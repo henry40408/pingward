@@ -22,7 +22,14 @@ pub fn due_time(check: &Check) -> Option<DateTime<Utc>> {
         ScheduleKind::Cron => {
             let expr = check.cron_expr.as_ref()?;
             let schedule = Schedule::from_str(expr).ok()?;
-            let tz: Tz = check.timezone.parse().unwrap_or(chrono_tz::UTC);
+            let tz: Tz = check.timezone.parse().unwrap_or_else(|_| {
+                tracing::warn!(
+                    check_id = check.id,
+                    timezone = %check.timezone,
+                    "invalid timezone on check, falling back to UTC"
+                );
+                chrono_tz::UTC
+            });
             let anchor_local = anchor(check).with_timezone(&tz);
             let next = schedule.after(&anchor_local).next()?;
             Some(next.with_timezone(&Utc) + grace)
@@ -83,6 +90,60 @@ mod tests {
     fn period_without_period_secs_is_none() {
         let mut c = base_check();
         c.period_secs = None;
+        assert!(due_time(&c).is_none());
+    }
+
+    #[test]
+    fn first_run_anchor_is_created_at() {
+        let mut c = base_check();
+        c.last_ping_at = None;
+        c.created_at = Utc.with_ymd_and_hms(2026, 7, 12, 9, 0, 0).unwrap();
+        c.period_secs = Some(1800);
+        c.grace_secs = 60;
+        // created_at 09:00 + 1800s + 60s = 09:31:00
+        assert_eq!(
+            due_time(&c).unwrap(),
+            Utc.with_ymd_and_hms(2026, 7, 12, 9, 31, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn cron_invalid_timezone_falls_back_to_utc() {
+        let mut c = base_check();
+        c.schedule_kind = ScheduleKind::Cron;
+        c.period_secs = None;
+        c.cron_expr = Some("0 0 * * * *".into());
+        c.timezone = "Not/AZone".into();
+
+        let mut expected = base_check();
+        expected.schedule_kind = ScheduleKind::Cron;
+        expected.period_secs = None;
+        expected.cron_expr = Some("0 0 * * * *".into());
+        expected.timezone = "UTC".into();
+
+        assert_eq!(due_time(&c).unwrap(), due_time(&expected).unwrap());
+        // last_ping 12:00 UTC → next trigger 13:00 UTC + 300s grace = 13:05 UTC
+        assert_eq!(
+            due_time(&c).unwrap(),
+            Utc.with_ymd_and_hms(2026, 7, 12, 13, 5, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn cron_without_cron_expr_is_none() {
+        let mut c = base_check();
+        c.schedule_kind = ScheduleKind::Cron;
+        c.period_secs = None;
+        c.cron_expr = None;
+        assert!(due_time(&c).is_none());
+    }
+
+    #[test]
+    fn cron_with_malformed_expr_is_none() {
+        let mut c = base_check();
+        c.schedule_kind = ScheduleKind::Cron;
+        c.period_secs = None;
+        c.cron_expr = Some("not a cron".into());
         assert!(due_time(&c).is_none());
     }
 }
