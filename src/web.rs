@@ -42,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         .route("/checks/{id}/edit", get(check_edit))
         .route("/checks/{id}/pause", post(check_pause))
         .route("/checks/{id}/resume", post(check_resume))
+        .route("/checks/{id}/ack", post(check_ack))
         .route("/checks/{id}/regenerate", post(check_regenerate))
         .route("/checks/{id}/delete", post(check_delete))
         .route("/projects/{pid}/channels/new", get(channel_new))
@@ -213,6 +214,7 @@ struct ProjectFormTemplate {
     action: String,
     name: String,
     scan_interval_secs: String,
+    nag_interval_secs: String,
 }
 
 #[derive(Template)]
@@ -228,6 +230,7 @@ struct ProjectTemplate {
 struct ProjectForm {
     name: String,
     scan_interval_secs: String,
+    nag_interval_secs: String,
 }
 
 fn parse_opt_i64(s: &str) -> Option<i64> {
@@ -256,6 +259,7 @@ async fn project_new(CurrentUser(_u): CurrentUser) -> Result<Response, AppError>
         action: "/projects".into(),
         name: String::new(),
         scan_interval_secs: String::new(),
+        nag_interval_secs: String::new(),
     })?
     .into_response())
 }
@@ -271,6 +275,7 @@ async fn project_create(
             user.id,
             &form.name,
             parse_opt_i64(&form.scan_interval_secs),
+            parse_opt_i64(&form.nag_interval_secs),
             Utc::now(),
         )
         .await?;
@@ -309,6 +314,10 @@ async fn project_edit(
             .scan_interval_secs
             .map(|v| v.to_string())
             .unwrap_or_default(),
+        nag_interval_secs: project
+            .nag_interval_secs
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
     })?
     .into_response())
 }
@@ -322,7 +331,12 @@ async fn project_update(
     owned_project(&state.store, id, user.id).await?;
     state
         .store
-        .update_project(id, &form.name, parse_opt_i64(&form.scan_interval_secs))
+        .update_project(
+            id,
+            &form.name,
+            parse_opt_i64(&form.scan_interval_secs),
+            parse_opt_i64(&form.nag_interval_secs),
+        )
         .await?;
     Ok(Redirect::to(&format!("/projects/{id}")).into_response())
 }
@@ -348,6 +362,7 @@ struct CheckForm {
     timezone: String,
     scan_interval_secs: String,
     max_runtime_secs: String,
+    nag_interval_secs: String,
 }
 
 struct PingRow {
@@ -384,6 +399,7 @@ struct CheckFormTemplate {
     timezone: String,
     scan_interval_secs: String,
     max_runtime_secs: String,
+    nag_interval_secs: String,
 }
 
 #[derive(Template)]
@@ -418,6 +434,7 @@ fn empty_check_form(heading: &str, action: String) -> CheckFormTemplate {
         timezone: "UTC".into(),
         scan_interval_secs: String::new(),
         max_runtime_secs: String::new(),
+        nag_interval_secs: String::new(),
     }
 }
 
@@ -485,6 +502,7 @@ async fn check_create(
             t.timezone = form.timezone;
             t.scan_interval_secs = form.scan_interval_secs;
             t.max_runtime_secs = form.max_runtime_secs;
+            t.nag_interval_secs = form.nag_interval_secs;
             return Ok(render(&t)?.into_response());
         }
     };
@@ -514,6 +532,7 @@ async fn check_create(
             &form.timezone,
             parse_opt_i64(&form.scan_interval_secs),
             parse_opt_i64(&form.max_runtime_secs),
+            parse_opt_i64(&form.nag_interval_secs),
         )
         .await?;
     Ok(Redirect::to(&format!("/checks/{id}")).into_response())
@@ -591,6 +610,10 @@ async fn check_edit(
             .max_runtime_secs
             .map(|v| v.to_string())
             .unwrap_or_default(),
+        nag_interval_secs: check
+            .nag_interval_secs
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
     })?
     .into_response())
 }
@@ -618,6 +641,7 @@ async fn check_update(
                 timezone: form.timezone,
                 scan_interval_secs: form.scan_interval_secs,
                 max_runtime_secs: form.max_runtime_secs,
+                nag_interval_secs: form.nag_interval_secs,
             };
             return Ok(render(&t)?.into_response());
         }
@@ -634,6 +658,7 @@ async fn check_update(
             &form.timezone,
             parse_opt_i64(&form.scan_interval_secs),
             parse_opt_i64(&form.max_runtime_secs),
+            parse_opt_i64(&form.nag_interval_secs),
         )
         .await?;
     Ok(Redirect::to(&format!("/checks/{id}")).into_response())
@@ -656,6 +681,16 @@ async fn check_resume(
 ) -> Result<Response, AppError> {
     owned_check(&state.store, id, user.id).await?;
     state.store.set_status(id, CheckStatus::New).await?;
+    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+}
+
+async fn check_ack(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    owned_check(&state.store, id, user.id).await?;
+    state.store.acknowledge(id).await?;
     Ok(Redirect::to(&format!("/checks/{id}")).into_response())
 }
 
@@ -880,6 +915,7 @@ async fn check_set_channels(
 struct SettingsTemplate {
     show_nav: bool,
     scan_interval: String,
+    nag_interval: String,
 }
 
 #[derive(Template)]
@@ -893,6 +929,7 @@ struct UsersTemplate {
 #[derive(Deserialize)]
 struct SettingsForm {
     scan_interval: String,
+    nag_interval: String,
 }
 
 #[derive(Deserialize)]
@@ -912,9 +949,15 @@ async fn settings_page(
         .get_setting("scan_interval")
         .await?
         .unwrap_or_default();
+    let nag_interval = state
+        .store
+        .get_setting("nag_interval")
+        .await?
+        .unwrap_or_default();
     Ok(render(&SettingsTemplate {
         show_nav: true,
         scan_interval,
+        nag_interval,
     })?
     .into_response())
 }
@@ -930,6 +973,12 @@ async fn settings_save(
         state.store.set_setting("scan_interval", "").await?;
     } else if trimmed.parse::<u64>().map(|v| v > 0).unwrap_or(false) {
         state.store.set_setting("scan_interval", trimmed).await?;
+    }
+    let nag = form.nag_interval.trim();
+    if nag.is_empty() {
+        state.store.set_setting("nag_interval", "").await?;
+    } else if nag.parse::<u64>().map(|v| v > 0).unwrap_or(false) {
+        state.store.set_setting("nag_interval", nag).await?;
     }
     Ok(Redirect::to("/settings").into_response())
 }

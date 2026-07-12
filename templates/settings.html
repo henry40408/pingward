@@ -3,6 +3,7 @@
 <h1>Settings</h1>
 <form method="post" action="/settings">
   <label>Global scan interval (secs) <input name="scan_interval" value="{{ scan_interval }}"></label>
+  <label>Global nag interval (secs, blank = off) <input name="nag_interval" value="{{ nag_interval }}"></label>
   <button type="submit">Save</button>
 </form>
 <p><a href="/users">Manage users</a></p>
