@@ -1,8 +1,8 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use pingward::{
     db,
-    models::{CheckStatus, ScheduleKind},
-    notify::{dispatch, Notifier, WebhookNotifier},
+    models::{ChannelKind, CheckStatus, NotifyStatus, ScheduleKind},
+    notify::{deliver_event, RetryPolicy},
     scheduler::scan_once,
     store::Store,
 };
@@ -185,7 +185,7 @@ async fn scan_once_does_not_down_check_one_second_before_due() {
 }
 
 #[tokio::test]
-async fn overdue_dispatches_to_webhook() {
+async fn overdue_downs_and_delivers_to_bound_channel() {
     let mock = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200))
@@ -193,13 +193,29 @@ async fn overdue_dispatches_to_webhook() {
         .mount(&mock)
         .await;
 
-    let (store, _) = store_with_up_check(60, 30, 200).await;
-    let notifiers: Vec<Box<dyn Notifier>> = vec![Box::new(WebhookNotifier::new(mock.uri()))];
+    // build store with an overdue up check bound to a webhook channel
+    let (store, id) = store_with_up_check(60, 30, 200).await;
+    let now = Utc::now();
+    let cid = store
+        .create_channel(
+            1,
+            ChannelKind::Webhook,
+            "hook",
+            &format!("{{\"url\":\"{}\"}}", mock.uri()),
+            now,
+        )
+        .await
+        .unwrap();
+    store.bind_channel(id, cid).await.unwrap();
 
-    let events = scan_once(&store, Utc::now()).await.unwrap();
+    let events = scan_once(&store, now).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].check_id, id);
     for ev in &events {
-        let results = dispatch(&notifiers, ev).await;
-        assert!(results.iter().all(|r| r.is_ok()));
+        deliver_event(&store, ev, RetryPolicy::default(), now).await;
     }
-    // mock verifies expect(1) on drop
+    assert_eq!(
+        store.list_recent_notifications(id, 10).await.unwrap()[0].status,
+        NotifyStatus::Ok
+    );
 }
