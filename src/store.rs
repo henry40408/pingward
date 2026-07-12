@@ -34,7 +34,7 @@ fn row_to_check(row: &sqlx::sqlite::SqliteRow) -> Check {
         last_start_at: parse_ts(row.get("last_start_at")),
         next_due_at: parse_ts(row.get("next_due_at")),
         scan_interval_secs: row.get("scan_interval_secs"),
-        created_at: parse_ts(row.get("created_at")).unwrap_or_else(Utc::now),
+        created_at: parse_ts(row.get("created_at")).expect("created_at must be valid RFC3339"),
     }
 }
 
@@ -139,7 +139,7 @@ mod tests {
         db,
         models::{CheckStatus, PingKind, ScheduleKind},
     };
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
 
     async fn seeded() -> Store {
         let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -195,19 +195,110 @@ mod tests {
             )
             .await
             .unwrap();
+        let ping_time = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
         store
             .insert_ping(
                 id,
                 PingKind::Success,
-                None,
+                Some(0),
                 "hello",
                 Some("1.2.3.4"),
-                Utc::now(),
+                ping_time,
             )
             .await
             .unwrap();
+
+        let row = sqlx::query("SELECT * FROM pings WHERE check_id = ?")
+            .bind(id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<String, _>("kind"), PingKind::Success.as_str());
+        assert_eq!(row.get::<Option<i64>, _>("exit_code"), Some(0));
+        assert_eq!(row.get::<String, _>("body"), "hello");
+        assert_eq!(
+            row.get::<Option<String>, _>("source_ip"),
+            Some("1.2.3.4".to_string())
+        );
+
         assert_eq!(store.list_active_checks().await.unwrap().len(), 1);
         store.set_status(id, CheckStatus::Paused).await.unwrap();
         assert_eq!(store.list_active_checks().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_active_checks_includes_up_status() {
+        let store = seeded().await;
+        let id = store
+            .create_check(
+                1,
+                "job",
+                "up-uuid",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        store.set_status(id, CheckStatus::Up).await.unwrap();
+        let active = store.list_active_checks().await.unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].status, CheckStatus::Up);
+    }
+
+    #[tokio::test]
+    async fn mark_ping_updates_status_and_coalesces_timestamps() {
+        let store = seeded().await;
+        let id = store
+            .create_check(
+                1,
+                "job",
+                "mark-uuid",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+
+        let t1 = Utc.with_ymd_and_hms(2026, 1, 1, 10, 0, 0).unwrap();
+        let s1 = Utc.with_ymd_and_hms(2026, 1, 1, 9, 59, 0).unwrap();
+        let due1 = Utc.with_ymd_and_hms(2026, 1, 1, 11, 0, 0).unwrap();
+
+        store
+            .mark_ping(id, CheckStatus::Up, Some(t1), Some(s1), Some(due1))
+            .await
+            .unwrap();
+
+        let found = store
+            .find_check_by_uuid("mark-uuid")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.status, CheckStatus::Up);
+        assert_eq!(found.last_ping_at, Some(t1));
+        assert_eq!(found.last_start_at, Some(s1));
+        assert_eq!(found.next_due_at, Some(due1));
+
+        // Second call with None for ping/start timestamps: COALESCE preserves
+        // the prior values, but next_due_at is unconditionally overwritten to NULL.
+        store
+            .mark_ping(id, CheckStatus::Up, None, None, None)
+            .await
+            .unwrap();
+
+        let found = store
+            .find_check_by_uuid("mark-uuid")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.status, CheckStatus::Up);
+        assert_eq!(found.last_ping_at, Some(t1));
+        assert_eq!(found.last_start_at, Some(s1));
+        assert_eq!(found.next_due_at, None);
     }
 }
