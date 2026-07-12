@@ -9,26 +9,40 @@ fn parse_days(v: Option<String>) -> Option<i64> {
         .filter(|&n| n > 0)
 }
 
+/// Resolve a retention setting into an RFC3339 cutoff: rows with
+/// `created_at < cutoff` should be deleted. Returns `None` when retention is
+/// off (unset/blank/non-numeric/≤0) or the day count is so large that
+/// `now - days` would overflow the representable range. In the overflow case a
+/// warning is logged and nothing is pruned — a fail-safe that keeps data
+/// rather than panicking the prune task.
+fn retention_cutoff(now: DateTime<Utc>, setting: Option<String>) -> Option<String> {
+    let days = parse_days(setting)?;
+    match Duration::try_days(days).and_then(|d| now.checked_sub_signed(d)) {
+        Some(cutoff) => Some(cutoff.to_rfc3339()),
+        None => {
+            tracing::warn!("retention of {days} days is out of range; skipping prune this run");
+            None
+        }
+    }
+}
+
 /// Delete `pings` and `notifications` older than their configured retention.
 /// Each table's retention is an independent global setting; a table with
 /// retention off is skipped (its count is 0). Returns
 /// `(pings_deleted, notifications_deleted)`. `now` is injected for determinism.
 pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<(u64, u64), sqlx::Error> {
-    let pings_deleted = match parse_days(store.get_setting("pings_retention_days").await?) {
-        Some(days) => {
-            let cutoff = (now - Duration::days(days)).to_rfc3339();
-            store.delete_pings_before(&cutoff).await?
-        }
-        None => 0,
-    };
-    let notifications_deleted =
-        match parse_days(store.get_setting("notifications_retention_days").await?) {
-            Some(days) => {
-                let cutoff = (now - Duration::days(days)).to_rfc3339();
-                store.delete_notifications_before(&cutoff).await?
-            }
+    let pings_deleted =
+        match retention_cutoff(now, store.get_setting("pings_retention_days").await?) {
+            Some(cutoff) => store.delete_pings_before(&cutoff).await?,
             None => 0,
         };
+    let notifications_deleted = match retention_cutoff(
+        now,
+        store.get_setting("notifications_retention_days").await?,
+    ) {
+        Some(cutoff) => store.delete_notifications_before(&cutoff).await?,
+        None => 0,
+    };
     Ok((pings_deleted, notifications_deleted))
 }
 
@@ -93,6 +107,36 @@ mod tests {
             .await
             .unwrap();
         (store, cid, chan)
+    }
+
+    #[test]
+    fn parse_days_off_and_positive_cases() {
+        assert_eq!(parse_days(None), None);
+        assert_eq!(parse_days(Some("".into())), None);
+        assert_eq!(parse_days(Some("   ".into())), None);
+        assert_eq!(parse_days(Some("abc".into())), None);
+        assert_eq!(parse_days(Some("0".into())), None);
+        assert_eq!(parse_days(Some("-5".into())), None);
+        assert_eq!(parse_days(Some("7".into())), Some(7));
+        assert_eq!(parse_days(Some("  30 ".into())), Some(30));
+    }
+
+    #[test]
+    fn retention_cutoff_off_overflow_and_valid() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 13, 12, 0, 0).unwrap();
+        // retention off → None
+        assert_eq!(retention_cutoff(now, None), None);
+        assert_eq!(retention_cutoff(now, Some("0".into())), None);
+        // sane value → cutoff = now - N days
+        assert_eq!(
+            retention_cutoff(now, Some("7".into())),
+            Some((now - Duration::days(7)).to_rfc3339())
+        );
+        // absurd value must NOT panic — fail-safe to None (overflow branch)
+        assert_eq!(
+            retention_cutoff(now, Some("999999999999999999".into())),
+            None
+        );
     }
 
     #[tokio::test]
