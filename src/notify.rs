@@ -17,6 +17,17 @@ impl EventKind {
     }
 }
 
+impl std::str::FromStr for EventKind {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "down" => Ok(EventKind::Down),
+            "up" => Ok(EventKind::Up),
+            other => Err(format!("invalid EventKind: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NotificationEvent {
     pub check_name: String,
