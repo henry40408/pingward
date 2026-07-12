@@ -265,9 +265,11 @@ async fn postgres_full_round_trip() {
         (1, 1),
         "expected exactly the old ping+notification pruned, got ({pd},{nd})"
     );
-    // direct delete method also works with an explicit cutoff
+    // direct delete methods also work with an explicit cutoff: a far-past
+    // cutoff matches nothing in either table (every remaining row is recent).
     let far = (now - chrono::Duration::days(3650)).to_rfc3339();
     assert_eq!(store.delete_pings_before(&far).await.unwrap(), 0);
+    assert_eq!(store.delete_notifications_before(&far).await.unwrap(), 0);
 
     // cascade delete: removing the user removes project → checks → channels → pings
     store.delete_user(uid).await.unwrap();
