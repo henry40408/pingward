@@ -153,6 +153,40 @@ async fn create_check_and_pause_resume() {
 }
 
 #[tokio::test]
+async fn acknowledge_persists() {
+    let (server, store, pid) = server_with_project().await;
+
+    let res = server
+        .post(&format!("/projects/{pid}/checks"))
+        .form(&[
+            ("name", "backup"),
+            ("schedule_kind", "period"),
+            ("period_secs", "3600"),
+            ("grace_secs", "300"),
+            ("cron_expr", ""),
+            ("timezone", "UTC"),
+            ("scan_interval_secs", ""),
+            ("max_runtime_secs", ""),
+            ("nag_interval_secs", ""),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let checks = store.list_checks_for_project(pid).await.unwrap();
+    let cid = checks[0].id;
+
+    store
+        .set_status(cid, pingward::models::CheckStatus::Down)
+        .await
+        .unwrap();
+
+    server
+        .post(&format!("/checks/{cid}/ack"))
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(store.find_check(cid).await.unwrap().unwrap().acknowledged);
+}
+
+#[tokio::test]
 async fn create_check_persists_max_runtime() {
     let (server, store, pid) = server_with_project().await;
     let res = server
@@ -550,6 +584,23 @@ async fn cannot_operate_on_another_users_check() {
         .assert_status(axum::http::StatusCode::NOT_FOUND);
     // The check must still exist — no cross-user mutation happened.
     assert!(store.find_check(ocid).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn non_owner_cannot_acknowledge() {
+    let (server, store, _uid) = logged_in_server().await;
+    let (_opid, ocid, _ochid) = other_users_project(&store).await;
+    store
+        .set_status(ocid, pingward::models::CheckStatus::Down)
+        .await
+        .unwrap();
+
+    server
+        .post(&format!("/checks/{ocid}/ack"))
+        .await
+        .assert_status(axum::http::StatusCode::NOT_FOUND);
+    // No cross-user mutation happened.
+    assert!(!store.find_check(ocid).await.unwrap().unwrap().acknowledged);
 }
 
 #[tokio::test]

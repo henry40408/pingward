@@ -42,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         .route("/checks/{id}/edit", get(check_edit))
         .route("/checks/{id}/pause", post(check_pause))
         .route("/checks/{id}/resume", post(check_resume))
+        .route("/checks/{id}/ack", post(check_ack))
         .route("/checks/{id}/regenerate", post(check_regenerate))
         .route("/checks/{id}/delete", post(check_delete))
         .route("/projects/{pid}/channels/new", get(channel_new))
@@ -680,6 +681,16 @@ async fn check_resume(
 ) -> Result<Response, AppError> {
     owned_check(&state.store, id, user.id).await?;
     state.store.set_status(id, CheckStatus::New).await?;
+    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+}
+
+async fn check_ack(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    owned_check(&state.store, id, user.id).await?;
+    state.store.acknowledge(id).await?;
     Ok(Redirect::to(&format!("/checks/{id}")).into_response())
 }
 

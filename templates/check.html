@@ -12,6 +12,10 @@
   <form class="inline" method="post" action="/checks/{{ check.id }}/regenerate"><button>Regenerate URL</button></form>
   <form class="inline" method="post" action="/checks/{{ check.id }}/delete"
         onsubmit="return confirm('Delete check?')"><button>Delete</button></form>
+  {% if check.status.as_str() == "down" && !check.acknowledged %}
+    <form class="inline" method="post" action="/checks/{{ check.id }}/ack"><button>Acknowledge</button></form>
+  {% endif %}
+  {% if check.acknowledged %}<span class="status-paused">acknowledged</span>{% endif %}
 </p>
 
 <h2>Channels</h2>
