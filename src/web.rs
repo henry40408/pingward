@@ -1,6 +1,6 @@
 use crate::auth::{
-    hash_password, new_session_token, verify_password, AdminUser, CurrentUser, SESSION_COOKIE,
-    SESSION_TTL_DAYS,
+    hash_password, new_session_token, verify_password, AdminUser, CurrentUser, OptionalUser,
+    SESSION_COOKIE, SESSION_TTL_DAYS,
 };
 use crate::error::AppError;
 use crate::models::{
@@ -167,27 +167,13 @@ async fn logout(State(state): State<AppState>, jar: CookieJar) -> Result<Respons
     Ok((jar, Redirect::to("/login")).into_response())
 }
 
-// NOTE on `Option<CurrentUser>`: the brief's primary approach was to make
-// `dashboard` take `user: Option<CurrentUser>` and rely on axum's blanket
-// `OptionalFromRequestParts` impl (available when `Rejection: IntoResponse`,
-// which `CurrentUser`'s `Response` rejection satisfies). That did not
-// compile — `fn(State<AppState>, Option<CurrentUser>) -> ...` did not
-// satisfy `Handler<_, _>` under the pinned axum 0.8.9 — so this uses the
-// brief's stated fallback: read the session cookie directly via a
-// `CookieJar` extractor and `Store::find_session_user`.
-async fn dashboard(State(state): State<AppState>, jar: CookieJar) -> Result<Response, AppError> {
+async fn dashboard(
+    State(state): State<AppState>,
+    OptionalUser(user): OptionalUser,
+) -> Result<Response, AppError> {
     if state.store.count_users().await? == 0 {
         return Ok(Redirect::to("/setup").into_response());
     }
-    let user = match jar.get(SESSION_COOKIE) {
-        Some(cookie) => {
-            state
-                .store
-                .find_session_user(cookie.value(), Utc::now())
-                .await?
-        }
-        None => None,
-    };
     let user = match user {
         Some(u) => u,
         None => return Ok(Redirect::to("/login").into_response()),

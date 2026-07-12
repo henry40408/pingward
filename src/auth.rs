@@ -103,6 +103,23 @@ impl FromRequestParts<AppState> for CurrentUser {
     }
 }
 
+/// Like `CurrentUser`, but infallible: resolves the current user via session
+/// cookie or trusted forward-auth header, yielding `None` instead of
+/// redirecting when no user can be resolved. Useful for handlers (e.g. the
+/// dashboard landing page) that need to branch on "no user" themselves
+/// rather than being redirected to `/login`.
+pub struct OptionalUser(pub Option<User>);
+
+impl FromRequestParts<AppState> for OptionalUser {
+    type Rejection = Response;
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(OptionalUser(resolve_user(parts, state).await))
+    }
+}
+
 pub struct AdminUser(pub User);
 
 impl FromRequestParts<AppState> for AdminUser {
