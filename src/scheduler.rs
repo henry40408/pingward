@@ -1,4 +1,6 @@
-use crate::models::{Check, ScheduleKind};
+use crate::models::{Check, CheckStatus, ScheduleKind};
+use crate::notify::{EventKind, NotificationEvent};
+use crate::store::Store;
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
@@ -35,6 +37,34 @@ pub fn due_time(check: &Check) -> Option<DateTime<Utc>> {
             Some(next.with_timezone(&Utc) + grace)
         }
     }
+}
+
+/// Scans every active check (status `new`/`up`), transitioning any whose
+/// `due_time` has passed to `down`. Per-check failures (e.g. a DB error on
+/// `set_status`) are logged and skipped rather than aborting the round.
+pub async fn scan_once(
+    store: &Store,
+    now: DateTime<Utc>,
+) -> Result<Vec<NotificationEvent>, sqlx::Error> {
+    let mut events = Vec::new();
+    for check in store.list_active_checks().await? {
+        let Some(due) = due_time(&check) else {
+            continue;
+        };
+        if now >= due {
+            if let Err(e) = store.set_status(check.id, CheckStatus::Down).await {
+                tracing::error!("failed to down check {}: {e}", check.id);
+                continue;
+            }
+            events.push(NotificationEvent {
+                check_name: check.name.clone(),
+                event: EventKind::Down,
+                at: now,
+                project_id: check.project_id,
+            });
+        }
+    }
+    Ok(events)
 }
 
 #[cfg(test)]
