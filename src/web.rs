@@ -684,7 +684,24 @@ struct ChannelFormTemplate {
 struct ChannelForm {
     name: String,
     kind: String,
-    url: String,
+    #[serde(default)]
+    webhook_url: String,
+    #[serde(default)]
+    slack_url: String,
+    #[serde(default)]
+    telegram_token: String,
+    #[serde(default)]
+    telegram_chat_id: String,
+    #[serde(default)]
+    ntfy_base_url: String, // optional, defaults to https://ntfy.sh
+    #[serde(default)]
+    ntfy_topic: String,
+    #[serde(default)]
+    ntfy_token: String, // optional
+    #[serde(default)]
+    pushover_token: String, // application token
+    #[serde(default)]
+    pushover_user: String, // user/group key
 }
 
 #[derive(Deserialize)]
@@ -714,19 +731,82 @@ async fn channel_create(
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    // Plan 2: only webhook is accepted.
-    if form.kind != ChannelKind::Webhook.as_str() || form.url.trim().is_empty() {
-        return Ok(render(&ChannelFormTemplate {
+
+    let err = |msg: &str| -> Result<Response, AppError> {
+        Ok(render(&ChannelFormTemplate {
             show_nav: true,
             project_id: pid,
-            error: Some("a webhook URL is required".into()),
+            error: Some(msg.to_string()),
         })?
-        .into_response());
+        .into_response())
+    };
+
+    let name = form.name.trim();
+    if name.is_empty() {
+        return err("a channel name is required");
     }
-    let config = serde_json::json!({ "url": form.url.trim() }).to_string();
+
+    let Ok(kind) = ChannelKind::from_str(&form.kind) else {
+        return err("unknown channel kind");
+    };
+
+    let config = match kind {
+        ChannelKind::Webhook => {
+            let url = form.webhook_url.trim();
+            if url.is_empty() {
+                return err("a webhook URL is required");
+            }
+            serde_json::json!({ "url": url }).to_string()
+        }
+        ChannelKind::Slack => {
+            let url = form.slack_url.trim();
+            if url.is_empty() {
+                return err("a Slack incoming-webhook URL is required");
+            }
+            serde_json::json!({ "url": url }).to_string()
+        }
+        ChannelKind::Telegram => {
+            let token = form.telegram_token.trim();
+            let chat_id = form.telegram_chat_id.trim();
+            if token.is_empty() || chat_id.is_empty() {
+                return err("Telegram requires both a bot token and a chat id");
+            }
+            serde_json::json!({ "token": token, "chat_id": chat_id }).to_string()
+        }
+        ChannelKind::Ntfy => {
+            let topic = form.ntfy_topic.trim();
+            if topic.is_empty() {
+                return err("ntfy requires a topic");
+            }
+            let base_url = {
+                let b = form.ntfy_base_url.trim();
+                if b.is_empty() {
+                    "https://ntfy.sh"
+                } else {
+                    b
+                }
+            };
+            let token = form.ntfy_token.trim();
+            serde_json::json!({
+                "base_url": base_url,
+                "topic": topic,
+                "token": token,
+            })
+            .to_string()
+        }
+        ChannelKind::Pushover => {
+            let token = form.pushover_token.trim();
+            let user = form.pushover_user.trim();
+            if token.is_empty() || user.is_empty() {
+                return err("Pushover requires both an application token and a user key");
+            }
+            serde_json::json!({ "token": token, "user": user }).to_string()
+        }
+    };
+
     state
         .store
-        .create_channel(pid, ChannelKind::Webhook, &form.name, &config, Utc::now())
+        .create_channel(pid, kind, name, &config, Utc::now())
         .await?;
     Ok(Redirect::to(&format!("/projects/{pid}")).into_response())
 }

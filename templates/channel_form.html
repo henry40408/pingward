@@ -5,9 +5,48 @@
 <form method="post" action="/projects/{{ project_id }}/channels">
   <label>Name <input name="name" required></label>
   <label>Kind
-    <select name="kind"><option value="webhook">webhook</option></select></label>
-  <label>Webhook URL <input name="url" required></label>
+    <select name="kind" id="kind">
+      <option value="webhook">webhook</option>
+      <option value="slack">slack</option>
+      <option value="telegram">telegram</option>
+      <option value="ntfy">ntfy</option>
+      <option value="pushover">pushover</option>
+    </select>
+  </label>
+
+  <div class="cfg" data-kind="webhook">
+    <label>Webhook URL <input name="webhook_url"></label>
+  </div>
+  <div class="cfg" data-kind="slack">
+    <label>Slack incoming webhook URL <input name="slack_url"></label>
+  </div>
+  <div class="cfg" data-kind="telegram">
+    <label>Bot token <input name="telegram_token"></label>
+    <label>Chat id <input name="telegram_chat_id"></label>
+  </div>
+  <div class="cfg" data-kind="ntfy">
+    <label>Server base URL <input name="ntfy_base_url" placeholder="https://ntfy.sh"></label>
+    <label>Topic <input name="ntfy_topic"></label>
+    <label>Token (optional) <input name="ntfy_token"></label>
+  </div>
+  <div class="cfg" data-kind="pushover">
+    <label>Application token <input name="pushover_token"></label>
+    <label>User/group key <input name="pushover_user"></label>
+  </div>
+
   <button type="submit">Create</button>
 </form>
-<p><small>Telegram, Slack, and ntfy channels arrive in a later release.</small></p>
+<script>
+  (function () {
+    var sel = document.getElementById('kind');
+    function sync() {
+      var k = sel.value;
+      document.querySelectorAll('.cfg').forEach(function (d) {
+        d.style.display = d.getAttribute('data-kind') === k ? '' : 'none';
+      });
+    }
+    sel.addEventListener('change', sync);
+    sync();
+  })();
+</script>
 {% endblock %}
