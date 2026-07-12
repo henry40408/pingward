@@ -58,6 +58,9 @@ fn row_to_check(row: &sqlx::any::AnyRow) -> Result<Check, sqlx::Error> {
         next_due_at: parse_ts(row.get("next_due_at")),
         scan_interval_secs: row.get("scan_interval_secs"),
         max_runtime_secs: row.get("max_runtime_secs"),
+        nag_interval_secs: row.get("nag_interval_secs"),
+        last_alert_at: parse_ts(row.get("last_alert_at")),
+        acknowledged: row.get::<i64, _>("acknowledged") != 0,
         created_at,
     })
 }
@@ -79,6 +82,7 @@ fn row_to_project(row: &sqlx::any::AnyRow) -> Result<Project, sqlx::Error> {
         user_id: row.get("user_id"),
         name: row.get("name"),
         scan_interval_secs: row.get("scan_interval_secs"),
+        nag_interval_secs: row.get("nag_interval_secs"),
         created_at: parse_ts(row.get("created_at"))
             .ok_or_else(|| decode_err("projects.created_at must be RFC3339"))?,
     })
@@ -959,5 +963,27 @@ mod tests {
 
         let map = store.all_project_scan_intervals().await.unwrap();
         assert_eq!(map.get(&pid), Some(&Some(15)));
+    }
+
+    #[tokio::test]
+    async fn new_check_has_nag_defaults() {
+        let store = seeded().await;
+        let id = store
+            .create_check(
+                1,
+                "c",
+                "uu",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        let c = store.find_check(id).await.unwrap().unwrap();
+        assert_eq!(c.nag_interval_secs, None);
+        assert_eq!(c.last_alert_at, None);
+        assert!(!c.acknowledged);
     }
 }

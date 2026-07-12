@@ -165,6 +165,9 @@ mod tests {
             next_due_at: None,
             scan_interval_secs: None,
             max_runtime_secs: None,
+            nag_interval_secs: None,
+            last_alert_at: None,
+            acknowledged: false,
             created_at: Utc.with_ymd_and_hms(2026, 7, 12, 11, 0, 0).unwrap(),
         }
     }

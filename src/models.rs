@@ -42,6 +42,9 @@ pub struct Check {
     pub next_due_at: Option<DateTime<Utc>>,
     pub scan_interval_secs: Option<i64>,
     pub max_runtime_secs: Option<i64>,
+    pub nag_interval_secs: Option<i64>,
+    pub last_alert_at: Option<DateTime<Utc>>,
+    pub acknowledged: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -60,6 +63,7 @@ pub struct Project {
     pub user_id: i64,
     pub name: String,
     pub scan_interval_secs: Option<i64>,
+    pub nag_interval_secs: Option<i64>,
     pub created_at: DateTime<Utc>,
 }
 
