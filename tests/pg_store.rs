@@ -139,6 +139,45 @@ async fn postgres_full_round_trip() {
         Some("45")
     );
 
+    // sessions
+    let future_expiry = now + chrono::Duration::hours(1);
+    store
+        .create_session("sess-active", uid, future_expiry)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .find_session_user("sess-active", now)
+            .await
+            .unwrap()
+            .map(|u| u.username),
+        Some("alice".to_string())
+    );
+
+    let past_expiry = now - chrono::Duration::hours(1);
+    store
+        .create_session("sess-expired", uid, past_expiry)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .find_session_user("sess-expired", now)
+            .await
+            .unwrap()
+            .is_none(),
+        "expired session must not resolve to a user"
+    );
+
+    store.delete_session("sess-active").await.unwrap();
+    assert!(
+        store
+            .find_session_user("sess-active", now)
+            .await
+            .unwrap()
+            .is_none(),
+        "deleted session must not resolve to a user"
+    );
+
     // cascade delete: removing the user removes project → checks → channels → pings
     store.delete_user(uid).await.unwrap();
     assert!(store.list_projects_for_user(uid).await.unwrap().is_empty());

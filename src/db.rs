@@ -28,6 +28,25 @@ pub async fn connect(url: &str) -> Result<Pool, sqlx::Error> {
         5
     };
 
+    // Before the `Any` driver migration, SQLite connections were opened with
+    // `SqliteConnectOptions::create_if_missing(true)`, so any SQLite file URL
+    // auto-created the database file. The `Any` driver has no equivalent
+    // builder option; the SQLite backend instead honours `?mode=rwc` in the
+    // URL itself. Append it here for file URLs that don't already specify a
+    // `mode=` so behaviour matches the pre-migration default (in-memory URLs
+    // and URLs that already set `mode=` are left untouched).
+    let created_url;
+    let url = if sqlite && !is_in_memory_url(url) && !url.contains("mode=") {
+        created_url = if url.contains('?') {
+            format!("{url}&mode=rwc")
+        } else {
+            format!("{url}?mode=rwc")
+        };
+        created_url.as_str()
+    } else {
+        url
+    };
+
     let opts = AnyConnectOptions::from_str(url)?;
 
     AnyPoolOptions::new()
@@ -120,5 +139,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(check_count, 0, "check should cascade-delete with project");
+    }
+
+    /// Regression test for a SQLite file URL with no `?mode=` query param:
+    /// pre-`Any`-driver, `create_if_missing(true)` made this auto-create the
+    /// database file. `connect()` must still do so by appending `mode=rwc`.
+    #[tokio::test]
+    async fn connect_creates_sqlite_file_without_mode_param() {
+        let path = std::env::temp_dir().join("pingward_dbtest_autocreate.sqlite3");
+        let _ = std::fs::remove_file(&path);
+        assert!(!path.exists());
+
+        let url = format!("sqlite://{}", path.display());
+        let pool = connect(&url).await.unwrap();
+        migrate(&pool, &url).await.unwrap();
+
+        assert!(
+            path.exists(),
+            "connect() should auto-create the sqlite file"
+        );
+
+        drop(pool);
+        let _ = std::fs::remove_file(&path);
     }
 }
