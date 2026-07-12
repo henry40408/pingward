@@ -1,4 +1,11 @@
-use pingward::{config::Config, db, store::Store};
+use pingward::{
+    config::Config,
+    db,
+    notify::{Notifier, WebhookNotifier},
+    scheduler,
+    store::Store,
+};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -14,6 +21,22 @@ async fn main() {
         .expect("failed to connect to database");
     db::migrate(&pool).await.expect("failed to run migrations");
     let store = Store::new(pool);
+
+    // Plan 1 bound: a single global webhook from env; per-check channels come in Plan 2.
+    let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
+    if let Ok(url) = std::env::var("PINGWARD_WEBHOOK_URL") {
+        tracing::warn!(
+            "Plan 1: using single global PINGWARD_WEBHOOK_URL; per-check channels come in Plan 2"
+        );
+        notifiers.push(Box::new(WebhookNotifier::new(url)));
+    }
+    let notifiers = Arc::new(notifiers);
+
+    tokio::spawn(scheduler::run_scan_loop(
+        store.clone(),
+        config.scan_interval_secs,
+        notifiers,
+    ));
 
     let listener = tokio::net::TcpListener::bind(&config.bind).await.unwrap();
     tracing::info!("listening on {}", listener.local_addr().unwrap());

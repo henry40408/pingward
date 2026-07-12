@@ -1,10 +1,12 @@
 use crate::models::{Check, CheckStatus, ScheduleKind};
-use crate::notify::{EventKind, NotificationEvent};
+use crate::notify::{dispatch, EventKind, NotificationEvent, Notifier};
 use crate::store::Store;
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
 use std::str::FromStr;
+use std::sync::Arc;
+use tokio::time::{interval, Duration as TokioDuration};
 
 /// Anchor for the next expected check-in: last successful ping, else creation.
 fn anchor(check: &Check) -> DateTime<Utc> {
@@ -65,6 +67,34 @@ pub async fn scan_once(
         }
     }
     Ok(events)
+}
+
+/// Runs the scan loop forever: on every tick, scans for overdue checks and
+/// dispatches any resulting events to `notifiers`. `Utc::now()` is called
+/// here (and only here) so `scan_once` itself stays deterministic and
+/// testable with an injected `now`.
+///
+/// Plan 1 bound: `notifiers` is a single, global set loaded once at startup
+/// (see `PINGWARD_WEBHOOK_URL` in `main.rs`); per-check channel binding
+/// arrives in Plan 2.
+pub async fn run_scan_loop(
+    store: Store,
+    interval_secs: u64,
+    notifiers: Arc<Vec<Box<dyn Notifier>>>,
+) {
+    let mut tick = interval(TokioDuration::from_secs(interval_secs.max(1)));
+    loop {
+        tick.tick().await;
+        match scan_once(&store, Utc::now()).await {
+            Ok(events) => {
+                for ev in &events {
+                    let _ = dispatch(&notifiers, ev).await;
+                    tracing::info!("notified: {} -> {}", ev.check_name, ev.event.as_str());
+                }
+            }
+            Err(e) => tracing::error!("scan_once failed: {e}"),
+        }
+    }
 }
 
 #[cfg(test)]

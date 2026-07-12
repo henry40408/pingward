@@ -2,9 +2,12 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use pingward::{
     db,
     models::{CheckStatus, ScheduleKind},
+    notify::{dispatch, Notifier, WebhookNotifier},
     scheduler::scan_once,
     store::Store,
 };
+use wiremock::matchers::method;
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 async fn empty_store() -> Store {
     let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -179,4 +182,24 @@ async fn scan_once_does_not_down_check_one_second_before_due() {
             .status,
         CheckStatus::Up
     );
+}
+
+#[tokio::test]
+async fn overdue_dispatches_to_webhook() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let (store, _) = store_with_up_check(60, 30, 200).await;
+    let notifiers: Vec<Box<dyn Notifier>> = vec![Box::new(WebhookNotifier::new(mock.uri()))];
+
+    let events = scan_once(&store, Utc::now()).await.unwrap();
+    for ev in &events {
+        let results = dispatch(&notifiers, ev).await;
+        assert!(results.iter().all(|r| r.is_ok()));
+    }
+    // mock verifies expect(1) on drop
 }
