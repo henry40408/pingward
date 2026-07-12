@@ -414,14 +414,17 @@ impl Store {
         user_id: i64,
         name: &str,
         scan_interval_secs: Option<i64>,
+        nag_interval_secs: Option<i64>,
         now: DateTime<Utc>,
     ) -> Result<i64, sqlx::Error> {
         let row = sqlx::query(
-            "INSERT INTO projects (user_id, name, scan_interval_secs, created_at) VALUES ($1,$2,$3,$4) RETURNING id",
+            "INSERT INTO projects (user_id, name, scan_interval_secs, nag_interval_secs, created_at) \
+             VALUES ($1,$2,$3,$4,$5) RETURNING id",
         )
         .bind(user_id)
         .bind(name)
         .bind(scan_interval_secs)
+        .bind(nag_interval_secs)
         .bind(now.to_rfc3339())
         .fetch_one(&self.pool)
         .await?;
@@ -449,13 +452,17 @@ impl Store {
         id: i64,
         name: &str,
         scan_interval_secs: Option<i64>,
+        nag_interval_secs: Option<i64>,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE projects SET name = $1, scan_interval_secs = $2 WHERE id = $3")
-            .bind(name)
-            .bind(scan_interval_secs)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE projects SET name = $1, scan_interval_secs = $2, nag_interval_secs = $3 WHERE id = $4",
+        )
+        .bind(name)
+        .bind(scan_interval_secs)
+        .bind(nag_interval_secs)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -980,7 +987,10 @@ mod tests {
         let store = seeded().await;
         let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 
-        let pid = store.create_project(1, "web", Some(15), now).await.unwrap();
+        let pid = store
+            .create_project(1, "web", Some(15), None, now)
+            .await
+            .unwrap();
         assert_eq!(store.list_projects_for_user(1).await.unwrap().len(), 2); // 'p' from seed + 'web'
         assert_eq!(
             store

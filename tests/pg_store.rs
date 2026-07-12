@@ -50,7 +50,7 @@ async fn postgres_full_round_trip() {
 
     // projects
     let pid = store
-        .create_project(uid, "web", Some(45), now)
+        .create_project(uid, "web", Some(45), None, now)
         .await
         .unwrap();
     assert_eq!(store.list_projects_for_user(uid).await.unwrap().len(), 1);

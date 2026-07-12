@@ -409,7 +409,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_project(1, "p", None, Utc::now())
+            .create_project(1, "p", None, None, Utc::now())
             .await
             .unwrap();
         let start = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
@@ -468,7 +468,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_project(1, "p", None, Utc::now())
+            .create_project(1, "p", None, None, Utc::now())
             .await
             .unwrap();
         let id = store

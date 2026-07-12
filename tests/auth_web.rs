@@ -60,7 +60,11 @@ async fn create_and_delete_project() {
 
     let res = server
         .post("/projects")
-        .form(&[("name", "web"), ("scan_interval_secs", "")])
+        .form(&[
+            ("name", "web"),
+            ("scan_interval_secs", ""),
+            ("nag_interval_secs", ""),
+        ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     let projects = store.list_projects_for_user(uid).await.unwrap();
@@ -88,7 +92,7 @@ async fn cannot_view_another_users_project() {
         .await
         .unwrap();
     let pid = store
-        .create_project(other, "secret", None, chrono::Utc::now())
+        .create_project(other, "secret", None, None, chrono::Utc::now())
         .await
         .unwrap();
     server
@@ -100,7 +104,7 @@ async fn cannot_view_another_users_project() {
 async fn server_with_project() -> (TestServer, Store, i64) {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", None, chrono::Utc::now())
+        .create_project(uid, "web", None, None, chrono::Utc::now())
         .await
         .unwrap();
     (server, store, pid)
@@ -121,6 +125,7 @@ async fn create_check_and_pause_resume() {
             ("timezone", "UTC"),
             ("scan_interval_secs", ""),
             ("max_runtime_secs", ""),
+            ("nag_interval_secs", ""),
         ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
@@ -161,11 +166,34 @@ async fn create_check_persists_max_runtime() {
             ("timezone", "UTC"),
             ("scan_interval_secs", ""),
             ("max_runtime_secs", "120"),
+            ("nag_interval_secs", ""),
         ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     let checks = store.list_checks_for_project(pid).await.unwrap();
     assert_eq!(checks[0].max_runtime_secs, Some(120));
+}
+
+#[tokio::test]
+async fn create_check_persists_nag_interval() {
+    let (server, store, pid) = server_with_project().await;
+    let res = server
+        .post(&format!("/projects/{pid}/checks"))
+        .form(&[
+            ("name", "job"),
+            ("schedule_kind", "period"),
+            ("period_secs", "3600"),
+            ("grace_secs", "300"),
+            ("cron_expr", ""),
+            ("timezone", "UTC"),
+            ("scan_interval_secs", ""),
+            ("max_runtime_secs", ""),
+            ("nag_interval_secs", "120"),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let checks = store.list_checks_for_project(pid).await.unwrap();
+    assert_eq!(checks[0].nag_interval_secs, Some(120));
 }
 
 #[tokio::test]
@@ -182,6 +210,7 @@ async fn invalid_cron_is_rejected() {
             ("timezone", "UTC"),
             ("scan_interval_secs", ""),
             ("max_runtime_secs", ""),
+            ("nag_interval_secs", ""),
         ])
         .await;
     res.assert_status_ok(); // re-rendered form, not a redirect
@@ -254,7 +283,7 @@ async fn admin_sets_global_scan_interval() {
     server.get("/settings").await.assert_status_ok();
     server
         .post("/settings")
-        .form(&[("scan_interval", "45")])
+        .form(&[("scan_interval", "45"), ("nag_interval", "")])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(
@@ -473,7 +502,7 @@ async fn other_users_project(store: &Store) -> (i64, i64, i64) {
         .await
         .unwrap();
     let opid = store
-        .create_project(other, "secret", None, now)
+        .create_project(other, "secret", None, None, now)
         .await
         .unwrap();
     let ocid = store

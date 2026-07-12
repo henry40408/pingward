@@ -5,6 +5,8 @@
   <label>Name <input name="name" value="{{ name }}" required></label>
   <label>Scan interval (secs, blank = inherit)
     <input name="scan_interval_secs" value="{{ scan_interval_secs }}"></label>
+  <label>Nag interval (secs, blank = inherit/off)
+    <input name="nag_interval_secs" value="{{ nag_interval_secs }}"></label>
   <button type="submit">Save</button>
 </form>
 {% endblock %}
