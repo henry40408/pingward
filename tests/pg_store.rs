@@ -178,6 +178,50 @@ async fn postgres_full_round_trip() {
         "deleted session must not resolve to a user"
     );
 
+    // nag: configure a per-check interval, down the check, stamp a baseline,
+    // and confirm the reminder scan and acknowledge/clear cycle work on PG.
+    store
+        .update_check_schedule(
+            cid,
+            "job",
+            ScheduleKind::Period,
+            Some(60),
+            30,
+            None,
+            "UTC",
+            None,
+            None,
+            Some(60),
+        )
+        .await
+        .unwrap();
+    store
+        .set_status(cid, pingward::models::CheckStatus::Down)
+        .await
+        .unwrap();
+    let t0 = now;
+    store.begin_down_alert(cid, t0).await.unwrap();
+    let due = t0 + chrono::Duration::seconds(90);
+    let evs = pingward::scheduler::nag_once(&store, due).await.unwrap();
+    assert!(evs
+        .iter()
+        .any(|e| e.check_id == cid && e.event == pingward::notify::EventKind::Reminder));
+    store.acknowledge(cid).await.unwrap();
+    assert!(store.find_check(cid).await.unwrap().unwrap().acknowledged);
+    // acknowledged → no further reminders
+    assert!(
+        pingward::scheduler::nag_once(&store, due + chrono::Duration::seconds(300))
+            .await
+            .unwrap()
+            .into_iter()
+            .all(|e| e.check_id != cid)
+    );
+    store.clear_nag(cid).await.unwrap();
+    assert_eq!(
+        store.find_check(cid).await.unwrap().unwrap().last_alert_at,
+        None
+    );
+
     // cascade delete: removing the user removes project → checks → channels → pings
     store.delete_user(uid).await.unwrap();
     assert!(store.list_projects_for_user(uid).await.unwrap().is_empty());
