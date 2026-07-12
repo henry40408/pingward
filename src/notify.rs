@@ -261,6 +261,67 @@ impl Notifier for NtfyNotifier {
     }
 }
 
+/// Pushover: `POST {base_url}/1/messages.json` with a form body carrying the
+/// app `token`, the recipient `user` key, and the `message`. `base_url` is
+/// injectable so tests can point at a mock; production uses
+/// `https://api.pushover.net`.
+pub struct PushoverNotifier {
+    token: String,
+    user: String,
+    base_url: String,
+    client: reqwest::Client,
+}
+
+impl PushoverNotifier {
+    pub fn new(token: String, user: String) -> Self {
+        Self::with_base_url(token, user, "https://api.pushover.net".to_string())
+    }
+
+    pub fn with_base_url(token: String, user: String, base_url: String) -> Self {
+        Self {
+            token,
+            user,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client: http_client(),
+        }
+    }
+}
+
+impl Notifier for PushoverNotifier {
+    fn send<'a>(
+        &'a self,
+        ev: &'a NotificationEvent,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+        Box::pin(async move {
+            let url = format!("{}/1/messages.json", self.base_url);
+            let priority = match ev.event {
+                EventKind::Down => "1",
+                EventKind::Up => "0",
+            };
+            let title = event_title(ev);
+            let message = event_text(ev);
+            let resp = self
+                .client
+                .post(&url)
+                .form(&[
+                    ("token", self.token.as_str()),
+                    ("user", self.user.as_str()),
+                    ("title", title.as_str()),
+                    ("message", message.as_str()),
+                    ("priority", priority),
+                ])
+                .send()
+                .await
+                .map_err(|e| NotifyError(e.to_string()))?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(NotifyError(format!("status {}", resp.status())))
+            }
+        })
+    }
+}
+
 use crate::models::{Channel, ChannelKind, NotifyStatus};
 use crate::store::Store;
 
@@ -573,6 +634,48 @@ mod tests {
             .mount(&server)
             .await;
         let n = NtfyNotifier::new(server.uri(), "t".into(), None);
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Up,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        assert!(n.send(&ev).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn pushover_posts_form_with_token_and_user() {
+        use wiremock::matchers::body_string_contains;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/1/messages.json"))
+            .and(body_string_contains("token=apptok"))
+            .and(body_string_contains("user=userkey"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"status\":1}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let n = PushoverNotifier::with_base_url("apptok".into(), "userkey".into(), server.uri());
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        n.send(&ev).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pushover_returns_err_on_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("{\"status\":0}"))
+            .mount(&server)
+            .await;
+        let n = PushoverNotifier::with_base_url("bad".into(), "bad".into(), server.uri());
         let ev = NotificationEvent {
             check_id: 1,
             check_name: "backup".into(),
