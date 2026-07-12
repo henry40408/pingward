@@ -1,6 +1,7 @@
 use axum::{routing::get, Router};
 
 pub mod config;
+pub mod db;
 pub mod error;
 
 pub fn app() -> Router {
