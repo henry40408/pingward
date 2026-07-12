@@ -172,6 +172,26 @@ impl Store {
         Ok(out)
     }
 
+    /// Checks currently in `down` status — the candidates for nag reminders.
+    /// Corrupt rows are logged and skipped, mirroring `list_active_checks`.
+    pub async fn list_down_checks(&self) -> Result<Vec<Check>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM checks WHERE status = 'down'")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            match row_to_check(row) {
+                Ok(check) => out.push(check),
+                Err(e) => {
+                    let id: i64 = row.get("id");
+                    tracing::error!("skipping corrupt checks row id={id}: {e}");
+                    continue;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn insert_ping(
         &self,
@@ -216,6 +236,53 @@ impl Store {
     pub async fn set_status(&self, check_id: i64, status: CheckStatus) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE checks SET status=$1 WHERE id=$2")
             .bind(status.as_str())
+            .bind(check_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Mark the start of a down incident's alerting: stamp the alert baseline
+    /// and clear any prior acknowledgement so a fresh incident is never silent.
+    pub async fn begin_down_alert(
+        &self,
+        check_id: i64,
+        at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE checks SET last_alert_at=$1, acknowledged=0 WHERE id=$2")
+            .bind(at.to_rfc3339())
+            .bind(check_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Advance the alert baseline after emitting a reminder.
+    pub async fn record_reminder(
+        &self,
+        check_id: i64,
+        at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE checks SET last_alert_at=$1 WHERE id=$2")
+            .bind(at.to_rfc3339())
+            .bind(check_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Clear nag state on recovery: no acknowledgement, no alert baseline.
+    pub async fn clear_nag(&self, check_id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE checks SET acknowledged=0, last_alert_at=NULL WHERE id=$1")
+            .bind(check_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Silence reminders for the current down incident.
+    pub async fn acknowledge(&self, check_id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE checks SET acknowledged=1 WHERE id=$1")
             .bind(check_id)
             .execute(&self.pool)
             .await?;
@@ -412,6 +479,23 @@ impl Store {
                 (
                     r.get::<i64, _>("id"),
                     r.get::<Option<i64>, _>("scan_interval_secs"),
+                )
+            })
+            .collect())
+    }
+
+    pub async fn all_project_nag_intervals(
+        &self,
+    ) -> Result<HashMap<i64, Option<i64>>, sqlx::Error> {
+        let rows = sqlx::query("SELECT id, nag_interval_secs FROM projects")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                (
+                    r.get::<i64, _>("id"),
+                    r.get::<Option<i64>, _>("nag_interval_secs"),
                 )
             })
             .collect())
@@ -985,5 +1069,54 @@ mod tests {
         assert_eq!(c.nag_interval_secs, None);
         assert_eq!(c.last_alert_at, None);
         assert!(!c.acknowledged);
+    }
+
+    #[tokio::test]
+    async fn nag_state_methods_roundtrip() {
+        let store = seeded().await;
+        let id = store
+            .create_check(
+                1,
+                "c",
+                "uu",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        store.set_status(id, CheckStatus::Down).await.unwrap();
+
+        // down check appears in list_down_checks
+        let down = store.list_down_checks().await.unwrap();
+        assert_eq!(down.len(), 1);
+        assert_eq!(down[0].id, id);
+
+        let t0 = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
+        store.begin_down_alert(id, t0).await.unwrap();
+        let c = store.find_check(id).await.unwrap().unwrap();
+        assert_eq!(c.last_alert_at, Some(t0));
+        assert!(!c.acknowledged);
+
+        store.acknowledge(id).await.unwrap();
+        assert!(store.find_check(id).await.unwrap().unwrap().acknowledged);
+
+        let t1 = t0 + chrono::Duration::seconds(90);
+        store.record_reminder(id, t1).await.unwrap();
+        assert_eq!(
+            store.find_check(id).await.unwrap().unwrap().last_alert_at,
+            Some(t1)
+        );
+
+        store.clear_nag(id).await.unwrap();
+        let c = store.find_check(id).await.unwrap().unwrap();
+        assert_eq!(c.last_alert_at, None);
+        assert!(!c.acknowledged);
+
+        // project nag intervals map exposes the (possibly-null) override
+        let map = store.all_project_nag_intervals().await.unwrap();
+        assert!(map.contains_key(&1));
     }
 }
