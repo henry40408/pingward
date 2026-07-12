@@ -257,9 +257,13 @@ async fn postgres_full_round_trip() {
         .await
         .unwrap();
     let (pd, nd) = pingward::prune::prune_once(&store, now).await.unwrap();
-    assert!(
-        pd >= 1 && nd >= 1,
-        "expected old ping+notification pruned, got ({pd},{nd})"
+    // Exactly the one 30-day-old ping and one 30-day-old notification are
+    // pruned; every other row in this test was inserted at `now`. The exact
+    // counts guard against an over-deleting regression that `>= 1` would miss.
+    assert_eq!(
+        (pd, nd),
+        (1, 1),
+        "expected exactly the old ping+notification pruned, got ({pd},{nd})"
     );
     // direct delete method also works with an explicit cutoff
     let far = (now - chrono::Duration::days(3650)).to_rfc3339();
