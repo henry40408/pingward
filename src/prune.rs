@@ -26,23 +26,47 @@ fn retention_cutoff(now: DateTime<Utc>, setting: Option<String>) -> Option<Strin
     }
 }
 
+/// Which table a prune pass targets. Ties the retention setting key to the
+/// matching delete method so the two are impossible to mismatch.
+#[derive(Clone, Copy)]
+enum PruneTable {
+    Pings,
+    Notifications,
+}
+
+impl PruneTable {
+    fn setting_key(self) -> &'static str {
+        match self {
+            PruneTable::Pings => "pings_retention_days",
+            PruneTable::Notifications => "notifications_retention_days",
+        }
+    }
+}
+
+/// Prune one table: resolve its retention cutoff and delete rows older than it,
+/// or return 0 when retention is off. Returns the number of rows deleted.
+async fn prune_table(
+    store: &Store,
+    now: DateTime<Utc>,
+    table: PruneTable,
+) -> Result<u64, sqlx::Error> {
+    let cutoff = match retention_cutoff(now, store.get_setting(table.setting_key()).await?) {
+        Some(cutoff) => cutoff,
+        None => return Ok(0),
+    };
+    match table {
+        PruneTable::Pings => store.delete_pings_before(&cutoff).await,
+        PruneTable::Notifications => store.delete_notifications_before(&cutoff).await,
+    }
+}
+
 /// Delete `pings` and `notifications` older than their configured retention.
 /// Each table's retention is an independent global setting; a table with
 /// retention off is skipped (its count is 0). Returns
 /// `(pings_deleted, notifications_deleted)`. `now` is injected for determinism.
 pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<(u64, u64), sqlx::Error> {
-    let pings_deleted =
-        match retention_cutoff(now, store.get_setting("pings_retention_days").await?) {
-            Some(cutoff) => store.delete_pings_before(&cutoff).await?,
-            None => 0,
-        };
-    let notifications_deleted = match retention_cutoff(
-        now,
-        store.get_setting("notifications_retention_days").await?,
-    ) {
-        Some(cutoff) => store.delete_notifications_before(&cutoff).await?,
-        None => 0,
-    };
+    let pings_deleted = prune_table(store, now, PruneTable::Pings).await?;
+    let notifications_deleted = prune_table(store, now, PruneTable::Notifications).await?;
     Ok((pings_deleted, notifications_deleted))
 }
 
