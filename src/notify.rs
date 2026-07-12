@@ -74,7 +74,16 @@ fn event_text(ev: &NotificationEvent) -> String {
 
 /// Short title for channels with a separate title field (ntfy).
 fn event_title(ev: &NotificationEvent) -> String {
-    format!("pingward: {} {}", ev.check_name, ev.event.as_str())
+    // This is used as the ntfy `Title` HTTP header value. A user-supplied
+    // check name containing control characters (e.g. a newline) would make
+    // `HeaderValue` construction fail and abort the send, so replace any
+    // control character with a space.
+    let name: String = ev
+        .check_name
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    format!("pingward: {} {}", name, ev.event.as_str())
 }
 
 pub struct WebhookNotifier {
@@ -667,6 +676,44 @@ mod tests {
             project_id: 1,
         };
         assert!(n.send(&ev).await.is_err());
+    }
+
+    #[test]
+    fn event_title_strips_control_characters() {
+        // A check name with a newline/tab must not survive into the ntfy
+        // `Title` header, or HeaderValue construction fails and aborts the send.
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "back\nup\tjob".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        let title = event_title(&ev);
+        assert!(!title.chars().any(|c| c.is_control()));
+        assert!(title.contains("back up job"));
+    }
+
+    #[tokio::test]
+    async fn ntfy_send_succeeds_with_control_char_check_name() {
+        // Regression guard: before sanitizing `event_title`, a check name
+        // containing a control char made the `Title` header invalid and the
+        // send returned Err. It must now succeed against a normal 200 server.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"id\":\"x\"}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let n = NtfyNotifier::new(server.uri(), "topic".into(), None);
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "nightly\nbackup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        n.send(&ev).await.unwrap();
     }
 
     #[tokio::test]
