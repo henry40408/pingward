@@ -724,6 +724,27 @@ impl Store {
         rows.iter().map(row_to_notification).collect()
     }
 
+    /// Delete pings older than `cutoff` (an RFC3339 timestamp). Returns the
+    /// number of rows removed. `created_at` is TEXT RFC3339 (UTC), so the
+    /// lexicographic `<` comparison is chronological on both backends.
+    pub async fn delete_pings_before(&self, cutoff: &str) -> Result<u64, sqlx::Error> {
+        let r = sqlx::query("DELETE FROM pings WHERE created_at < $1")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
+    /// Delete notifications older than `cutoff` (an RFC3339 timestamp). Returns
+    /// the number of rows removed.
+    pub async fn delete_notifications_before(&self, cutoff: &str) -> Result<u64, sqlx::Error> {
+        let r = sqlx::query("DELETE FROM notifications WHERE created_at < $1")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
     // --- settings ---
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>, sqlx::Error> {
         sqlx::query_scalar("SELECT value FROM settings WHERE key = $1")
@@ -1131,5 +1152,75 @@ mod tests {
         // project nag intervals map exposes the (possibly-null) override
         let map = store.all_project_nag_intervals().await.unwrap();
         assert!(map.contains_key(&1));
+    }
+
+    #[tokio::test]
+    async fn delete_before_removes_only_old_rows() {
+        use chrono::Duration;
+        let store = seeded().await;
+        let cid = store
+            .create_check(
+                1,
+                "c",
+                "uu",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        let chan = store
+            .create_channel(
+                1,
+                ChannelKind::Webhook,
+                "h",
+                "{\"url\":\"http://x\"}",
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+
+        let now = Utc.with_ymd_and_hms(2026, 7, 13, 12, 0, 0).unwrap();
+        let old = now - Duration::days(10);
+        let recent = now - Duration::days(1);
+
+        // two pings: one old, one recent
+        store
+            .insert_ping(cid, PingKind::Success, None, "", None, old)
+            .await
+            .unwrap();
+        store
+            .insert_ping(cid, PingKind::Success, None, "", None, recent)
+            .await
+            .unwrap();
+        // two notifications: one old, one recent
+        store
+            .record_notification(cid, chan, EventKind::Down, NotifyStatus::Ok, None, old)
+            .await
+            .unwrap();
+        store
+            .record_notification(cid, chan, EventKind::Up, NotifyStatus::Ok, None, recent)
+            .await
+            .unwrap();
+
+        // cutoff = 7 days before now → deletes the 10-day-old rows, keeps the 1-day-old
+        let cutoff = (now - Duration::days(7)).to_rfc3339();
+        assert_eq!(store.delete_pings_before(&cutoff).await.unwrap(), 1);
+        assert_eq!(store.delete_notifications_before(&cutoff).await.unwrap(), 1);
+        assert_eq!(store.list_recent_pings(cid, 10).await.unwrap().len(), 1);
+        assert_eq!(
+            store
+                .list_recent_notifications(cid, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // a far-past cutoff deletes nothing more
+        let far = (now - Duration::days(365)).to_rfc3339();
+        assert_eq!(store.delete_pings_before(&far).await.unwrap(), 0);
     }
 }
