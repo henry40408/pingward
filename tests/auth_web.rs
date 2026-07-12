@@ -302,7 +302,7 @@ async fn create_channel_and_bind_to_check() {
         .form(&[
             ("name", "hook"),
             ("kind", "webhook"),
-            ("url", "http://example.test/h"),
+            ("webhook_url", "http://example.test/h"),
         ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
@@ -326,4 +326,28 @@ async fn create_channel_and_bind_to_check() {
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(store.bound_channel_ids(cid).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn create_telegram_channel_persists_config() {
+    let (server, store, pid) = server_with_project().await;
+
+    let res = server
+        .post(&format!("/projects/{pid}/channels"))
+        .form(&[
+            ("name", "tg"),
+            ("kind", "telegram"),
+            ("telegram_token", "123:ABC"),
+            ("telegram_chat_id", "999"),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    let channels = store.list_channels_for_project(pid).await.unwrap();
+    let tg = channels
+        .iter()
+        .find(|c| c.kind == pingward::models::ChannelKind::Telegram)
+        .expect("telegram channel persisted");
+    assert!(tg.config_json.contains("\"token\":\"123:ABC\""));
+    assert!(tg.config_json.contains("\"chat_id\":\"999\""));
 }
