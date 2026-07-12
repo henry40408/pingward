@@ -48,6 +48,38 @@ pub trait Notifier: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>>;
 }
 
+/// Shared reqwest client: a 10s request timeout keeps a hung endpoint from
+/// blocking delivery forever. Falls back to a default client if the builder
+/// fails (it never does with these options, but we avoid unwrap-panics).
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// One-line human summary of a state transition, reused by text-oriented
+/// channels (Telegram, Slack, and the ntfy body).
+fn event_text(ev: &NotificationEvent) -> String {
+    let (emoji, word) = match ev.event {
+        EventKind::Down => ("\u{1F534}", "DOWN"), // red circle
+        EventKind::Up => ("\u{1F7E2}", "UP"),     // green circle
+    };
+    format!(
+        "{emoji} {name} is {word} (as of {at})",
+        name = ev.check_name,
+        at = ev.at.to_rfc3339()
+    )
+}
+
+/// Short title for channels with a separate title field (ntfy).
+// Not yet consumed: the ntfy notifier that uses this lands in a later task
+// of this plan.
+#[allow(dead_code)]
+fn event_title(ev: &NotificationEvent) -> String {
+    format!("pingward: {} {}", ev.check_name, ev.event.as_str())
+}
+
 pub struct WebhookNotifier {
     url: String,
     client: reqwest::Client,
@@ -57,10 +89,7 @@ impl WebhookNotifier {
     pub fn new(url: String) -> Self {
         Self {
             url,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            client: http_client(),
         }
     }
 }
@@ -80,6 +109,58 @@ impl Notifier for WebhookNotifier {
             let resp = self
                 .client
                 .post(&self.url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| NotifyError(e.to_string()))?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(NotifyError(format!("status {}", resp.status())))
+            }
+        })
+    }
+}
+
+/// Telegram Bot API. `POST {base_url}/bot{token}/sendMessage` with a JSON
+/// `{chat_id, text}` body. `base_url` is injectable so tests can point at a
+/// mock server; production uses `https://api.telegram.org`.
+pub struct TelegramNotifier {
+    token: String,
+    chat_id: String,
+    base_url: String,
+    client: reqwest::Client,
+}
+
+impl TelegramNotifier {
+    pub fn new(token: String, chat_id: String) -> Self {
+        Self::with_base_url(token, chat_id, "https://api.telegram.org".to_string())
+    }
+
+    pub fn with_base_url(token: String, chat_id: String, base_url: String) -> Self {
+        Self {
+            token,
+            chat_id,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client: http_client(),
+        }
+    }
+}
+
+impl Notifier for TelegramNotifier {
+    fn send<'a>(
+        &'a self,
+        ev: &'a NotificationEvent,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+        Box::pin(async move {
+            let url = format!("{}/bot{}/sendMessage", self.base_url, self.token);
+            let body = serde_json::json!({
+                "chat_id": self.chat_id,
+                "text": event_text(ev),
+            });
+            let resp = self
+                .client
+                .post(&url)
                 .json(&body)
                 .send()
                 .await
@@ -231,8 +312,50 @@ pub async fn dispatch(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn telegram_posts_sendmessage_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/bot123:ABC/sendMessage"))
+            .and(body_string_contains("\"chat_id\":\"999\""))
+            .and(body_string_contains("DOWN"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"ok\":true}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let n = TelegramNotifier::with_base_url("123:ABC".into(), "999".into(), server.uri());
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        n.send(&ev).await.unwrap();
+        // wiremock verifies expect(1) on drop
+    }
+
+    #[tokio::test]
+    async fn telegram_returns_err_on_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("{\"ok\":false}"))
+            .mount(&server)
+            .await;
+        let n = TelegramNotifier::with_base_url("bad".into(), "1".into(), server.uri());
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        assert!(n.send(&ev).await.is_err());
+    }
 
     #[tokio::test]
     async fn webhook_posts_json() {
