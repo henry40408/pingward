@@ -144,6 +144,7 @@ mod tests {
             last_start_at: None,
             next_due_at: None,
             scan_interval_secs: None,
+            max_runtime_secs: None,
             created_at: Utc.with_ymd_and_hms(2026, 7, 12, 11, 0, 0).unwrap(),
         }
     }

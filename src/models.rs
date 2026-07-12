@@ -41,6 +41,7 @@ pub struct Check {
     pub last_start_at: Option<DateTime<Utc>>,
     pub next_due_at: Option<DateTime<Utc>>,
     pub scan_interval_secs: Option<i64>,
+    pub max_runtime_secs: Option<i64>,
     pub created_at: DateTime<Utc>,
 }
 

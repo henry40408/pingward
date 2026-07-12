@@ -57,6 +57,7 @@ fn row_to_check(row: &sqlx::any::AnyRow) -> Result<Check, sqlx::Error> {
         last_start_at: parse_ts(row.get("last_start_at")),
         next_due_at: parse_ts(row.get("next_due_at")),
         scan_interval_secs: row.get("scan_interval_secs"),
+        max_runtime_secs: row.get("max_runtime_secs"),
         created_at,
     })
 }
@@ -535,10 +536,11 @@ impl Store {
         cron_expr: Option<&str>,
         timezone: &str,
         scan_interval_secs: Option<i64>,
+        max_runtime_secs: Option<i64>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE checks SET name=$1, schedule_kind=$2, period_secs=$3, grace_secs=$4, \
-             cron_expr=$5, timezone=$6, scan_interval_secs=$7 WHERE id=$8",
+             cron_expr=$5, timezone=$6, scan_interval_secs=$7, max_runtime_secs=$8 WHERE id=$9",
         )
         .bind(name)
         .bind(kind.as_str())
@@ -547,6 +549,7 @@ impl Store {
         .bind(cron_expr)
         .bind(timezone)
         .bind(scan_interval_secs)
+        .bind(max_runtime_secs)
         .bind(id)
         .execute(&self.pool)
         .await?;
