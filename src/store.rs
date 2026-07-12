@@ -30,7 +30,7 @@ fn decode_err(msg: impl Into<String>) -> sqlx::Error {
 /// as an `Err` rather than panic, since a panic here (e.g. via
 /// `list_active_checks` in the scan loop) would unwind and permanently kill
 /// the spawned scan task.
-fn row_to_check(row: &sqlx::sqlite::SqliteRow) -> Result<Check, sqlx::Error> {
+fn row_to_check(row: &sqlx::any::AnyRow) -> Result<Check, sqlx::Error> {
     let schedule_kind_raw: String = row.get("schedule_kind");
     let schedule_kind = ScheduleKind::from_str(&schedule_kind_raw)
         .map_err(|e| decode_err(format!("invalid schedule_kind {schedule_kind_raw:?}: {e}")))?;
@@ -61,7 +61,7 @@ fn row_to_check(row: &sqlx::sqlite::SqliteRow) -> Result<Check, sqlx::Error> {
     })
 }
 
-fn row_to_user(row: &sqlx::sqlite::SqliteRow) -> Result<User, sqlx::Error> {
+fn row_to_user(row: &sqlx::any::AnyRow) -> Result<User, sqlx::Error> {
     Ok(User {
         id: row.get("id"),
         username: row.get("username"),
@@ -72,7 +72,7 @@ fn row_to_user(row: &sqlx::sqlite::SqliteRow) -> Result<User, sqlx::Error> {
     })
 }
 
-fn row_to_project(row: &sqlx::sqlite::SqliteRow) -> Result<Project, sqlx::Error> {
+fn row_to_project(row: &sqlx::any::AnyRow) -> Result<Project, sqlx::Error> {
     Ok(Project {
         id: row.get("id"),
         user_id: row.get("user_id"),
@@ -83,7 +83,7 @@ fn row_to_project(row: &sqlx::sqlite::SqliteRow) -> Result<Project, sqlx::Error>
     })
 }
 
-fn row_to_channel(row: &sqlx::sqlite::SqliteRow) -> Result<Channel, sqlx::Error> {
+fn row_to_channel(row: &sqlx::any::AnyRow) -> Result<Channel, sqlx::Error> {
     let kind_raw: String = row.get("kind");
     let kind = ChannelKind::from_str(&kind_raw)
         .map_err(|e| decode_err(format!("invalid channel kind {kind_raw:?}: {e}")))?;
@@ -98,7 +98,7 @@ fn row_to_channel(row: &sqlx::sqlite::SqliteRow) -> Result<Channel, sqlx::Error>
     })
 }
 
-fn row_to_ping(row: &sqlx::sqlite::SqliteRow) -> Result<Ping, sqlx::Error> {
+fn row_to_ping(row: &sqlx::any::AnyRow) -> Result<Ping, sqlx::Error> {
     let kind_raw: String = row.get("kind");
     let kind = PingKind::from_str(&kind_raw)
         .map_err(|e| decode_err(format!("invalid ping kind {kind_raw:?}: {e}")))?;
@@ -114,7 +114,7 @@ fn row_to_ping(row: &sqlx::sqlite::SqliteRow) -> Result<Ping, sqlx::Error> {
     })
 }
 
-fn row_to_notification(row: &sqlx::sqlite::SqliteRow) -> Result<Notification, sqlx::Error> {
+fn row_to_notification(row: &sqlx::any::AnyRow) -> Result<Notification, sqlx::Error> {
     let event_raw: String = row.get("event");
     let event = EventKind::from_str(&event_raw)
         .map_err(|e| decode_err(format!("invalid notification event {event_raw:?}: {e}")))?;
@@ -139,7 +139,7 @@ impl Store {
     }
 
     pub async fn find_check_by_uuid(&self, uuid: &str) -> Result<Option<Check>, sqlx::Error> {
-        let row = sqlx::query("SELECT * FROM checks WHERE ping_uuid = ?")
+        let row = sqlx::query("SELECT * FROM checks WHERE ping_uuid = $1")
             .bind(uuid)
             .fetch_optional(&self.pool)
             .await?;
@@ -178,7 +178,7 @@ impl Store {
         now: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO pings (check_id, kind, exit_code, body, source_ip, created_at) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO pings (check_id, kind, exit_code, body, source_ip, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
         )
         .bind(check_id).bind(kind.as_str()).bind(exit_code)
         .bind(body).bind(source_ip).bind(now.to_rfc3339())
@@ -195,8 +195,8 @@ impl Store {
         next_due_at: Option<DateTime<Utc>>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE checks SET status=?, last_ping_at=COALESCE(?, last_ping_at), \
-             last_start_at=COALESCE(?, last_start_at), next_due_at=? WHERE id=?",
+            "UPDATE checks SET status=$1, last_ping_at=COALESCE($2, last_ping_at), \
+             last_start_at=COALESCE($3, last_start_at), next_due_at=$4 WHERE id=$5",
         )
         .bind(status.as_str())
         .bind(last_ping_at.map(|d| d.to_rfc3339()))
@@ -209,7 +209,7 @@ impl Store {
     }
 
     pub async fn set_status(&self, check_id: i64, status: CheckStatus) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE checks SET status=? WHERE id=?")
+        sqlx::query("UPDATE checks SET status=$1 WHERE id=$2")
             .bind(status.as_str())
             .bind(check_id)
             .execute(&self.pool)
@@ -229,15 +229,16 @@ impl Store {
         cron_expr: Option<&str>,
         timezone: &str,
     ) -> Result<i64, sqlx::Error> {
-        let res = sqlx::query(
+        let row = sqlx::query(
             "INSERT INTO checks (project_id, name, ping_uuid, schedule_kind, period_secs, \
-             grace_secs, cron_expr, timezone, status, created_at) VALUES (?,?,?,?,?,?,?,?, 'new', ?)",
+             grace_secs, cron_expr, timezone, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8, 'new', $9) \
+             RETURNING id",
         )
         .bind(project_id).bind(name).bind(ping_uuid).bind(kind.as_str())
         .bind(period_secs).bind(grace_secs).bind(cron_expr).bind(timezone)
         .bind(Utc::now().to_rfc3339())
-        .execute(&self.pool).await?;
-        Ok(res.last_insert_rowid())
+        .fetch_one(&self.pool).await?;
+        Ok(row.get::<i64, _>("id"))
     }
 
     pub async fn count_users(&self) -> Result<i64, sqlx::Error> {
@@ -253,20 +254,20 @@ impl Store {
         is_admin: bool,
         now: DateTime<Utc>,
     ) -> Result<i64, sqlx::Error> {
-        let res = sqlx::query(
-            "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?,?,?,?)",
+        let row = sqlx::query(
+            "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES ($1,$2,$3,$4) RETURNING id",
         )
         .bind(username)
         .bind(password_hash)
         .bind(is_admin as i64)
         .bind(now.to_rfc3339())
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(res.last_insert_rowid())
+        Ok(row.get::<i64, _>("id"))
     }
 
     pub async fn find_user_by_username(&self, username: &str) -> Result<Option<User>, sqlx::Error> {
-        let row = sqlx::query("SELECT * FROM users WHERE username = ?")
+        let row = sqlx::query("SELECT * FROM users WHERE username = $1")
             .bind(username)
             .fetch_optional(&self.pool)
             .await?;
@@ -274,7 +275,7 @@ impl Store {
     }
 
     pub async fn find_user_by_id(&self, id: i64) -> Result<Option<User>, sqlx::Error> {
-        let row = sqlx::query("SELECT * FROM users WHERE id = ?")
+        let row = sqlx::query("SELECT * FROM users WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -289,7 +290,7 @@ impl Store {
     }
 
     pub async fn delete_user(&self, id: i64) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM users WHERE id = ?")
+        sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -302,7 +303,7 @@ impl Store {
         user_id: i64,
         expires_at: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO sessions (id, user_id, expires_at) VALUES (?,?,?)")
+        sqlx::query("INSERT INTO sessions (id, user_id, expires_at) VALUES ($1,$2,$3)")
             .bind(id)
             .bind(user_id)
             .bind(expires_at.to_rfc3339())
@@ -318,7 +319,7 @@ impl Store {
     ) -> Result<Option<User>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id \
-             WHERE s.id = ? AND s.expires_at > ?",
+             WHERE s.id = $1 AND s.expires_at > $2",
         )
         .bind(session_id)
         .bind(now.to_rfc3339())
@@ -328,7 +329,7 @@ impl Store {
     }
 
     pub async fn delete_session(&self, id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM sessions WHERE id = ?")
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -343,20 +344,20 @@ impl Store {
         scan_interval_secs: Option<i64>,
         now: DateTime<Utc>,
     ) -> Result<i64, sqlx::Error> {
-        let res = sqlx::query(
-            "INSERT INTO projects (user_id, name, scan_interval_secs, created_at) VALUES (?,?,?,?)",
+        let row = sqlx::query(
+            "INSERT INTO projects (user_id, name, scan_interval_secs, created_at) VALUES ($1,$2,$3,$4) RETURNING id",
         )
         .bind(user_id)
         .bind(name)
         .bind(scan_interval_secs)
         .bind(now.to_rfc3339())
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(res.last_insert_rowid())
+        Ok(row.get::<i64, _>("id"))
     }
 
     pub async fn find_project(&self, id: i64) -> Result<Option<Project>, sqlx::Error> {
-        let row = sqlx::query("SELECT * FROM projects WHERE id = ?")
+        let row = sqlx::query("SELECT * FROM projects WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -364,7 +365,7 @@ impl Store {
     }
 
     pub async fn list_projects_for_user(&self, user_id: i64) -> Result<Vec<Project>, sqlx::Error> {
-        let rows = sqlx::query("SELECT * FROM projects WHERE user_id = ? ORDER BY id")
+        let rows = sqlx::query("SELECT * FROM projects WHERE user_id = $1 ORDER BY id")
             .bind(user_id)
             .fetch_all(&self.pool)
             .await?;
@@ -377,7 +378,7 @@ impl Store {
         name: &str,
         scan_interval_secs: Option<i64>,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE projects SET name = ?, scan_interval_secs = ? WHERE id = ?")
+        sqlx::query("UPDATE projects SET name = $1, scan_interval_secs = $2 WHERE id = $3")
             .bind(name)
             .bind(scan_interval_secs)
             .bind(id)
@@ -387,7 +388,7 @@ impl Store {
     }
 
     pub async fn delete_project(&self, id: i64) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM projects WHERE id = ?")
+        sqlx::query("DELETE FROM projects WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -420,16 +421,17 @@ impl Store {
         config_json: &str,
         now: DateTime<Utc>,
     ) -> Result<i64, sqlx::Error> {
-        let res = sqlx::query(
-            "INSERT INTO channels (project_id, kind, name, config_json, created_at) VALUES (?,?,?,?,?)",
+        let row = sqlx::query(
+            "INSERT INTO channels (project_id, kind, name, config_json, created_at) VALUES ($1,$2,$3,$4,$5) \
+             RETURNING id",
         )
         .bind(project_id).bind(kind.as_str()).bind(name).bind(config_json).bind(now.to_rfc3339())
-        .execute(&self.pool).await?;
-        Ok(res.last_insert_rowid())
+        .fetch_one(&self.pool).await?;
+        Ok(row.get::<i64, _>("id"))
     }
 
     pub async fn find_channel(&self, id: i64) -> Result<Option<Channel>, sqlx::Error> {
-        let row = sqlx::query("SELECT * FROM channels WHERE id = ?")
+        let row = sqlx::query("SELECT * FROM channels WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -440,7 +442,7 @@ impl Store {
         &self,
         project_id: i64,
     ) -> Result<Vec<Channel>, sqlx::Error> {
-        let rows = sqlx::query("SELECT * FROM channels WHERE project_id = ? ORDER BY id")
+        let rows = sqlx::query("SELECT * FROM channels WHERE project_id = $1 ORDER BY id")
             .bind(project_id)
             .fetch_all(&self.pool)
             .await?;
@@ -448,7 +450,7 @@ impl Store {
     }
 
     pub async fn delete_channel(&self, id: i64) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM channels WHERE id = ?")
+        sqlx::query("DELETE FROM channels WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -457,16 +459,23 @@ impl Store {
 
     // --- bindings ---
     pub async fn bind_channel(&self, check_id: i64, channel_id: i64) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT OR IGNORE INTO check_channels (check_id, channel_id) VALUES (?,?)")
-            .bind(check_id)
-            .bind(channel_id)
-            .execute(&self.pool)
-            .await?;
+        // `INSERT OR IGNORE` is SQLite-only syntax and is a parse error on
+        // Postgres; `ON CONFLICT DO NOTHING` is portable to both backends and
+        // relies on the `(check_id, channel_id)` primary key as the conflict
+        // target.
+        sqlx::query(
+            "INSERT INTO check_channels (check_id, channel_id) VALUES ($1,$2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(check_id)
+        .bind(channel_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn unbind_channel(&self, check_id: i64, channel_id: i64) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM check_channels WHERE check_id = ? AND channel_id = ?")
+        sqlx::query("DELETE FROM check_channels WHERE check_id = $1 AND channel_id = $2")
             .bind(check_id)
             .bind(channel_id)
             .execute(&self.pool)
@@ -476,7 +485,7 @@ impl Store {
 
     pub async fn bound_channel_ids(&self, check_id: i64) -> Result<Vec<i64>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT channel_id FROM check_channels WHERE check_id = ? ORDER BY channel_id",
+            "SELECT channel_id FROM check_channels WHERE check_id = $1 ORDER BY channel_id",
         )
         .bind(check_id)
         .fetch_all(&self.pool)
@@ -487,7 +496,7 @@ impl Store {
     pub async fn channels_for_check(&self, check_id: i64) -> Result<Vec<Channel>, sqlx::Error> {
         let rows = sqlx::query(
             "SELECT c.* FROM channels c JOIN check_channels cc ON cc.channel_id = c.id \
-             WHERE cc.check_id = ? ORDER BY c.id",
+             WHERE cc.check_id = $1 ORDER BY c.id",
         )
         .bind(check_id)
         .fetch_all(&self.pool)
@@ -497,7 +506,7 @@ impl Store {
 
     // --- checks (web) ---
     pub async fn find_check(&self, id: i64) -> Result<Option<Check>, sqlx::Error> {
-        let row = sqlx::query("SELECT * FROM checks WHERE id = ?")
+        let row = sqlx::query("SELECT * FROM checks WHERE id = $1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -508,7 +517,7 @@ impl Store {
         &self,
         project_id: i64,
     ) -> Result<Vec<Check>, sqlx::Error> {
-        let rows = sqlx::query("SELECT * FROM checks WHERE project_id = ? ORDER BY id")
+        let rows = sqlx::query("SELECT * FROM checks WHERE project_id = $1 ORDER BY id")
             .bind(project_id)
             .fetch_all(&self.pool)
             .await?;
@@ -528,8 +537,8 @@ impl Store {
         scan_interval_secs: Option<i64>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE checks SET name=?, schedule_kind=?, period_secs=?, grace_secs=?, \
-             cron_expr=?, timezone=?, scan_interval_secs=? WHERE id=?",
+            "UPDATE checks SET name=$1, schedule_kind=$2, period_secs=$3, grace_secs=$4, \
+             cron_expr=$5, timezone=$6, scan_interval_secs=$7 WHERE id=$8",
         )
         .bind(name)
         .bind(kind.as_str())
@@ -545,7 +554,7 @@ impl Store {
     }
 
     pub async fn regenerate_uuid(&self, id: i64, new_uuid: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE checks SET ping_uuid = ? WHERE id = ?")
+        sqlx::query("UPDATE checks SET ping_uuid = $1 WHERE id = $2")
             .bind(new_uuid)
             .bind(id)
             .execute(&self.pool)
@@ -554,7 +563,7 @@ impl Store {
     }
 
     pub async fn delete_check(&self, id: i64) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM checks WHERE id = ?")
+        sqlx::query("DELETE FROM checks WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -567,7 +576,7 @@ impl Store {
         check_id: i64,
         limit: i64,
     ) -> Result<Vec<Ping>, sqlx::Error> {
-        let rows = sqlx::query("SELECT * FROM pings WHERE check_id = ? ORDER BY id DESC LIMIT ?")
+        let rows = sqlx::query("SELECT * FROM pings WHERE check_id = $1 ORDER BY id DESC LIMIT $2")
             .bind(check_id)
             .bind(limit)
             .fetch_all(&self.pool)
@@ -586,7 +595,7 @@ impl Store {
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO notifications (check_id, channel_id, event, status, error, created_at) \
-             VALUES (?,?,?,?,?,?)",
+             VALUES ($1,$2,$3,$4,$5,$6)",
         )
         .bind(check_id)
         .bind(channel_id)
@@ -604,18 +613,19 @@ impl Store {
         check_id: i64,
         limit: i64,
     ) -> Result<Vec<Notification>, sqlx::Error> {
-        let rows =
-            sqlx::query("SELECT * FROM notifications WHERE check_id = ? ORDER BY id DESC LIMIT ?")
-                .bind(check_id)
-                .bind(limit)
-                .fetch_all(&self.pool)
-                .await?;
+        let rows = sqlx::query(
+            "SELECT * FROM notifications WHERE check_id = $1 ORDER BY id DESC LIMIT $2",
+        )
+        .bind(check_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(row_to_notification).collect()
     }
 
     // --- settings ---
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>, sqlx::Error> {
-        sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = $1")
             .bind(key)
             .fetch_optional(&self.pool)
             .await
@@ -623,7 +633,7 @@ impl Store {
 
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO settings (key, value) VALUES (?,?) \
+            "INSERT INTO settings (key, value) VALUES ($1,$2) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         )
         .bind(key)
@@ -645,13 +655,13 @@ mod tests {
 
     async fn seeded() -> Store {
         let pool = db::connect("sqlite::memory:").await.unwrap();
-        db::migrate(&pool).await.unwrap();
-        sqlx::query("INSERT INTO users (username, is_admin, created_at) VALUES ('u', 0, ?)")
+        db::migrate(&pool, "sqlite::memory:").await.unwrap();
+        sqlx::query("INSERT INTO users (username, is_admin, created_at) VALUES ('u', 0, $1)")
             .bind(Utc::now().to_rfc3339())
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO projects (user_id, name, created_at) VALUES (1, 'p', ?)")
+        sqlx::query("INSERT INTO projects (user_id, name, created_at) VALUES (1, 'p', $1)")
             .bind(Utc::now().to_rfc3339())
             .execute(&pool)
             .await
@@ -710,7 +720,7 @@ mod tests {
             .await
             .unwrap();
 
-        let row = sqlx::query("SELECT * FROM pings WHERE check_id = ?")
+        let row = sqlx::query("SELECT * FROM pings WHERE check_id = $1")
             .bind(id)
             .fetch_one(&store.pool)
             .await
@@ -812,7 +822,7 @@ mod tests {
         let store = seeded().await;
         let res = sqlx::query(
             "INSERT INTO checks (project_id, name, ping_uuid, schedule_kind, status, created_at) \
-             VALUES (1, 'x', 'bad-status-uuid', 'period', 'bogus', ?)",
+             VALUES (1, 'x', 'bad-status-uuid', 'period', 'bogus', $1)",
         )
         .bind(Utc::now().to_rfc3339())
         .execute(&store.pool)

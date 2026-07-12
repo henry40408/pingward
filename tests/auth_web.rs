@@ -3,7 +3,7 @@ use pingward::{app, config::Config, db, state::AppState, store::Store};
 
 async fn server() -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
-    db::migrate(&pool).await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
     let state = AppState::new(store.clone(), Config::from_map(|_| None));
     // axum-test 21's `TestServer::new` returns `Self` directly (it panics
