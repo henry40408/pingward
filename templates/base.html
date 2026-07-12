@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pingward</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    nav a { margin-right: 1rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: .4rem .6rem; text-align: left; }
+    .status-up { color: #2e7d32; } .status-down { color: #c62828; }
+    .status-new, .status-paused { color: #757575; }
+    form.inline { display: inline; }
+    label { display: block; margin: .5rem 0; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/">Dashboard</a>
+    {% if show_nav %}<a href="/settings">Settings</a>
+    <form class="inline" method="post" action="/logout"><button type="submit">Log out</button></form>{% endif %}
+  </nav>
+  {% block body %}{% endblock %}
+</body>
+</html>

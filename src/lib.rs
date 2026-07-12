@@ -11,11 +11,12 @@ pub mod ping;
 pub mod scheduler;
 pub mod state;
 pub mod store;
-pub mod web; // added in Task 10; declare now behind a stub so app() compiles
+pub mod web;
 
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .merge(web::routes())
         .merge(ping::routes())
         .with_state(state)
 }

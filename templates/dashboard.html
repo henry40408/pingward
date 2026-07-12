@@ -1,0 +1,4 @@
+{% extends "base.html" %}
+{% block body %}<h1>Dashboard</h1>{% for r in projects %}<h2>{{ r.project.name }}</h2>{% endfor %}
+<p><a href="/projects/new">New project</a></p>
+{% endblock %}
