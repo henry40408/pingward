@@ -1,5 +1,5 @@
 use axum_test::TestServer;
-use pingward::{app, db, models::ScheduleKind, store::Store};
+use pingward::{app, config::Config, db, models::ScheduleKind, state::AppState, store::Store};
 use sqlx::Row;
 
 async fn test_server() -> (TestServer, Store) {
@@ -16,10 +16,11 @@ async fn test_server() -> (TestServer, Store) {
         .await
         .unwrap();
     let store = Store::new(pool);
+    let state = AppState::new(store.clone(), Config::from_map(|_| None));
     // axum-test 21's `TestServer::new` returns `Self` directly (it panics
     // internally on failure rather than returning a `Result`), unlike the
     // brief's `.unwrap()` which assumed a `Result`.
-    let server = TestServer::new(app(store.clone()));
+    let server = TestServer::new(app(state));
     (server, store)
 }
 

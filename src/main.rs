@@ -32,17 +32,22 @@ async fn main() {
     }
     let notifiers = Arc::new(notifiers);
 
+    let bind = config.bind.clone();
+    let scan_interval_secs = config.scan_interval_secs;
+
     tokio::spawn(scheduler::run_scan_loop(
         store.clone(),
-        config.scan_interval_secs,
+        scan_interval_secs,
         notifiers,
     ));
 
-    let listener = tokio::net::TcpListener::bind(&config.bind).await.unwrap();
+    let state = pingward::state::AppState::new(store, config);
+
+    let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
     tracing::info!("listening on {}", listener.local_addr().unwrap());
     axum::serve(
         listener,
-        pingward::app(store).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        pingward::app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .await
     .unwrap();

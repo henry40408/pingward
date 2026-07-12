@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::models::{CheckStatus, PingKind};
 use crate::scheduler::due_time;
+use crate::state::AppState;
 use crate::store::Store;
 use axum::{
     body::Bytes,
@@ -50,7 +51,7 @@ where
     }
 }
 
-pub fn routes() -> Router<Store> {
+pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/ping/{uuid}", get(success).post(success))
         .route("/ping/{uuid}/fail", get(fail).post(fail))
