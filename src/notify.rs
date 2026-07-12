@@ -174,6 +174,44 @@ impl Notifier for TelegramNotifier {
     }
 }
 
+/// Slack incoming webhook: `POST {url}` with a JSON `{text}` body.
+pub struct SlackNotifier {
+    url: String,
+    client: reqwest::Client,
+}
+
+impl SlackNotifier {
+    pub fn new(url: String) -> Self {
+        Self {
+            url,
+            client: http_client(),
+        }
+    }
+}
+
+impl Notifier for SlackNotifier {
+    fn send<'a>(
+        &'a self,
+        ev: &'a NotificationEvent,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+        Box::pin(async move {
+            let body = serde_json::json!({ "text": event_text(ev) });
+            let resp = self
+                .client
+                .post(&self.url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| NotifyError(e.to_string()))?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(NotifyError(format!("status {}", resp.status())))
+            }
+        })
+    }
+}
+
 use crate::models::{Channel, ChannelKind, NotifyStatus};
 use crate::store::Store;
 
@@ -411,6 +449,47 @@ mod tests {
             "send took {:?}, expected the 10s client timeout to fire well before the 30s mock delay",
             elapsed
         );
+    }
+
+    #[tokio::test]
+    async fn slack_posts_text_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/services/hook"))
+            .and(body_string_contains("\"text\""))
+            .and(body_string_contains("UP"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let n = SlackNotifier::new(format!("{}/services/hook", server.uri()));
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Up,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        n.send(&ev).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn slack_returns_err_on_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let n = SlackNotifier::new(format!("{}/x", server.uri()));
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Up,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        assert!(n.send(&ev).await.is_err());
     }
 
     use crate::db;
