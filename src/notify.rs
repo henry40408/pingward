@@ -340,33 +340,58 @@ impl Default for RetryPolicy {
     }
 }
 
-/// Build a notifier for a channel. Only `webhook` is implemented in Plan 2;
-/// Telegram/Slack/ntfy return `None` (logged) and arrive in Plan 3.
+/// Read a required non-empty string field from parsed channel config.
+fn cfg_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// Build a notifier for a channel from its `(kind, config_json)`. Returns
+/// `None` (with a warning) when a required config field is missing or blank —
+/// `deliver_event` skips such channels rather than failing the event.
 pub fn notifier_for(channel: &Channel) -> Option<Box<dyn Notifier>> {
+    let cfg: serde_json::Value = serde_json::from_str(&channel.config_json)
+        .map_err(|e| {
+            tracing::warn!(channel_id = channel.id, "invalid config_json: {e}");
+        })
+        .ok()?;
+    let missing = |field: &str| {
+        tracing::warn!(
+            channel_id = channel.id,
+            kind = channel.kind.as_str(),
+            "channel missing required config field: {field}"
+        );
+        None::<Box<dyn Notifier>>
+    };
     match channel.kind {
-        ChannelKind::Webhook => {
-            let url = serde_json::from_str::<serde_json::Value>(&channel.config_json)
-                .ok()
-                .and_then(|v| v.get("url").and_then(|u| u.as_str()).map(str::to_owned));
-            match url {
-                Some(u) => Some(Box::new(WebhookNotifier::new(u))),
-                None => {
-                    tracing::warn!(
-                        channel_id = channel.id,
-                        "webhook channel missing url in config_json"
-                    );
-                    None
-                }
+        ChannelKind::Webhook => match cfg_str(&cfg, "url") {
+            Some(url) => Some(Box::new(WebhookNotifier::new(url))),
+            None => missing("url"),
+        },
+        ChannelKind::Slack => match cfg_str(&cfg, "url") {
+            Some(url) => Some(Box::new(SlackNotifier::new(url))),
+            None => missing("url"),
+        },
+        ChannelKind::Telegram => match (cfg_str(&cfg, "token"), cfg_str(&cfg, "chat_id")) {
+            (Some(token), Some(chat_id)) => Some(Box::new(TelegramNotifier::new(token, chat_id))),
+            _ => missing("token/chat_id"),
+        },
+        ChannelKind::Ntfy => match cfg_str(&cfg, "topic") {
+            Some(topic) => {
+                let base_url =
+                    cfg_str(&cfg, "base_url").unwrap_or_else(|| "https://ntfy.sh".to_string());
+                let token = cfg_str(&cfg, "token");
+                Some(Box::new(NtfyNotifier::new(base_url, topic, token)))
             }
-        }
-        other => {
-            tracing::debug!(
-                channel_id = channel.id,
-                kind = other.as_str(),
-                "channel kind not yet supported (Plan 3)"
-            );
-            None
-        }
+            None => missing("topic"),
+        },
+        ChannelKind::Pushover => match (cfg_str(&cfg, "token"), cfg_str(&cfg, "user")) {
+            (Some(token), Some(user)) => Some(Box::new(PushoverNotifier::new(token, user))),
+            _ => missing("token/user"),
+        },
     }
 }
 
@@ -684,6 +709,52 @@ mod tests {
             project_id: 1,
         };
         assert!(n.send(&ev).await.is_err());
+    }
+
+    fn channel_with(kind: ChannelKind, config_json: &str) -> Channel {
+        Channel {
+            id: 1,
+            project_id: 1,
+            kind,
+            name: "c".into(),
+            config_json: config_json.into(),
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn notifier_for_builds_each_kind_with_valid_config() {
+        assert!(notifier_for(&channel_with(
+            ChannelKind::Webhook,
+            "{\"url\":\"http://x\"}"
+        ))
+        .is_some());
+        assert!(
+            notifier_for(&channel_with(ChannelKind::Slack, "{\"url\":\"http://x\"}")).is_some()
+        );
+        assert!(notifier_for(&channel_with(
+            ChannelKind::Telegram,
+            "{\"token\":\"t\",\"chat_id\":\"1\"}"
+        ))
+        .is_some());
+        assert!(notifier_for(&channel_with(
+            ChannelKind::Ntfy,
+            "{\"base_url\":\"https://ntfy.sh\",\"topic\":\"t\"}"
+        ))
+        .is_some());
+        assert!(notifier_for(&channel_with(
+            ChannelKind::Pushover,
+            "{\"token\":\"t\",\"user\":\"u\"}"
+        ))
+        .is_some());
+    }
+
+    #[test]
+    fn notifier_for_returns_none_on_missing_config() {
+        assert!(notifier_for(&channel_with(ChannelKind::Slack, "{}")).is_none());
+        assert!(notifier_for(&channel_with(ChannelKind::Telegram, "{\"token\":\"t\"}")).is_none());
+        assert!(notifier_for(&channel_with(ChannelKind::Ntfy, "{\"base_url\":\"x\"}")).is_none());
+        assert!(notifier_for(&channel_with(ChannelKind::Pushover, "{\"token\":\"t\"}")).is_none());
     }
 
     use crate::db;
