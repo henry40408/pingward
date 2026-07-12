@@ -48,11 +48,12 @@ pub fn effective_scan_interval(
     global_secs: Option<i64>,
     env_default: u64,
 ) -> u64 {
-    for candidate in [check_secs, project_secs, global_secs] {
-        if let Some(v) = candidate {
-            if v > 0 {
-                return v as u64;
-            }
+    for v in [check_secs, project_secs, global_secs]
+        .into_iter()
+        .flatten()
+    {
+        if v > 0 {
+            return v as u64;
         }
     }
     env_default.max(1)
