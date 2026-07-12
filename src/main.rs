@@ -15,7 +15,9 @@ async fn main() {
     let pool = db::connect(&config.database_url)
         .await
         .expect("failed to connect to database");
-    db::migrate(&pool).await.expect("failed to run migrations");
+    db::migrate(&pool, &config.database_url)
+        .await
+        .expect("failed to run migrations");
     let store = Store::new(pool);
 
     // Per-check channel binding replaces Plan 1's single global webhook: the scan

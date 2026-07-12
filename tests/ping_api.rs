@@ -4,7 +4,7 @@ use sqlx::Row;
 
 async fn test_server() -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
-    db::migrate(&pool).await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
     sqlx::query(
         "INSERT INTO users (username, is_admin, created_at) VALUES ('u',0,datetime('now'))",
     )
