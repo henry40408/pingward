@@ -1,10 +1,10 @@
 use crate::auth::{
-    hash_password, new_session_token, verify_password, CurrentUser, SESSION_COOKIE,
+    hash_password, new_session_token, verify_password, AdminUser, CurrentUser, SESSION_COOKIE,
     SESSION_TTL_DAYS,
 };
 use crate::error::AppError;
 use crate::models::{
-    Channel, ChannelKind, Check, CheckStatus, Notification, Project, ScheduleKind,
+    Channel, ChannelKind, Check, CheckStatus, Notification, Project, ScheduleKind, User,
 };
 use crate::state::AppState;
 use crate::store::Store;
@@ -48,6 +48,9 @@ pub fn routes() -> Router<AppState> {
         .route("/projects/{pid}/channels", post(channel_create))
         .route("/channels/{id}/delete", post(channel_delete))
         .route("/checks/{id}/channels", post(check_set_channels))
+        .route("/settings", get(settings_page).post(settings_save))
+        .route("/users", get(users_page).post(users_create))
+        .route("/users/{id}/delete", post(users_delete))
 }
 
 // --- templates ---
@@ -792,4 +795,129 @@ async fn check_set_channels(
         state.store.unbind_channel(id, *remove).await?;
     }
     Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+}
+
+// --- settings / user administration (admin only) ---
+#[derive(Template)]
+#[template(path = "settings.html")]
+struct SettingsTemplate {
+    show_nav: bool,
+    scan_interval: String,
+}
+
+#[derive(Template)]
+#[template(path = "users.html")]
+struct UsersTemplate {
+    show_nav: bool,
+    users: Vec<User>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SettingsForm {
+    scan_interval: String,
+}
+
+#[derive(Deserialize)]
+struct NewUserForm {
+    username: String,
+    password: String,
+    #[serde(default)]
+    is_admin: Option<String>,
+}
+
+async fn settings_page(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Response, AppError> {
+    let scan_interval = state
+        .store
+        .get_setting("scan_interval")
+        .await?
+        .unwrap_or_default();
+    Ok(render(&SettingsTemplate {
+        show_nav: true,
+        scan_interval,
+    })?
+    .into_response())
+}
+
+async fn settings_save(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Form(form): Form<SettingsForm>,
+) -> Result<Response, AppError> {
+    let trimmed = form.scan_interval.trim();
+    // Only persist a positive integer; blank clears to default behavior.
+    if trimmed.is_empty() {
+        state.store.set_setting("scan_interval", "").await?;
+    } else if trimmed.parse::<u64>().map(|v| v > 0).unwrap_or(false) {
+        state.store.set_setting("scan_interval", trimmed).await?;
+    }
+    Ok(Redirect::to("/settings").into_response())
+}
+
+async fn users_page(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Response, AppError> {
+    let users = state.store.list_users().await?;
+    Ok(render(&UsersTemplate {
+        show_nav: true,
+        users,
+        error: None,
+    })?
+    .into_response())
+}
+
+async fn users_create(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+    Form(form): Form<NewUserForm>,
+) -> Result<Response, AppError> {
+    if form.username.trim().is_empty() || form.password.is_empty() {
+        let users = state.store.list_users().await?;
+        return Ok(render(&UsersTemplate {
+            show_nav: true,
+            users,
+            error: Some("username and password are required".into()),
+        })?
+        .into_response());
+    }
+    let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
+    // A checked checkbox submits `is_admin=1`; an unchecked one is either
+    // omitted entirely or (as form-encoded test clients sometimes do) sent as
+    // an empty string — both must be treated as "not admin".
+    let is_admin = form.is_admin.as_deref().is_some_and(|s| !s.is_empty());
+    state
+        .store
+        .create_user(form.username.trim(), Some(&phc), is_admin, Utc::now())
+        .await?;
+    Ok(Redirect::to("/users").into_response())
+}
+
+async fn users_delete(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    // Never allow deleting yourself or the last admin (lockout guard).
+    if id == admin.id {
+        return Ok(Redirect::to("/users").into_response());
+    }
+    let admins = state
+        .store
+        .list_users()
+        .await?
+        .into_iter()
+        .filter(|u| u.is_admin)
+        .count();
+    let target = state.store.find_user_by_id(id).await?;
+    if let Some(t) = target {
+        if t.is_admin && admins <= 1 {
+            return Ok(Redirect::to("/users").into_response());
+        }
+    }
+    state.store.delete_user(id).await?;
+    Ok(Redirect::to("/users").into_response())
 }

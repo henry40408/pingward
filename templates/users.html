@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Users</h1>
+<table><tr><th>Username</th><th>Admin</th><th></th></tr>
+{% for u in users %}
+<tr><td>{{ u.username }}</td><td>{% if u.is_admin %}yes{% else %}no{% endif %}</td>
+  <td><form class="inline" method="post" action="/users/{{ u.id }}/delete"><button>delete</button></form></td></tr>
+{% endfor %}
+</table>
+<h2>Add user</h2>
+{% if let Some(error) = error %}<p class="status-down">{{ error }}</p>{% endif %}
+<form method="post" action="/users">
+  <label>Username <input name="username" required></label>
+  <label>Password <input name="password" type="password" required></label>
+  <label>Admin <input type="checkbox" name="is_admin" value="1"></label>
+  <button type="submit">Create user</button>
+</form>
+{% endblock %}

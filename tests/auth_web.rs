@@ -226,6 +226,60 @@ async fn login_logout_cycle() {
 }
 
 #[tokio::test]
+async fn admin_sets_global_scan_interval() {
+    let (server, store, _uid) = logged_in_server().await; // admin
+    server.get("/settings").await.assert_status_ok();
+    server
+        .post("/settings")
+        .form(&[("scan_interval", "45")])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(
+        store.get_setting("scan_interval").await.unwrap().as_deref(),
+        Some("45")
+    );
+}
+
+#[tokio::test]
+async fn non_admin_forbidden_from_settings() {
+    let (server, store) = server().await;
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("plain", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    server
+        .post("/login")
+        .form(&[("username", "plain"), ("password", "pw")])
+        .await;
+    server
+        .get("/settings")
+        .await
+        .assert_status(axum::http::StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admin_creates_and_deletes_user() {
+    let (server, store, _uid) = logged_in_server().await;
+    server
+        .post("/users")
+        .form(&[("username", "carol"), ("password", "pw2"), ("is_admin", "")])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    let carol = store.find_user_by_username("carol").await.unwrap().unwrap();
+    assert!(!carol.is_admin);
+    server
+        .post(&format!("/users/{}/delete", carol.id))
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(store
+        .find_user_by_username("carol")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn create_channel_and_bind_to_check() {
     let (server, store, pid) = server_with_project().await;
     let cid = store
