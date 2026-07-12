@@ -3,7 +3,7 @@ use crate::auth::{
     SESSION_TTL_DAYS,
 };
 use crate::error::AppError;
-use crate::models::{Channel, Check, Project};
+use crate::models::{Channel, Check, CheckStatus, Notification, Project, ScheduleKind};
 use crate::state::AppState;
 use crate::store::Store;
 use askama::Template;
@@ -13,7 +13,9 @@ use axum::routing::{get, post};
 use axum::{Form, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{Duration, Utc};
+use cron::Schedule;
 use serde::Deserialize;
+use std::str::FromStr;
 
 pub fn render<T: Template>(t: &T) -> Result<Html<String>, AppError> {
     let body = t.render().map_err(|e| AppError::Other(Box::new(e)))?;
@@ -31,6 +33,14 @@ pub fn routes() -> Router<AppState> {
         .route("/projects/{id}", get(project_show).post(project_update))
         .route("/projects/{id}/edit", get(project_edit))
         .route("/projects/{id}/delete", post(project_delete))
+        .route("/projects/{pid}/checks/new", get(check_new))
+        .route("/projects/{pid}/checks", post(check_create))
+        .route("/checks/{id}", get(check_show).post(check_update))
+        .route("/checks/{id}/edit", get(check_edit))
+        .route("/checks/{id}/pause", post(check_pause))
+        .route("/checks/{id}/resume", post(check_resume))
+        .route("/checks/{id}/regenerate", post(check_regenerate))
+        .route("/checks/{id}/delete", post(check_delete))
 }
 
 // --- templates ---
@@ -329,4 +339,338 @@ async fn project_delete(
     owned_project(&state.store, id, user.id).await?;
     state.store.delete_project(id).await?;
     Ok(Redirect::to("/").into_response())
+}
+
+// --- check templates ---
+#[derive(Deserialize)]
+struct CheckForm {
+    name: String,
+    schedule_kind: String,
+    period_secs: String,
+    cron_expr: String,
+    grace_secs: String,
+    timezone: String,
+    scan_interval_secs: String,
+}
+
+struct PingRow {
+    created_at: String,
+    kind: PingKindWrap,
+    exit_code_display: String,
+}
+struct PingKindWrap(crate::models::PingKind);
+impl PingKindWrap {
+    fn as_str(&self) -> &'static str {
+        self.0.as_str()
+    }
+}
+
+struct ChannelBox {
+    id: i64,
+    name: String,
+    kind: &'static str,
+    bound: bool,
+}
+
+#[derive(Template)]
+#[template(path = "check_form.html")]
+struct CheckFormTemplate {
+    show_nav: bool,
+    heading: String,
+    action: String,
+    error: Option<String>,
+    name: String,
+    schedule_kind: String,
+    period_secs: String,
+    cron_expr: String,
+    grace_secs: String,
+    timezone: String,
+    scan_interval_secs: String,
+}
+
+#[derive(Template)]
+#[template(path = "check.html")]
+struct CheckTemplate {
+    show_nav: bool,
+    check: Check,
+    ping_url: String,
+    channel_boxes: Vec<ChannelBox>,
+    pings: Vec<PingRow>,
+    notifications: Vec<Notification>,
+}
+
+/// Load a check and enforce ownership through its project.
+async fn owned_check(store: &Store, id: i64, user_id: i64) -> Result<Check, AppError> {
+    let check = store.find_check(id).await?.ok_or(AppError::NotFound)?;
+    owned_project(store, check.project_id, user_id).await?;
+    Ok(check)
+}
+
+fn empty_check_form(heading: &str, action: String) -> CheckFormTemplate {
+    CheckFormTemplate {
+        show_nav: true,
+        heading: heading.into(),
+        action,
+        error: None,
+        name: String::new(),
+        schedule_kind: "period".into(),
+        period_secs: String::new(),
+        cron_expr: String::new(),
+        grace_secs: "300".into(),
+        timezone: "UTC".into(),
+        scan_interval_secs: String::new(),
+    }
+}
+
+/// Validate a check form into (kind, period_secs, grace_secs, cron_expr). Returns
+/// `Err(message)` on invalid input.
+fn validate_check(
+    form: &CheckForm,
+) -> Result<(ScheduleKind, Option<i64>, i64, Option<String>), String> {
+    let grace = parse_opt_i64(&form.grace_secs).ok_or("grace_secs must be an integer")?;
+    if grace < 0 {
+        return Err("grace_secs must be >= 0".into());
+    }
+    let kind = ScheduleKind::from_str(&form.schedule_kind)
+        .map_err(|_| "invalid schedule kind".to_string())?;
+    match kind {
+        ScheduleKind::Period => {
+            let secs =
+                parse_opt_i64(&form.period_secs).ok_or("period_secs required for period mode")?;
+            if secs <= 0 {
+                return Err("period_secs must be > 0".into());
+            }
+            Ok((kind, Some(secs), grace, None))
+        }
+        ScheduleKind::Cron => {
+            let expr = form.cron_expr.trim();
+            if expr.is_empty() {
+                return Err("cron_expr required for cron mode".into());
+            }
+            Schedule::from_str(expr).map_err(|e| format!("invalid cron expression: {e}"))?;
+            Ok((kind, None, grace, Some(expr.to_string())))
+        }
+    }
+}
+
+async fn check_new(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(pid): Path<i64>,
+) -> Result<Response, AppError> {
+    owned_project(&state.store, pid, user.id).await?;
+    Ok(render(&empty_check_form(
+        "New check",
+        format!("/projects/{pid}/checks"),
+    ))?
+    .into_response())
+}
+
+async fn check_create(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(pid): Path<i64>,
+    Form(form): Form<CheckForm>,
+) -> Result<Response, AppError> {
+    owned_project(&state.store, pid, user.id).await?;
+    let (kind, period_secs, grace, cron_expr) = match validate_check(&form) {
+        Ok(v) => v,
+        Err(msg) => {
+            let mut t = empty_check_form("New check", format!("/projects/{pid}/checks"));
+            t.error = Some(msg);
+            t.name = form.name;
+            t.schedule_kind = form.schedule_kind;
+            t.period_secs = form.period_secs;
+            t.cron_expr = form.cron_expr;
+            t.grace_secs = form.grace_secs;
+            t.timezone = form.timezone;
+            t.scan_interval_secs = form.scan_interval_secs;
+            return Ok(render(&t)?.into_response());
+        }
+    };
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let id = state
+        .store
+        .create_check(
+            pid,
+            &form.name,
+            &uuid,
+            kind,
+            period_secs,
+            grace,
+            cron_expr.as_deref(),
+            &form.timezone,
+        )
+        .await?;
+    state
+        .store
+        .update_check_schedule(
+            id,
+            &form.name,
+            kind,
+            period_secs,
+            grace,
+            cron_expr.as_deref(),
+            &form.timezone,
+            parse_opt_i64(&form.scan_interval_secs),
+        )
+        .await?;
+    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+}
+
+async fn check_show(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let check = owned_check(&state.store, id, user.id).await?;
+    let ping_url = format!(
+        "{}/ping/{}",
+        state.config.base_url.trim_end_matches('/'),
+        check.ping_uuid
+    );
+    let bound = state.store.bound_channel_ids(id).await?;
+    let channel_boxes = state
+        .store
+        .list_channels_for_project(check.project_id)
+        .await?
+        .into_iter()
+        .map(|c| ChannelBox {
+            id: c.id,
+            name: c.name,
+            kind: c.kind.as_str(),
+            bound: bound.contains(&c.id),
+        })
+        .collect();
+    let pings = state
+        .store
+        .list_recent_pings(id, 20)
+        .await?
+        .into_iter()
+        .map(|p| PingRow {
+            created_at: p.created_at.to_rfc3339(),
+            kind: PingKindWrap(p.kind),
+            exit_code_display: p.exit_code.map(|c| c.to_string()).unwrap_or_default(),
+        })
+        .collect();
+    let notifications = state.store.list_recent_notifications(id, 20).await?;
+    Ok(render(&CheckTemplate {
+        show_nav: true,
+        check,
+        ping_url,
+        channel_boxes,
+        pings,
+        notifications,
+    })?
+    .into_response())
+}
+
+async fn check_edit(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let check = owned_check(&state.store, id, user.id).await?;
+    Ok(render(&CheckFormTemplate {
+        show_nav: true,
+        heading: "Edit check".into(),
+        action: format!("/checks/{id}"),
+        error: None,
+        name: check.name,
+        schedule_kind: check.schedule_kind.as_str().into(),
+        period_secs: check.period_secs.map(|v| v.to_string()).unwrap_or_default(),
+        cron_expr: check.cron_expr.unwrap_or_default(),
+        grace_secs: check.grace_secs.to_string(),
+        timezone: check.timezone,
+        scan_interval_secs: check
+            .scan_interval_secs
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
+    })?
+    .into_response())
+}
+
+async fn check_update(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+    Form(form): Form<CheckForm>,
+) -> Result<Response, AppError> {
+    owned_check(&state.store, id, user.id).await?;
+    let (kind, period_secs, grace, cron_expr) = match validate_check(&form) {
+        Ok(v) => v,
+        Err(msg) => {
+            let t = CheckFormTemplate {
+                show_nav: true,
+                heading: "Edit check".into(),
+                action: format!("/checks/{id}"),
+                error: Some(msg),
+                name: form.name,
+                schedule_kind: form.schedule_kind,
+                period_secs: form.period_secs,
+                cron_expr: form.cron_expr,
+                grace_secs: form.grace_secs,
+                timezone: form.timezone,
+                scan_interval_secs: form.scan_interval_secs,
+            };
+            return Ok(render(&t)?.into_response());
+        }
+    };
+    state
+        .store
+        .update_check_schedule(
+            id,
+            &form.name,
+            kind,
+            period_secs,
+            grace,
+            cron_expr.as_deref(),
+            &form.timezone,
+            parse_opt_i64(&form.scan_interval_secs),
+        )
+        .await?;
+    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+}
+
+async fn check_pause(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    owned_check(&state.store, id, user.id).await?;
+    state.store.set_status(id, CheckStatus::Paused).await?;
+    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+}
+
+async fn check_resume(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    owned_check(&state.store, id, user.id).await?;
+    state.store.set_status(id, CheckStatus::New).await?;
+    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+}
+
+async fn check_regenerate(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    owned_check(&state.store, id, user.id).await?;
+    state
+        .store
+        .regenerate_uuid(id, &uuid::Uuid::new_v4().to_string())
+        .await?;
+    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+}
+
+async fn check_delete(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let check = owned_check(&state.store, id, user.id).await?;
+    state.store.delete_check(id).await?;
+    Ok(Redirect::to(&format!("/projects/{}", check.project_id)).into_response())
 }

@@ -97,6 +97,100 @@ async fn cannot_view_another_users_project() {
         .assert_status(axum::http::StatusCode::NOT_FOUND);
 }
 
+async fn server_with_project() -> (TestServer, Store, i64) {
+    let (server, store, uid) = logged_in_server().await;
+    let pid = store
+        .create_project(uid, "web", None, chrono::Utc::now())
+        .await
+        .unwrap();
+    (server, store, pid)
+}
+
+#[tokio::test]
+async fn create_check_and_pause_resume() {
+    let (server, store, pid) = server_with_project().await;
+
+    let res = server
+        .post(&format!("/projects/{pid}/checks"))
+        .form(&[
+            ("name", "backup"),
+            ("schedule_kind", "period"),
+            ("period_secs", "3600"),
+            ("grace_secs", "300"),
+            ("cron_expr", ""),
+            ("timezone", "UTC"),
+            ("scan_interval_secs", ""),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let checks = store.list_checks_for_project(pid).await.unwrap();
+    assert_eq!(checks.len(), 1);
+    let cid = checks[0].id;
+
+    server
+        .post(&format!("/checks/{cid}/pause"))
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(
+        store.find_check(cid).await.unwrap().unwrap().status,
+        pingward::models::CheckStatus::Paused
+    );
+
+    server
+        .post(&format!("/checks/{cid}/resume"))
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(
+        store.find_check(cid).await.unwrap().unwrap().status,
+        pingward::models::CheckStatus::New
+    );
+}
+
+#[tokio::test]
+async fn invalid_cron_is_rejected() {
+    let (server, store, pid) = server_with_project().await;
+    let res = server
+        .post(&format!("/projects/{pid}/checks"))
+        .form(&[
+            ("name", "bad"),
+            ("schedule_kind", "cron"),
+            ("period_secs", ""),
+            ("grace_secs", "60"),
+            ("cron_expr", "not a cron"),
+            ("timezone", "UTC"),
+            ("scan_interval_secs", ""),
+        ])
+        .await;
+    res.assert_status_ok(); // re-rendered form, not a redirect
+    assert!(store.list_checks_for_project(pid).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn regenerate_uuid_changes_ping_url() {
+    let (server, store, pid) = server_with_project().await;
+    let cid = store
+        .create_check(
+            pid,
+            "job",
+            "old-uuid",
+            pingward::models::ScheduleKind::Period,
+            Some(60),
+            30,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    server
+        .post(&format!("/checks/{cid}/regenerate"))
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_ne!(
+        store.find_check(cid).await.unwrap().unwrap().ping_uuid,
+        "old-uuid"
+    );
+}
+
 #[tokio::test]
 async fn login_logout_cycle() {
     let (server, store) = server().await;
