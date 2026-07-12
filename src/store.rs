@@ -1,5 +1,5 @@
 use crate::db::Pool;
-use crate::models::{Check, CheckStatus, PingKind, ScheduleKind};
+use crate::models::{Check, CheckStatus, PingKind, ScheduleKind, User};
 use chrono::{DateTime, Utc};
 use sqlx::Row;
 use std::str::FromStr;
@@ -53,6 +53,17 @@ fn row_to_check(row: &sqlx::sqlite::SqliteRow) -> Result<Check, sqlx::Error> {
         next_due_at: parse_ts(row.get("next_due_at")),
         scan_interval_secs: row.get("scan_interval_secs"),
         created_at,
+    })
+}
+
+fn row_to_user(row: &sqlx::sqlite::SqliteRow) -> Result<User, sqlx::Error> {
+    Ok(User {
+        id: row.get("id"),
+        username: row.get("username"),
+        password_hash: row.get("password_hash"),
+        is_admin: row.get::<i64, _>("is_admin") != 0,
+        created_at: parse_ts(row.get("created_at"))
+            .ok_or_else(|| decode_err("users.created_at must be RFC3339"))?,
     })
 }
 
@@ -161,6 +172,101 @@ impl Store {
         .bind(Utc::now().to_rfc3339())
         .execute(&self.pool).await?;
         Ok(res.last_insert_rowid())
+    }
+
+    pub async fn count_users(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn create_user(
+        &self,
+        username: &str,
+        password_hash: Option<&str>,
+        is_admin: bool,
+        now: DateTime<Utc>,
+    ) -> Result<i64, sqlx::Error> {
+        let res = sqlx::query(
+            "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?,?,?,?)",
+        )
+        .bind(username)
+        .bind(password_hash)
+        .bind(is_admin as i64)
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(res.last_insert_rowid())
+    }
+
+    pub async fn find_user_by_username(&self, username: &str) -> Result<Option<User>, sqlx::Error> {
+        let row = sqlx::query("SELECT * FROM users WHERE username = ?")
+            .bind(username)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(row_to_user).transpose()
+    }
+
+    pub async fn find_user_by_id(&self, id: i64) -> Result<Option<User>, sqlx::Error> {
+        let row = sqlx::query("SELECT * FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(row_to_user).transpose()
+    }
+
+    pub async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM users ORDER BY id")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_user).collect()
+    }
+
+    pub async fn delete_user(&self, id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn create_session(
+        &self,
+        id: &str,
+        user_id: i64,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO sessions (id, user_id, expires_at) VALUES (?,?,?)")
+            .bind(id)
+            .bind(user_id)
+            .bind(expires_at.to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn find_session_user(
+        &self,
+        session_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<User>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.id = ? AND s.expires_at > ?",
+        )
+        .bind(session_id)
+        .bind(now.to_rfc3339())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(row_to_user).transpose()
+    }
+
+    pub async fn delete_session(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 
@@ -351,5 +457,53 @@ mod tests {
             res.is_err(),
             "expected CHECK constraint to reject bad status"
         );
+    }
+
+    #[tokio::test]
+    async fn user_and_session_lifecycle() {
+        let store = seeded().await; // seeds user id=1 already
+        assert_eq!(store.count_users().await.unwrap(), 1);
+
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let uid = store
+            .create_user("bob", Some("phc"), true, now)
+            .await
+            .unwrap();
+        assert_eq!(store.count_users().await.unwrap(), 2);
+
+        let bob = store.find_user_by_username("bob").await.unwrap().unwrap();
+        assert_eq!(bob.id, uid);
+        assert!(bob.is_admin);
+        assert_eq!(bob.password_hash.as_deref(), Some("phc"));
+        assert!(store
+            .find_user_by_username("nobody")
+            .await
+            .unwrap()
+            .is_none());
+
+        store
+            .create_session("sess-1", uid, now + chrono::Duration::hours(1))
+            .await
+            .unwrap();
+        // valid at now
+        let u = store
+            .find_session_user("sess-1", now)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(u.id, uid);
+        // expired two hours later
+        assert!(store
+            .find_session_user("sess-1", now + chrono::Duration::hours(2))
+            .await
+            .unwrap()
+            .is_none());
+        // deleted
+        store.delete_session("sess-1").await.unwrap();
+        assert!(store
+            .find_session_user("sess-1", now)
+            .await
+            .unwrap()
+            .is_none());
     }
 }
