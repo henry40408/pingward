@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Keep the SHA-pinned GitHub Actions in .github/workflows up to date.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Only propose releases that have been public for at least 7 days, so a
+    # freshly-published (possibly compromised) version is caught and yanked
+    # before we adopt it.
+    cooldown:
+      default-days: 7
+    # Collapse all Actions bumps into a single PR to reduce review noise.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Rust crate dependencies (Cargo.toml / Cargo.lock).
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      cargo:
+        patterns:
+          - "*"
