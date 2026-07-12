@@ -59,6 +59,7 @@ pub async fn scan_once(
                 continue;
             }
             events.push(NotificationEvent {
+                check_id: check.id,
                 check_name: check.name.clone(),
                 event: EventKind::Down,
                 at: now,
