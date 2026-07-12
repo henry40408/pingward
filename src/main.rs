@@ -1,4 +1,4 @@
-use pingward::{config::Config, db, scheduler, store::Store};
+use pingward::{config::Config, db, scheduler, state::AppState, store::Store};
 
 #[tokio::main]
 async fn main() {
@@ -9,19 +9,20 @@ async fn main() {
         .init();
 
     let config = Config::from_env();
+    let bind = config.bind.clone();
+    let scan_interval_secs = config.scan_interval_secs;
+
     let pool = db::connect(&config.database_url)
         .await
         .expect("failed to connect to database");
     db::migrate(&pool).await.expect("failed to run migrations");
     let store = Store::new(pool);
 
-    let bind = config.bind.clone();
-    let scan_interval_secs = config.scan_interval_secs;
-
+    // Per-check channel binding replaces Plan 1's single global webhook: the scan
+    // loop now resolves each check's bound channels via notify::deliver_event.
     tokio::spawn(scheduler::run_scan_loop(store.clone(), scan_interval_secs));
 
-    let state = pingward::state::AppState::new(store, config);
-
+    let state = AppState::new(store, config);
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
     tracing::info!("listening on {}", listener.local_addr().unwrap());
     axum::serve(
