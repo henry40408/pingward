@@ -73,9 +73,6 @@ fn event_text(ev: &NotificationEvent) -> String {
 }
 
 /// Short title for channels with a separate title field (ntfy).
-// Not yet consumed: the ntfy notifier that uses this lands in a later task
-// of this plan.
-#[allow(dead_code)]
 fn event_title(ev: &NotificationEvent) -> String {
     format!("pingward: {} {}", ev.check_name, ev.event.as_str())
 }
@@ -203,6 +200,58 @@ impl Notifier for SlackNotifier {
                 .send()
                 .await
                 .map_err(|e| NotifyError(e.to_string()))?;
+            if resp.status().is_success() {
+                Ok(())
+            } else {
+                Err(NotifyError(format!("status {}", resp.status())))
+            }
+        })
+    }
+}
+
+/// ntfy publish: `POST {base_url}/{topic}` with the message as the body and
+/// `Title`/`Priority`/`Tags` headers. An optional bearer token authenticates
+/// against protected topics / self-hosted servers.
+pub struct NtfyNotifier {
+    base_url: String,
+    topic: String,
+    token: Option<String>,
+    client: reqwest::Client,
+}
+
+impl NtfyNotifier {
+    pub fn new(base_url: String, topic: String, token: Option<String>) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            topic,
+            token: token.filter(|t| !t.is_empty()),
+            client: http_client(),
+        }
+    }
+}
+
+impl Notifier for NtfyNotifier {
+    fn send<'a>(
+        &'a self,
+        ev: &'a NotificationEvent,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+        Box::pin(async move {
+            let url = format!("{}/{}", self.base_url, self.topic);
+            let (priority, tags) = match ev.event {
+                EventKind::Down => ("high", "red_circle"),
+                EventKind::Up => ("default", "green_circle"),
+            };
+            let mut req = self
+                .client
+                .post(&url)
+                .header("Title", event_title(ev))
+                .header("Priority", priority)
+                .header("Tags", tags)
+                .body(event_text(ev));
+            if let Some(t) = &self.token {
+                req = req.bearer_auth(t);
+            }
+            let resp = req.send().await.map_err(|e| NotifyError(e.to_string()))?;
             if resp.status().is_success() {
                 Ok(())
             } else {
@@ -482,6 +531,48 @@ mod tests {
             .mount(&server)
             .await;
         let n = SlackNotifier::new(format!("{}/x", server.uri()));
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Up,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        assert!(n.send(&ev).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ntfy_posts_body_with_headers_and_token() {
+        use wiremock::matchers::header;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mytopic"))
+            .and(header("authorization", "Bearer tok"))
+            .and(header("priority", "high"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"id\":\"x\"}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let n = NtfyNotifier::new(server.uri(), "mytopic".into(), Some("tok".into()));
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        n.send(&ev).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ntfy_works_without_token_and_errors_on_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let n = NtfyNotifier::new(server.uri(), "t".into(), None);
         let ev = NotificationEvent {
             check_id: 1,
             check_name: "backup".into(),
