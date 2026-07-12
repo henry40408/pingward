@@ -3,6 +3,7 @@ use axum::{routing::get, Router};
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod models;
 
 pub fn app() -> Router {
     Router::new().route("/healthz", get(|| async { "ok" }))
