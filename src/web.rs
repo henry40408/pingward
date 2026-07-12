@@ -347,6 +347,7 @@ struct CheckForm {
     grace_secs: String,
     timezone: String,
     scan_interval_secs: String,
+    max_runtime_secs: String,
 }
 
 struct PingRow {
@@ -382,6 +383,7 @@ struct CheckFormTemplate {
     grace_secs: String,
     timezone: String,
     scan_interval_secs: String,
+    max_runtime_secs: String,
 }
 
 #[derive(Template)]
@@ -415,6 +417,7 @@ fn empty_check_form(heading: &str, action: String) -> CheckFormTemplate {
         grace_secs: "300".into(),
         timezone: "UTC".into(),
         scan_interval_secs: String::new(),
+        max_runtime_secs: String::new(),
     }
 }
 
@@ -481,6 +484,7 @@ async fn check_create(
             t.grace_secs = form.grace_secs;
             t.timezone = form.timezone;
             t.scan_interval_secs = form.scan_interval_secs;
+            t.max_runtime_secs = form.max_runtime_secs;
             return Ok(render(&t)?.into_response());
         }
     };
@@ -509,6 +513,7 @@ async fn check_create(
             cron_expr.as_deref(),
             &form.timezone,
             parse_opt_i64(&form.scan_interval_secs),
+            parse_opt_i64(&form.max_runtime_secs),
         )
         .await?;
     Ok(Redirect::to(&format!("/checks/{id}")).into_response())
@@ -582,6 +587,10 @@ async fn check_edit(
             .scan_interval_secs
             .map(|v| v.to_string())
             .unwrap_or_default(),
+        max_runtime_secs: check
+            .max_runtime_secs
+            .map(|v| v.to_string())
+            .unwrap_or_default(),
     })?
     .into_response())
 }
@@ -608,6 +617,7 @@ async fn check_update(
                 grace_secs: form.grace_secs,
                 timezone: form.timezone,
                 scan_interval_secs: form.scan_interval_secs,
+                max_runtime_secs: form.max_runtime_secs,
             };
             return Ok(render(&t)?.into_response());
         }
@@ -623,6 +633,7 @@ async fn check_update(
             cron_expr.as_deref(),
             &form.timezone,
             parse_opt_i64(&form.scan_interval_secs),
+            parse_opt_i64(&form.max_runtime_secs),
         )
         .await?;
     Ok(Redirect::to(&format!("/checks/{id}")).into_response())

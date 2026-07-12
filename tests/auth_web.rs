@@ -120,6 +120,7 @@ async fn create_check_and_pause_resume() {
             ("cron_expr", ""),
             ("timezone", "UTC"),
             ("scan_interval_secs", ""),
+            ("max_runtime_secs", ""),
         ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
@@ -147,6 +148,27 @@ async fn create_check_and_pause_resume() {
 }
 
 #[tokio::test]
+async fn create_check_persists_max_runtime() {
+    let (server, store, pid) = server_with_project().await;
+    let res = server
+        .post(&format!("/projects/{pid}/checks"))
+        .form(&[
+            ("name", "job"),
+            ("schedule_kind", "period"),
+            ("period_secs", "3600"),
+            ("grace_secs", "300"),
+            ("cron_expr", ""),
+            ("timezone", "UTC"),
+            ("scan_interval_secs", ""),
+            ("max_runtime_secs", "120"),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let checks = store.list_checks_for_project(pid).await.unwrap();
+    assert_eq!(checks[0].max_runtime_secs, Some(120));
+}
+
+#[tokio::test]
 async fn invalid_cron_is_rejected() {
     let (server, store, pid) = server_with_project().await;
     let res = server
@@ -159,6 +181,7 @@ async fn invalid_cron_is_rejected() {
             ("cron_expr", "not a cron"),
             ("timezone", "UTC"),
             ("scan_interval_secs", ""),
+            ("max_runtime_secs", ""),
         ])
         .await;
     res.assert_status_ok(); // re-rendered form, not a redirect

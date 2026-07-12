@@ -41,8 +41,28 @@ pub fn due_time(check: &Check) -> Option<DateTime<Utc>> {
     }
 }
 
+/// The instant at/after which an in-flight run is considered overrun, or
+/// `None` if overrun detection does not apply. A run is in flight when the
+/// check has a `max_runtime_secs > 0`, a `last_start_at`, and that start is
+/// newer than the last completion (`last_ping_at`) — i.e. a `start` ping
+/// arrived without a subsequent success/fail. The deadline is
+/// `last_start_at + max_runtime_secs`.
+pub fn overrun_time(check: &Check) -> Option<DateTime<Utc>> {
+    let max = check.max_runtime_secs?;
+    if max <= 0 {
+        return None;
+    }
+    let start = check.last_start_at?;
+    let in_flight = check.last_ping_at.is_none_or(|done| start > done);
+    if !in_flight {
+        return None;
+    }
+    Some(start + Duration::seconds(max))
+}
+
 /// Scans every active check (status `new`/`up`), transitioning any whose
-/// `due_time` has passed to `down`. Per-check failures (e.g. a DB error on
+/// `due_time` has passed, or whose in-flight run has exceeded
+/// `max_runtime_secs`, to `down`. Per-check failures (e.g. a DB error on
 /// `set_status`) are logged and skipped rather than aborting the round.
 pub async fn scan_once(
     store: &Store,
@@ -50,22 +70,22 @@ pub async fn scan_once(
 ) -> Result<Vec<NotificationEvent>, sqlx::Error> {
     let mut events = Vec::new();
     for check in store.list_active_checks().await? {
-        let Some(due) = due_time(&check) else {
+        let overdue = due_time(&check).is_some_and(|due| now >= due);
+        let overrun = overrun_time(&check).is_some_and(|deadline| now >= deadline);
+        if !(overdue || overrun) {
             continue;
-        };
-        if now >= due {
-            if let Err(e) = store.set_status(check.id, CheckStatus::Down).await {
-                tracing::error!("failed to down check {}: {e}", check.id);
-                continue;
-            }
-            events.push(NotificationEvent {
-                check_id: check.id,
-                check_name: check.name.clone(),
-                event: EventKind::Down,
-                at: now,
-                project_id: check.project_id,
-            });
         }
+        if let Err(e) = store.set_status(check.id, CheckStatus::Down).await {
+            tracing::error!("failed to down check {}: {e}", check.id);
+            continue;
+        }
+        events.push(NotificationEvent {
+            check_id: check.id,
+            check_name: check.name.clone(),
+            event: EventKind::Down,
+            at: now,
+            project_id: check.project_id,
+        });
     }
     Ok(events)
 }
@@ -144,6 +164,7 @@ mod tests {
             last_start_at: None,
             next_due_at: None,
             scan_interval_secs: None,
+            max_runtime_secs: None,
             created_at: Utc.with_ymd_and_hms(2026, 7, 12, 11, 0, 0).unwrap(),
         }
     }
@@ -261,5 +282,115 @@ mod tests {
         assert_eq!(loop_interval_secs(&[], &intervals, None, 30), 30);
         // env default of 0 is clamped to at least 1 so the timer stays valid.
         assert_eq!(loop_interval_secs(&[], &intervals, None, 0), 1);
+    }
+
+    // helper: a check that started at `start`, last completed at `last_ping`,
+    // with an optional max runtime.
+    fn running_check(
+        max_runtime: Option<i64>,
+        start: DateTime<Utc>,
+        last_ping: Option<DateTime<Utc>>,
+    ) -> Check {
+        let mut c = base_check();
+        c.max_runtime_secs = max_runtime;
+        c.last_start_at = Some(start);
+        c.last_ping_at = last_ping;
+        c
+    }
+
+    #[test]
+    fn overrun_when_in_flight_past_max_runtime() {
+        let start = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
+        // started, never completed (last_ping older than start), max 60s
+        let c = running_check(
+            Some(60),
+            start,
+            Some(Utc.with_ymd_and_hms(2026, 7, 12, 11, 0, 0).unwrap()),
+        );
+        // deadline = 12:00:60
+        assert_eq!(overrun_time(&c), Some(start + Duration::seconds(60)));
+    }
+
+    #[test]
+    fn no_overrun_when_completed_after_start() {
+        let start = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
+        // a success ping landed AFTER the start → run finished, not in flight
+        let c = running_check(
+            Some(60),
+            start,
+            Some(Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 30).unwrap()),
+        );
+        assert_eq!(overrun_time(&c), None);
+    }
+
+    #[test]
+    fn no_overrun_without_max_runtime_or_start() {
+        let start = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
+        assert_eq!(overrun_time(&running_check(None, start, None)), None);
+        assert_eq!(overrun_time(&running_check(Some(0), start, None)), None); // non-positive off
+        let mut no_start = base_check();
+        no_start.max_runtime_secs = Some(60);
+        no_start.last_start_at = None;
+        assert_eq!(overrun_time(&no_start), None);
+    }
+
+    #[tokio::test]
+    async fn scan_once_downs_overrun_check() {
+        use crate::db;
+        let pool = db::connect("sqlite::memory:").await.unwrap();
+        db::migrate(&pool, "sqlite::memory:").await.unwrap();
+        let store = Store::new(pool);
+        // user+project+check
+        store
+            .create_user("u", Some("x"), false, Utc::now())
+            .await
+            .unwrap();
+        store
+            .create_project(1, "p", None, Utc::now())
+            .await
+            .unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
+        let cid = store
+            .create_check(
+                1,
+                "job",
+                "u1",
+                ScheduleKind::Period,
+                Some(3_600_000),
+                300,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        // long period so it is NOT overdue; set an in-flight start + short max runtime
+        store
+            .update_check_schedule(
+                cid,
+                "job",
+                ScheduleKind::Period,
+                Some(3_600_000),
+                300,
+                None,
+                "UTC",
+                None,
+                Some(60),
+            )
+            .await
+            .unwrap();
+        store
+            .mark_ping(cid, CheckStatus::Up, None, Some(start), None)
+            .await
+            .unwrap();
+
+        // now = start + 61s → past the 60s max runtime
+        let now = start + Duration::seconds(61);
+        let events = scan_once(&store, now).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, EventKind::Down);
+        assert_eq!(
+            store.find_check(cid).await.unwrap().unwrap().status,
+            CheckStatus::Down
+        );
     }
 }
