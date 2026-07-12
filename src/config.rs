@@ -59,6 +59,21 @@ pub fn effective_scan_interval(
     env_default.max(1)
 }
 
+/// Resolve the effective nag (repeat-notification) interval for a check from
+/// the cascade: check → project → global. Returns `None` when nag is off at
+/// every level (unset or non-positive). Unlike `effective_scan_interval`,
+/// there is no env-default fallback — nag is opt-in.
+pub fn effective_nag_interval(
+    check_secs: Option<i64>,
+    project_secs: Option<i64>,
+    global_secs: Option<i64>,
+) -> Option<i64> {
+    [check_secs, project_secs, global_secs]
+        .into_iter()
+        .flatten()
+        .find(|&v| v > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +111,20 @@ mod tests {
         assert_eq!(effective_scan_interval(Some(0), Some(-1), None, 30), 30);
         // result is clamped to >= 1 even if env default is 0
         assert_eq!(effective_scan_interval(None, None, None, 0), 1);
+    }
+
+    #[test]
+    fn nag_cascade_prefers_most_specific_and_is_opt_in() {
+        assert_eq!(effective_nag_interval(Some(5), Some(10), Some(20)), Some(5));
+        assert_eq!(effective_nag_interval(None, Some(10), Some(20)), Some(10));
+        assert_eq!(effective_nag_interval(None, None, Some(20)), Some(20));
+        // opt-in: all unset → off (no env default)
+        assert_eq!(effective_nag_interval(None, None, None), None);
+        // non-positive levels are skipped
+        assert_eq!(
+            effective_nag_interval(Some(0), Some(-1), Some(30)),
+            Some(30)
+        );
+        assert_eq!(effective_nag_interval(Some(0), None, None), None);
     }
 }

@@ -153,6 +153,7 @@ async fn apply(
                 .mark_ping(check.id, CheckStatus::Up, Some(now), None, next)
                 .await?;
             if prev_status == CheckStatus::Down {
+                store.clear_nag(check.id).await?;
                 spawn_delivery(
                     store.clone(),
                     check.id,
@@ -168,6 +169,7 @@ async fn apply(
                 .mark_ping(check.id, CheckStatus::Down, Some(now), None, None)
                 .await?;
             if matches!(prev_status, CheckStatus::Up | CheckStatus::New) {
+                store.begin_down_alert(check.id, now).await?;
                 spawn_delivery(
                     store.clone(),
                     check.id,

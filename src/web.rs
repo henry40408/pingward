@@ -514,6 +514,8 @@ async fn check_create(
             &form.timezone,
             parse_opt_i64(&form.scan_interval_secs),
             parse_opt_i64(&form.max_runtime_secs),
+            // Task 5 replaces this with parse_opt_i64(&form.nag_interval_secs).
+            None,
         )
         .await?;
     Ok(Redirect::to(&format!("/checks/{id}")).into_response())
@@ -634,6 +636,8 @@ async fn check_update(
             &form.timezone,
             parse_opt_i64(&form.scan_interval_secs),
             parse_opt_i64(&form.max_runtime_secs),
+            // Task 5 replaces this with parse_opt_i64(&form.nag_interval_secs).
+            None,
         )
         .await?;
     Ok(Redirect::to(&format!("/checks/{id}")).into_response())

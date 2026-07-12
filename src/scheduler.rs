@@ -1,4 +1,4 @@
-use crate::config::effective_scan_interval;
+use crate::config::{effective_nag_interval, effective_scan_interval};
 use crate::models::{Check, CheckStatus, ScheduleKind};
 use crate::notify::{deliver_event, EventKind, NotificationEvent, RetryPolicy};
 use crate::store::Store;
@@ -79,10 +79,58 @@ pub async fn scan_once(
             tracing::error!("failed to down check {}: {e}", check.id);
             continue;
         }
+        if let Err(e) = store.begin_down_alert(check.id, now).await {
+            tracing::error!("failed to set alert baseline for {}: {e}", check.id);
+        }
         events.push(NotificationEvent {
             check_id: check.id,
             check_name: check.name.clone(),
             event: EventKind::Down,
+            at: now,
+            project_id: check.project_id,
+        });
+    }
+    Ok(events)
+}
+
+/// Emit a `Reminder` event for every down, un-acknowledged check whose nag
+/// interval has elapsed since its last alert, advancing each reminded check's
+/// `last_alert_at` so the next reminder is one interval later. `now` is
+/// injected so the function stays deterministic (mirrors `scan_once`).
+pub async fn nag_once(
+    store: &Store,
+    now: DateTime<Utc>,
+) -> Result<Vec<NotificationEvent>, sqlx::Error> {
+    let project_nags = store.all_project_nag_intervals().await?;
+    let global_nag = store
+        .get_setting("nag_interval")
+        .await?
+        .and_then(|v| v.parse::<i64>().ok());
+
+    let mut events = Vec::new();
+    for check in store.list_down_checks().await? {
+        if check.acknowledged {
+            continue;
+        }
+        let project = project_nags.get(&check.project_id).copied().flatten();
+        let Some(interval) = effective_nag_interval(check.nag_interval_secs, project, global_nag)
+        else {
+            continue; // nag off for this check
+        };
+        let Some(last) = check.last_alert_at else {
+            continue; // no baseline yet (e.g. downed before this feature shipped)
+        };
+        if now < last + Duration::seconds(interval) {
+            continue; // not yet due
+        }
+        if let Err(e) = store.record_reminder(check.id, now).await {
+            tracing::error!("failed to record reminder for {}: {e}", check.id);
+            continue;
+        }
+        events.push(NotificationEvent {
+            check_id: check.id,
+            check_name: check.name.clone(),
+            event: EventKind::Reminder,
             at: now,
             project_id: check.project_id,
         });
@@ -126,6 +174,18 @@ pub async fn run_scan_loop(store: Store, env_default_secs: u64) {
                 }
             }
             Err(e) => tracing::error!("scan_once failed: {e}"),
+        }
+
+        match nag_once(&store, Utc::now()).await {
+            Ok(events) => {
+                for ev in events {
+                    let store = store.clone();
+                    tokio::spawn(async move {
+                        deliver_event(&store, &ev, RetryPolicy::default(), Utc::now()).await;
+                    });
+                }
+            }
+            Err(e) => tracing::error!("nag_once failed: {e}"),
         }
 
         // Resolve the next sleep from the cascade; failures fall back to the env default.
@@ -378,6 +438,7 @@ mod tests {
                 "UTC",
                 None,
                 Some(60),
+                None,
             )
             .await
             .unwrap();
@@ -395,5 +456,108 @@ mod tests {
             store.find_check(cid).await.unwrap().unwrap().status,
             CheckStatus::Down
         );
+    }
+
+    async fn down_check_store() -> (Store, i64) {
+        use crate::db;
+        let pool = db::connect("sqlite::memory:").await.unwrap();
+        db::migrate(&pool, "sqlite::memory:").await.unwrap();
+        let store = Store::new(pool);
+        store
+            .create_user("u", Some("x"), false, Utc::now())
+            .await
+            .unwrap();
+        store
+            .create_project(1, "p", None, Utc::now())
+            .await
+            .unwrap();
+        let id = store
+            .create_check(
+                1,
+                "job",
+                "u1",
+                ScheduleKind::Period,
+                Some(3600),
+                300,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        store.set_status(id, CheckStatus::Down).await.unwrap();
+        (store, id)
+    }
+
+    #[tokio::test]
+    async fn nag_once_reminds_due_unacked_check() {
+        let (store, id) = down_check_store().await;
+        // per-check nag interval 60s, baseline at t0
+        let t0 = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
+        store
+            .update_check_schedule(
+                id,
+                "job",
+                ScheduleKind::Period,
+                Some(3600),
+                300,
+                None,
+                "UTC",
+                None,
+                None,
+                Some(60),
+            )
+            .await
+            .unwrap();
+        store.begin_down_alert(id, t0).await.unwrap();
+
+        // not yet due
+        assert!(nag_once(&store, t0 + Duration::seconds(59))
+            .await
+            .unwrap()
+            .is_empty());
+        // due
+        let evs = nag_once(&store, t0 + Duration::seconds(60)).await.unwrap();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].event, EventKind::Reminder);
+        // baseline advanced, so immediately after it is not due again
+        assert!(nag_once(&store, t0 + Duration::seconds(61))
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn nag_once_skips_acked_and_off_and_no_baseline() {
+        let (store, id) = down_check_store().await;
+        let t0 = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
+
+        // no nag interval configured anywhere → off
+        store.begin_down_alert(id, t0).await.unwrap();
+        assert!(nag_once(&store, t0 + Duration::seconds(3600))
+            .await
+            .unwrap()
+            .is_empty());
+
+        // configure interval, but acknowledged → skipped
+        store
+            .update_check_schedule(
+                id,
+                "job",
+                ScheduleKind::Period,
+                Some(3600),
+                300,
+                None,
+                "UTC",
+                None,
+                None,
+                Some(60),
+            )
+            .await
+            .unwrap();
+        store.acknowledge(id).await.unwrap();
+        assert!(nag_once(&store, t0 + Duration::seconds(3600))
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

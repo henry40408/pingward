@@ -625,10 +625,12 @@ impl Store {
         timezone: &str,
         scan_interval_secs: Option<i64>,
         max_runtime_secs: Option<i64>,
+        nag_interval_secs: Option<i64>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE checks SET name=$1, schedule_kind=$2, period_secs=$3, grace_secs=$4, \
-             cron_expr=$5, timezone=$6, scan_interval_secs=$7, max_runtime_secs=$8 WHERE id=$9",
+             cron_expr=$5, timezone=$6, scan_interval_secs=$7, max_runtime_secs=$8, \
+             nag_interval_secs=$9 WHERE id=$10",
         )
         .bind(name)
         .bind(kind.as_str())
@@ -638,6 +640,7 @@ impl Store {
         .bind(timezone)
         .bind(scan_interval_secs)
         .bind(max_runtime_secs)
+        .bind(nag_interval_secs)
         .bind(id)
         .execute(&self.pool)
         .await?;
