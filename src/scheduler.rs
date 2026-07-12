@@ -231,4 +231,35 @@ mod tests {
         c.cron_expr = Some("not a cron".into());
         assert!(due_time(&c).is_none());
     }
+
+    #[test]
+    fn loop_interval_picks_min_effective_across_checks() {
+        use std::collections::HashMap;
+        // check 1 in project 1: no project override → its own 50 applies.
+        let mut c1 = base_check();
+        c1.id = 1;
+        c1.project_id = 1;
+        c1.scan_interval_secs = Some(50);
+        // check 2 in project 2: no check override → project override 10 applies.
+        let mut c2 = base_check();
+        c2.id = 2;
+        c2.project_id = 2;
+        c2.scan_interval_secs = None;
+
+        let mut intervals = HashMap::new();
+        intervals.insert(1, None);
+        intervals.insert(2, Some(10));
+
+        // effective: check1=50, check2=10 → the loop ticks at the minimum, 10.
+        assert_eq!(loop_interval_secs(&[c1, c2], &intervals, Some(30), 30), 10);
+    }
+
+    #[test]
+    fn loop_interval_empty_falls_back_to_env_default() {
+        use std::collections::HashMap;
+        let intervals = HashMap::new();
+        assert_eq!(loop_interval_secs(&[], &intervals, None, 30), 30);
+        // env default of 0 is clamped to at least 1 so the timer stays valid.
+        assert_eq!(loop_interval_secs(&[], &intervals, None, 0), 1);
+    }
 }

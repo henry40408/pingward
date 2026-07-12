@@ -351,3 +351,194 @@ async fn create_telegram_channel_persists_config() {
     assert!(tg.config_json.contains("\"token\":\"123:ABC\""));
     assert!(tg.config_json.contains("\"chat_id\":\"999\""));
 }
+
+#[tokio::test]
+async fn create_slack_channel_persists_config() {
+    let (server, store, pid) = server_with_project().await;
+    let res = server
+        .post(&format!("/projects/{pid}/channels"))
+        .form(&[
+            ("name", "sl"),
+            ("kind", "slack"),
+            ("slack_url", "http://hooks.test/x"),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    let channels = store.list_channels_for_project(pid).await.unwrap();
+    let ch = channels
+        .iter()
+        .find(|c| c.kind == pingward::models::ChannelKind::Slack)
+        .expect("slack channel persisted");
+    assert!(ch.config_json.contains("hooks.test"));
+}
+
+#[tokio::test]
+async fn create_ntfy_channel_persists_config() {
+    let (server, store, pid) = server_with_project().await;
+    let res = server
+        .post(&format!("/projects/{pid}/channels"))
+        .form(&[
+            ("name", "nt"),
+            ("kind", "ntfy"),
+            ("ntfy_base_url", "https://ntfy.example"),
+            ("ntfy_topic", "alerts"),
+            ("ntfy_token", ""),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    let channels = store.list_channels_for_project(pid).await.unwrap();
+    let ch = channels
+        .iter()
+        .find(|c| c.kind == pingward::models::ChannelKind::Ntfy)
+        .expect("ntfy channel persisted");
+    assert!(ch.config_json.contains("\"topic\":\"alerts\""));
+    assert!(ch.config_json.contains("ntfy.example"));
+}
+
+#[tokio::test]
+async fn create_pushover_channel_persists_config() {
+    let (server, store, pid) = server_with_project().await;
+    let res = server
+        .post(&format!("/projects/{pid}/channels"))
+        .form(&[
+            ("name", "po"),
+            ("kind", "pushover"),
+            ("pushover_token", "apptok"),
+            ("pushover_user", "userkey"),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    let channels = store.list_channels_for_project(pid).await.unwrap();
+    let ch = channels
+        .iter()
+        .find(|c| c.kind == pingward::models::ChannelKind::Pushover)
+        .expect("pushover channel persisted");
+    assert!(ch.config_json.contains("\"token\":\"apptok\""));
+    assert!(ch.config_json.contains("\"user\":\"userkey\""));
+}
+
+#[tokio::test]
+async fn channel_create_rejects_blank_required_field() {
+    let (server, store, pid) = server_with_project().await;
+    // telegram with a blank chat_id → re-rendered form (200), nothing persisted.
+    let res = server
+        .post(&format!("/projects/{pid}/channels"))
+        .form(&[
+            ("name", "tg"),
+            ("kind", "telegram"),
+            ("telegram_token", "123:ABC"),
+            ("telegram_chat_id", ""),
+        ])
+        .await;
+    res.assert_status_ok();
+    assert!(store
+        .list_channels_for_project(pid)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// Set up a second user owning a project + check + channel, for authorization
+/// negative-path tests run as the logged-in `admin`.
+async fn other_users_project(store: &Store) -> (i64, i64, i64) {
+    let now = chrono::Utc::now();
+    let other = store
+        .create_user("other", Some("x"), false, now)
+        .await
+        .unwrap();
+    let opid = store
+        .create_project(other, "secret", None, now)
+        .await
+        .unwrap();
+    let ocid = store
+        .create_check(
+            opid,
+            "j",
+            "other-uuid",
+            pingward::models::ScheduleKind::Period,
+            Some(60),
+            30,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    let ochid = store
+        .create_channel(
+            opid,
+            pingward::models::ChannelKind::Webhook,
+            "h",
+            "{\"url\":\"http://other.test/h\"}",
+            now,
+        )
+        .await
+        .unwrap();
+    (opid, ocid, ochid)
+}
+
+#[tokio::test]
+async fn cannot_operate_on_another_users_check() {
+    let (server, store, _uid) = logged_in_server().await;
+    let (_opid, ocid, _ochid) = other_users_project(&store).await;
+
+    server
+        .get(&format!("/checks/{ocid}"))
+        .await
+        .assert_status(axum::http::StatusCode::NOT_FOUND);
+    server
+        .post(&format!("/checks/{ocid}/pause"))
+        .await
+        .assert_status(axum::http::StatusCode::NOT_FOUND);
+    server
+        .post(&format!("/checks/{ocid}/delete"))
+        .await
+        .assert_status(axum::http::StatusCode::NOT_FOUND);
+    // The check must still exist — no cross-user mutation happened.
+    assert!(store.find_check(ocid).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn cannot_delete_another_users_channel() {
+    let (server, store, _uid) = logged_in_server().await;
+    let (_opid, _ocid, ochid) = other_users_project(&store).await;
+
+    server
+        .post(&format!("/channels/{ochid}/delete"))
+        .await
+        .assert_status(axum::http::StatusCode::NOT_FOUND);
+    assert!(store.find_channel(ochid).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn cannot_create_channel_in_another_users_project() {
+    let (server, store, _uid) = logged_in_server().await;
+    let (opid, _ocid, _ochid) = other_users_project(&store).await;
+
+    server
+        .post(&format!("/projects/{opid}/channels"))
+        .form(&[
+            ("name", "x"),
+            ("kind", "webhook"),
+            ("webhook_url", "http://evil.test/h"),
+        ])
+        .await
+        .assert_status(axum::http::StatusCode::NOT_FOUND);
+    // Only the other user's own channel remains; nothing was injected.
+    let channels = store.list_channels_for_project(opid).await.unwrap();
+    assert_eq!(channels.len(), 1);
+    assert!(channels[0].config_json.contains("other.test"));
+}
+
+#[tokio::test]
+async fn admin_cannot_delete_self() {
+    let (server, store, uid) = logged_in_server().await; // uid is the sole admin
+    server
+        .post(&format!("/users/{uid}/delete"))
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    // Self-delete is a no-op guard: the admin must still exist.
+    assert!(store.find_user_by_id(uid).await.unwrap().is_some());
+}
