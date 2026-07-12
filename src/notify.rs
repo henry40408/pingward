@@ -6,6 +6,7 @@ use std::pin::Pin;
 pub enum EventKind {
     Down,
     Up,
+    Reminder,
 }
 
 impl EventKind {
@@ -13,6 +14,7 @@ impl EventKind {
         match self {
             EventKind::Down => "down",
             EventKind::Up => "up",
+            EventKind::Reminder => "reminder",
         }
     }
 }
@@ -23,6 +25,7 @@ impl std::str::FromStr for EventKind {
         match s {
             "down" => Ok(EventKind::Down),
             "up" => Ok(EventKind::Up),
+            "reminder" => Ok(EventKind::Reminder),
             other => Err(format!("invalid EventKind: {other}")),
         }
     }
@@ -64,6 +67,7 @@ fn event_text(ev: &NotificationEvent) -> String {
     let (emoji, word) = match ev.event {
         EventKind::Down => ("\u{1F534}", "DOWN"), // red circle
         EventKind::Up => ("\u{1F7E2}", "UP"),     // green circle
+        EventKind::Reminder => ("\u{1F534}", "STILL DOWN"), // red circle
     };
     format!(
         "{emoji} {name} is {word} (as of {at})",
@@ -249,6 +253,7 @@ impl Notifier for NtfyNotifier {
             let (priority, tags) = match ev.event {
                 EventKind::Down => ("high", "red_circle"),
                 EventKind::Up => ("default", "green_circle"),
+                EventKind::Reminder => ("high", "red_circle"),
             };
             let mut req = self
                 .client
@@ -306,6 +311,7 @@ impl Notifier for PushoverNotifier {
             let priority = match ev.event {
                 EventKind::Down => "1",
                 EventKind::Up => "0",
+                EventKind::Reminder => "1",
             };
             let title = event_title(ev);
             let message = event_text(ev);
@@ -901,5 +907,24 @@ mod tests {
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].status, crate::models::NotifyStatus::Error);
         assert!(recs[0].error.is_some());
+    }
+
+    #[test]
+    fn reminder_event_roundtrips_and_renders_still_down() {
+        assert_eq!(EventKind::Reminder.as_str(), "reminder");
+        assert_eq!(
+            std::str::FromStr::from_str("reminder"),
+            Ok(EventKind::Reminder)
+        );
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Reminder,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        let text = event_text(&ev);
+        assert!(text.contains("STILL DOWN"), "got: {text}");
+        assert_eq!(event_title(&ev), "pingward: backup reminder");
     }
 }
