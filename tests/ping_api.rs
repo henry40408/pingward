@@ -107,3 +107,104 @@ async fn exit_code_nonzero_marks_down() {
     let c = store.find_check_by_uuid("abc").await.unwrap().unwrap();
     assert_eq!(c.status, pingward::models::CheckStatus::Down);
 }
+
+#[tokio::test]
+async fn start_does_not_reset_due_clock() {
+    let (server, store) = test_server().await;
+    store
+        .create_check(
+            1,
+            "job",
+            "abc",
+            ScheduleKind::Period,
+            Some(60),
+            30,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+
+    server.post("/ping/abc").await.assert_status_ok();
+    let before = store.find_check_by_uuid("abc").await.unwrap().unwrap();
+    assert_eq!(before.status, pingward::models::CheckStatus::Up);
+    assert!(before.last_ping_at.is_some());
+    assert!(before.next_due_at.is_some());
+
+    server.post("/ping/abc/start").await.assert_status_ok();
+    let after = store.find_check_by_uuid("abc").await.unwrap().unwrap();
+    assert_eq!(after.status, pingward::models::CheckStatus::Up);
+    assert_eq!(after.last_ping_at, before.last_ping_at);
+    assert_eq!(after.next_due_at, before.next_due_at);
+    assert!(after.last_start_at.is_some());
+}
+
+#[tokio::test]
+async fn log_records_only_no_state_change() {
+    let (server, store) = test_server().await;
+    store
+        .create_check(
+            1,
+            "job",
+            "abc",
+            ScheduleKind::Period,
+            Some(60),
+            30,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+
+    let before = store.find_check_by_uuid("abc").await.unwrap().unwrap();
+    assert_eq!(before.status, pingward::models::CheckStatus::New);
+
+    server.post("/ping/abc/log").await.assert_status_ok();
+
+    let after = store.find_check_by_uuid("abc").await.unwrap().unwrap();
+    assert_eq!(after.status, pingward::models::CheckStatus::New);
+    assert!(after.last_ping_at.is_none());
+}
+
+#[tokio::test]
+async fn exit_code_zero_marks_up() {
+    let (server, store) = test_server().await;
+    store
+        .create_check(
+            1,
+            "job",
+            "abc",
+            ScheduleKind::Period,
+            Some(60),
+            30,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    server.post("/ping/abc/0").await.assert_status_ok();
+    let c = store.find_check_by_uuid("abc").await.unwrap().unwrap();
+    assert_eq!(c.status, pingward::models::CheckStatus::Up);
+    assert!(c.last_ping_at.is_some());
+}
+
+#[tokio::test]
+async fn get_verb_works_for_success() {
+    let (server, store) = test_server().await;
+    store
+        .create_check(
+            1,
+            "job",
+            "abc",
+            ScheduleKind::Period,
+            Some(60),
+            30,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    server.get("/ping/abc").await.assert_status_ok();
+    let c = store.find_check_by_uuid("abc").await.unwrap().unwrap();
+    assert_eq!(c.status, pingward::models::CheckStatus::Up);
+}
