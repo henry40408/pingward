@@ -222,6 +222,49 @@ async fn postgres_full_round_trip() {
         None
     );
 
+    // retention/pruning: an old ping + old notification are deleted by prune_once
+    // when retention is configured; a far-future cutoff via a large retention
+    // keeps recent rows.
+    let old = now - chrono::Duration::days(30);
+    store
+        .insert_ping(
+            cid,
+            pingward::models::PingKind::Success,
+            None,
+            "",
+            None,
+            old,
+        )
+        .await
+        .unwrap();
+    store
+        .record_notification(
+            cid,
+            chid,
+            pingward::notify::EventKind::Down,
+            pingward::models::NotifyStatus::Ok,
+            None,
+            old,
+        )
+        .await
+        .unwrap();
+    store
+        .set_setting("pings_retention_days", "7")
+        .await
+        .unwrap();
+    store
+        .set_setting("notifications_retention_days", "7")
+        .await
+        .unwrap();
+    let (pd, nd) = pingward::prune::prune_once(&store, now).await.unwrap();
+    assert!(
+        pd >= 1 && nd >= 1,
+        "expected old ping+notification pruned, got ({pd},{nd})"
+    );
+    // direct delete method also works with an explicit cutoff
+    let far = (now - chrono::Duration::days(3650)).to_rfc3339();
+    assert_eq!(store.delete_pings_before(&far).await.unwrap(), 0);
+
     // cascade delete: removing the user removes project → checks → channels → pings
     store.delete_user(uid).await.unwrap();
     assert!(store.list_projects_for_user(uid).await.unwrap().is_empty());
