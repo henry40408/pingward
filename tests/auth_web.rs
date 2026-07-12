@@ -317,12 +317,49 @@ async fn admin_sets_global_scan_interval() {
     server.get("/settings").await.assert_status_ok();
     server
         .post("/settings")
-        .form(&[("scan_interval", "45"), ("nag_interval", "")])
+        .form(&[
+            ("scan_interval", "45"),
+            ("nag_interval", ""),
+            ("pings_retention_days", ""),
+            ("notifications_retention_days", ""),
+        ])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(
         store.get_setting("scan_interval").await.unwrap().as_deref(),
         Some("45")
+    );
+}
+
+#[tokio::test]
+async fn admin_sets_retention_days() {
+    let (server, store, _uid) = logged_in_server().await; // admin
+    server.get("/settings").await.assert_status_ok();
+    server
+        .post("/settings")
+        .form(&[
+            ("scan_interval", ""),
+            ("nag_interval", ""),
+            ("pings_retention_days", "30"),
+            ("notifications_retention_days", "90"),
+        ])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(
+        store
+            .get_setting("pings_retention_days")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("30")
+    );
+    assert_eq!(
+        store
+            .get_setting("notifications_retention_days")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("90")
     );
 }
 

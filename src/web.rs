@@ -916,6 +916,8 @@ struct SettingsTemplate {
     show_nav: bool,
     scan_interval: String,
     nag_interval: String,
+    pings_retention_days: String,
+    notifications_retention_days: String,
 }
 
 #[derive(Template)]
@@ -930,6 +932,8 @@ struct UsersTemplate {
 struct SettingsForm {
     scan_interval: String,
     nag_interval: String,
+    pings_retention_days: String,
+    notifications_retention_days: String,
 }
 
 #[derive(Deserialize)]
@@ -954,10 +958,22 @@ async fn settings_page(
         .get_setting("nag_interval")
         .await?
         .unwrap_or_default();
+    let pings_retention_days = state
+        .store
+        .get_setting("pings_retention_days")
+        .await?
+        .unwrap_or_default();
+    let notifications_retention_days = state
+        .store
+        .get_setting("notifications_retention_days")
+        .await?
+        .unwrap_or_default();
     Ok(render(&SettingsTemplate {
         show_nav: true,
         scan_interval,
         nag_interval,
+        pings_retention_days,
+        notifications_retention_days,
     })?
     .into_response())
 }
@@ -979,6 +995,24 @@ async fn settings_save(
         state.store.set_setting("nag_interval", "").await?;
     } else if nag.parse::<u64>().map(|v| v > 0).unwrap_or(false) {
         state.store.set_setting("nag_interval", nag).await?;
+    }
+    let pr = form.pings_retention_days.trim();
+    if pr.is_empty() {
+        state.store.set_setting("pings_retention_days", "").await?;
+    } else if pr.parse::<u64>().map(|v| v > 0).unwrap_or(false) {
+        state.store.set_setting("pings_retention_days", pr).await?;
+    }
+    let nr = form.notifications_retention_days.trim();
+    if nr.is_empty() {
+        state
+            .store
+            .set_setting("notifications_retention_days", "")
+            .await?;
+    } else if nr.parse::<u64>().map(|v| v > 0).unwrap_or(false) {
+        state
+            .store
+            .set_setting("notifications_retention_days", nr)
+            .await?;
     }
     Ok(Redirect::to("/settings").into_response())
 }
