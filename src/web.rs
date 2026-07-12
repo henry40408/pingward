@@ -3,7 +3,9 @@ use crate::auth::{
     SESSION_TTL_DAYS,
 };
 use crate::error::AppError;
-use crate::models::{Channel, Check, CheckStatus, Notification, Project, ScheduleKind};
+use crate::models::{
+    Channel, ChannelKind, Check, CheckStatus, Notification, Project, ScheduleKind,
+};
 use crate::state::AppState;
 use crate::store::Store;
 use askama::Template;
@@ -12,6 +14,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use axum_extra::extract::Form as HtmlForm;
 use chrono::{Duration, Utc};
 use cron::Schedule;
 use serde::Deserialize;
@@ -41,6 +44,10 @@ pub fn routes() -> Router<AppState> {
         .route("/checks/{id}/resume", post(check_resume))
         .route("/checks/{id}/regenerate", post(check_regenerate))
         .route("/checks/{id}/delete", post(check_delete))
+        .route("/projects/{pid}/channels/new", get(channel_new))
+        .route("/projects/{pid}/channels", post(channel_create))
+        .route("/channels/{id}/delete", post(channel_delete))
+        .route("/checks/{id}/channels", post(check_set_channels))
 }
 
 // --- templates ---
@@ -673,4 +680,116 @@ async fn check_delete(
     let check = owned_check(&state.store, id, user.id).await?;
     state.store.delete_check(id).await?;
     Ok(Redirect::to(&format!("/projects/{}", check.project_id)).into_response())
+}
+
+// --- channel templates ---
+#[derive(Template)]
+#[template(path = "channel_form.html")]
+struct ChannelFormTemplate {
+    show_nav: bool,
+    project_id: i64,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChannelForm {
+    name: String,
+    kind: String,
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct BindForm {
+    #[serde(default)]
+    channel_ids: Vec<i64>,
+}
+
+async fn channel_new(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(pid): Path<i64>,
+) -> Result<Response, AppError> {
+    owned_project(&state.store, pid, user.id).await?;
+    Ok(render(&ChannelFormTemplate {
+        show_nav: true,
+        project_id: pid,
+        error: None,
+    })?
+    .into_response())
+}
+
+async fn channel_create(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(pid): Path<i64>,
+    Form(form): Form<ChannelForm>,
+) -> Result<Response, AppError> {
+    owned_project(&state.store, pid, user.id).await?;
+    // Plan 2: only webhook is accepted.
+    if form.kind != ChannelKind::Webhook.as_str() || form.url.trim().is_empty() {
+        return Ok(render(&ChannelFormTemplate {
+            show_nav: true,
+            project_id: pid,
+            error: Some("a webhook URL is required".into()),
+        })?
+        .into_response());
+    }
+    let config = serde_json::json!({ "url": form.url.trim() }).to_string();
+    state
+        .store
+        .create_channel(pid, ChannelKind::Webhook, &form.name, &config, Utc::now())
+        .await?;
+    Ok(Redirect::to(&format!("/projects/{pid}")).into_response())
+}
+
+async fn channel_delete(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let channel = state
+        .store
+        .find_channel(id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let project = owned_project(&state.store, channel.project_id, user.id).await?;
+    state.store.delete_channel(id).await?;
+    Ok(Redirect::to(&format!("/projects/{}", project.id)).into_response())
+}
+
+/// Replace a check's bound channel set with exactly the submitted ids (only
+/// those that belong to the same project are honored).
+async fn check_set_channels(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+    HtmlForm(form): HtmlForm<BindForm>,
+) -> Result<Response, AppError> {
+    let check = owned_check(&state.store, id, user.id).await?;
+    let valid: std::collections::HashSet<i64> = state
+        .store
+        .list_channels_for_project(check.project_id)
+        .await?
+        .into_iter()
+        .map(|c| c.id)
+        .collect();
+    let current: std::collections::HashSet<i64> = state
+        .store
+        .bound_channel_ids(id)
+        .await?
+        .into_iter()
+        .collect();
+    let desired: std::collections::HashSet<i64> = form
+        .channel_ids
+        .into_iter()
+        .filter(|c| valid.contains(c))
+        .collect();
+
+    for add in desired.difference(&current) {
+        state.store.bind_channel(id, *add).await?;
+    }
+    for remove in current.difference(&desired) {
+        state.store.unbind_channel(id, *remove).await?;
+    }
+    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
 }

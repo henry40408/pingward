@@ -224,3 +224,52 @@ async fn login_logout_cycle() {
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/login");
 }
+
+#[tokio::test]
+async fn create_channel_and_bind_to_check() {
+    let (server, store, pid) = server_with_project().await;
+    let cid = store
+        .create_check(
+            pid,
+            "job",
+            "cu",
+            pingward::models::ScheduleKind::Period,
+            Some(60),
+            30,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+
+    // create a webhook channel
+    let res = server
+        .post(&format!("/projects/{pid}/channels"))
+        .form(&[
+            ("name", "hook"),
+            ("kind", "webhook"),
+            ("url", "http://example.test/h"),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let channels = store.list_channels_for_project(pid).await.unwrap();
+    assert_eq!(channels.len(), 1);
+    let chid = channels[0].id;
+    assert!(channels[0].config_json.contains("example.test"));
+
+    // bind it to the check
+    server
+        .post(&format!("/checks/{cid}/channels"))
+        .form(&[("channel_ids", chid.to_string().as_str())])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(store.bound_channel_ids(cid).await.unwrap(), vec![chid]);
+
+    // unbind by submitting no channel_ids
+    server
+        .post(&format!("/checks/{cid}/channels"))
+        .form(&[("_", "")])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(store.bound_channel_ids(cid).await.unwrap().is_empty());
+}

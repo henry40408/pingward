@@ -15,7 +15,7 @@ path = "src/main.rs"
 argon2 = { version = "0.5", features = ["rand"] }
 askama = "0.16"
 axum = "0.8"
-axum-extra = { version = "0.12", default-features = false, features = ["cookie"] }
+axum-extra = { version = "0.12", default-features = false, features = ["cookie", "form"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "net", "sync"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "tls-rustls-aws-lc-rs", "migrate"] }
