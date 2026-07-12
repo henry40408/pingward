@@ -1,6 +1,8 @@
 use crate::error::AppError;
 use crate::models::{CheckStatus, PingKind};
+use crate::notify::{deliver_event, EventKind, NotificationEvent, RetryPolicy};
 use crate::scheduler::due_time;
+use crate::state::AppState;
 use crate::store::Store;
 use axum::{
     body::Bytes,
@@ -50,7 +52,7 @@ where
     }
 }
 
-pub fn routes() -> Router<Store> {
+pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/ping/{uuid}", get(success).post(success))
         .route("/ping/{uuid}/fail", get(fail).post(fail))
@@ -141,6 +143,7 @@ async fn apply(
         return Ok(StatusCode::OK);
     }
 
+    let prev_status = check.status;
     match kind {
         PingKind::Success => {
             let mut updated = check.clone();
@@ -149,11 +152,31 @@ async fn apply(
             store
                 .mark_ping(check.id, CheckStatus::Up, Some(now), None, next)
                 .await?;
+            if prev_status == CheckStatus::Down {
+                spawn_delivery(
+                    store.clone(),
+                    check.id,
+                    check.name.clone(),
+                    check.project_id,
+                    EventKind::Up,
+                    now,
+                );
+            }
         }
         PingKind::Fail => {
             store
                 .mark_ping(check.id, CheckStatus::Down, Some(now), None, None)
                 .await?;
+            if matches!(prev_status, CheckStatus::Up | CheckStatus::New) {
+                spawn_delivery(
+                    store.clone(),
+                    check.id,
+                    check.name.clone(),
+                    check.project_id,
+                    EventKind::Down,
+                    now,
+                );
+            }
         }
         PingKind::Start => {
             store
@@ -164,4 +187,26 @@ async fn apply(
         PingKind::Exitcode => unreachable!("exitcode maps to Success/Fail above"),
     }
     Ok(StatusCode::OK)
+}
+
+/// Spawn a fire-and-forget delivery so the ping response is not blocked by
+/// notification I/O. `store` is cheap to clone (holds an `Arc` pool).
+fn spawn_delivery(
+    store: Store,
+    check_id: i64,
+    check_name: String,
+    project_id: i64,
+    event: EventKind,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    tokio::spawn(async move {
+        let ev = NotificationEvent {
+            check_id,
+            check_name,
+            event,
+            at: now,
+            project_id,
+        };
+        deliver_event(&store, &ev, RetryPolicy::default(), now).await;
+    });
 }

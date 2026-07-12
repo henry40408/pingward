@@ -1,7 +1,12 @@
 use crate::db::Pool;
-use crate::models::{Check, CheckStatus, PingKind, ScheduleKind};
+use crate::models::{
+    Channel, ChannelKind, Check, CheckStatus, Notification, NotifyStatus, Ping, PingKind, Project,
+    ScheduleKind, User,
+};
+use crate::notify::EventKind;
 use chrono::{DateTime, Utc};
 use sqlx::Row;
+use std::collections::HashMap;
 use std::str::FromStr;
 
 #[derive(Clone)]
@@ -53,6 +58,78 @@ fn row_to_check(row: &sqlx::sqlite::SqliteRow) -> Result<Check, sqlx::Error> {
         next_due_at: parse_ts(row.get("next_due_at")),
         scan_interval_secs: row.get("scan_interval_secs"),
         created_at,
+    })
+}
+
+fn row_to_user(row: &sqlx::sqlite::SqliteRow) -> Result<User, sqlx::Error> {
+    Ok(User {
+        id: row.get("id"),
+        username: row.get("username"),
+        password_hash: row.get("password_hash"),
+        is_admin: row.get::<i64, _>("is_admin") != 0,
+        created_at: parse_ts(row.get("created_at"))
+            .ok_or_else(|| decode_err("users.created_at must be RFC3339"))?,
+    })
+}
+
+fn row_to_project(row: &sqlx::sqlite::SqliteRow) -> Result<Project, sqlx::Error> {
+    Ok(Project {
+        id: row.get("id"),
+        user_id: row.get("user_id"),
+        name: row.get("name"),
+        scan_interval_secs: row.get("scan_interval_secs"),
+        created_at: parse_ts(row.get("created_at"))
+            .ok_or_else(|| decode_err("projects.created_at must be RFC3339"))?,
+    })
+}
+
+fn row_to_channel(row: &sqlx::sqlite::SqliteRow) -> Result<Channel, sqlx::Error> {
+    let kind_raw: String = row.get("kind");
+    let kind = ChannelKind::from_str(&kind_raw)
+        .map_err(|e| decode_err(format!("invalid channel kind {kind_raw:?}: {e}")))?;
+    Ok(Channel {
+        id: row.get("id"),
+        project_id: row.get("project_id"),
+        kind,
+        name: row.get("name"),
+        config_json: row.get("config_json"),
+        created_at: parse_ts(row.get("created_at"))
+            .ok_or_else(|| decode_err("channels.created_at must be RFC3339"))?,
+    })
+}
+
+fn row_to_ping(row: &sqlx::sqlite::SqliteRow) -> Result<Ping, sqlx::Error> {
+    let kind_raw: String = row.get("kind");
+    let kind = PingKind::from_str(&kind_raw)
+        .map_err(|e| decode_err(format!("invalid ping kind {kind_raw:?}: {e}")))?;
+    Ok(Ping {
+        id: row.get("id"),
+        check_id: row.get("check_id"),
+        kind,
+        exit_code: row.get("exit_code"),
+        body: row.get("body"),
+        source_ip: row.get("source_ip"),
+        created_at: parse_ts(row.get("created_at"))
+            .ok_or_else(|| decode_err("pings.created_at must be RFC3339"))?,
+    })
+}
+
+fn row_to_notification(row: &sqlx::sqlite::SqliteRow) -> Result<Notification, sqlx::Error> {
+    let event_raw: String = row.get("event");
+    let event = EventKind::from_str(&event_raw)
+        .map_err(|e| decode_err(format!("invalid notification event {event_raw:?}: {e}")))?;
+    let status_raw: String = row.get("status");
+    let status = NotifyStatus::from_str(&status_raw)
+        .map_err(|e| decode_err(format!("invalid notification status {status_raw:?}: {e}")))?;
+    Ok(Notification {
+        id: row.get("id"),
+        check_id: row.get("check_id"),
+        channel_id: row.get("channel_id"),
+        event,
+        status,
+        error: row.get("error"),
+        created_at: parse_ts(row.get("created_at"))
+            .ok_or_else(|| decode_err("notifications.created_at must be RFC3339"))?,
     })
 }
 
@@ -161,6 +238,399 @@ impl Store {
         .bind(Utc::now().to_rfc3339())
         .execute(&self.pool).await?;
         Ok(res.last_insert_rowid())
+    }
+
+    pub async fn count_users(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn create_user(
+        &self,
+        username: &str,
+        password_hash: Option<&str>,
+        is_admin: bool,
+        now: DateTime<Utc>,
+    ) -> Result<i64, sqlx::Error> {
+        let res = sqlx::query(
+            "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES (?,?,?,?)",
+        )
+        .bind(username)
+        .bind(password_hash)
+        .bind(is_admin as i64)
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(res.last_insert_rowid())
+    }
+
+    pub async fn find_user_by_username(&self, username: &str) -> Result<Option<User>, sqlx::Error> {
+        let row = sqlx::query("SELECT * FROM users WHERE username = ?")
+            .bind(username)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(row_to_user).transpose()
+    }
+
+    pub async fn find_user_by_id(&self, id: i64) -> Result<Option<User>, sqlx::Error> {
+        let row = sqlx::query("SELECT * FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(row_to_user).transpose()
+    }
+
+    pub async fn list_users(&self) -> Result<Vec<User>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM users ORDER BY id")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_user).collect()
+    }
+
+    pub async fn delete_user(&self, id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn create_session(
+        &self,
+        id: &str,
+        user_id: i64,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO sessions (id, user_id, expires_at) VALUES (?,?,?)")
+            .bind(id)
+            .bind(user_id)
+            .bind(expires_at.to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn find_session_user(
+        &self,
+        session_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<User>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id \
+             WHERE s.id = ? AND s.expires_at > ?",
+        )
+        .bind(session_id)
+        .bind(now.to_rfc3339())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(row_to_user).transpose()
+    }
+
+    pub async fn delete_session(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM sessions WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // --- projects ---
+    pub async fn create_project(
+        &self,
+        user_id: i64,
+        name: &str,
+        scan_interval_secs: Option<i64>,
+        now: DateTime<Utc>,
+    ) -> Result<i64, sqlx::Error> {
+        let res = sqlx::query(
+            "INSERT INTO projects (user_id, name, scan_interval_secs, created_at) VALUES (?,?,?,?)",
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(scan_interval_secs)
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(res.last_insert_rowid())
+    }
+
+    pub async fn find_project(&self, id: i64) -> Result<Option<Project>, sqlx::Error> {
+        let row = sqlx::query("SELECT * FROM projects WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(row_to_project).transpose()
+    }
+
+    pub async fn list_projects_for_user(&self, user_id: i64) -> Result<Vec<Project>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM projects WHERE user_id = ? ORDER BY id")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_project).collect()
+    }
+
+    pub async fn update_project(
+        &self,
+        id: i64,
+        name: &str,
+        scan_interval_secs: Option<i64>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE projects SET name = ?, scan_interval_secs = ? WHERE id = ?")
+            .bind(name)
+            .bind(scan_interval_secs)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_project(&self, id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM projects WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn all_project_scan_intervals(
+        &self,
+    ) -> Result<HashMap<i64, Option<i64>>, sqlx::Error> {
+        let rows = sqlx::query("SELECT id, scan_interval_secs FROM projects")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                (
+                    r.get::<i64, _>("id"),
+                    r.get::<Option<i64>, _>("scan_interval_secs"),
+                )
+            })
+            .collect())
+    }
+
+    // --- channels ---
+    pub async fn create_channel(
+        &self,
+        project_id: i64,
+        kind: ChannelKind,
+        name: &str,
+        config_json: &str,
+        now: DateTime<Utc>,
+    ) -> Result<i64, sqlx::Error> {
+        let res = sqlx::query(
+            "INSERT INTO channels (project_id, kind, name, config_json, created_at) VALUES (?,?,?,?,?)",
+        )
+        .bind(project_id).bind(kind.as_str()).bind(name).bind(config_json).bind(now.to_rfc3339())
+        .execute(&self.pool).await?;
+        Ok(res.last_insert_rowid())
+    }
+
+    pub async fn find_channel(&self, id: i64) -> Result<Option<Channel>, sqlx::Error> {
+        let row = sqlx::query("SELECT * FROM channels WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(row_to_channel).transpose()
+    }
+
+    pub async fn list_channels_for_project(
+        &self,
+        project_id: i64,
+    ) -> Result<Vec<Channel>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM channels WHERE project_id = ? ORDER BY id")
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_channel).collect()
+    }
+
+    pub async fn delete_channel(&self, id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM channels WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // --- bindings ---
+    pub async fn bind_channel(&self, check_id: i64, channel_id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT OR IGNORE INTO check_channels (check_id, channel_id) VALUES (?,?)")
+            .bind(check_id)
+            .bind(channel_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn unbind_channel(&self, check_id: i64, channel_id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM check_channels WHERE check_id = ? AND channel_id = ?")
+            .bind(check_id)
+            .bind(channel_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn bound_channel_ids(&self, check_id: i64) -> Result<Vec<i64>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT channel_id FROM check_channels WHERE check_id = ? ORDER BY channel_id",
+        )
+        .bind(check_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(|r| r.get::<i64, _>("channel_id")).collect())
+    }
+
+    pub async fn channels_for_check(&self, check_id: i64) -> Result<Vec<Channel>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT c.* FROM channels c JOIN check_channels cc ON cc.channel_id = c.id \
+             WHERE cc.check_id = ? ORDER BY c.id",
+        )
+        .bind(check_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_channel).collect()
+    }
+
+    // --- checks (web) ---
+    pub async fn find_check(&self, id: i64) -> Result<Option<Check>, sqlx::Error> {
+        let row = sqlx::query("SELECT * FROM checks WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(row_to_check).transpose()
+    }
+
+    pub async fn list_checks_for_project(
+        &self,
+        project_id: i64,
+    ) -> Result<Vec<Check>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM checks WHERE project_id = ? ORDER BY id")
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_check).collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_check_schedule(
+        &self,
+        id: i64,
+        name: &str,
+        kind: ScheduleKind,
+        period_secs: Option<i64>,
+        grace_secs: i64,
+        cron_expr: Option<&str>,
+        timezone: &str,
+        scan_interval_secs: Option<i64>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE checks SET name=?, schedule_kind=?, period_secs=?, grace_secs=?, \
+             cron_expr=?, timezone=?, scan_interval_secs=? WHERE id=?",
+        )
+        .bind(name)
+        .bind(kind.as_str())
+        .bind(period_secs)
+        .bind(grace_secs)
+        .bind(cron_expr)
+        .bind(timezone)
+        .bind(scan_interval_secs)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn regenerate_uuid(&self, id: i64, new_uuid: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE checks SET ping_uuid = ? WHERE id = ?")
+            .bind(new_uuid)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_check(&self, id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM checks WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // --- pings / notifications ---
+    pub async fn list_recent_pings(
+        &self,
+        check_id: i64,
+        limit: i64,
+    ) -> Result<Vec<Ping>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM pings WHERE check_id = ? ORDER BY id DESC LIMIT ?")
+            .bind(check_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_ping).collect()
+    }
+
+    pub async fn record_notification(
+        &self,
+        check_id: i64,
+        channel_id: i64,
+        event: EventKind,
+        status: NotifyStatus,
+        error: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO notifications (check_id, channel_id, event, status, error, created_at) \
+             VALUES (?,?,?,?,?,?)",
+        )
+        .bind(check_id)
+        .bind(channel_id)
+        .bind(event.as_str())
+        .bind(status.as_str())
+        .bind(error)
+        .bind(now.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_recent_notifications(
+        &self,
+        check_id: i64,
+        limit: i64,
+    ) -> Result<Vec<Notification>, sqlx::Error> {
+        let rows =
+            sqlx::query("SELECT * FROM notifications WHERE check_id = ? ORDER BY id DESC LIMIT ?")
+                .bind(check_id)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?;
+        rows.iter().map(row_to_notification).collect()
+    }
+
+    // --- settings ---
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?,?) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 }
 
@@ -351,5 +821,130 @@ mod tests {
             res.is_err(),
             "expected CHECK constraint to reject bad status"
         );
+    }
+
+    #[tokio::test]
+    async fn user_and_session_lifecycle() {
+        let store = seeded().await; // seeds user id=1 already
+        assert_eq!(store.count_users().await.unwrap(), 1);
+
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let uid = store
+            .create_user("bob", Some("phc"), true, now)
+            .await
+            .unwrap();
+        assert_eq!(store.count_users().await.unwrap(), 2);
+
+        let bob = store.find_user_by_username("bob").await.unwrap().unwrap();
+        assert_eq!(bob.id, uid);
+        assert!(bob.is_admin);
+        assert_eq!(bob.password_hash.as_deref(), Some("phc"));
+        assert!(store
+            .find_user_by_username("nobody")
+            .await
+            .unwrap()
+            .is_none());
+
+        store
+            .create_session("sess-1", uid, now + chrono::Duration::hours(1))
+            .await
+            .unwrap();
+        // valid at now
+        let u = store
+            .find_session_user("sess-1", now)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(u.id, uid);
+        // expired two hours later
+        assert!(store
+            .find_session_user("sess-1", now + chrono::Duration::hours(2))
+            .await
+            .unwrap()
+            .is_none());
+        // deleted
+        store.delete_session("sess-1").await.unwrap();
+        assert!(store
+            .find_session_user("sess-1", now)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn project_channel_binding_and_settings() {
+        let store = seeded().await;
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+        let pid = store.create_project(1, "web", Some(15), now).await.unwrap();
+        assert_eq!(store.list_projects_for_user(1).await.unwrap().len(), 2); // 'p' from seed + 'web'
+        assert_eq!(
+            store
+                .find_project(pid)
+                .await
+                .unwrap()
+                .unwrap()
+                .scan_interval_secs,
+            Some(15)
+        );
+
+        let cid = store
+            .create_channel(
+                pid,
+                ChannelKind::Webhook,
+                "hook",
+                r#"{"url":"http://x"}"#,
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.list_channels_for_project(pid).await.unwrap().len(), 1);
+
+        let chk = store
+            .create_check(
+                pid,
+                "job",
+                "uuid-x",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        store.bind_channel(chk, cid).await.unwrap();
+        assert_eq!(store.bound_channel_ids(chk).await.unwrap(), vec![cid]);
+        assert_eq!(store.channels_for_check(chk).await.unwrap().len(), 1);
+        store.unbind_channel(chk, cid).await.unwrap();
+        assert!(store.bound_channel_ids(chk).await.unwrap().is_empty());
+
+        store
+            .record_notification(chk, cid, EventKind::Down, NotifyStatus::Ok, None, now)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .list_recent_notifications(chk, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert!(store.get_setting("scan_interval").await.unwrap().is_none());
+        store.set_setting("scan_interval", "45").await.unwrap();
+        assert_eq!(
+            store.get_setting("scan_interval").await.unwrap().as_deref(),
+            Some("45")
+        );
+        store.set_setting("scan_interval", "60").await.unwrap(); // upsert
+        assert_eq!(
+            store.get_setting("scan_interval").await.unwrap().as_deref(),
+            Some("60")
+        );
+
+        let map = store.all_project_scan_intervals().await.unwrap();
+        assert_eq!(map.get(&pid), Some(&Some(15)));
     }
 }

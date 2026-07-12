@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>{{ heading }}</h1>
+{% if let Some(error) = error %}<p class="status-down">{{ error }}</p>{% endif %}
+<form method="post" action="{{ action }}">
+  <label>Name <input name="name" value="{{ name }}" required></label>
+  <label>Schedule kind
+    <select name="schedule_kind">
+      <option value="period"{% if schedule_kind == "period" %} selected{% endif %}>period</option>
+      <option value="cron"{% if schedule_kind == "cron" %} selected{% endif %}>cron</option>
+    </select></label>
+  <label>Period seconds (period mode) <input name="period_secs" value="{{ period_secs }}"></label>
+  <label>Cron expr (cron mode, 6-field "sec min hour dom mon dow") <input name="cron_expr" value="{{ cron_expr }}"></label>
+  <label>Grace seconds <input name="grace_secs" value="{{ grace_secs }}" required></label>
+  <label>Timezone <input name="timezone" value="{{ timezone }}" required></label>
+  <label>Scan interval secs (blank = inherit) <input name="scan_interval_secs" value="{{ scan_interval_secs }}"></label>
+  <button type="submit">Save</button>
+</form>
+{% endblock %}

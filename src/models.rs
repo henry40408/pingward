@@ -22,6 +22,8 @@ macro_rules! str_enum {
 str_enum!(ScheduleKind { Period => "period", Cron => "cron" });
 str_enum!(CheckStatus { New => "new", Up => "up", Down => "down", Paused => "paused" });
 str_enum!(PingKind { Success => "success", Fail => "fail", Start => "start", Log => "log", Exitcode => "exitcode" });
+str_enum!(ChannelKind { Webhook => "webhook", Telegram => "telegram", Slack => "slack", Ntfy => "ntfy" });
+str_enum!(NotifyStatus { Ok => "ok", Error => "error" });
 
 #[derive(Debug, Clone)]
 pub struct Check {
@@ -39,6 +41,56 @@ pub struct Check {
     pub last_start_at: Option<DateTime<Utc>>,
     pub next_due_at: Option<DateTime<Utc>>,
     pub scan_interval_secs: Option<i64>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct User {
+    pub id: i64,
+    pub username: String,
+    pub password_hash: Option<String>,
+    pub is_admin: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Project {
+    pub id: i64,
+    pub user_id: i64,
+    pub name: String,
+    pub scan_interval_secs: Option<i64>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Channel {
+    pub id: i64,
+    pub project_id: i64,
+    pub kind: ChannelKind,
+    pub name: String,
+    pub config_json: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Ping {
+    pub id: i64,
+    pub check_id: i64,
+    pub kind: PingKind,
+    pub exit_code: Option<i64>,
+    pub body: String,
+    pub source_ip: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub id: i64,
+    pub check_id: i64,
+    pub channel_id: i64,
+    pub event: crate::notify::EventKind,
+    pub status: NotifyStatus,
+    pub error: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -62,5 +114,27 @@ mod tests {
     #[test]
     fn unknown_status_is_error() {
         assert!(CheckStatus::from_str("bogus").is_err());
+    }
+
+    #[test]
+    fn channel_kind_roundtrips() {
+        for k in [
+            ChannelKind::Webhook,
+            ChannelKind::Telegram,
+            ChannelKind::Slack,
+            ChannelKind::Ntfy,
+        ] {
+            assert_eq!(ChannelKind::from_str(k.as_str()).unwrap(), k);
+        }
+        assert!(ChannelKind::from_str("email").is_err());
+    }
+
+    #[test]
+    fn notify_status_roundtrips() {
+        assert_eq!(NotifyStatus::from_str("ok").unwrap(), NotifyStatus::Ok);
+        assert_eq!(
+            NotifyStatus::from_str("error").unwrap(),
+            NotifyStatus::Error
+        );
     }
 }

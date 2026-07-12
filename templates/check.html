@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>{{ check.name }} <span class="status-{{ check.status.as_str() }}">({{ check.status.as_str() }})</span></h1>
+<p>Ping URL: <code>{{ ping_url }}</code></p>
+<p>
+  <a href="/checks/{{ check.id }}/edit">Edit</a>
+  {% if check.status.as_str() == "paused" %}
+    <form class="inline" method="post" action="/checks/{{ check.id }}/resume"><button>Resume</button></form>
+  {% else %}
+    <form class="inline" method="post" action="/checks/{{ check.id }}/pause"><button>Pause</button></form>
+  {% endif %}
+  <form class="inline" method="post" action="/checks/{{ check.id }}/regenerate"><button>Regenerate URL</button></form>
+  <form class="inline" method="post" action="/checks/{{ check.id }}/delete"
+        onsubmit="return confirm('Delete check?')"><button>Delete</button></form>
+</p>
+
+<h2>Channels</h2>
+<form method="post" action="/checks/{{ check.id }}/channels">
+  {% for cb in channel_boxes %}
+  <label><input type="checkbox" name="channel_ids" value="{{ cb.id }}"{% if cb.bound %} checked{% endif %}> {{ cb.name }} ({{ cb.kind }})</label>
+  {% endfor %}
+  <button type="submit">Save channels</button>
+</form>
+
+<h2>Recent pings</h2>
+<table><tr><th>When</th><th>Kind</th><th>Exit</th></tr>
+{% for p in pings %}<tr><td>{{ p.created_at }}</td><td>{{ p.kind.as_str() }}</td><td>{{ p.exit_code_display }}</td></tr>{% endfor %}
+</table>
+
+<h2>Recent notifications</h2>
+<table><tr><th>When</th><th>Event</th><th>Status</th></tr>
+{% for n in notifications %}<tr><td>{{ n.created_at }}</td><td>{{ n.event.as_str() }}</td><td>{{ n.status.as_str() }}</td></tr>{% endfor %}
+</table>
+{% endblock %}

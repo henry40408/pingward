@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Create the first admin</h1>
+{% if let Some(error) = error %}<p class="status-down">{{ error }}</p>{% endif %}
+<form method="post" action="/setup">
+  <label>Username <input name="username" required></label>
+  <label>Password <input name="password" type="password" required></label>
+  <button type="submit">Create admin</button>
+</form>
+{% endblock %}

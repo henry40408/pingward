@@ -1,12 +1,12 @@
+use crate::config::effective_scan_interval;
 use crate::models::{Check, CheckStatus, ScheduleKind};
-use crate::notify::{dispatch, EventKind, NotificationEvent, Notifier, NotifyError};
+use crate::notify::{deliver_event, EventKind, NotificationEvent, RetryPolicy};
 use crate::store::Store;
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
 use std::str::FromStr;
-use std::sync::Arc;
-use tokio::time::{interval, Duration as TokioDuration};
+use tokio::time::{sleep, Duration as TokioDuration};
 
 /// Anchor for the next expected check-in: last successful ping, else creation.
 fn anchor(check: &Check) -> DateTime<Utc> {
@@ -59,6 +59,7 @@ pub async fn scan_once(
                 continue;
             }
             events.push(NotificationEvent {
+                check_id: check.id,
                 check_name: check.name.clone(),
                 event: EventKind::Down,
                 at: now,
@@ -69,73 +70,55 @@ pub async fn scan_once(
     Ok(events)
 }
 
-/// Logs the true outcome of a dispatch round for one event: only claims
-/// "notified" when at least one channel actually succeeded, warns (naming
-/// the check/event and failure count) when any channel failed, and stays
-/// quiet (debug-level) when there were no channels to deliver to at all.
-fn log_dispatch_outcome(ev: &NotificationEvent, results: &[Result<(), NotifyError>]) {
-    if results.is_empty() {
-        tracing::debug!(
-            check = %ev.check_name,
-            event = ev.event.as_str(),
-            "no notification channels configured; skipping delivery"
-        );
-        return;
-    }
-
-    let failures: Vec<&NotifyError> = results.iter().filter_map(|r| r.as_ref().err()).collect();
-    let ok_count = results.len() - failures.len();
-
-    if !failures.is_empty() {
-        tracing::warn!(
-            check = %ev.check_name,
-            event = ev.event.as_str(),
-            ok = ok_count,
-            failed = failures.len(),
-            first_error = %failures[0],
-            "some notification deliveries failed"
-        );
-    }
-
-    if ok_count > 0 {
-        tracing::info!("notified: {} -> {}", ev.check_name, ev.event.as_str());
-    }
+/// Compute the loop's sleep interval: the smallest effective scan interval
+/// across all active checks (spec §8 cascade), or `env_default` when there are
+/// no active checks. Bounded to `>= 1s`.
+fn loop_interval_secs(
+    checks: &[Check],
+    project_intervals: &std::collections::HashMap<i64, Option<i64>>,
+    global_secs: Option<i64>,
+    env_default: u64,
+) -> u64 {
+    checks
+        .iter()
+        .map(|c| {
+            let project = project_intervals.get(&c.project_id).copied().flatten();
+            effective_scan_interval(c.scan_interval_secs, project, global_secs, env_default)
+        })
+        .min()
+        .unwrap_or(env_default.max(1))
 }
 
-/// Runs the scan loop forever: on every tick, scans for overdue checks and
-/// dispatches any resulting events to `notifiers`. `Utc::now()` is called
-/// here (and only here) so `scan_once` itself stays deterministic and
-/// testable with an injected `now`.
-///
-/// Delivery is decoupled from the tick: each event's dispatch is spawned as
-/// its own task so a slow or hung notifier (see the webhook client timeout in
-/// `notify.rs`) cannot stall the scan loop itself. `notifiers` is an
-/// `Arc<Vec<Box<dyn Notifier>>>`; `Box<dyn Notifier>` is `Send + Sync`, so
-/// cloning the `Arc` into the spawned task is cheap and sound.
-///
-/// Plan 1 bound: `notifiers` is a single, global set loaded once at startup
-/// (see `PINGWARD_WEBHOOK_URL` in `main.rs`); per-check channel binding
-/// arrives in Plan 2.
-pub async fn run_scan_loop(
-    store: Store,
-    interval_secs: u64,
-    notifiers: Arc<Vec<Box<dyn Notifier>>>,
-) {
-    let mut tick = interval(TokioDuration::from_secs(interval_secs.max(1)));
+/// Runs the scan loop forever. On each iteration it re-reads active checks,
+/// resolves the cascade sleep interval, scans for overdue checks, and delivers
+/// each resulting `Down` event to that check's bound channels. `Utc::now()` is
+/// called only here so `scan_once` stays deterministic.
+pub async fn run_scan_loop(store: Store, env_default_secs: u64) {
     loop {
-        tick.tick().await;
-        match scan_once(&store, Utc::now()).await {
+        let now = Utc::now();
+        match scan_once(&store, now).await {
             Ok(events) => {
                 for ev in events {
-                    let notifiers = Arc::clone(&notifiers);
+                    let store = store.clone();
                     tokio::spawn(async move {
-                        let results = dispatch(notifiers.as_slice(), &ev).await;
-                        log_dispatch_outcome(&ev, &results);
+                        deliver_event(&store, &ev, RetryPolicy::default(), Utc::now()).await;
                     });
                 }
             }
             Err(e) => tracing::error!("scan_once failed: {e}"),
         }
+
+        // Resolve the next sleep from the cascade; failures fall back to the env default.
+        let active = store.list_active_checks().await.unwrap_or_default();
+        let projects = store.all_project_scan_intervals().await.unwrap_or_default();
+        let global = store
+            .get_setting("scan_interval")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<i64>().ok());
+        let secs = loop_interval_secs(&active, &projects, global, env_default_secs);
+        sleep(TokioDuration::from_secs(secs)).await;
     }
 }
 

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>{{ project.name }}</h1>
+<p>
+  <a href="/projects/{{ project.id }}/edit">Edit</a>
+  <a href="/projects/{{ project.id }}/checks/new">New check</a>
+  <a href="/projects/{{ project.id }}/channels/new">New channel</a>
+  <form class="inline" method="post" action="/projects/{{ project.id }}/delete"
+        onsubmit="return confirm('Delete project?')"><button>Delete project</button></form>
+</p>
+<h2>Checks</h2>
+<table><tr><th>Name</th><th>Status</th><th>Schedule</th><th></th></tr>
+{% for c in checks %}
+<tr>
+  <td><a href="/checks/{{ c.id }}">{{ c.name }}</a></td>
+  <td class="status-{{ c.status.as_str() }}">{{ c.status.as_str() }}</td>
+  <td>{{ c.schedule_kind.as_str() }}</td>
+  <td><a href="/checks/{{ c.id }}/edit">edit</a></td>
+</tr>
+{% endfor %}
+</table>
+<h2>Channels</h2>
+<table><tr><th>Name</th><th>Kind</th><th></th></tr>
+{% for ch in channels %}
+<tr><td>{{ ch.name }}</td><td>{{ ch.kind.as_str() }}</td>
+  <td><form class="inline" method="post" action="/channels/{{ ch.id }}/delete"><button>delete</button></form></td></tr>
+{% endfor %}
+</table>
+{% endblock %}

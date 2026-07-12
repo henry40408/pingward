@@ -38,6 +38,27 @@ impl Config {
     }
 }
 
+/// Resolve the effective scan interval for a check using the spec §8 cascade:
+/// check → project → global (DB settings) → env default. A `Some(v)` override
+/// with `v <= 0` is treated as unset and falls through. The result is clamped
+/// to at least 1 second so the scan loop's timer is always valid.
+pub fn effective_scan_interval(
+    check_secs: Option<i64>,
+    project_secs: Option<i64>,
+    global_secs: Option<i64>,
+    env_default: u64,
+) -> u64 {
+    for v in [check_secs, project_secs, global_secs]
+        .into_iter()
+        .flatten()
+    {
+        if v > 0 {
+            return v as u64;
+        }
+    }
+    env_default.max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +80,21 @@ mod tests {
         });
         assert_eq!(c.scan_interval_secs, 10);
         assert_eq!(c.trusted_proxies, vec!["10.0.0.1", "10.0.0.2"]);
+    }
+
+    #[test]
+    fn cascade_prefers_most_specific() {
+        // check wins
+        assert_eq!(effective_scan_interval(Some(5), Some(10), Some(20), 30), 5);
+        // project when no check
+        assert_eq!(effective_scan_interval(None, Some(10), Some(20), 30), 10);
+        // global when no check/project
+        assert_eq!(effective_scan_interval(None, None, Some(20), 30), 20);
+        // env default when nothing set
+        assert_eq!(effective_scan_interval(None, None, None, 30), 30);
+        // non-positive overrides are ignored
+        assert_eq!(effective_scan_interval(Some(0), Some(-1), None, 30), 30);
+        // result is clamped to >= 1 even if env default is 0
+        assert_eq!(effective_scan_interval(None, None, None, 0), 1);
     }
 }

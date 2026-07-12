@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Dashboard</h1>
+<p><a href="/projects/new">New project</a></p>
+{% for r in projects %}
+<h2><a href="/projects/{{ r.project.id }}">{{ r.project.name }}</a></h2>
+<table><tr><th>Check</th><th>Status</th></tr>
+{% for c in r.checks %}
+<tr><td><a href="/checks/{{ c.id }}">{{ c.name }}</a></td>
+  <td class="status-{{ c.status.as_str() }}">{{ c.status.as_str() }}</td></tr>
+{% endfor %}
+</table>
+{% endfor %}
+{% endblock %}

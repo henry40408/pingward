@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>{{ heading }}</h1>
+<form method="post" action="{{ action }}">
+  <label>Name <input name="name" value="{{ name }}" required></label>
+  <label>Scan interval (secs, blank = inherit)
+    <input name="scan_interval_secs" value="{{ scan_interval_secs }}"></label>
+  <button type="submit">Save</button>
+</form>
+{% endblock %}
