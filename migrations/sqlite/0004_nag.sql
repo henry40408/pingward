@@ -19,3 +19,6 @@ INSERT INTO notifications_new (id, check_id, channel_id, event, status, error, c
   SELECT id, check_id, channel_id, event, status, error, created_at FROM notifications;
 DROP TABLE notifications;
 ALTER TABLE notifications_new RENAME TO notifications;
+-- The DROP above also dropped the index created in 0002_indexes.sql; recreate it
+-- so the rebuilt table keeps parity with Postgres (which only alters the CHECK).
+CREATE INDEX idx_notifications_check ON notifications(check_id, created_at);
