@@ -1,5 +1,6 @@
 use axum_test::TestServer;
 use pingward::{app, db, models::ScheduleKind, store::Store};
+use sqlx::Row;
 
 async fn test_server() -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -207,4 +208,45 @@ async fn get_verb_works_for_success() {
     server.get("/ping/abc").await.assert_status_ok();
     let c = store.find_check_by_uuid("abc").await.unwrap().unwrap();
     assert_eq!(c.status, pingward::models::CheckStatus::Up);
+}
+
+/// Spec §6: a paused check is excluded from monitoring, so a ping must not
+/// resurrect it into `up`/`down`. The ping is still recorded for history.
+#[tokio::test]
+async fn paused_check_is_not_resurrected_by_a_ping() {
+    let (server, store) = test_server().await;
+    let id = store
+        .create_check(
+            1,
+            "job",
+            "abc",
+            ScheduleKind::Period,
+            Some(60),
+            30,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    store
+        .set_status(id, pingward::models::CheckStatus::Paused)
+        .await
+        .unwrap();
+
+    server
+        .post("/ping/abc")
+        .text("done")
+        .await
+        .assert_status_ok();
+
+    let c = store.find_check_by_uuid("abc").await.unwrap().unwrap();
+    assert_eq!(c.status, pingward::models::CheckStatus::Paused);
+
+    let row = sqlx::query("SELECT COUNT(*) AS cnt FROM pings WHERE check_id = ?")
+        .bind(id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    let cnt: i64 = row.get("cnt");
+    assert_eq!(cnt, 1, "ping should still be recorded even while paused");
 }

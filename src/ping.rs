@@ -134,6 +134,13 @@ async fn apply(
         )
         .await?;
 
+    // Spec §6: a paused check is excluded from monitoring. Its ping is
+    // still recorded above, but it must not be resurrected into up/down by
+    // an incoming ping.
+    if check.status == CheckStatus::Paused {
+        return Ok(StatusCode::OK);
+    }
+
     match kind {
         PingKind::Success => {
             let mut updated = check.clone();

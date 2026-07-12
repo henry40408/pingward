@@ -1,5 +1,5 @@
 use crate::models::{Check, CheckStatus, ScheduleKind};
-use crate::notify::{dispatch, EventKind, NotificationEvent, Notifier};
+use crate::notify::{dispatch, EventKind, NotificationEvent, Notifier, NotifyError};
 use crate::store::Store;
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
@@ -69,10 +69,49 @@ pub async fn scan_once(
     Ok(events)
 }
 
+/// Logs the true outcome of a dispatch round for one event: only claims
+/// "notified" when at least one channel actually succeeded, warns (naming
+/// the check/event and failure count) when any channel failed, and stays
+/// quiet (debug-level) when there were no channels to deliver to at all.
+fn log_dispatch_outcome(ev: &NotificationEvent, results: &[Result<(), NotifyError>]) {
+    if results.is_empty() {
+        tracing::debug!(
+            check = %ev.check_name,
+            event = ev.event.as_str(),
+            "no notification channels configured; skipping delivery"
+        );
+        return;
+    }
+
+    let failures: Vec<&NotifyError> = results.iter().filter_map(|r| r.as_ref().err()).collect();
+    let ok_count = results.len() - failures.len();
+
+    if !failures.is_empty() {
+        tracing::warn!(
+            check = %ev.check_name,
+            event = ev.event.as_str(),
+            ok = ok_count,
+            failed = failures.len(),
+            first_error = %failures[0],
+            "some notification deliveries failed"
+        );
+    }
+
+    if ok_count > 0 {
+        tracing::info!("notified: {} -> {}", ev.check_name, ev.event.as_str());
+    }
+}
+
 /// Runs the scan loop forever: on every tick, scans for overdue checks and
 /// dispatches any resulting events to `notifiers`. `Utc::now()` is called
 /// here (and only here) so `scan_once` itself stays deterministic and
 /// testable with an injected `now`.
+///
+/// Delivery is decoupled from the tick: each event's dispatch is spawned as
+/// its own task so a slow or hung notifier (see the webhook client timeout in
+/// `notify.rs`) cannot stall the scan loop itself. `notifiers` is an
+/// `Arc<Vec<Box<dyn Notifier>>>`; `Box<dyn Notifier>` is `Send + Sync`, so
+/// cloning the `Arc` into the spawned task is cheap and sound.
 ///
 /// Plan 1 bound: `notifiers` is a single, global set loaded once at startup
 /// (see `PINGWARD_WEBHOOK_URL` in `main.rs`); per-check channel binding
@@ -87,9 +126,12 @@ pub async fn run_scan_loop(
         tick.tick().await;
         match scan_once(&store, Utc::now()).await {
             Ok(events) => {
-                for ev in &events {
-                    let _ = dispatch(&notifiers, ev).await;
-                    tracing::info!("notified: {} -> {}", ev.check_name, ev.event.as_str());
+                for ev in events {
+                    let notifiers = Arc::clone(&notifiers);
+                    tokio::spawn(async move {
+                        let results = dispatch(notifiers.as_slice(), &ev).await;
+                        log_dispatch_outcome(&ev, &results);
+                    });
                 }
             }
             Err(e) => tracing::error!("scan_once failed: {e}"),

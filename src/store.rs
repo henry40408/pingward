@@ -17,25 +17,43 @@ fn parse_ts(s: Option<String>) -> Option<DateTime<Utc>> {
     })
 }
 
-fn row_to_check(row: &sqlx::sqlite::SqliteRow) -> Check {
-    Check {
+fn decode_err(msg: impl Into<String>) -> sqlx::Error {
+    sqlx::Error::Decode(Box::<dyn std::error::Error + Send + Sync>::from(msg.into()))
+}
+
+/// Fallible row mapping: a corrupt/unparsable enum or timestamp must surface
+/// as an `Err` rather than panic, since a panic here (e.g. via
+/// `list_active_checks` in the scan loop) would unwind and permanently kill
+/// the spawned scan task.
+fn row_to_check(row: &sqlx::sqlite::SqliteRow) -> Result<Check, sqlx::Error> {
+    let schedule_kind_raw: String = row.get("schedule_kind");
+    let schedule_kind = ScheduleKind::from_str(&schedule_kind_raw)
+        .map_err(|e| decode_err(format!("invalid schedule_kind {schedule_kind_raw:?}: {e}")))?;
+
+    let status_raw: String = row.get("status");
+    let status = CheckStatus::from_str(&status_raw)
+        .map_err(|e| decode_err(format!("invalid status {status_raw:?}: {e}")))?;
+
+    let created_at = parse_ts(row.get("created_at"))
+        .ok_or_else(|| decode_err("created_at must be valid RFC3339"))?;
+
+    Ok(Check {
         id: row.get("id"),
         project_id: row.get("project_id"),
         name: row.get("name"),
         ping_uuid: row.get("ping_uuid"),
-        schedule_kind: ScheduleKind::from_str(row.get::<String, _>("schedule_kind").as_str())
-            .unwrap(),
+        schedule_kind,
         period_secs: row.get("period_secs"),
         grace_secs: row.get("grace_secs"),
         cron_expr: row.get("cron_expr"),
         timezone: row.get("timezone"),
-        status: CheckStatus::from_str(row.get::<String, _>("status").as_str()).unwrap(),
+        status,
         last_ping_at: parse_ts(row.get("last_ping_at")),
         last_start_at: parse_ts(row.get("last_start_at")),
         next_due_at: parse_ts(row.get("next_due_at")),
         scan_interval_secs: row.get("scan_interval_secs"),
-        created_at: parse_ts(row.get("created_at")).expect("created_at must be valid RFC3339"),
-    }
+        created_at,
+    })
 }
 
 impl Store {
@@ -48,14 +66,28 @@ impl Store {
             .bind(uuid)
             .fetch_optional(&self.pool)
             .await?;
-        Ok(row.as_ref().map(row_to_check))
+        row.as_ref().map(row_to_check).transpose()
     }
 
+    /// One corrupt/unparsable row must never abort the whole scan: rows that
+    /// fail to decode are logged and skipped rather than propagated as an
+    /// error or allowed to panic.
     pub async fn list_active_checks(&self) -> Result<Vec<Check>, sqlx::Error> {
         let rows = sqlx::query("SELECT * FROM checks WHERE status IN ('new','up')")
             .fetch_all(&self.pool)
             .await?;
-        Ok(rows.iter().map(row_to_check).collect())
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            match row_to_check(row) {
+                Ok(check) => out.push(check),
+                Err(e) => {
+                    let id: i64 = row.get("id");
+                    tracing::error!("skipping corrupt checks row id={id}: {e}");
+                    continue;
+                }
+            }
+        }
+        Ok(out)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -300,5 +332,24 @@ mod tests {
         assert_eq!(found.last_ping_at, Some(t1));
         assert_eq!(found.last_start_at, Some(s1));
         assert_eq!(found.next_due_at, None);
+    }
+
+    /// Proves the DB-level CHECK constraint on `checks.status` (source-level
+    /// prevention added in migration 0001): an out-of-domain status must be
+    /// rejected at insert time, not merely handled defensively when read back.
+    #[tokio::test]
+    async fn bad_status_is_rejected_by_check_constraint() {
+        let store = seeded().await;
+        let res = sqlx::query(
+            "INSERT INTO checks (project_id, name, ping_uuid, schedule_kind, status, created_at) \
+             VALUES (1, 'x', 'bad-status-uuid', 'period', 'bogus', ?)",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .execute(&store.pool)
+        .await;
+        assert!(
+            res.is_err(),
+            "expected CHECK constraint to reject bad status"
+        );
     }
 }

@@ -19,12 +19,12 @@ CREATE TABLE checks (
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   ping_uuid TEXT NOT NULL UNIQUE,
-  schedule_kind TEXT NOT NULL,           -- 'period' | 'cron'
+  schedule_kind TEXT NOT NULL CHECK (schedule_kind IN ('period','cron')),
   period_secs INTEGER,
   grace_secs INTEGER NOT NULL DEFAULT 300,
   cron_expr TEXT,
   timezone TEXT NOT NULL DEFAULT 'UTC',
-  status TEXT NOT NULL DEFAULT 'new',     -- 'new'|'up'|'down'|'paused'
+  status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','up','down','paused')),
   last_ping_at TEXT,
   last_start_at TEXT,
   next_due_at TEXT,
@@ -51,7 +51,7 @@ CREATE TABLE check_channels (
 CREATE TABLE pings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   check_id INTEGER NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL,                     -- 'success'|'fail'|'start'|'log'|'exitcode'
+  kind TEXT NOT NULL CHECK (kind IN ('success','fail','start','log','exitcode')),
   exit_code INTEGER,
   body TEXT NOT NULL DEFAULT '',
   source_ip TEXT,
@@ -63,8 +63,8 @@ CREATE TABLE notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   check_id INTEGER NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
   channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-  event TEXT NOT NULL,                    -- 'down'|'up'
-  status TEXT NOT NULL,                   -- 'ok'|'error'
+  event TEXT NOT NULL CHECK (event IN ('down','up')),
+  status TEXT NOT NULL CHECK (status IN ('ok','error')),
   error TEXT,
   created_at TEXT NOT NULL
 );

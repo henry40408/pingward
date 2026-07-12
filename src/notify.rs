@@ -45,7 +45,10 @@ impl WebhookNotifier {
     pub fn new(url: String) -> Self {
         Self {
             url,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 }
@@ -115,5 +118,38 @@ mod tests {
         };
         n.send(&ev).await.unwrap();
         // wiremock verifies expect(1) on drop
+    }
+
+    /// A hung endpoint must not block delivery forever: the client's 10s
+    /// timeout should fire and `send` should return `Err` well before the
+    /// mock's 30s delay elapses. This test adds ~10s of real wall-clock time
+    /// (reqwest's timer is real; tokio's paused clock does not apply to it).
+    #[tokio::test]
+    async fn webhook_send_times_out_on_hung_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/hook"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(30)))
+            .mount(&server)
+            .await;
+
+        let n = WebhookNotifier::new(format!("{}/hook", server.uri()));
+        let ev = NotificationEvent {
+            check_name: "backup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+
+        let start = std::time::Instant::now();
+        let result = n.send(&ev).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "expected timeout to produce an error");
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "send took {:?}, expected the 10s client timeout to fire well before the 30s mock delay",
+            elapsed
+        );
     }
 }
