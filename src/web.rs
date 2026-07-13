@@ -792,6 +792,8 @@ struct ChannelForm {
     pushover_token: String, // application token
     #[serde(default)]
     pushover_user: String, // user/group key
+    #[serde(default)]
+    email_to: String,
 }
 
 #[derive(Deserialize)]
@@ -891,6 +893,13 @@ async fn channel_create(
                 return err("Pushover requires both an application token and a user key");
             }
             serde_json::json!({ "token": token, "user": user }).to_string()
+        }
+        ChannelKind::Email => {
+            let to = form.email_to.trim();
+            if to.is_empty() {
+                return err("an email recipient address is required");
+            }
+            serde_json::json!({ "to": to }).to_string()
         }
     };
 
