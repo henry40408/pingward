@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block body %}
+{% if let Some(tr) = test_result %}
+<p class="{% if tr.ok %}status-up{% else %}status-down{% endif %}">{{ tr.message }}</p>
+{% endif %}
 <h1>{{ project.name }}</h1>
 <p>
   <a href="/projects/{{ project.id }}/edit">Edit</a>
@@ -23,7 +26,10 @@
 <table><tr><th>Name</th><th>Kind</th><th></th></tr>
 {% for ch in channels %}
 <tr><td>{{ ch.name }}</td><td>{{ ch.kind.as_str() }}</td>
-  <td><form class="inline" method="post" action="/channels/{{ ch.id }}/delete"><button>delete</button></form></td></tr>
+  <td>
+    <form class="inline" method="post" action="/channels/{{ ch.id }}/test"><button>Send test</button></form>
+    <form class="inline" method="post" action="/channels/{{ ch.id }}/delete"><button>delete</button></form>
+  </td></tr>
 {% endfor %}
 </table>
 {% endblock %}

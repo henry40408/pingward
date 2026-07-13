@@ -682,3 +682,65 @@ async fn admin_cannot_delete_self() {
     // Self-delete is a no-op guard: the admin must still exist.
     assert!(store.find_user_by_id(uid).await.unwrap().is_some());
 }
+
+#[tokio::test]
+async fn send_test_notification_reports_success() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&mock)
+        .await;
+
+    let (server, store, pid) = server_with_project().await;
+    let chid = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "hook",
+            &format!("{{\"url\":\"{}\"}}", mock.uri()),
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let res = server.post(&format!("/channels/{chid}/test")).await;
+    res.assert_status_ok();
+    assert!(
+        res.text().contains("Test notification sent"),
+        "got: {}",
+        res.text()
+    );
+}
+
+#[tokio::test]
+async fn send_test_notification_reports_failure() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock)
+        .await;
+
+    let (server, store, pid) = server_with_project().await;
+    let chid = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "hook",
+            &format!("{{\"url\":\"{}\"}}", mock.uri()),
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let res = server.post(&format!("/channels/{chid}/test")).await;
+    res.assert_status_ok();
+    assert!(
+        res.text().contains("Test notification failed"),
+        "got: {}",
+        res.text()
+    );
+}
