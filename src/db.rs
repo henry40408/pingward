@@ -47,20 +47,45 @@ pub async fn connect(url: &str) -> Result<Pool, sqlx::Error> {
         url
     };
 
+    // WAL and `synchronous=NORMAL` only make sense for an on-disk database.
+    // An in-memory database is a single shared connection with no concurrent
+    // writers, and it reports its journal mode as `memory` regardless.
+    let sqlite_file = sqlite && !is_in_memory_url(url);
+
     let opts = AnyConnectOptions::from_str(url)?;
 
     AnyPoolOptions::new()
         .max_connections(max_connections)
         .after_connect(move |conn, _meta| {
             Box::pin(async move {
-                // `foreign_keys` is a per-connection SQLite pragma. Under the
-                // `Any` driver we cannot set `SqliteConnectOptions.foreign_keys`,
-                // so enable it on every new SQLite connection here (otherwise
-                // `ON DELETE CASCADE` is silently unenforced). Postgres enforces
-                // foreign keys natively and needs no pragma.
+                // These are per-connection SQLite pragmas. Under the `Any`
+                // driver we cannot set them via `SqliteConnectOptions`, so
+                // apply them on every new SQLite connection here. Postgres
+                // enforces foreign keys natively and needs none of this.
                 if sqlite {
+                    // `foreign_keys` — otherwise `ON DELETE CASCADE` is silently
+                    // unenforced.
                     sqlx::query("PRAGMA foreign_keys = ON")
-                        .execute(conn)
+                        .execute(&mut *conn)
+                        .await?;
+                    // `busy_timeout` — a writer blocked by another writer waits
+                    // and retries for up to 5s instead of failing immediately
+                    // with `SQLITE_BUSY` ("database is locked"). Set explicitly
+                    // rather than relying on the driver's implicit default.
+                    sqlx::query("PRAGMA busy_timeout = 5000")
+                        .execute(&mut *conn)
+                        .await?;
+                }
+                if sqlite_file {
+                    // `journal_mode = WAL` lets readers run concurrently with a
+                    // writer (e.g. a dashboard read while a ping is being
+                    // written); `synchronous = NORMAL` is the standard, safe
+                    // durability level under WAL.
+                    sqlx::query("PRAGMA journal_mode = WAL")
+                        .execute(&mut *conn)
+                        .await?;
+                    sqlx::query("PRAGMA synchronous = NORMAL")
+                        .execute(&mut *conn)
                         .await?;
                 }
                 Ok(())
@@ -139,6 +164,63 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(check_count, 0, "check should cascade-delete with project");
+    }
+
+    /// File-based SQLite connections must enable WAL + a busy timeout so a
+    /// writer blocked by another writer waits and retries instead of failing
+    /// immediately with `SQLITE_BUSY` ("database is locked").
+    #[tokio::test]
+    async fn sqlite_file_connection_sets_busy_timeout_and_wal() {
+        let path = std::env::temp_dir().join("pingward_dbtest_pragmas.sqlite3");
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+
+        let url = format!("sqlite://{}", path.display());
+        let pool = connect(&url).await.unwrap();
+
+        let busy: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(busy, 5000, "busy_timeout must be 5000ms on file SQLite");
+
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal", "file SQLite must use WAL");
+
+        drop(pool);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+
+    /// In-memory SQLite still gets a busy timeout but WAL does not apply (a
+    /// `:memory:` database reports its journal mode as `memory`).
+    #[tokio::test]
+    async fn sqlite_memory_sets_busy_timeout_but_not_wal() {
+        let pool = connect("sqlite::memory:").await.unwrap();
+
+        let busy: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            busy, 5000,
+            "busy_timeout must be 5000ms on in-memory SQLite"
+        );
+
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_ne!(
+            mode.to_lowercase(),
+            "wal",
+            "WAL must not be applied to in-memory SQLite"
+        );
     }
 
     /// Regression test for a SQLite file URL with no `?mode=` query param:
