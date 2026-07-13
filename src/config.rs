@@ -60,9 +60,6 @@ impl Config {
             nonblank("PINGWARD_SMTP_FROM"),
         ) {
             (Some(host), Some(from)) => {
-                let port = nonblank("PINGWARD_SMTP_PORT")
-                    .and_then(|v| v.parse::<u16>().ok())
-                    .unwrap_or(587);
                 let tls = match nonblank("PINGWARD_SMTP_TLS")
                     .unwrap_or_default()
                     .to_ascii_lowercase()
@@ -72,6 +69,15 @@ impl Config {
                     "none" => SmtpTls::None,
                     _ => SmtpTls::Starttls,
                 };
+                // Default port depends on TLS mode: implicit TLS conventionally
+                // uses 465, while STARTTLS/plaintext use the submission port 587.
+                let default_port = match tls {
+                    SmtpTls::Tls => 465,
+                    SmtpTls::Starttls | SmtpTls::None => 587,
+                };
+                let port = nonblank("PINGWARD_SMTP_PORT")
+                    .and_then(|v| v.parse::<u16>().ok())
+                    .unwrap_or(default_port);
                 Some(SmtpConfig {
                     host,
                     port,
@@ -258,5 +264,37 @@ mod tests {
         assert_eq!(mk("starttls"), SmtpTls::Starttls);
         assert_eq!(mk("none"), SmtpTls::None);
         assert_eq!(mk("tls"), SmtpTls::Tls);
+    }
+
+    #[test]
+    fn smtp_tls_implicit_defaults_port_465() {
+        let c = Config::from_map(|k| match k {
+            "PINGWARD_SMTP_HOST" => Some("mail.x".into()),
+            "PINGWARD_SMTP_FROM" => Some("a@x".into()),
+            "PINGWARD_SMTP_TLS" => Some("tls".into()),
+            _ => None,
+        });
+        let s = c.smtp.unwrap();
+        assert_eq!(s.tls, SmtpTls::Tls);
+        assert_eq!(
+            s.port, 465,
+            "implicit TLS with no explicit port defaults to 465"
+        );
+
+        // Starttls (explicit or unset) still defaults to 587.
+        let c = Config::from_map(|k| match k {
+            "PINGWARD_SMTP_HOST" => Some("mail.x".into()),
+            "PINGWARD_SMTP_FROM" => Some("a@x".into()),
+            "PINGWARD_SMTP_TLS" => Some("starttls".into()),
+            _ => None,
+        });
+        assert_eq!(c.smtp.unwrap().port, 587);
+
+        let c = Config::from_map(|k| match k {
+            "PINGWARD_SMTP_HOST" => Some("mail.x".into()),
+            "PINGWARD_SMTP_FROM" => Some("a@x".into()),
+            _ => None,
+        });
+        assert_eq!(c.smtp.unwrap().port, 587, "no TLS set still defaults 587");
     }
 }
