@@ -47,6 +47,26 @@ pub struct NotificationEvent {
 #[error("notify failed: {0}")]
 pub struct NotifyError(pub String);
 
+/// Convert a reqwest transport error into a `NotifyError` without leaking the
+/// request URL. reqwest's `Display` embeds the URL, which for Telegram carries
+/// the bot token in its path; surfacing that in the failure banner (or the
+/// stored notification error) would leak the secret. Report the error's
+/// classification instead — the raw `Display` adds only the URL here anyway.
+fn transport_err(e: &reqwest::Error) -> NotifyError {
+    let kind = if e.is_timeout() {
+        "request timed out"
+    } else if e.is_connect() {
+        "connection failed"
+    } else if e.is_redirect() {
+        "too many redirects"
+    } else if e.is_body() || e.is_decode() {
+        "invalid response"
+    } else {
+        "request failed"
+    };
+    NotifyError(kind.into())
+}
+
 pub trait Notifier: Send + Sync {
     fn send<'a>(
         &'a self,
@@ -125,7 +145,7 @@ impl Notifier for WebhookNotifier {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| NotifyError(e.to_string()))?;
+                .map_err(|e| transport_err(&e))?;
             if resp.status().is_success() {
                 Ok(())
             } else {
@@ -177,7 +197,7 @@ impl Notifier for TelegramNotifier {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| NotifyError(e.to_string()))?;
+                .map_err(|e| transport_err(&e))?;
             if resp.status().is_success() {
                 Ok(())
             } else {
@@ -215,7 +235,7 @@ impl Notifier for SlackNotifier {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| NotifyError(e.to_string()))?;
+                .map_err(|e| transport_err(&e))?;
             if resp.status().is_success() {
                 Ok(())
             } else {
@@ -269,7 +289,7 @@ impl Notifier for NtfyNotifier {
             if let Some(t) = &self.token {
                 req = req.bearer_auth(t);
             }
-            let resp = req.send().await.map_err(|e| NotifyError(e.to_string()))?;
+            let resp = req.send().await.map_err(|e| transport_err(&e))?;
             if resp.status().is_success() {
                 Ok(())
             } else {
@@ -332,7 +352,7 @@ impl Notifier for PushoverNotifier {
                 ])
                 .send()
                 .await
-                .map_err(|e| NotifyError(e.to_string()))?;
+                .map_err(|e| transport_err(&e))?;
             if resp.status().is_success() {
                 Ok(())
             } else {
@@ -687,6 +707,31 @@ mod tests {
             project_id: 1,
         };
         assert!(n.send(&ev).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn telegram_send_error_does_not_leak_bot_token() {
+        // A connection-level failure must not surface the request URL (which for
+        // Telegram carries the bot token in its path) in the NotifyError shown
+        // to the user. Point at a closed local port to force a connect error.
+        let token = "123456:SECRETTOKENVALUE";
+        let n = TelegramNotifier::with_base_url(
+            token.into(),
+            "1".into(),
+            "http://127.0.0.1:1".to_string(),
+        );
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        let err = n.send(&ev).await.unwrap_err();
+        assert!(
+            !err.to_string().contains("SECRETTOKENVALUE"),
+            "bot token leaked into NotifyError: {err}"
+        );
     }
 
     #[test]
