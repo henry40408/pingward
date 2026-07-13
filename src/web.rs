@@ -3,9 +3,7 @@ use crate::auth::{
     SESSION_COOKIE, SESSION_TTL_DAYS,
 };
 use crate::error::AppError;
-use crate::models::{
-    Channel, ChannelKind, Check, CheckStatus, Notification, Project, ScheduleKind, User,
-};
+use crate::models::{Channel, ChannelKind, Check, CheckStatus, Project, ScheduleKind, User};
 use crate::notify::{notifier_for, EventKind, NotificationEvent};
 use crate::state::AppState;
 use crate::store::Store;
@@ -402,6 +400,14 @@ struct ChannelBox {
     bound: bool,
 }
 
+struct NotificationRow {
+    created_at: String,
+    event: &'static str,
+    status: &'static str,
+    channel: String,
+    error: String,
+}
+
 #[derive(Template)]
 #[template(path = "check_form.html")]
 struct CheckFormTemplate {
@@ -428,7 +434,7 @@ struct CheckTemplate {
     ping_url: String,
     channel_boxes: Vec<ChannelBox>,
     pings: Vec<PingRow>,
-    notifications: Vec<Notification>,
+    notifications: Vec<NotificationRow>,
 }
 
 /// Load a check and enforce ownership through its project.
@@ -568,10 +574,15 @@ async fn check_show(
         check.ping_uuid
     );
     let bound = state.store.bound_channel_ids(id).await?;
-    let channel_boxes = state
+    let project_channels = state
         .store
         .list_channels_for_project(check.project_id)
-        .await?
+        .await?;
+    let channel_names: std::collections::HashMap<i64, String> = project_channels
+        .iter()
+        .map(|c| (c.id, c.name.clone()))
+        .collect();
+    let channel_boxes = project_channels
         .into_iter()
         .map(|c| ChannelBox {
             id: c.id,
@@ -591,7 +602,22 @@ async fn check_show(
             exit_code_display: p.exit_code.map(|c| c.to_string()).unwrap_or_default(),
         })
         .collect();
-    let notifications = state.store.list_recent_notifications(id, 20).await?;
+    let notifications = state
+        .store
+        .list_recent_notifications(id, 20)
+        .await?
+        .into_iter()
+        .map(|n| NotificationRow {
+            created_at: n.created_at.to_rfc3339(),
+            event: n.event.as_str(),
+            status: n.status.as_str(),
+            channel: channel_names
+                .get(&n.channel_id)
+                .cloned()
+                .unwrap_or_else(|| "(deleted)".into()),
+            error: n.error.unwrap_or_default(),
+        })
+        .collect();
     Ok(render(&CheckTemplate {
         show_nav: true,
         check,

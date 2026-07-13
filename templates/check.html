@@ -32,7 +32,7 @@
 </table>
 
 <h2>Recent notifications</h2>
-<table><tr><th>When</th><th>Event</th><th>Status</th></tr>
-{% for n in notifications %}<tr><td>{{ n.created_at }}</td><td>{{ n.event.as_str() }}</td><td>{{ n.status.as_str() }}</td></tr>{% endfor %}
+<table><tr><th>When</th><th>Event</th><th>Status</th><th>Channel</th><th>Error</th></tr>
+{% for n in notifications %}<tr><td>{{ n.created_at }}</td><td>{{ n.event }}</td><td>{{ n.status }}</td><td>{{ n.channel }}</td><td>{{ n.error }}</td></tr>{% endfor %}
 </table>
 {% endblock %}
