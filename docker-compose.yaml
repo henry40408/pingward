@@ -10,3 +10,11 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+  # Local SMTP relay + mail viewer for the Email (SMTP) notification channel.
+  # SMTP on 1025 (plaintext, no auth) — pair with PINGWARD_SMTP_TLS=none;
+  # web UI + REST API on 8025 (http://localhost:8025, /api/v1/messages).
+  mailpit:
+    image: axllent/mailpit:v1.30.3
+    ports:
+      - "1025:1025"
+      - "8025:8025"

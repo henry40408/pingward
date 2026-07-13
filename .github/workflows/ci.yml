@@ -28,6 +28,11 @@ jobs:
           --health-interval 2s
           --health-timeout 3s
           --health-retries 15
+      mailpit:
+        image: axllent/mailpit:v1.30.3
+        ports:
+          - 1025:1025
+          - 8025:8025
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -50,7 +55,19 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Wait for mailpit
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8025/readyz && exit 0
+            sleep 1
+          done
+          echo "mailpit did not become ready" >&2
+          exit 1
+
       - name: Test
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+          PINGWARD_TEST_SMTP_HOST: localhost
+          PINGWARD_TEST_SMTP_PORT: "1025"
+          PINGWARD_TEST_MAILPIT_API: http://localhost:8025
         run: cargo nextest run
