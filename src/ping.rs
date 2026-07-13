@@ -1,3 +1,4 @@
+use crate::config::{Config, SmtpConfig};
 use crate::error::AppError;
 use crate::models::{CheckStatus, PingKind};
 use crate::notify::{deliver_event, EventKind, NotificationEvent, RetryPolicy};
@@ -14,6 +15,7 @@ use axum::{
 use chrono::Utc;
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 const MAX_BODY: usize = 10 * 1024;
 
@@ -70,38 +72,79 @@ async fn resolve(store: &Store, uuid: &str) -> Result<crate::models::Check, AppE
 
 async fn success(
     State(store): State<Store>,
+    State(config): State<Arc<Config>>,
     Path(uuid): Path<String>,
     conn: ClientIp,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    apply(&store, &uuid, PingKind::Success, None, &body, conn).await
+    apply(
+        &store,
+        &uuid,
+        PingKind::Success,
+        None,
+        &body,
+        conn,
+        config.smtp.clone(),
+    )
+    .await
 }
 async fn fail(
     State(store): State<Store>,
+    State(config): State<Arc<Config>>,
     Path(uuid): Path<String>,
     conn: ClientIp,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    apply(&store, &uuid, PingKind::Fail, None, &body, conn).await
+    apply(
+        &store,
+        &uuid,
+        PingKind::Fail,
+        None,
+        &body,
+        conn,
+        config.smtp.clone(),
+    )
+    .await
 }
 async fn start(
     State(store): State<Store>,
+    State(config): State<Arc<Config>>,
     Path(uuid): Path<String>,
     conn: ClientIp,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    apply(&store, &uuid, PingKind::Start, None, &body, conn).await
+    apply(
+        &store,
+        &uuid,
+        PingKind::Start,
+        None,
+        &body,
+        conn,
+        config.smtp.clone(),
+    )
+    .await
 }
 async fn log(
     State(store): State<Store>,
+    State(config): State<Arc<Config>>,
     Path(uuid): Path<String>,
     conn: ClientIp,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    apply(&store, &uuid, PingKind::Log, None, &body, conn).await
+    apply(
+        &store,
+        &uuid,
+        PingKind::Log,
+        None,
+        &body,
+        conn,
+        config.smtp.clone(),
+    )
+    .await
 }
 async fn exitcode(
     State(store): State<Store>,
+    State(config): State<Arc<Config>>,
     Path((uuid, code)): Path<(String, i64)>,
     conn: ClientIp,
     body: Bytes,
@@ -111,7 +154,16 @@ async fn exitcode(
     } else {
         PingKind::Fail
     };
-    apply(&store, &uuid, kind, Some(code), &body, conn).await
+    apply(
+        &store,
+        &uuid,
+        kind,
+        Some(code),
+        &body,
+        conn,
+        config.smtp.clone(),
+    )
+    .await
 }
 
 async fn apply(
@@ -121,6 +173,7 @@ async fn apply(
     exit_code: Option<i64>,
     body: &Bytes,
     conn: ClientIp,
+    smtp: Option<SmtpConfig>,
 ) -> Result<StatusCode, AppError> {
     let check = resolve(store, uuid).await?;
     let now = Utc::now();
@@ -161,6 +214,7 @@ async fn apply(
                     check.project_id,
                     EventKind::Up,
                     now,
+                    smtp.clone(),
                 );
             }
         }
@@ -177,6 +231,7 @@ async fn apply(
                     check.project_id,
                     EventKind::Down,
                     now,
+                    smtp.clone(),
                 );
             }
         }
@@ -200,6 +255,7 @@ fn spawn_delivery(
     project_id: i64,
     event: EventKind,
     now: chrono::DateTime<chrono::Utc>,
+    smtp: Option<SmtpConfig>,
 ) {
     tokio::spawn(async move {
         let ev = NotificationEvent {
@@ -209,6 +265,6 @@ fn spawn_delivery(
             at: now,
             project_id,
         };
-        deliver_event(&store, &ev, RetryPolicy::default(), now).await;
+        deliver_event(&store, &ev, RetryPolicy::default(), now, smtp.as_ref()).await;
     });
 }

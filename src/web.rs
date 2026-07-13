@@ -937,7 +937,7 @@ async fn channel_test(
         at: Utc::now(),
         project_id: channel.project_id,
     };
-    let result = match notifier_for(&channel) {
+    let result = match notifier_for(&channel, state.config.smtp.as_ref()) {
         None => TestResult {
             ok: false,
             message: "channel configuration is incomplete".into(),

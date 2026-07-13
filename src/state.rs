@@ -23,3 +23,9 @@ impl FromRef<AppState> for Store {
         state.store.clone()
     }
 }
+
+impl FromRef<AppState> for Arc<Config> {
+    fn from_ref(state: &AppState) -> Arc<Config> {
+        state.config.clone()
+    }
+}

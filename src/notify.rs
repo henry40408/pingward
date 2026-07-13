@@ -362,6 +362,7 @@ impl Notifier for PushoverNotifier {
     }
 }
 
+use crate::config::SmtpConfig;
 use crate::models::{Channel, ChannelKind, NotifyStatus};
 use crate::store::Store;
 
@@ -392,7 +393,7 @@ fn cfg_str(v: &serde_json::Value, key: &str) -> Option<String> {
 /// Build a notifier for a channel from its `(kind, config_json)`. Returns
 /// `None` (with a warning) when a required config field is missing or blank —
 /// `deliver_event` skips such channels rather than failing the event.
-pub fn notifier_for(channel: &Channel) -> Option<Box<dyn Notifier>> {
+pub fn notifier_for(channel: &Channel, _smtp: Option<&SmtpConfig>) -> Option<Box<dyn Notifier>> {
     let cfg: serde_json::Value = serde_json::from_str(&channel.config_json)
         .map_err(|e| {
             tracing::warn!(channel_id = channel.id, "invalid config_json: {e}");
@@ -466,6 +467,7 @@ pub async fn deliver_event(
     ev: &NotificationEvent,
     policy: RetryPolicy,
     now: DateTime<Utc>,
+    smtp: Option<&SmtpConfig>,
 ) {
     let channels = match store.channels_for_check(ev.check_id).await {
         Ok(c) => c,
@@ -483,7 +485,7 @@ pub async fn deliver_event(
         return;
     }
     for channel in &channels {
-        let Some(notifier) = notifier_for(channel) else {
+        let Some(notifier) = notifier_for(channel, smtp) else {
             continue;
         };
         let (status, error) = match send_with_retry(notifier.as_ref(), ev, policy).await {
@@ -827,37 +829,54 @@ mod tests {
 
     #[test]
     fn notifier_for_builds_each_kind_with_valid_config() {
-        assert!(notifier_for(&channel_with(
-            ChannelKind::Webhook,
-            "{\"url\":\"http://x\"}"
-        ))
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Webhook, "{\"url\":\"http://x\"}"),
+            None
+        )
         .is_some());
-        assert!(
-            notifier_for(&channel_with(ChannelKind::Slack, "{\"url\":\"http://x\"}")).is_some()
-        );
-        assert!(notifier_for(&channel_with(
-            ChannelKind::Telegram,
-            "{\"token\":\"t\",\"chat_id\":\"1\"}"
-        ))
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Slack, "{\"url\":\"http://x\"}"),
+            None
+        )
         .is_some());
-        assert!(notifier_for(&channel_with(
-            ChannelKind::Ntfy,
-            "{\"base_url\":\"https://ntfy.sh\",\"topic\":\"t\"}"
-        ))
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Telegram, "{\"token\":\"t\",\"chat_id\":\"1\"}"),
+            None
+        )
         .is_some());
-        assert!(notifier_for(&channel_with(
-            ChannelKind::Pushover,
-            "{\"token\":\"t\",\"user\":\"u\"}"
-        ))
+        assert!(notifier_for(
+            &channel_with(
+                ChannelKind::Ntfy,
+                "{\"base_url\":\"https://ntfy.sh\",\"topic\":\"t\"}"
+            ),
+            None
+        )
+        .is_some());
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Pushover, "{\"token\":\"t\",\"user\":\"u\"}"),
+            None
+        )
         .is_some());
     }
 
     #[test]
     fn notifier_for_returns_none_on_missing_config() {
-        assert!(notifier_for(&channel_with(ChannelKind::Slack, "{}")).is_none());
-        assert!(notifier_for(&channel_with(ChannelKind::Telegram, "{\"token\":\"t\"}")).is_none());
-        assert!(notifier_for(&channel_with(ChannelKind::Ntfy, "{\"base_url\":\"x\"}")).is_none());
-        assert!(notifier_for(&channel_with(ChannelKind::Pushover, "{\"token\":\"t\"}")).is_none());
+        assert!(notifier_for(&channel_with(ChannelKind::Slack, "{}"), None).is_none());
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Telegram, "{\"token\":\"t\"}"),
+            None
+        )
+        .is_none());
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Ntfy, "{\"base_url\":\"x\"}"),
+            None
+        )
+        .is_none());
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Pushover, "{\"token\":\"t\"}"),
+            None
+        )
+        .is_none());
     }
 
     use crate::db;
@@ -924,7 +943,7 @@ mod tests {
             at: Utc::now(),
             project_id: 1,
         };
-        deliver_event(&store, &ev, RetryPolicy::default(), Utc::now()).await;
+        deliver_event(&store, &ev, RetryPolicy::default(), Utc::now(), None).await;
 
         let recs = store.list_recent_notifications(chk, 10).await.unwrap();
         assert_eq!(recs.len(), 1);
@@ -951,7 +970,7 @@ mod tests {
             max_attempts: 2,
             base_backoff: std::time::Duration::from_millis(1),
         };
-        deliver_event(&store, &ev, policy, Utc::now()).await;
+        deliver_event(&store, &ev, policy, Utc::now(), None).await;
 
         let recs = store.list_recent_notifications(chk, 10).await.unwrap();
         assert_eq!(recs.len(), 1);
