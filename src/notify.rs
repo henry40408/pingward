@@ -7,6 +7,7 @@ pub enum EventKind {
     Down,
     Up,
     Reminder,
+    Test,
 }
 
 impl EventKind {
@@ -15,6 +16,7 @@ impl EventKind {
             EventKind::Down => "down",
             EventKind::Up => "up",
             EventKind::Reminder => "reminder",
+            EventKind::Test => "test",
         }
     }
 }
@@ -26,6 +28,7 @@ impl std::str::FromStr for EventKind {
             "down" => Ok(EventKind::Down),
             "up" => Ok(EventKind::Up),
             "reminder" => Ok(EventKind::Reminder),
+            "test" => Ok(EventKind::Test),
             other => Err(format!("invalid EventKind: {other}")),
         }
     }
@@ -64,16 +67,16 @@ fn http_client() -> reqwest::Client {
 /// One-line human summary of a state transition, reused by text-oriented
 /// channels (Telegram, Slack, and the ntfy body).
 fn event_text(ev: &NotificationEvent) -> String {
-    let (emoji, word) = match ev.event {
-        EventKind::Down => ("\u{1F534}", "DOWN"), // red circle
-        EventKind::Up => ("\u{1F7E2}", "UP"),     // green circle
-        EventKind::Reminder => ("\u{1F534}", "STILL DOWN"), // red circle
-    };
-    format!(
-        "{emoji} {name} is {word} (as of {at})",
-        name = ev.check_name,
-        at = ev.at.to_rfc3339()
-    )
+    let at = ev.at.to_rfc3339();
+    let name = &ev.check_name;
+    match ev.event {
+        EventKind::Test => {
+            format!("\u{1F514} pingward test notification for \"{name}\" (as of {at})")
+        }
+        EventKind::Down => format!("\u{1F534} {name} is DOWN (as of {at})"),
+        EventKind::Up => format!("\u{1F7E2} {name} is UP (as of {at})"),
+        EventKind::Reminder => format!("\u{1F534} {name} is STILL DOWN (as of {at})"),
+    }
 }
 
 /// Short title for channels with a separate title field (ntfy).
@@ -254,6 +257,7 @@ impl Notifier for NtfyNotifier {
                 EventKind::Down => ("high", "red_circle"),
                 EventKind::Up => ("default", "green_circle"),
                 EventKind::Reminder => ("high", "red_circle"),
+                EventKind::Test => ("default", "bell"),
             };
             let mut req = self
                 .client
@@ -312,6 +316,7 @@ impl Notifier for PushoverNotifier {
                 EventKind::Down => "1",
                 EventKind::Up => "0",
                 EventKind::Reminder => "1",
+                EventKind::Test => "0",
             };
             let title = event_title(ev);
             let message = event_text(ev);
@@ -926,5 +931,22 @@ mod tests {
         let text = event_text(&ev);
         assert!(text.contains("STILL DOWN"), "got: {text}");
         assert_eq!(event_title(&ev), "pingward: backup reminder");
+    }
+
+    #[test]
+    fn test_event_roundtrips_and_renders() {
+        assert_eq!(EventKind::Test.as_str(), "test");
+        assert_eq!(std::str::FromStr::from_str("test"), Ok(EventKind::Test));
+        let ev = NotificationEvent {
+            check_id: 0,
+            check_name: "my-slack".into(),
+            event: EventKind::Test,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        let text = event_text(&ev);
+        assert!(text.contains("test notification"), "got: {text}");
+        assert!(text.contains("my-slack"), "got: {text}");
+        assert_eq!(event_title(&ev), "pingward: my-slack test");
     }
 }
