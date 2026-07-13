@@ -768,6 +768,7 @@ struct ChannelFormTemplate {
     show_nav: bool,
     project_id: i64,
     error: Option<String>,
+    smtp_available: bool,
 }
 
 #[derive(Deserialize)]
@@ -812,6 +813,7 @@ async fn channel_new(
         show_nav: true,
         project_id: pid,
         error: None,
+        smtp_available: state.config.smtp.is_some(),
     })?
     .into_response())
 }
@@ -829,6 +831,7 @@ async fn channel_create(
             show_nav: true,
             project_id: pid,
             error: Some(msg.to_string()),
+            smtp_available: state.config.smtp.is_some(),
         })?
         .into_response())
     };

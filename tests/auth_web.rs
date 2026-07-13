@@ -110,6 +110,76 @@ async fn server_with_project() -> (TestServer, Store, i64) {
     (server, store, pid)
 }
 
+async fn server_with_project_and_smtp() -> (TestServer, Store, i64) {
+    use pingward::{app, config::Config, state::AppState, store::Store};
+    let pool = pingward::db::connect("sqlite::memory:").await.unwrap();
+    pingward::db::migrate(&pool, "sqlite::memory:")
+        .await
+        .unwrap();
+    let store = Store::new(pool);
+    let cfg = Config::from_map(|k| match k {
+        "PINGWARD_SMTP_HOST" => Some("mail.example.com".into()),
+        "PINGWARD_SMTP_FROM" => Some("alerts@example.com".into()),
+        _ => None,
+    });
+    let state = AppState::new(store.clone(), cfg);
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    let uid = store
+        .create_user("admin", Some(&phc), true, chrono::Utc::now())
+        .await
+        .unwrap();
+    server
+        .post("/login")
+        .form(&[("username", "admin"), ("password", "pw")])
+        .await;
+    let pid = store
+        .create_project(uid, "p", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    (server, store, pid)
+}
+
+#[tokio::test]
+async fn channel_form_hides_email_without_smtp() {
+    let (server, _store, pid) = server_with_project().await;
+    let res = server.get(&format!("/projects/{pid}/channels/new")).await;
+    res.assert_status_ok();
+    assert!(
+        !res.text().contains("value=\"email\""),
+        "email option must be hidden when SMTP is unconfigured"
+    );
+}
+
+#[tokio::test]
+async fn channel_form_shows_email_with_smtp() {
+    let (server, _store, pid) = server_with_project_and_smtp().await;
+    let res = server.get(&format!("/projects/{pid}/channels/new")).await;
+    res.assert_status_ok();
+    assert!(
+        res.text().contains("value=\"email\""),
+        "email option must appear when SMTP is configured"
+    );
+}
+
+#[tokio::test]
+async fn create_email_channel_stores_recipient() {
+    let (server, store, pid) = server_with_project_and_smtp().await;
+    let res = server
+        .post(&format!("/projects/{pid}/channels"))
+        .form(&[
+            ("name", "ops"),
+            ("kind", "email"),
+            ("email_to", "ops@example.com"),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let channels = store.list_channels_for_project(pid).await.unwrap();
+    assert_eq!(channels.len(), 1);
+    assert!(channels[0].config_json.contains("ops@example.com"));
+}
+
 #[tokio::test]
 async fn create_check_and_pause_resume() {
     let (server, store, pid) = server_with_project().await;
