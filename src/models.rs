@@ -22,7 +22,7 @@ macro_rules! str_enum {
 str_enum!(ScheduleKind { Period => "period", Cron => "cron" });
 str_enum!(CheckStatus { New => "new", Up => "up", Down => "down", Paused => "paused" });
 str_enum!(PingKind { Success => "success", Fail => "fail", Start => "start", Log => "log", Exitcode => "exitcode" });
-str_enum!(ChannelKind { Webhook => "webhook", Telegram => "telegram", Slack => "slack", Ntfy => "ntfy", Pushover => "pushover" });
+str_enum!(ChannelKind { Webhook => "webhook", Telegram => "telegram", Slack => "slack", Ntfy => "ntfy", Pushover => "pushover", Email => "email" });
 str_enum!(NotifyStatus { Ok => "ok", Error => "error" });
 
 #[derive(Debug, Clone)]
@@ -129,10 +129,12 @@ mod tests {
             ChannelKind::Slack,
             ChannelKind::Ntfy,
             ChannelKind::Pushover,
+            ChannelKind::Email,
         ] {
             assert_eq!(ChannelKind::from_str(k.as_str()).unwrap(), k);
         }
-        assert!(ChannelKind::from_str("email").is_err());
+        assert_eq!(ChannelKind::from_str("email").unwrap(), ChannelKind::Email);
+        assert!(ChannelKind::from_str("carrier-pigeon").is_err());
     }
 
     #[test]

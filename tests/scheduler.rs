@@ -212,7 +212,7 @@ async fn overdue_downs_and_delivers_to_bound_channel() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].check_id, id);
     for ev in &events {
-        deliver_event(&store, ev, RetryPolicy::default(), now).await;
+        deliver_event(&store, ev, RetryPolicy::default(), now, None).await;
     }
     assert_eq!(
         store.list_recent_notifications(id, 10).await.unwrap()[0].status,

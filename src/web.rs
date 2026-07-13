@@ -768,6 +768,7 @@ struct ChannelFormTemplate {
     show_nav: bool,
     project_id: i64,
     error: Option<String>,
+    smtp_available: bool,
 }
 
 #[derive(Deserialize)]
@@ -792,6 +793,8 @@ struct ChannelForm {
     pushover_token: String, // application token
     #[serde(default)]
     pushover_user: String, // user/group key
+    #[serde(default)]
+    email_to: String,
 }
 
 #[derive(Deserialize)]
@@ -810,6 +813,7 @@ async fn channel_new(
         show_nav: true,
         project_id: pid,
         error: None,
+        smtp_available: state.config.smtp.is_some(),
     })?
     .into_response())
 }
@@ -827,6 +831,7 @@ async fn channel_create(
             show_nav: true,
             project_id: pid,
             error: Some(msg.to_string()),
+            smtp_available: state.config.smtp.is_some(),
         })?
         .into_response())
     };
@@ -892,6 +897,13 @@ async fn channel_create(
             }
             serde_json::json!({ "token": token, "user": user }).to_string()
         }
+        ChannelKind::Email => {
+            let to = form.email_to.trim();
+            if to.is_empty() {
+                return err("an email recipient address is required");
+            }
+            serde_json::json!({ "to": to }).to_string()
+        }
     };
 
     state
@@ -937,7 +949,7 @@ async fn channel_test(
         at: Utc::now(),
         project_id: channel.project_id,
     };
-    let result = match notifier_for(&channel) {
+    let result = match notifier_for(&channel, state.config.smtp.as_ref()) {
         None => TestResult {
             ok: false,
             message: "channel configuration is incomplete".into(),

@@ -362,8 +362,14 @@ impl Notifier for PushoverNotifier {
     }
 }
 
+use crate::config::SmtpConfig;
+use crate::config::SmtpTls;
 use crate::models::{Channel, ChannelKind, NotifyStatus};
 use crate::store::Store;
+use lettre::message::Message;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::AsyncSmtpTransport;
+use lettre::{AsyncTransport, Tokio1Executor};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
@@ -389,10 +395,71 @@ fn cfg_str(v: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Build the plain-text email for an event. Pure and panic-free: a malformed
+/// address yields a `NotifyError` rather than panicking. Subject reuses
+/// `event_title` (control-char sanitized); body is the one-line `event_text`.
+fn build_email(from: &str, to: &str, ev: &NotificationEvent) -> Result<Message, NotifyError> {
+    Message::builder()
+        .from(
+            from.parse()
+                .map_err(|e| NotifyError(format!("invalid from address: {e}")))?,
+        )
+        .to(to
+            .parse()
+            .map_err(|e| NotifyError(format!("invalid recipient address: {e}")))?)
+        .subject(event_title(ev))
+        .body(event_text(ev))
+        .map_err(|e| NotifyError(format!("failed to build email: {e}")))
+}
+
+/// Email via the instance SMTP relay. `smtp` is `None` when the relay is not
+/// configured — `send` then reports a recorded delivery error rather than
+/// silently dropping the alert.
+pub struct EmailNotifier {
+    smtp: Option<SmtpConfig>,
+    to: String,
+}
+
+impl Notifier for EmailNotifier {
+    fn send<'a>(
+        &'a self,
+        ev: &'a NotificationEvent,
+    ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
+        Box::pin(async move {
+            let smtp = self
+                .smtp
+                .as_ref()
+                .ok_or_else(|| NotifyError("instance SMTP not configured".into()))?;
+            let msg = build_email(&smtp.from, &self.to, ev)?;
+            let builder = match smtp.tls {
+                SmtpTls::Tls => AsyncSmtpTransport::<Tokio1Executor>::relay(&smtp.host)
+                    .map_err(|e| NotifyError(format!("smtp setup failed: {e}")))?,
+                SmtpTls::Starttls => {
+                    AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp.host)
+                        .map_err(|e| NotifyError(format!("smtp setup failed: {e}")))?
+                }
+                SmtpTls::None => {
+                    AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp.host)
+                }
+            };
+            let mut builder = builder.port(smtp.port);
+            if let (Some(u), Some(p)) = (&smtp.username, &smtp.password) {
+                builder = builder.credentials(Credentials::new(u.clone(), p.clone()));
+            }
+            let transport = builder.build();
+            transport
+                .send(msg)
+                .await
+                .map_err(|e| NotifyError(format!("smtp send failed: {e}")))?;
+            Ok(())
+        })
+    }
+}
+
 /// Build a notifier for a channel from its `(kind, config_json)`. Returns
 /// `None` (with a warning) when a required config field is missing or blank —
 /// `deliver_event` skips such channels rather than failing the event.
-pub fn notifier_for(channel: &Channel) -> Option<Box<dyn Notifier>> {
+pub fn notifier_for(channel: &Channel, smtp: Option<&SmtpConfig>) -> Option<Box<dyn Notifier>> {
     let cfg: serde_json::Value = serde_json::from_str(&channel.config_json)
         .map_err(|e| {
             tracing::warn!(channel_id = channel.id, "invalid config_json: {e}");
@@ -432,6 +499,13 @@ pub fn notifier_for(channel: &Channel) -> Option<Box<dyn Notifier>> {
             (Some(token), Some(user)) => Some(Box::new(PushoverNotifier::new(token, user))),
             _ => missing("token/user"),
         },
+        ChannelKind::Email => match cfg_str(&cfg, "to") {
+            Some(to) => Some(Box::new(EmailNotifier {
+                smtp: smtp.cloned(),
+                to,
+            })),
+            None => missing("to"),
+        },
     }
 }
 
@@ -466,6 +540,7 @@ pub async fn deliver_event(
     ev: &NotificationEvent,
     policy: RetryPolicy,
     now: DateTime<Utc>,
+    smtp: Option<&SmtpConfig>,
 ) {
     let channels = match store.channels_for_check(ev.check_id).await {
         Ok(c) => c,
@@ -483,7 +558,7 @@ pub async fn deliver_event(
         return;
     }
     for channel in &channels {
-        let Some(notifier) = notifier_for(channel) else {
+        let Some(notifier) = notifier_for(channel, smtp) else {
             continue;
         };
         let (status, error) = match send_with_retry(notifier.as_ref(), ev, policy).await {
@@ -827,37 +902,54 @@ mod tests {
 
     #[test]
     fn notifier_for_builds_each_kind_with_valid_config() {
-        assert!(notifier_for(&channel_with(
-            ChannelKind::Webhook,
-            "{\"url\":\"http://x\"}"
-        ))
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Webhook, "{\"url\":\"http://x\"}"),
+            None
+        )
         .is_some());
-        assert!(
-            notifier_for(&channel_with(ChannelKind::Slack, "{\"url\":\"http://x\"}")).is_some()
-        );
-        assert!(notifier_for(&channel_with(
-            ChannelKind::Telegram,
-            "{\"token\":\"t\",\"chat_id\":\"1\"}"
-        ))
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Slack, "{\"url\":\"http://x\"}"),
+            None
+        )
         .is_some());
-        assert!(notifier_for(&channel_with(
-            ChannelKind::Ntfy,
-            "{\"base_url\":\"https://ntfy.sh\",\"topic\":\"t\"}"
-        ))
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Telegram, "{\"token\":\"t\",\"chat_id\":\"1\"}"),
+            None
+        )
         .is_some());
-        assert!(notifier_for(&channel_with(
-            ChannelKind::Pushover,
-            "{\"token\":\"t\",\"user\":\"u\"}"
-        ))
+        assert!(notifier_for(
+            &channel_with(
+                ChannelKind::Ntfy,
+                "{\"base_url\":\"https://ntfy.sh\",\"topic\":\"t\"}"
+            ),
+            None
+        )
+        .is_some());
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Pushover, "{\"token\":\"t\",\"user\":\"u\"}"),
+            None
+        )
         .is_some());
     }
 
     #[test]
     fn notifier_for_returns_none_on_missing_config() {
-        assert!(notifier_for(&channel_with(ChannelKind::Slack, "{}")).is_none());
-        assert!(notifier_for(&channel_with(ChannelKind::Telegram, "{\"token\":\"t\"}")).is_none());
-        assert!(notifier_for(&channel_with(ChannelKind::Ntfy, "{\"base_url\":\"x\"}")).is_none());
-        assert!(notifier_for(&channel_with(ChannelKind::Pushover, "{\"token\":\"t\"}")).is_none());
+        assert!(notifier_for(&channel_with(ChannelKind::Slack, "{}"), None).is_none());
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Telegram, "{\"token\":\"t\"}"),
+            None
+        )
+        .is_none());
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Ntfy, "{\"base_url\":\"x\"}"),
+            None
+        )
+        .is_none());
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Pushover, "{\"token\":\"t\"}"),
+            None
+        )
+        .is_none());
     }
 
     use crate::db;
@@ -924,7 +1016,7 @@ mod tests {
             at: Utc::now(),
             project_id: 1,
         };
-        deliver_event(&store, &ev, RetryPolicy::default(), Utc::now()).await;
+        deliver_event(&store, &ev, RetryPolicy::default(), Utc::now(), None).await;
 
         let recs = store.list_recent_notifications(chk, 10).await.unwrap();
         assert_eq!(recs.len(), 1);
@@ -951,12 +1043,73 @@ mod tests {
             max_attempts: 2,
             base_backoff: std::time::Duration::from_millis(1),
         };
-        deliver_event(&store, &ev, policy, Utc::now()).await;
+        deliver_event(&store, &ev, policy, Utc::now(), None).await;
 
         let recs = store.list_recent_notifications(chk, 10).await.unwrap();
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].status, crate::models::NotifyStatus::Error);
         assert!(recs[0].error.is_some());
+    }
+
+    #[test]
+    fn build_email_sets_headers_and_builds() {
+        let ev = NotificationEvent {
+            check_id: 0,
+            check_name: "backup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        let msg = build_email("alerts@example.com", "ops@example.com", &ev).unwrap();
+        let raw = String::from_utf8(msg.formatted()).unwrap();
+        assert!(raw.contains("From: alerts@example.com"), "got: {raw}");
+        assert!(raw.contains("To: ops@example.com"), "got: {raw}");
+        assert!(
+            raw.contains("Subject:") && raw.contains("pingward"),
+            "got: {raw}"
+        );
+    }
+
+    #[test]
+    fn build_email_rejects_bad_address() {
+        let ev = NotificationEvent {
+            check_id: 0,
+            check_name: "backup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        assert!(build_email("not-an-address", "ops@example.com", &ev).is_err());
+    }
+
+    #[tokio::test]
+    async fn email_notifier_errors_when_smtp_unconfigured() {
+        let n = EmailNotifier {
+            smtp: None,
+            to: "ops@example.com".into(),
+        };
+        let ev = NotificationEvent {
+            check_id: 0,
+            check_name: "backup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+        };
+        let err = n.send(&ev).await.unwrap_err();
+        assert!(
+            err.to_string().contains("instance SMTP not configured"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn notifier_for_email_needs_recipient() {
+        assert!(notifier_for(
+            &channel_with(ChannelKind::Email, "{\"to\":\"ops@example.com\"}"),
+            None
+        )
+        .is_some());
+        assert!(notifier_for(&channel_with(ChannelKind::Email, "{}"), None).is_none());
     }
 
     #[test]

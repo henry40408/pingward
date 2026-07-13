@@ -12,6 +12,7 @@ async fn main() {
     let bind = config.bind.clone();
     let scan_interval_secs = config.scan_interval_secs;
     let prune_interval_secs = config.prune_interval_secs;
+    let smtp = config.smtp.clone();
 
     let pool = db::connect(&config.database_url)
         .await
@@ -23,7 +24,11 @@ async fn main() {
 
     // Per-check channel binding replaces Plan 1's single global webhook: the scan
     // loop now resolves each check's bound channels via notify::deliver_event.
-    tokio::spawn(scheduler::run_scan_loop(store.clone(), scan_interval_secs));
+    tokio::spawn(scheduler::run_scan_loop(
+        store.clone(),
+        scan_interval_secs,
+        smtp,
+    ));
     tokio::spawn(pingward::prune::run_prune_loop(
         store.clone(),
         prune_interval_secs,

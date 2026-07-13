@@ -11,6 +11,7 @@
       <option value="telegram">telegram</option>
       <option value="ntfy">ntfy</option>
       <option value="pushover">pushover</option>
+      {% if smtp_available %}<option value="email">email</option>{% endif %}
     </select>
   </label>
 
@@ -33,6 +34,11 @@
     <label>Application token <input name="pushover_token"></label>
     <label>User/group key <input name="pushover_user"></label>
   </div>
+  {% if smtp_available %}
+  <div class="cfg" data-kind="email">
+    <label>Recipient email <input name="email_to" type="email"></label>
+  </div>
+  {% endif %}
 
   <button type="submit">Create</button>
 </form>

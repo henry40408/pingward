@@ -1,4 +1,4 @@
-use crate::config::{effective_nag_interval, effective_scan_interval};
+use crate::config::{effective_nag_interval, effective_scan_interval, SmtpConfig};
 use crate::models::{Check, CheckStatus, ScheduleKind};
 use crate::notify::{deliver_event, EventKind, NotificationEvent, RetryPolicy};
 use crate::store::Store;
@@ -161,15 +161,23 @@ fn loop_interval_secs(
 /// resolves the cascade sleep interval, scans for overdue checks, and delivers
 /// each resulting `Down` event to that check's bound channels. `Utc::now()` is
 /// called only here so `scan_once` stays deterministic.
-pub async fn run_scan_loop(store: Store, env_default_secs: u64) {
+pub async fn run_scan_loop(store: Store, env_default_secs: u64, smtp: Option<SmtpConfig>) {
     loop {
         let now = Utc::now();
         match scan_once(&store, now).await {
             Ok(events) => {
                 for ev in events {
                     let store = store.clone();
+                    let smtp = smtp.clone();
                     tokio::spawn(async move {
-                        deliver_event(&store, &ev, RetryPolicy::default(), Utc::now()).await;
+                        deliver_event(
+                            &store,
+                            &ev,
+                            RetryPolicy::default(),
+                            Utc::now(),
+                            smtp.as_ref(),
+                        )
+                        .await;
                     });
                 }
             }
@@ -180,8 +188,16 @@ pub async fn run_scan_loop(store: Store, env_default_secs: u64) {
             Ok(events) => {
                 for ev in events {
                     let store = store.clone();
+                    let smtp = smtp.clone();
                     tokio::spawn(async move {
-                        deliver_event(&store, &ev, RetryPolicy::default(), Utc::now()).await;
+                        deliver_event(
+                            &store,
+                            &ev,
+                            RetryPolicy::default(),
+                            Utc::now(),
+                            smtp.as_ref(),
+                        )
+                        .await;
                     });
                 }
             }
