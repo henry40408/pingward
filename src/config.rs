@@ -78,11 +78,22 @@ impl Config {
                 let port = nonblank("PINGWARD_SMTP_PORT")
                     .and_then(|v| v.parse::<u16>().ok())
                     .unwrap_or(default_port);
+                let username = nonblank("PINGWARD_SMTP_USERNAME");
+                let password = nonblank("PINGWARD_SMTP_PASSWORD");
+                // Cleartext-credentials footgun: sending AUTH over an
+                // unencrypted connection (TLS=none) exposes the username and
+                // password to anyone on the path. Intended only for a trusted
+                // local relay; warn once at startup otherwise.
+                if tls == SmtpTls::None && username.is_some() && password.is_some() {
+                    tracing::warn!(
+                        "SMTP AUTH credentials set with PINGWARD_SMTP_TLS=none: credentials will be sent unencrypted"
+                    );
+                }
                 Some(SmtpConfig {
                     host,
                     port,
-                    username: nonblank("PINGWARD_SMTP_USERNAME"),
-                    password: nonblank("PINGWARD_SMTP_PASSWORD"),
+                    username,
+                    password,
                     from,
                     tls,
                 })
