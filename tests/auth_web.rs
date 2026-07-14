@@ -348,6 +348,41 @@ async fn regenerate_uuid_changes_ping_url() {
 }
 
 #[tokio::test]
+async fn setup_page_uses_auth_card() {
+    let (server, _store) = server().await;
+    let res = server.get("/setup").await;
+    res.assert_status_ok();
+    assert!(res.text().contains("class=\"auth\""));
+}
+
+#[tokio::test]
+async fn login_page_uses_auth_card_and_error_is_restyled() {
+    let (server, store) = server().await;
+    let phc = pingward::auth::hash_password("secret1").unwrap();
+    store
+        .create_user("bob", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let res = server.get("/login").await;
+    res.assert_status_ok();
+    assert!(res.text().contains("class=\"auth\""));
+
+    // Wrong password → re-rendered login page, error still reachable.
+    let res = server
+        .post("/login")
+        .form(&[("username", "bob"), ("password", "nope")])
+        .await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(body.contains("invalid username or password"), "got: {body}");
+    assert!(
+        body.contains("class=\"flash err\""),
+        "missing restyled err banner: {body}"
+    );
+}
+
+#[tokio::test]
 async fn login_logout_cycle() {
     let (server, store) = server().await;
     let phc = pingward::auth::hash_password("secret1").unwrap();
@@ -777,10 +812,11 @@ async fn send_test_notification_reports_success() {
 
     let res = server.post(&format!("/channels/{chid}/test")).await;
     res.assert_status_ok();
+    let body = res.text();
+    assert!(body.contains("Test notification sent"), "got: {body}");
     assert!(
-        res.text().contains("Test notification sent"),
-        "got: {}",
-        res.text()
+        body.contains("class=\"flash ok\""),
+        "missing restyled ok banner: {body}"
     );
 }
 
@@ -808,11 +844,25 @@ async fn send_test_notification_reports_failure() {
 
     let res = server.post(&format!("/channels/{chid}/test")).await;
     res.assert_status_ok();
+    let body = res.text();
+    assert!(body.contains("Test notification failed"), "got: {body}");
     assert!(
-        res.text().contains("Test notification failed"),
-        "got: {}",
-        res.text()
+        body.contains("class=\"flash err\""),
+        "missing restyled err banner: {body}"
     );
+}
+
+#[tokio::test]
+async fn settings_and_users_pages_use_restyled_field_class() {
+    let (server, _store, _uid) = logged_in_server().await; // admin
+
+    let settings_res = server.get("/settings").await;
+    settings_res.assert_status_ok();
+    assert!(settings_res.text().contains("class=\"field\""));
+
+    let users_res = server.get("/users").await;
+    users_res.assert_status_ok();
+    assert!(users_res.text().contains("class=\"field\""));
 }
 
 #[tokio::test]

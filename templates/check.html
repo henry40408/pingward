@@ -1,38 +1,107 @@
 {% extends "base.html" %}
 {% block body %}
-<h1>{{ check.name }} <span class="status-{{ check.status.as_str() }}">({{ check.status.as_str() }})</span></h1>
-<p>Ping URL: <code>{{ ping_url }}</code></p>
-<p>
-  <a href="/checks/{{ check.id }}/edit">Edit</a>
+<div class="crumb">
+  <a href="/">Checks</a><span class="sep">/</span>
+  <a href="/projects/{{ check.project_id }}">{{ project_name }}</a><span class="sep">/</span>{{ check.name }}
+</div>
+
+<div class="chead">
+  <span class="status-dot {{ status }}"></span>
+  <h1>{{ check.name }}</h1>
+  <span class="badge {{ status }}">{{ status }}</span>
+  <span class="since {{ status }}">{{ since }}</span>
+</div>
+<div class="crumb" style="margin:2px 0 0">{{ schedule }}</div>
+
+<div class="actions">
+  <a class="btn" href="/checks/{{ check.id }}/edit">Edit</a>
   {% if check.status.as_str() == "paused" %}
-    <form class="inline" method="post" action="/checks/{{ check.id }}/resume"><button>Resume</button></form>
+  <form class="inline" method="post" action="/checks/{{ check.id }}/resume"><button class="btn">Resume</button></form>
   {% else %}
-    <form class="inline" method="post" action="/checks/{{ check.id }}/pause"><button>Pause</button></form>
+  <form class="inline" method="post" action="/checks/{{ check.id }}/pause"><button class="btn">Pause</button></form>
   {% endif %}
-  <form class="inline" method="post" action="/checks/{{ check.id }}/regenerate"><button>Regenerate URL</button></form>
+  {% if status == "down" && !check.acknowledged %}
+  <form class="inline" method="post" action="/checks/{{ check.id }}/ack"><button class="btn primary">Acknowledge</button></form>
+  {% endif %}
+  <form class="inline" method="post" action="/checks/{{ check.id }}/regenerate"><button class="btn">Regenerate URL</button></form>
   <form class="inline" method="post" action="/checks/{{ check.id }}/delete"
-        onsubmit="return confirm('Delete check?')"><button>Delete</button></form>
-  {% if check.status.as_str() == "down" && !check.acknowledged %}
-    <form class="inline" method="post" action="/checks/{{ check.id }}/ack"><button>Acknowledge</button></form>
-  {% endif %}
-  {% if check.acknowledged %}<span class="status-paused">acknowledged</span>{% endif %}
-</p>
+        onsubmit="return confirm('Delete this check?')"><button class="btn danger">Delete</button></form>
+</div>
 
-<h2>Channels</h2>
-<form method="post" action="/checks/{{ check.id }}/channels">
-  {% for cb in channel_boxes %}
-  <label><input type="checkbox" name="channel_ids" value="{{ cb.id }}"{% if cb.bound %} checked{% endif %}> {{ cb.name }} ({{ cb.kind }})</label>
-  {% endfor %}
-  <button type="submit">Save channels</button>
-</form>
+<div class="card">
+  <div class="cb">
+    <div class="urlrow"><code>{{ ping_url }}</code><button class="copy" type="button" data-copy="{{ ping_url }}">Copy</button></div>
+    <div class="beat" style="margin-top:16px" title="last 30 runs">
+      {% for b in bars %}<i class="{{ b.class }}" style="height:{{ b.height }}px" title="{{ b.title }}"></i>{% endfor %}
+    </div>
+    <div class="beatcap"><span>30 runs ago</span><span>taller = longer run &middot; amber &ge;80% budget &middot; red = failed</span><span>now</span></div>
+  </div>
+</div>
 
-<h2>Recent pings</h2>
-<table><tr><th>When</th><th>Kind</th><th>Exit</th></tr>
-{% for p in pings %}<tr><td>{{ p.created_at }}</td><td>{{ p.kind.as_str() }}</td><td>{{ p.exit_code_display }}</td></tr>{% endfor %}
-</table>
+<div class="card">
+  <div class="ch"><h2>Notify channels</h2></div>
+  <div class="cb">
+    <form method="post" action="/checks/{{ check.id }}/channels">
+      {% for cb in channel_boxes %}
+      <label class="chk"><input type="checkbox" name="channel_ids" value="{{ cb.id }}"{% if cb.bound %} checked{% endif %}><span class="nm">{{ cb.name }}</span><span class="kind">{{ cb.kind }}</span></label>
+      {% endfor %}
+      <div style="margin-top:12px"><button class="btn primary" type="submit">Save channels</button></div>
+    </form>
+  </div>
+</div>
 
-<h2>Recent notifications</h2>
-<table><tr><th>When</th><th>Event</th><th>Status</th><th>Channel</th><th>Error</th></tr>
-{% for n in notifications %}<tr><td>{{ n.created_at }}</td><td>{{ n.event }}</td><td>{{ n.status }}</td><td>{{ n.channel }}</td><td>{{ n.error }}</td></tr>{% endfor %}
-</table>
+<div class="card">
+  <div class="ch"><h2>Recent pings</h2></div>
+  <div class="cb" style="padding-top:6px">
+    <table>
+      <thead><tr><th>When</th><th>Kind</th><th>Exit</th><th>Duration</th><th>Source</th></tr></thead>
+      <tbody>
+        {% for p in pings %}
+        {% if p.body.is_empty() %}
+        <tr><td class="mono"><span class="caret" style="opacity:0">&#9656;</span>{{ p.time }}</td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
+        {% else %}
+        <tr class="toggle" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span>{{ p.time }}</td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
+        <tr class="exp"><td colspan="5" style="border-top:none;padding-top:0"><div class="out {{ p.pill_class }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:0">
+  <div class="ch"><h2>Recent notifications</h2></div>
+  <div class="cb" style="padding-top:6px">
+    <table>
+      <thead><tr><th>When</th><th>Event</th><th>Channel</th><th>Result</th></tr></thead>
+      <tbody>
+        {% for n in notifications %}
+        <tr><td class="mono">{{ n.created_at }}</td><td>{{ n.event }}</td><td>{{ n.channel }}</td>
+          {% if n.status == "ok" %}<td class="mono ok-txt">sent</td>{% else %}<td class="mono fail-txt">{{ n.error }}</td>{% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  document.querySelectorAll('tr.toggle').forEach(function(r){
+    r.addEventListener('click', function(){
+      var n = r.nextElementSibling;
+      if (n && n.classList.contains('exp')) {
+        n.classList.toggle('open');
+        r.querySelector('.caret').classList.toggle('open');
+      }
+    });
+  });
+  document.querySelectorAll('.copy').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var text = btn.getAttribute('data-copy');
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(text);
+      }
+    });
+  });
+</script>
 {% endblock %}

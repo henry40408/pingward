@@ -1,14 +1,50 @@
 {% extends "base.html" %}
 {% block body %}
-<h1>Dashboard</h1>
-<p><a href="/projects/new">New project</a></p>
-{% for r in projects %}
-<h2><a href="/projects/{{ r.project.id }}">{{ r.project.name }}</a></h2>
-<table><tr><th>Check</th><th>Status</th></tr>
-{% for c in r.checks %}
-<tr><td><a href="/checks/{{ c.id }}">{{ c.name }}</a></td>
-  <td class="status-{{ c.status.as_str() }}">{{ c.status.as_str() }}</td></tr>
+<div class="phead">
+  <div><h1>Checks</h1></div>
+  <a class="btn-primary" href="/projects/new">New project</a>
+</div>
+
+<div class="tiles">
+  <div class="tile total"><span class="edge"></span><div class="n">{{ total }}</div><div class="l">Total</div></div>
+  <div class="tile up"><span class="edge"></span><div class="n">{{ up }}</div><div class="l">Up</div></div>
+  <div class="tile late"><span class="edge"></span><div class="n">{{ late }}</div><div class="l">Late</div></div>
+  <div class="tile down"><span class="edge"></span><div class="n">{{ down }}</div><div class="l">Down</div></div>
+</div>
+
+{% if groups.is_empty() %}
+<p>No projects yet. Create one to start watching a job.</p>
+{% else %}
+{% for g in groups %}
+<div class="group">
+  <div class="gh">
+    <h2>{{ g.name }}</h2>
+    <span class="count">{{ g.count }} checks</span>
+    <span class="line"></span>
+    <a href="/projects/{{ g.id }}">Manage →</a>
+  </div>
+  <div class="list">
+    {% for c in g.checks %}
+    <div class="check" tabindex="0" role="link" onclick="location='/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='/checks/{{ c.id }}'">
+      <span class="status-dot {{ c.status }}"></span>
+      <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule }}</div></div>
+      <div class="spark">{% for b in c.bars %}<i class="{{ b.class }}" style="height:{{ b.height }}px" title="{{ b.title }}"></i>{% endfor %}</div>
+      <div class="cwhen">{{ c.last }}</div>
+      <span class="badge {{ c.status }}">{{ c.status }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
 {% endfor %}
-</table>
-{% endfor %}
+
+<div class="legend">
+  <span style="color:var(--ink);font-weight:600">Heartbeat</span>
+  <span class="k"><span class="mini"><i style="height:6px;background:var(--up)"></i></span>short = fast run · lots of headroom</span>
+  <span class="k"><span class="mini"><i style="height:15px;background:var(--up)"></i></span>tall = long run · nearing timeout</span>
+  <span class="k"><span class="mini"><i style="height:15px;background:var(--late)"></i></span>amber = used ≥80% of budget</span>
+  <span class="k"><span class="mini"><i style="height:15px;background:var(--down)"></i></span>red = failed</span>
+  <span class="k"><span class="mini"><i style="height:16px;background:color-mix(in srgb,var(--bar-none) 22%,transparent);border:1.5px solid var(--bar-none)"></i></span>hollow = duration unknown</span>
+  <span class="k"><span class="mini"><i style="height:4px;background:var(--paused);opacity:.6"></i></span>flat = paused</span>
+</div>
+{% endif %}
 {% endblock %}

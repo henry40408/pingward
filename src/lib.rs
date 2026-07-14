@@ -1,6 +1,7 @@
 use axum::{routing::get, Router};
 use state::AppState;
 
+pub mod assets;
 pub mod auth;
 pub mod config;
 pub mod db;
@@ -12,6 +13,7 @@ pub mod prune;
 pub mod scheduler;
 pub mod state;
 pub mod store;
+pub mod view;
 pub mod web;
 
 pub fn app(state: AppState) -> Router {
@@ -19,5 +21,6 @@ pub fn app(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .merge(web::routes())
         .merge(ping::routes())
+        .merge(assets::routes())
         .with_state(state)
 }

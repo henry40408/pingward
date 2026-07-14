@@ -1,21 +1,62 @@
 {% extends "base.html" %}
 {% block body %}
 <h1>{{ heading }}</h1>
-{% if let Some(error) = error %}<p class="status-down">{{ error }}</p>{% endif %}
-<form method="post" action="{{ action }}">
-  <label>Name <input name="name" value="{{ name }}" required></label>
-  <label>Schedule kind
-    <select name="schedule_kind">
-      <option value="period"{% if schedule_kind == "period" %} selected{% endif %}>period</option>
-      <option value="cron"{% if schedule_kind == "cron" %} selected{% endif %}>cron</option>
-    </select></label>
-  <label>Period seconds (period mode) <input name="period_secs" value="{{ period_secs }}"></label>
-  <label>Cron expr (cron mode, 6-field "sec min hour dom mon dow") <input name="cron_expr" value="{{ cron_expr }}"></label>
-  <label>Grace seconds <input name="grace_secs" value="{{ grace_secs }}" required></label>
-  <label>Timezone <input name="timezone" value="{{ timezone }}" required></label>
-  <label>Scan interval secs (blank = inherit) <input name="scan_interval_secs" value="{{ scan_interval_secs }}"></label>
-  <label>Max runtime secs (blank = off) <input name="max_runtime_secs" value="{{ max_runtime_secs }}"></label>
-  <label>Nag interval secs (blank = inherit/off) <input name="nag_interval_secs" value="{{ nag_interval_secs }}"></label>
-  <button type="submit">Save</button>
-</form>
+{% if let Some(error) = error %}<p class="flash err">{{ error }}</p>{% endif %}
+<div class="card">
+  <div class="cb">
+    <form method="post" action="{{ action }}">
+      <div class="field">
+        <label for="name">Name</label>
+        <input id="name" name="name" value="{{ name }}" required>
+      </div>
+      <div class="field">
+        <label for="schedule_kind">Schedule kind</label>
+        <select id="schedule_kind" name="schedule_kind">
+          <option value="period"{% if schedule_kind == "period" %} selected{% endif %}>period</option>
+          <option value="cron"{% if schedule_kind == "cron" %} selected{% endif %}>cron</option>
+        </select>
+      </div>
+      <div class="two">
+        <div class="field">
+          <label for="period_secs">Period seconds</label>
+          <input id="period_secs" name="period_secs" value="{{ period_secs }}">
+          <div class="help">Used in period mode.</div>
+        </div>
+        <div class="field">
+          <label for="cron_expr">Cron expression</label>
+          <input id="cron_expr" name="cron_expr" value="{{ cron_expr }}">
+          <div class="help">Used in cron mode, 6-field "sec min hour dom mon dow".</div>
+        </div>
+      </div>
+      <div class="two">
+        <div class="field">
+          <label for="grace_secs">Grace seconds</label>
+          <input id="grace_secs" name="grace_secs" value="{{ grace_secs }}" required>
+        </div>
+        <div class="field">
+          <label for="timezone">Timezone</label>
+          <input id="timezone" name="timezone" value="{{ timezone }}" required>
+        </div>
+      </div>
+      <div class="field">
+        <label for="scan_interval_secs">Scan interval seconds</label>
+        <input id="scan_interval_secs" name="scan_interval_secs" value="{{ scan_interval_secs }}">
+        <div class="help">Leave blank to inherit from the project.</div>
+      </div>
+      <div class="field">
+        <label for="max_runtime_secs">Max runtime seconds</label>
+        <input id="max_runtime_secs" name="max_runtime_secs" value="{{ max_runtime_secs }}">
+        <div class="help">Leave blank to turn off the runtime budget.</div>
+      </div>
+      <div class="field">
+        <label for="nag_interval_secs">Nag interval seconds</label>
+        <input id="nag_interval_secs" name="nag_interval_secs" value="{{ nag_interval_secs }}">
+        <div class="help">Leave blank to inherit from the project, or to turn off nagging.</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn primary" type="submit">Save changes</button>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}

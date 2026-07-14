@@ -1,12 +1,27 @@
 {% extends "base.html" %}
 {% block body %}
 <h1>{{ heading }}</h1>
-<form method="post" action="{{ action }}">
-  <label>Name <input name="name" value="{{ name }}" required></label>
-  <label>Scan interval (secs, blank = inherit)
-    <input name="scan_interval_secs" value="{{ scan_interval_secs }}"></label>
-  <label>Nag interval (secs, blank = inherit/off)
-    <input name="nag_interval_secs" value="{{ nag_interval_secs }}"></label>
-  <button type="submit">Save</button>
-</form>
+<div class="card">
+  <div class="cb">
+    <form method="post" action="{{ action }}">
+      <div class="field">
+        <label for="name">Name</label>
+        <input id="name" name="name" value="{{ name }}" required>
+      </div>
+      <div class="field">
+        <label for="scan_interval_secs">Scan interval seconds</label>
+        <input id="scan_interval_secs" name="scan_interval_secs" value="{{ scan_interval_secs }}">
+        <div class="help">Leave blank to inherit the default scan interval.</div>
+      </div>
+      <div class="field">
+        <label for="nag_interval_secs">Nag interval seconds</label>
+        <input id="nag_interval_secs" name="nag_interval_secs" value="{{ nag_interval_secs }}">
+        <div class="help">Leave blank to inherit, or to turn off nagging.</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn primary" type="submit">Save changes</button>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}

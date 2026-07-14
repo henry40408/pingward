@@ -73,12 +73,43 @@ struct LoginTemplate {
 #[template(path = "dashboard.html")]
 struct DashboardTemplate {
     show_nav: bool,
-    projects: Vec<ProjectRow>,
+    total: usize,
+    up: usize,
+    late: usize,
+    down: usize,
+    groups: Vec<ProjectGroup>,
 }
 
-pub struct ProjectRow {
-    pub project: Project,
-    pub checks: Vec<Check>,
+struct CheckRow {
+    id: i64,
+    name: String,
+    status: &'static str, // view::DisplayStatus::as_str()
+    schedule: String,     // e.g. "every 1h · 10m grace" or the cron expr
+    last: String,         // fmt_relative or "—"
+    bars: Vec<crate::view::Bar>,
+}
+
+struct ProjectGroup {
+    id: i64,
+    name: String,
+    count: usize,
+    checks: Vec<CheckRow>,
+}
+
+/// Human-readable schedule summary shown under a check's name (dashboard rows
+/// and the check detail page).
+fn schedule_label(c: &Check) -> String {
+    match c.schedule_kind {
+        ScheduleKind::Period => match c.period_secs {
+            Some(s) => format!(
+                "every {} · {} grace",
+                crate::view::fmt_secs(s),
+                crate::view::fmt_secs(c.grace_secs)
+            ),
+            None => format!("{} grace", crate::view::fmt_secs(c.grace_secs)),
+        },
+        ScheduleKind::Cron => c.cron_expr.clone().unwrap_or_default(),
+    }
 }
 
 // --- forms ---
@@ -179,15 +210,54 @@ async fn dashboard(
         Some(u) => u,
         None => return Ok(Redirect::to("/login").into_response()),
     };
-    let projects = state.store.list_projects_for_user(user.id).await?;
-    let mut rows = Vec::with_capacity(projects.len());
-    for project in projects {
+    let now = Utc::now();
+    let (mut total, mut up, mut late, mut down) = (0usize, 0, 0, 0);
+    let mut groups = Vec::new();
+    for project in state.store.list_projects_for_user(user.id).await? {
         let checks = state.store.list_checks_for_project(project.id).await?;
-        rows.push(ProjectRow { project, checks });
+        let mut rows = Vec::with_capacity(checks.len());
+        for c in &checks {
+            let ds = crate::view::display_status(c, now);
+            total += 1;
+            match ds {
+                crate::view::DisplayStatus::Up => up += 1,
+                crate::view::DisplayStatus::Late => late += 1,
+                crate::view::DisplayStatus::Down => down += 1,
+                _ => {}
+            }
+            let pings = state.store.list_recent_pings(c.id, 40).await?;
+            let bars = crate::view::heartbeat(
+                &pings,
+                c.max_runtime_secs,
+                c.status == CheckStatus::Paused,
+                6,
+            );
+            rows.push(CheckRow {
+                id: c.id,
+                name: c.name.clone(),
+                status: ds.as_str(),
+                schedule: schedule_label(c),
+                last: c
+                    .last_ping_at
+                    .map(|t| crate::view::fmt_relative(t, now))
+                    .unwrap_or_else(|| "—".into()),
+                bars,
+            });
+        }
+        groups.push(ProjectGroup {
+            id: project.id,
+            name: project.name,
+            count: checks.len(),
+            checks: rows,
+        });
     }
     Ok(render(&DashboardTemplate {
         show_nav: true,
-        projects: rows,
+        total,
+        up,
+        late,
+        down,
+        groups,
     })?
     .into_response())
 }
@@ -382,14 +452,26 @@ struct CheckForm {
 }
 
 struct PingRow {
-    created_at: String,
-    kind: PingKindWrap,
-    exit_code_display: String,
+    time: String,
+    pill_class: &'static str, // pill/output css class: "ok"|"fail"|"start"|"log"
+    kind_label: &'static str, // visible kind label (spec §8): "success"|"fail"|"start"|"log"
+    exit: String,
+    duration: String,
+    source: String,
+    body: String,
 }
-struct PingKindWrap(crate::models::PingKind);
-impl PingKindWrap {
-    fn as_str(&self) -> &'static str {
-        self.0.as_str()
+
+/// Maps a stored `PingKind` to the pill/output CSS class used on the
+/// check-detail page (the visible label instead uses `PingKind::as_str()`).
+/// `Exitcode` never reaches storage — `apply()` in `ping.rs` rewrites it to
+/// `Success`/`Fail` before insert — but is handled defensively.
+fn ping_pill_class(k: crate::models::PingKind) -> &'static str {
+    use crate::models::PingKind;
+    match k {
+        PingKind::Success | PingKind::Exitcode => "ok",
+        PingKind::Fail => "fail",
+        PingKind::Start => "start",
+        PingKind::Log => "log",
     }
 }
 
@@ -431,10 +513,40 @@ struct CheckFormTemplate {
 struct CheckTemplate {
     show_nav: bool,
     check: Check,
+    project_name: String,
+    status: &'static str,
+    since: String,
+    schedule: String,
     ping_url: String,
+    bars: Vec<crate::view::Bar>,
     channel_boxes: Vec<ChannelBox>,
     pings: Vec<PingRow>,
     notifications: Vec<NotificationRow>,
+}
+
+/// Short status line shown next to the check name on the detail page, e.g.
+/// "down · 2h 14m ago · not acknowledged" or "updated 3m ago".
+fn status_since_label(check: &Check, now: chrono::DateTime<Utc>) -> String {
+    if crate::view::display_status(check, now) == crate::view::DisplayStatus::Down {
+        let ack = if check.acknowledged {
+            "acknowledged"
+        } else {
+            "not acknowledged"
+        };
+        // A check can go New -> Down (e.g. it never checked in before its
+        // first deadline) without ever having received a ping.
+        let relative = check
+            .last_ping_at
+            .map(|t| crate::view::fmt_relative(t, now))
+            .unwrap_or_else(|| "no pings yet".into());
+        format!("down · {relative} · {ack}")
+    } else {
+        let relative = check
+            .last_ping_at
+            .map(|t| crate::view::fmt_relative(t, now))
+            .unwrap_or_else(|| "never".into());
+        format!("updated {relative}")
+    }
 }
 
 /// Load a check and enforce ownership through its project.
@@ -568,6 +680,12 @@ async fn check_show(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
+    let project = state
+        .store
+        .find_project(check.project_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let now = Utc::now();
     let ping_url = format!(
         "{}/ping/{}",
         state.config.base_url.trim_end_matches('/'),
@@ -591,24 +709,43 @@ async fn check_show(
             bound: bound.contains(&c.id),
         })
         .collect();
-    let pings = state
-        .store
-        .list_recent_pings(id, 20)
-        .await?
-        .into_iter()
+    let recent = state.store.list_recent_pings(id, 40).await?;
+    let durations = crate::view::run_durations(&recent);
+    let bars = crate::view::heartbeat(
+        &recent,
+        check.max_runtime_secs,
+        check.status == CheckStatus::Paused,
+        30,
+    );
+    let pings = recent
+        .iter()
+        .take(20)
         .map(|p| PingRow {
-            created_at: p.created_at.to_rfc3339(),
-            kind: PingKindWrap(p.kind),
-            exit_code_display: p.exit_code.map(|c| c.to_string()).unwrap_or_default(),
+            time: p.created_at.format("%H:%M:%S").to_string(),
+            pill_class: ping_pill_class(p.kind),
+            kind_label: p.kind.as_str(),
+            exit: p
+                .exit_code
+                .map(|c| format!("exit {c}"))
+                .unwrap_or_else(|| "—".into()),
+            duration: durations
+                .get(&p.id)
+                .map(|d| crate::view::fmt_secs(*d))
+                .unwrap_or_else(|| "—".into()),
+            source: p.source_ip.clone().unwrap_or_else(|| "—".into()),
+            body: p.body.clone(),
         })
         .collect();
+    let status = crate::view::display_status(&check, now).as_str();
+    let since = status_since_label(&check, now);
+    let schedule = schedule_label(&check);
     let notifications = state
         .store
         .list_recent_notifications(id, 20)
         .await?
         .into_iter()
         .map(|n| NotificationRow {
-            created_at: n.created_at.to_rfc3339(),
+            created_at: n.created_at.format("%H:%M:%S").to_string(),
             event: n.event.as_str(),
             status: n.status.as_str(),
             channel: channel_names
@@ -621,7 +758,12 @@ async fn check_show(
     Ok(render(&CheckTemplate {
         show_nav: true,
         check,
+        project_name: project.name,
+        status,
+        since,
+        schedule,
         ping_url,
+        bars,
         channel_boxes,
         pings,
         notifications,
@@ -1176,4 +1318,52 @@ async fn users_delete(
     }
     state.store.delete_user(id).await?;
     Ok(Redirect::to("/users").into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_check() -> Check {
+        Check {
+            id: 1,
+            project_id: 1,
+            name: "c".into(),
+            ping_uuid: "u".into(),
+            schedule_kind: ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            cron_expr: None,
+            timezone: "UTC".into(),
+            status: CheckStatus::Down,
+            last_ping_at: None,
+            last_start_at: None,
+            next_due_at: None,
+            scan_interval_secs: None,
+            max_runtime_secs: None,
+            nag_interval_secs: None,
+            last_alert_at: None,
+            acknowledged: false,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn status_since_label_down_never_pinged_reads_no_pings_yet() {
+        let c = base_check();
+        assert_eq!(
+            status_since_label(&c, Utc::now()),
+            "down · no pings yet · not acknowledged"
+        );
+    }
+
+    #[test]
+    fn status_since_label_down_with_ping_shows_relative_time() {
+        let mut c = base_check();
+        c.last_ping_at = Some(Utc::now() - Duration::seconds(120));
+        assert_eq!(
+            status_since_label(&c, Utc::now()),
+            "down · 2m ago · not acknowledged"
+        );
+    }
 }
