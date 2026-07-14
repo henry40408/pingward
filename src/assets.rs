@@ -24,9 +24,20 @@ async fn app_css() -> impl IntoResponse {
 }
 
 async fn font(Path(file): Path<String>) -> impl IntoResponse {
-    // Vendored in Task 2. Until then, unknown files 404 cleanly.
-    #[allow(clippy::match_single_binding)] // arms populated when fonts land
     let bytes: Option<&'static [u8]> = match file.as_str() {
+        "inter-400.woff2" => Some(include_bytes!("../assets/fonts/inter-400.woff2")),
+        "inter-500.woff2" => Some(include_bytes!("../assets/fonts/inter-500.woff2")),
+        "inter-600.woff2" => Some(include_bytes!("../assets/fonts/inter-600.woff2")),
+        "inter-700.woff2" => Some(include_bytes!("../assets/fonts/inter-700.woff2")),
+        "ibm-plex-mono-400.woff2" => {
+            Some(include_bytes!("../assets/fonts/ibm-plex-mono-400.woff2"))
+        }
+        "ibm-plex-mono-500.woff2" => {
+            Some(include_bytes!("../assets/fonts/ibm-plex-mono-500.woff2"))
+        }
+        "ibm-plex-mono-600.woff2" => {
+            Some(include_bytes!("../assets/fonts/ibm-plex-mono-600.woff2"))
+        }
         _ => None,
     };
     match bytes {

@@ -24,3 +24,11 @@ async fn unknown_font_file_404s() {
     let res = server.get("/assets/fonts/does-not-exist.woff2").await;
     res.assert_status_not_found();
 }
+
+#[tokio::test]
+async fn serves_a_font() {
+    let server = server().await;
+    let res = server.get("/assets/fonts/inter-400.woff2").await;
+    res.assert_status_ok();
+    assert_eq!(res.header("content-type"), "font/woff2");
+}
