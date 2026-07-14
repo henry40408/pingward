@@ -114,3 +114,39 @@ async fn admin_resets_password_and_target_can_login() {
         .iter()
         .any(|a| a.action == "user.password_reset" && a.target_id == Some(dave.id)));
 }
+
+#[tokio::test]
+async fn disable_and_enable_member() {
+    let (server, store, _admin) = admin_server().await;
+    let uid = store
+        .create_user("frank", Some("p"), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    server
+        .post(&format!("/users/{uid}/disabled"))
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(store.find_user_by_id(uid).await.unwrap().unwrap().disabled);
+    server.post(&format!("/users/{uid}/disabled")).await;
+    assert!(!store.find_user_by_id(uid).await.unwrap().unwrap().disabled);
+    assert!(store
+        .list_audit(50)
+        .await
+        .unwrap()
+        .iter()
+        .any(|a| a.action == "user.set_disabled"));
+}
+
+#[tokio::test]
+async fn cannot_disable_self_or_last_admin() {
+    let (server, store, admin_id) = admin_server().await;
+    server.post(&format!("/users/{admin_id}/disabled")).await;
+    assert!(
+        !store
+            .find_user_by_id(admin_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .disabled
+    );
+}

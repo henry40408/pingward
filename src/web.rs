@@ -54,6 +54,7 @@ pub fn routes() -> Router<AppState> {
         .route("/users/{id}/delete", post(users_delete))
         .route("/users/{id}/password", post(users_set_password))
         .route("/users/{id}/admin", post(users_toggle_admin))
+        .route("/users/{id}/disabled", post(users_set_disabled))
         // --- admin cross-user route group (each handler guarded by AdminUser) ---
         .route("/admin", get(admin_home))
         .route("/admin/projects", get(admin_projects_page))
@@ -1690,6 +1691,46 @@ async fn users_toggle_admin(
                 target_type: Some("user"),
                 target_id: Some(id),
                 detail: Some(if new_admin { "promote" } else { "demote" }),
+                ..Default::default()
+            },
+            Utc::now(),
+        )
+        .await?;
+    Ok(Redirect::to("/users").into_response())
+}
+
+async fn users_set_disabled(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    // Never disable yourself.
+    if id == admin.id {
+        return Ok(Redirect::to("/users").into_response());
+    }
+    let Some(target) = state.store.find_user_by_id(id).await? else {
+        return Ok(Redirect::to("/users").into_response());
+    };
+    let new_disabled = !target.disabled;
+    // Refuse to disable the last enabled admin.
+    if new_disabled
+        && target.is_admin
+        && !target.disabled
+        && state.store.count_enabled_admins().await? <= 1
+    {
+        return Ok(Redirect::to("/users").into_response());
+    }
+    state.store.set_user_disabled(id, new_disabled).await?;
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: admin.id,
+                actor_username: &admin.username,
+                action: "user.set_disabled",
+                target_type: Some("user"),
+                target_id: Some(id),
+                detail: Some(if new_disabled { "disable" } else { "enable" }),
                 ..Default::default()
             },
             Utc::now(),
