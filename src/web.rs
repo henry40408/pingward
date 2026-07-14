@@ -1547,7 +1547,7 @@ async fn users_page(
 
 async fn users_create(
     State(state): State<AppState>,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
     Form(form): Form<NewUserForm>,
 ) -> Result<Response, AppError> {
     if form.username.trim().is_empty() || form.password.is_empty() {
@@ -1565,9 +1565,24 @@ async fn users_create(
     // omitted entirely or (as form-encoded test clients sometimes do) sent as
     // an empty string — both must be treated as "not admin".
     let is_admin = form.is_admin.as_deref().is_some_and(|s| !s.is_empty());
-    state
+    let new_id = state
         .store
         .create_user(form.username.trim(), Some(&phc), is_admin, Utc::now())
+        .await?;
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: admin.id,
+                actor_username: &admin.username,
+                action: "user.create",
+                target_type: Some("user"),
+                target_id: Some(new_id),
+                detail: Some(if is_admin { "admin" } else { "member" }),
+                ..Default::default()
+            },
+            Utc::now(),
+        )
         .await?;
     Ok(Redirect::to("/users").into_response())
 }
@@ -1595,6 +1610,20 @@ async fn users_delete(
         }
     }
     state.store.delete_user(id).await?;
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: admin.id,
+                actor_username: &admin.username,
+                action: "user.delete",
+                target_type: Some("user"),
+                target_id: Some(id),
+                ..Default::default()
+            },
+            Utc::now(),
+        )
+        .await?;
     Ok(Redirect::to("/users").into_response())
 }
 
