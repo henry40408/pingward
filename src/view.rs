@@ -148,7 +148,16 @@ pub fn heartbeat(
                 _ => {
                     let class = if failed { "bad" } else { "none" };
                     let height = if failed { MAX_H } else { NONE_H };
-                    let title = if failed { "failed".into() } else { "duration unknown".into() };
+                    let title = if failed {
+                        "failed".into()
+                    } else if dur.is_some() {
+                        // Duration was measured, but there's no ceiling (no
+                        // explicit max_runtime_secs and <2 measured runs in
+                        // the window) to render height as a fraction of.
+                        "no runtime limit set".into()
+                    } else {
+                        "duration unknown".into()
+                    };
                     Bar { height, class, title }
                 }
             }
@@ -272,6 +281,25 @@ mod tests {
         ];
         let bars = heartbeat(&pings, None, false, 6);
         assert!(bars.iter().all(|b| b.class == "none"));
+        // No start pings at all → duration is genuinely unknown for every bar.
+        assert!(bars.iter().all(|b| b.title == "duration unknown"));
+    }
+
+    #[test]
+    fn heartbeat_known_duration_without_ceiling_has_distinct_title() {
+        // A single measured run (start→success), no max_runtime_secs configured:
+        // ceiling stays None (window fallback needs >=2 measured durations), but
+        // the duration itself IS known — the tooltip must say so, not claim
+        // "duration unknown".
+        let t0 = Utc.with_ymd_and_hms(2026, 7, 14, 8, 0, 0).unwrap();
+        let pings = vec![
+            ping(1, PingKind::Start, t0),
+            ping(2, PingKind::Success, t0 + Duration::seconds(42)),
+        ];
+        let bars = heartbeat(&pings, None, false, 6);
+        let bar = bars.last().unwrap();
+        assert_eq!(bar.class, "none"); // height/class logic unchanged
+        assert_eq!(bar.title, "no runtime limit set");
     }
 
     #[test]

@@ -526,18 +526,24 @@ struct CheckTemplate {
 /// Short status line shown next to the check name on the detail page, e.g.
 /// "down · 2h 14m ago · not acknowledged" or "updated 3m ago".
 fn status_since_label(check: &Check, now: chrono::DateTime<Utc>) -> String {
-    let relative = check
-        .last_ping_at
-        .map(|t| crate::view::fmt_relative(t, now))
-        .unwrap_or_else(|| "never".into());
     if crate::view::display_status(check, now) == crate::view::DisplayStatus::Down {
         let ack = if check.acknowledged {
             "acknowledged"
         } else {
             "not acknowledged"
         };
+        // A check can go New -> Down (e.g. it never checked in before its
+        // first deadline) without ever having received a ping.
+        let relative = check
+            .last_ping_at
+            .map(|t| crate::view::fmt_relative(t, now))
+            .unwrap_or_else(|| "no pings yet".into());
         format!("down · {relative} · {ack}")
     } else {
+        let relative = check
+            .last_ping_at
+            .map(|t| crate::view::fmt_relative(t, now))
+            .unwrap_or_else(|| "never".into());
         format!("updated {relative}")
     }
 }
@@ -1310,4 +1316,52 @@ async fn users_delete(
     }
     state.store.delete_user(id).await?;
     Ok(Redirect::to("/users").into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_check() -> Check {
+        Check {
+            id: 1,
+            project_id: 1,
+            name: "c".into(),
+            ping_uuid: "u".into(),
+            schedule_kind: ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            cron_expr: None,
+            timezone: "UTC".into(),
+            status: CheckStatus::Down,
+            last_ping_at: None,
+            last_start_at: None,
+            next_due_at: None,
+            scan_interval_secs: None,
+            max_runtime_secs: None,
+            nag_interval_secs: None,
+            last_alert_at: None,
+            acknowledged: false,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn status_since_label_down_never_pinged_reads_no_pings_yet() {
+        let c = base_check();
+        assert_eq!(
+            status_since_label(&c, Utc::now()),
+            "down · no pings yet · not acknowledged"
+        );
+    }
+
+    #[test]
+    fn status_since_label_down_with_ping_shows_relative_time() {
+        let mut c = base_check();
+        c.last_ping_at = Some(Utc::now() - Duration::seconds(120));
+        assert_eq!(
+            status_since_label(&c, Utc::now()),
+            "down · 2m ago · not acknowledged"
+        );
+    }
 }

@@ -483,6 +483,15 @@ nav.links a:hover {
   color: var(--ink-2);
   font-size: 12.5px;
 }
+.rowedit {
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.rowedit:hover {
+  color: var(--brand);
+}
 
 /* ---- Heartbeat strip (dashboard, small) ---- */
 .spark {
@@ -718,6 +727,7 @@ nav.links a:hover {
 }
 .card .cb {
   padding: 16px 18px;
+  overflow-x: auto;
 }
 
 /* ---- Ping URL row ---- */
@@ -953,6 +963,9 @@ tr.exp > td {
 .out.log {
   border-left-color: var(--brand);
 }
+.out.start {
+  border-left-color: var(--muted);
+}
 .out .tag {
   color: var(--faint);
   display: block;
@@ -1073,4 +1086,13 @@ form.inline,
     animation: none !important;
     transition: none !important;
   }
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+.check:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
 }
