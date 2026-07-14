@@ -52,6 +52,7 @@ pub fn routes() -> Router<AppState> {
         .route("/settings", get(settings_page).post(settings_save))
         .route("/users", get(users_page).post(users_create))
         .route("/users/{id}/delete", post(users_delete))
+        .route("/users/{id}/password", post(users_set_password))
         // --- admin cross-user route group (each handler guarded by AdminUser) ---
         .route("/admin", get(admin_home))
         .route("/admin/projects", get(admin_projects_page))
@@ -1457,6 +1458,11 @@ struct NewUserForm {
     is_admin: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct PasswordForm {
+    password: String,
+}
+
 async fn settings_page(
     State(state): State<AppState>,
     _admin: AdminUser,
@@ -1617,6 +1623,34 @@ async fn users_delete(
                 actor_user_id: admin.id,
                 actor_username: &admin.username,
                 action: "user.delete",
+                target_type: Some("user"),
+                target_id: Some(id),
+                ..Default::default()
+            },
+            Utc::now(),
+        )
+        .await?;
+    Ok(Redirect::to("/users").into_response())
+}
+
+async fn users_set_password(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Path(id): Path<i64>,
+    Form(form): Form<PasswordForm>,
+) -> Result<Response, AppError> {
+    if form.password.is_empty() {
+        return Ok(Redirect::to("/users").into_response());
+    }
+    let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
+    state.store.set_user_password(id, &phc).await?;
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: admin.id,
+                actor_username: &admin.username,
+                action: "user.password_reset",
                 target_type: Some("user"),
                 target_id: Some(id),
                 ..Default::default()

@@ -11,7 +11,13 @@
         <tr>
           <td>{{ u.username }}</td>
           <td>{% if u.is_admin %}<span class="pill ok">admin</span>{% else %}<span class="pill start">member</span>{% endif %}</td>
-          <td><form class="inline" method="post" action="/users/{{ u.id }}/delete"><button class="btn danger" type="submit">delete</button></form></td>
+          <td>
+            <form class="inline" method="post" action="/users/{{ u.id }}/password">
+              <input type="password" name="password" placeholder="new password" required>
+              <button class="btn" type="submit">reset</button>
+            </form>
+            <form class="inline" method="post" action="/users/{{ u.id }}/delete"><button class="btn danger" type="submit">delete</button></form>
+          </td>
         </tr>
         {% endfor %}
       </tbody>

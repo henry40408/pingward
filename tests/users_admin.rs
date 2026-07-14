@@ -48,3 +48,30 @@ async fn deleting_user_is_audited() {
         && a.target_type.as_deref() == Some("user")
         && a.target_id == Some(dave)));
 }
+
+#[tokio::test]
+async fn admin_resets_password_and_target_can_login() {
+    let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("original").unwrap();
+    store
+        .create_user("dave", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let dave = store.find_user_by_username("dave").await.unwrap().unwrap();
+    server
+        .post(&format!("/users/{}/password", dave.id))
+        .form(&[("password", "brandnew1")])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    let updated = store.find_user_by_id(dave.id).await.unwrap().unwrap();
+    assert!(pingward::auth::verify_password(
+        "brandnew1",
+        updated.password_hash.as_deref().unwrap()
+    ));
+    assert!(store
+        .list_audit(50)
+        .await
+        .unwrap()
+        .iter()
+        .any(|a| a.action == "user.password_reset" && a.target_id == Some(dave.id)));
+}
