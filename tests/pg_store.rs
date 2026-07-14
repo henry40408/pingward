@@ -111,6 +111,56 @@ async fn postgres_full_round_trip() {
         .await
         .unwrap();
 
+    // batched recent-pings query (the dashboard's N+1 avoidance): the
+    // ROW_NUMBER() window must behave on PostgreSQL exactly as on SQLite —
+    // per-check limit honored, grouped by check_id, and matching the per-check
+    // query. cid already has one ping; give cid2 three.
+    let cid2 = store
+        .create_check(
+            pid,
+            "job2",
+            "uuid-2",
+            ScheduleKind::Period,
+            Some(60),
+            30,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    for i in 0..3 {
+        store
+            .insert_ping(
+                cid2,
+                pingward::models::PingKind::Success,
+                None,
+                "p",
+                None,
+                now + chrono::Duration::seconds(i),
+            )
+            .await
+            .unwrap();
+    }
+    let batch = store
+        .list_recent_pings_for_checks(&[cid, cid2], 2)
+        .await
+        .unwrap();
+    assert_eq!(batch.get(&cid).unwrap().len(), 1);
+    assert_eq!(
+        batch.get(&cid2).unwrap().len(),
+        2,
+        "per-check limit honored"
+    );
+    let per_check: Vec<i64> = store
+        .list_recent_pings(cid2, 2)
+        .await
+        .unwrap()
+        .iter()
+        .map(|p| p.id)
+        .collect();
+    let batched: Vec<i64> = batch.get(&cid2).unwrap().iter().map(|p| p.id).collect();
+    assert_eq!(batched, per_check, "batch order matches per-check query");
+
     // notifications
     store
         .record_notification(

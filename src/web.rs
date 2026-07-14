@@ -277,8 +277,20 @@ async fn dashboard(
     let now = Utc::now();
     let (mut total, mut up, mut late, mut down) = (0usize, 0, 0, 0);
     let mut groups = Vec::new();
+    // Gather every project's checks first, then fetch all their recent pings in
+    // one batched query (avoids an N+1 of one `list_recent_pings` per check).
+    let mut project_checks = Vec::new();
+    let mut check_ids = Vec::new();
     for project in state.store.list_projects_for_user(user.id).await? {
         let checks = state.store.list_checks_for_project(project.id).await?;
+        check_ids.extend(checks.iter().map(|c| c.id));
+        project_checks.push((project, checks));
+    }
+    let pings_by_check = state
+        .store
+        .list_recent_pings_for_checks(&check_ids, 40)
+        .await?;
+    for (project, checks) in project_checks {
         let mut rows = Vec::with_capacity(checks.len());
         for c in &checks {
             let ds = crate::view::display_status(c, now);
@@ -289,9 +301,10 @@ async fn dashboard(
                 crate::view::DisplayStatus::Down => down += 1,
                 _ => {}
             }
-            let pings = state.store.list_recent_pings(c.id, 40).await?;
+            let empty = Vec::new();
+            let pings = pings_by_check.get(&c.id).unwrap_or(&empty);
             let bars = crate::view::heartbeat(
-                &pings,
+                pings,
                 c.max_runtime_secs,
                 c.status == CheckStatus::Paused,
                 6,
