@@ -3,7 +3,9 @@ use crate::auth::{
     SESSION_COOKIE, SESSION_TTL_DAYS,
 };
 use crate::error::AppError;
-use crate::models::{Channel, ChannelKind, Check, CheckStatus, Project, ScheduleKind, User};
+use crate::models::{
+    Channel, ChannelKind, Check, CheckStatus, Notification, Project, ScheduleKind, User,
+};
 use crate::notify::{notifier_for, EventKind, NotificationEvent};
 use crate::state::AppState;
 use crate::store::Store;
@@ -56,7 +58,7 @@ pub fn routes() -> Router<AppState> {
         .route("/users/{id}/admin", post(users_toggle_admin))
         .route("/users/{id}/disabled", post(users_set_disabled))
         // --- admin cross-user route group (each handler guarded by AdminUser) ---
-        .route("/admin", get(admin_home))
+        .route("/admin", get(admin_dashboard))
         .route("/admin/projects", get(admin_projects_page))
         .route(
             "/admin/projects/{id}",
@@ -1753,10 +1755,51 @@ struct AdminProjectsTemplate {
     projects: Vec<(Project, String)>,
 }
 
-/// `/admin` landing: for this plan simply a redirect to the projects list
-/// (a later plan replaces it with a cross-user dashboard).
-async fn admin_home(_admin: AdminUser) -> Result<Response, AppError> {
-    Ok(Redirect::to("/admin/projects").into_response())
+/// `/admin` landing: a cross-user dashboard with site-wide health and scale
+/// figures (users/projects/checks/pings, check status rollup, notification
+/// health, and scheduler heartbeat).
+#[derive(Template)]
+#[template(path = "admin_dashboard.html")]
+struct AdminDashboardTemplate {
+    show_nav: bool,
+    is_admin: bool,
+    users: i64,
+    projects: i64,
+    checks: i64,
+    pings_24h: i64,
+    status: crate::store::CheckStatusCounts,
+    down: Vec<(Check, String, String)>,
+    notif_ok: i64,
+    notif_err: i64,
+    channel_fail: Vec<(String, i64, i64)>,
+    recent_fail: Vec<Notification>,
+    last_scan_at: Option<String>,
+    last_prune_at: Option<String>,
+}
+
+async fn admin_dashboard(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Response, AppError> {
+    let day_ago = Utc::now() - Duration::days(1);
+    let (notif_ok, notif_err) = state.store.notification_counts_since(day_ago).await?;
+    Ok(render(&AdminDashboardTemplate {
+        show_nav: true,
+        is_admin: true,
+        users: state.store.count_users().await?,
+        projects: state.store.count_projects().await?,
+        checks: state.store.count_checks().await?,
+        pings_24h: state.store.count_pings_since(day_ago).await?,
+        status: state.store.count_checks_by_status().await?,
+        down: state.store.list_down_checks_with_owner().await?,
+        notif_ok,
+        notif_err,
+        channel_fail: state.store.channel_failure_counts_since(day_ago).await?,
+        recent_fail: state.store.recent_failed_notifications(10).await?,
+        last_scan_at: state.store.get_setting("last_scan_at").await?,
+        last_prune_at: state.store.get_setting("last_prune_at").await?,
+    })?
+    .into_response())
 }
 
 async fn admin_projects_page(
