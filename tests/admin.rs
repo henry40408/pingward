@@ -138,3 +138,32 @@ async fn admin_mutation_on_other_project_is_audited() {
             && a.target_id == Some(cid)
             && a.method.as_deref() == Some("POST")));
 }
+
+#[tokio::test]
+async fn admin_keeps_nav_link_on_owner_form_validation_error() {
+    let (server, store, admin_id) = admin_server().await;
+    let pid = store
+        .create_project(admin_id, "p", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    // Invalid: blank name is allowed, but blank period_secs with schedule_kind
+    // "period" fails `validate_check`, triggering the error re-render branch.
+    let res = server
+        .post(&format!("/projects/{pid}/checks"))
+        .form(&[
+            ("name", "c"),
+            ("schedule_kind", "period"),
+            ("period_secs", ""),
+            ("cron_expr", ""),
+            ("grace_secs", "30"),
+            ("timezone", "UTC"),
+            ("scan_interval_secs", ""),
+            ("max_runtime_secs", ""),
+            ("nag_interval_secs", ""),
+        ])
+        .await;
+    // Error re-render is 200 with the form; it must still show the Admin nav
+    // link since the viewer is an admin (even though this is the owner route).
+    res.assert_status_ok();
+    assert!(res.text().contains("href=\"/admin\""));
+}

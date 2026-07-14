@@ -751,10 +751,10 @@ async fn owned_check(store: &Store, id: i64, user_id: i64) -> Result<Check, AppE
     Ok(check)
 }
 
-fn empty_check_form(heading: &str, action: String, admin: bool) -> CheckFormTemplate {
+fn empty_check_form(heading: &str, action: String, is_admin: bool) -> CheckFormTemplate {
     CheckFormTemplate {
         show_nav: true,
-        is_admin: admin,
+        is_admin,
         heading: heading.into(),
         action,
         error: None,
@@ -807,25 +807,34 @@ async fn check_new(
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    let mut form = empty_check_form("New check", format!("/projects/{pid}/checks"), false);
-    form.is_admin = user.is_admin;
+    let form = empty_check_form(
+        "New check",
+        format!("/projects/{pid}/checks"),
+        user.is_admin,
+    );
     Ok(render(&form)?.into_response())
 }
 
 /// Shared create-check core: validate, re-render the form on error, else create
-/// the check and redirect. `admin` selects the owner or `/admin` route surface.
+/// the check and redirect. `admin` selects the owner or `/admin` route surface;
+/// `is_admin` reflects the current viewer's admin status and controls the nav
+/// Admin link.
 async fn check_create_core(
     state: &AppState,
     pid: i64,
     form: CheckForm,
     admin: bool,
+    is_admin: bool,
 ) -> Result<Response, AppError> {
     let base = admin_prefix(admin);
     let (kind, period_secs, grace, cron_expr) = match validate_check(&form) {
         Ok(v) => v,
         Err(msg) => {
-            let mut t =
-                empty_check_form("New check", format!("{base}/projects/{pid}/checks"), admin);
+            let mut t = empty_check_form(
+                "New check",
+                format!("{base}/projects/{pid}/checks"),
+                is_admin,
+            );
             t.error = Some(msg);
             t.name = form.name;
             t.schedule_kind = form.schedule_kind;
@@ -878,7 +887,7 @@ async fn check_create(
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    check_create_core(&state, pid, form, false).await
+    check_create_core(&state, pid, form, false, user.is_admin).await
 }
 
 async fn check_show(
@@ -1037,12 +1046,15 @@ async fn check_edit(
 }
 
 /// Shared update-check core: validate, re-render the form on error, else apply
-/// the schedule update and redirect. `admin` selects the route surface.
+/// the schedule update and redirect. `admin` selects the route surface;
+/// `is_admin` reflects the current viewer's admin status and controls the nav
+/// Admin link.
 async fn check_update_core(
     state: &AppState,
     id: i64,
     form: CheckForm,
     admin: bool,
+    is_admin: bool,
 ) -> Result<Response, AppError> {
     let base = admin_prefix(admin);
     let (kind, period_secs, grace, cron_expr) = match validate_check(&form) {
@@ -1050,7 +1062,7 @@ async fn check_update_core(
         Err(msg) => {
             let t = CheckFormTemplate {
                 show_nav: true,
-                is_admin: admin,
+                is_admin,
                 heading: "Edit check".into(),
                 action: format!("{base}/checks/{id}"),
                 error: Some(msg),
@@ -1092,7 +1104,7 @@ async fn check_update(
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     owned_check(&state.store, id, user.id).await?;
-    check_update_core(&state, id, form, false).await
+    check_update_core(&state, id, form, false, user.is_admin).await
 }
 
 async fn check_pause(
@@ -1211,19 +1223,21 @@ async fn channel_new(
 
 /// Shared create-channel core: validate config by kind, re-render the form on
 /// error, else create the channel and redirect. `admin` selects the route
-/// surface (form action + redirect target).
+/// surface (form action + redirect target); `is_admin` reflects the current
+/// viewer's admin status and controls the nav Admin link.
 async fn channel_create_core(
     state: &AppState,
     pid: i64,
     form: ChannelForm,
     admin: bool,
+    is_admin: bool,
 ) -> Result<Response, AppError> {
     let base = admin_prefix(admin);
 
     let err = |msg: &str| -> Result<Response, AppError> {
         Ok(render(&ChannelFormTemplate {
             show_nav: true,
-            is_admin: admin,
+            is_admin,
             admin,
             project_id: pid,
             error: Some(msg.to_string()),
@@ -1316,7 +1330,7 @@ async fn channel_create(
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    channel_create_core(&state, pid, form, false).await
+    channel_create_core(&state, pid, form, false, user.is_admin).await
 }
 
 async fn channel_delete(
@@ -1897,7 +1911,7 @@ async fn admin_check_create(
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
-    check_create_core(&state, pid, form, true).await
+    check_create_core(&state, pid, form, true, true).await
 }
 
 async fn admin_check_show(
@@ -1931,7 +1945,7 @@ async fn admin_check_update(
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    check_update_core(&state, id, form, true).await
+    check_update_core(&state, id, form, true, true).await
 }
 
 async fn admin_check_pause(
@@ -2038,7 +2052,7 @@ async fn admin_channel_create(
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
-    channel_create_core(&state, pid, form, true).await
+    channel_create_core(&state, pid, form, true, true).await
 }
 
 async fn admin_channel_delete(
