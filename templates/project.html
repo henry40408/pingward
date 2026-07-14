@@ -1,35 +1,51 @@
 {% extends "base.html" %}
 {% block body %}
-{% if let Some(tr) = test_result %}
-<p class="{% if tr.ok %}status-up{% else %}status-down{% endif %}">{{ tr.message }}</p>
-{% endif %}
-<h1>{{ project.name }}</h1>
-<p>
-  <a href="/projects/{{ project.id }}/edit">Edit</a>
-  <a href="/projects/{{ project.id }}/checks/new">New check</a>
-  <a href="/projects/{{ project.id }}/channels/new">New channel</a>
+<div class="phead">
+  <div><h1>{{ project.name }}</h1></div>
+</div>
+
+<div class="actions">
+  <a class="btn" href="/projects/{{ project.id }}/edit">Edit</a>
+  <a class="btn" href="/projects/{{ project.id }}/checks/new">New check</a>
+  <a class="btn" href="/projects/{{ project.id }}/channels/new">New channel</a>
   <form class="inline" method="post" action="/projects/{{ project.id }}/delete"
-        onsubmit="return confirm('Delete project?')"><button>Delete project</button></form>
-</p>
-<h2>Checks</h2>
-<table><tr><th>Name</th><th>Status</th><th>Schedule</th><th></th></tr>
-{% for c in checks %}
-<tr>
-  <td><a href="/checks/{{ c.id }}">{{ c.name }}</a></td>
-  <td class="status-{{ c.status.as_str() }}">{{ c.status.as_str() }}</td>
-  <td>{{ c.schedule_kind.as_str() }}</td>
-  <td><a href="/checks/{{ c.id }}/edit">edit</a></td>
-</tr>
-{% endfor %}
-</table>
-<h2>Channels</h2>
-<table><tr><th>Name</th><th>Kind</th><th></th></tr>
-{% for ch in channels %}
-<tr><td>{{ ch.name }}</td><td>{{ ch.kind.as_str() }}</td>
-  <td>
-    <form class="inline" method="post" action="/channels/{{ ch.id }}/test"><button>Send test</button></form>
-    <form class="inline" method="post" action="/channels/{{ ch.id }}/delete"><button>delete</button></form>
-  </td></tr>
-{% endfor %}
-</table>
+        onsubmit="return confirm('Delete project?')"><button class="btn danger" type="submit">Delete project</button></form>
+</div>
+
+{% if let Some(tr) = test_result %}
+<p class="flash {% if tr.ok %}ok{% else %}err{% endif %}">{{ tr.message }}</p>
+{% endif %}
+
+<div class="group">
+  <div class="gh"><h2>Checks</h2><span class="line"></span></div>
+  <div class="list">
+    {% if checks.is_empty() %}
+    <div class="cb"><p style="margin:0;color:var(--muted)">No checks yet.</p></div>
+    {% endif %}
+    {% for c in checks %}
+    <div class="check" onclick="location='/checks/{{ c.id }}'">
+      <span class="status-dot {{ c.status.as_str() }}"></span>
+      <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule_kind.as_str() }}</div></div>
+      <span class="badge {{ c.status.as_str() }}">{{ c.status.as_str() }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:0">
+  <div class="ch"><h2>Channels</h2></div>
+  <div class="cb">
+    {% if channels.is_empty() %}
+    <p style="margin:0;color:var(--muted)">No channels yet.</p>
+    {% endif %}
+    {% for ch in channels %}
+    <div class="chk" style="cursor:default">
+      <span class="nm">{{ ch.name }}</span>
+      <span class="kind">{{ ch.kind.as_str() }}</span>
+      <form class="inline" method="post" action="/channels/{{ ch.id }}/test" style="margin-left:8px"><button class="btn" type="submit">Send test</button></form>
+      <form class="inline" method="post" action="/channels/{{ ch.id }}/delete"><button class="btn danger" type="submit">delete</button></form>
+    </div>
+    {% endfor %}
+  </div>
+</div>
 {% endblock %}

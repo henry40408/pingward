@@ -777,10 +777,11 @@ async fn send_test_notification_reports_success() {
 
     let res = server.post(&format!("/channels/{chid}/test")).await;
     res.assert_status_ok();
+    let body = res.text();
+    assert!(body.contains("Test notification sent"), "got: {body}");
     assert!(
-        res.text().contains("Test notification sent"),
-        "got: {}",
-        res.text()
+        body.contains("class=\"flash ok\""),
+        "missing restyled ok banner: {body}"
     );
 }
 
@@ -808,11 +809,25 @@ async fn send_test_notification_reports_failure() {
 
     let res = server.post(&format!("/channels/{chid}/test")).await;
     res.assert_status_ok();
+    let body = res.text();
+    assert!(body.contains("Test notification failed"), "got: {body}");
     assert!(
-        res.text().contains("Test notification failed"),
-        "got: {}",
-        res.text()
+        body.contains("class=\"flash err\""),
+        "missing restyled err banner: {body}"
     );
+}
+
+#[tokio::test]
+async fn settings_and_users_pages_use_restyled_field_class() {
+    let (server, _store, _uid) = logged_in_server().await; // admin
+
+    let settings_res = server.get("/settings").await;
+    settings_res.assert_status_ok();
+    assert!(settings_res.text().contains("class=\"field\""));
+
+    let users_res = server.get("/users").await;
+    users_res.assert_status_ok();
+    assert!(users_res.text().contains("class=\"field\""));
 }
 
 #[tokio::test]
