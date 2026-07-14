@@ -10,7 +10,9 @@ use crate::notify::{notifier_for, EventKind, NotificationEvent};
 use crate::state::AppState;
 use crate::store::Store;
 use askama::Template;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
+use axum::http::{Method, StatusCode};
+use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
@@ -96,6 +98,7 @@ pub fn routes() -> Router<AppState> {
 #[template(path = "setup.html")]
 struct SetupTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     error: Option<String>,
 }
@@ -104,6 +107,7 @@ struct SetupTemplate {
 #[template(path = "login.html")]
 struct LoginTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     error: Option<String>,
 }
@@ -112,6 +116,7 @@ struct LoginTemplate {
 #[template(path = "dashboard.html")]
 struct DashboardTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     total: usize,
     up: usize,
@@ -166,6 +171,7 @@ async fn setup_page(State(state): State<AppState>) -> Result<Response, AppError>
     }
     Ok(render(&SetupTemplate {
         show_nav: false,
+        csrf: String::new(),
         is_admin: false,
         error: None,
     })?
@@ -183,6 +189,7 @@ async fn setup_submit(
     if creds.username.is_empty() || creds.password.is_empty() {
         return Ok(render(&SetupTemplate {
             show_nav: false,
+            csrf: String::new(),
             is_admin: false,
             error: Some("username and password are required".into()),
         })?
@@ -206,6 +213,7 @@ async fn login_page(State(state): State<AppState>) -> Result<Response, AppError>
     }
     Ok(render(&LoginTemplate {
         show_nav: false,
+        csrf: String::new(),
         is_admin: false,
         error: None,
     })?
@@ -226,6 +234,7 @@ async fn login_submit(
     if !ok {
         return Ok(render(&LoginTemplate {
             show_nav: false,
+            csrf: String::new(),
             is_admin: false,
             error: Some("invalid username or password".into()),
         })?
@@ -235,6 +244,7 @@ async fn login_submit(
     if user.disabled {
         return Ok(render(&LoginTemplate {
             show_nav: false,
+            csrf: String::new(),
             is_admin: false,
             error: Some("account is disabled".into()),
         })?
@@ -254,6 +264,7 @@ async fn logout(State(state): State<AppState>, jar: CookieJar) -> Result<Respons
 
 async fn dashboard(
     State(state): State<AppState>,
+    jar: CookieJar,
     OptionalUser(user): OptionalUser,
 ) -> Result<Response, AppError> {
     if state.store.count_users().await? == 0 {
@@ -306,6 +317,7 @@ async fn dashboard(
     }
     Ok(render(&DashboardTemplate {
         show_nav: true,
+        csrf: current_csrf(&state, &jar).await,
         is_admin: user.is_admin,
         total,
         up,
@@ -319,8 +331,14 @@ async fn dashboard(
 /// Create a session row and return a jar carrying the session cookie.
 async fn start_session(store: &Store, jar: CookieJar, user_id: i64) -> Result<CookieJar, AppError> {
     let token = new_session_token();
+    // Per-session CSRF synchronizer token, validated by `csrf_guard` on every
+    // state-changing browser request and embedded in POST forms by the render
+    // path (looked up via `Store::session_csrf_token`).
+    let csrf = new_session_token();
     let expires = Utc::now() + Duration::days(SESSION_TTL_DAYS);
-    store.create_session(&token, user_id, expires).await?;
+    store
+        .create_session(&token, user_id, &csrf, expires)
+        .await?;
     let cookie = Cookie::build((SESSION_COOKIE, token))
         .http_only(true)
         .same_site(SameSite::Lax)
@@ -329,11 +347,87 @@ async fn start_session(store: &Store, jar: CookieJar, user_id: i64) -> Result<Co
     Ok(jar.add(cookie))
 }
 
+/// Resolve the current session's CSRF synchronizer token from the request
+/// cookies, for embedding as a hidden `_csrf` field in rendered POST forms.
+/// Returns an empty string when there is no session or no stored token (e.g.
+/// the pre-session `login`/`setup` pages, which carry exempt forms).
+async fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
+    match jar.get(SESSION_COOKIE) {
+        Some(cookie) => state
+            .store
+            .session_csrf_token(cookie.value())
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+/// CSRF synchronizer-token guard, applied to `web::routes()` only (the machine
+/// `/ping/*` endpoints, assets, and `/healthz` live in sibling routers and are
+/// therefore structurally exempt).
+///
+/// Safe methods (GET/HEAD/OPTIONS) and the pre-session `POST /login` and
+/// `POST /setup` paths pass through untouched. Every other state-changing
+/// request must present the session's stored token, taken from the
+/// `X-CSRF-Token` header or, failing that, the `_csrf` urlencoded form field
+/// (in which case the body is buffered and the request rebuilt so the
+/// downstream `Form<T>` extractor still works). The token is a random UUID, so
+/// a plain `==` comparison (no constant-time compare) is adequate here.
+pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    // Safe methods never change state.
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        return next.run(req).await;
+    }
+    // Pre-session paths: no session (and hence no token) exists yet.
+    let path = req.uri().path();
+    if path == "/login" || path == "/setup" {
+        return next.run(req).await;
+    }
+    // Resolve the caller's session token from the cookie, then its stored CSRF.
+    let jar = CookieJar::from_headers(req.headers());
+    let stored = match jar.get(SESSION_COOKIE) {
+        Some(cookie) => match state.store.session_csrf_token(cookie.value()).await {
+            Ok(Some(tok)) if !tok.is_empty() => tok,
+            _ => return StatusCode::FORBIDDEN.into_response(),
+        },
+        None => return StatusCode::FORBIDDEN.into_response(),
+    };
+    // Prefer the header token — this path avoids buffering the body.
+    if let Some(submitted) = req
+        .headers()
+        .get("x-csrf-token")
+        .and_then(|v| v.to_str().ok())
+    {
+        if stored == submitted {
+            return next.run(req).await;
+        }
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // Otherwise read the `_csrf` form field: buffer the body, extract the token,
+    // then rebuild the request with the same bytes for the downstream handler.
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, 1 << 20).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    };
+    let submitted = form_urlencoded::parse(&bytes)
+        .find(|(k, _)| k == "_csrf")
+        .map(|(_, v)| v.into_owned());
+    if submitted.as_deref() != Some(stored.as_str()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let req = Request::from_parts(parts, axum::body::Body::from(bytes));
+    next.run(req).await
+}
+
 // --- project templates ---
 #[derive(Template)]
 #[template(path = "project_form.html")]
 struct ProjectFormTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     heading: String,
     action: String,
@@ -346,6 +440,7 @@ struct ProjectFormTemplate {
 #[template(path = "project.html")]
 struct ProjectTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     admin: bool,
     project: Project,
@@ -493,9 +588,14 @@ async fn admin_channel(
     Ok(ch)
 }
 
-async fn project_new(CurrentUser(user): CurrentUser) -> Result<Response, AppError> {
+async fn project_new(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+) -> Result<Response, AppError> {
     Ok(render(&ProjectFormTemplate {
         show_nav: true,
+        csrf: current_csrf(&state, &jar).await,
         is_admin: user.is_admin,
         heading: "New project".into(),
         action: "/projects".into(),
@@ -543,11 +643,13 @@ async fn render_project_page(
     test_result: Option<TestResult>,
     admin: bool,
     is_admin: bool,
+    csrf: String,
 ) -> Result<Response, AppError> {
     let checks = store.list_checks_for_project(project.id).await?;
     let channels = store.list_channels_for_project(project.id).await?;
     Ok(render(&ProjectTemplate {
         show_nav: true,
+        csrf,
         is_admin,
         admin,
         project,
@@ -561,10 +663,16 @@ async fn render_project_page(
 /// Build the project edit form, pointing its action at the owner or `/admin`
 /// route depending on `admin`. `is_admin` reflects the current viewer's admin
 /// status and controls the nav Admin link.
-fn project_edit_form(project: Project, admin: bool, is_admin: bool) -> ProjectFormTemplate {
+fn project_edit_form(
+    project: Project,
+    admin: bool,
+    is_admin: bool,
+    csrf: String,
+) -> ProjectFormTemplate {
     let base = admin_prefix(admin);
     ProjectFormTemplate {
         show_nav: true,
+        csrf,
         is_admin,
         heading: "Edit project".into(),
         action: format!("{base}/projects/{}", project.id),
@@ -582,20 +690,24 @@ fn project_edit_form(project: Project, admin: bool, is_admin: bool) -> ProjectFo
 
 async fn project_show(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = owned_project(&state.store, id, user.id).await?;
-    render_project_page(&state.store, project, None, false, user.is_admin).await
+    let csrf = current_csrf(&state, &jar).await;
+    render_project_page(&state.store, project, None, false, user.is_admin, csrf).await
 }
 
 async fn project_edit(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = owned_project(&state.store, id, user.id).await?;
-    Ok(render(&project_edit_form(project, false, user.is_admin))?.into_response())
+    let csrf = current_csrf(&state, &jar).await;
+    Ok(render(&project_edit_form(project, false, user.is_admin, csrf))?.into_response())
 }
 
 async fn project_update(
@@ -686,6 +798,7 @@ struct NotificationRow {
 #[template(path = "check_form.html")]
 struct CheckFormTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     heading: String,
     action: String,
@@ -705,6 +818,7 @@ struct CheckFormTemplate {
 #[template(path = "check.html")]
 struct CheckTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     admin: bool,
     check: Check,
@@ -751,10 +865,16 @@ async fn owned_check(store: &Store, id: i64, user_id: i64) -> Result<Check, AppE
     Ok(check)
 }
 
-fn empty_check_form(heading: &str, action: String, admin: bool) -> CheckFormTemplate {
+fn empty_check_form(
+    heading: &str,
+    action: String,
+    is_admin: bool,
+    csrf: String,
+) -> CheckFormTemplate {
     CheckFormTemplate {
         show_nav: true,
-        is_admin: admin,
+        csrf,
+        is_admin,
         heading: heading.into(),
         action,
         error: None,
@@ -803,29 +923,43 @@ fn validate_check(
 
 async fn check_new(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    let mut form = empty_check_form("New check", format!("/projects/{pid}/checks"), false);
-    form.is_admin = user.is_admin;
+    let csrf = current_csrf(&state, &jar).await;
+    let form = empty_check_form(
+        "New check",
+        format!("/projects/{pid}/checks"),
+        user.is_admin,
+        csrf,
+    );
     Ok(render(&form)?.into_response())
 }
 
 /// Shared create-check core: validate, re-render the form on error, else create
-/// the check and redirect. `admin` selects the owner or `/admin` route surface.
+/// the check and redirect. `admin` selects the owner or `/admin` route surface;
+/// `is_admin` reflects the current viewer's admin status and controls the nav
+/// Admin link.
 async fn check_create_core(
     state: &AppState,
     pid: i64,
     form: CheckForm,
     admin: bool,
+    is_admin: bool,
+    csrf: String,
 ) -> Result<Response, AppError> {
     let base = admin_prefix(admin);
     let (kind, period_secs, grace, cron_expr) = match validate_check(&form) {
         Ok(v) => v,
         Err(msg) => {
-            let mut t =
-                empty_check_form("New check", format!("{base}/projects/{pid}/checks"), admin);
+            let mut t = empty_check_form(
+                "New check",
+                format!("{base}/projects/{pid}/checks"),
+                is_admin,
+                csrf,
+            );
             t.error = Some(msg);
             t.name = form.name;
             t.schedule_kind = form.schedule_kind;
@@ -873,21 +1007,25 @@ async fn check_create_core(
 
 async fn check_create(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(pid): Path<i64>,
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    check_create_core(&state, pid, form, false).await
+    let csrf = current_csrf(&state, &jar).await;
+    check_create_core(&state, pid, form, false, user.is_admin, csrf).await
 }
 
 async fn check_show(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
-    render_check_page(&state, check, false, user.is_admin).await
+    let csrf = current_csrf(&state, &jar).await;
+    render_check_page(&state, check, false, user.is_admin, csrf).await
 }
 
 /// Render the check detail page. `admin` renders `/admin`-prefixed action URLs;
@@ -898,6 +1036,7 @@ async fn render_check_page(
     check: Check,
     admin: bool,
     is_admin: bool,
+    csrf: String,
 ) -> Result<Response, AppError> {
     let id = check.id;
     let project = state
@@ -979,6 +1118,7 @@ async fn render_check_page(
         .collect();
     Ok(render(&CheckTemplate {
         show_nav: true,
+        csrf,
         is_admin,
         admin,
         check,
@@ -998,10 +1138,11 @@ async fn render_check_page(
 /// Build the check edit form pre-filled from `check`, pointing its action at
 /// the owner or `/admin` route depending on `admin`. `is_admin` reflects the
 /// current viewer's admin status and controls the nav Admin link.
-fn check_edit_form(check: Check, admin: bool, is_admin: bool) -> CheckFormTemplate {
+fn check_edit_form(check: Check, admin: bool, is_admin: bool, csrf: String) -> CheckFormTemplate {
     let base = admin_prefix(admin);
     CheckFormTemplate {
         show_nav: true,
+        csrf,
         is_admin,
         heading: "Edit check".into(),
         action: format!("{base}/checks/{}", check.id),
@@ -1029,20 +1170,26 @@ fn check_edit_form(check: Check, admin: bool, is_admin: bool) -> CheckFormTempla
 
 async fn check_edit(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
-    Ok(render(&check_edit_form(check, false, user.is_admin))?.into_response())
+    let csrf = current_csrf(&state, &jar).await;
+    Ok(render(&check_edit_form(check, false, user.is_admin, csrf))?.into_response())
 }
 
 /// Shared update-check core: validate, re-render the form on error, else apply
-/// the schedule update and redirect. `admin` selects the route surface.
+/// the schedule update and redirect. `admin` selects the route surface;
+/// `is_admin` reflects the current viewer's admin status and controls the nav
+/// Admin link.
 async fn check_update_core(
     state: &AppState,
     id: i64,
     form: CheckForm,
     admin: bool,
+    is_admin: bool,
+    csrf: String,
 ) -> Result<Response, AppError> {
     let base = admin_prefix(admin);
     let (kind, period_secs, grace, cron_expr) = match validate_check(&form) {
@@ -1050,7 +1197,8 @@ async fn check_update_core(
         Err(msg) => {
             let t = CheckFormTemplate {
                 show_nav: true,
-                is_admin: admin,
+                csrf,
+                is_admin,
                 heading: "Edit check".into(),
                 action: format!("{base}/checks/{id}"),
                 error: Some(msg),
@@ -1087,12 +1235,14 @@ async fn check_update_core(
 
 async fn check_update(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     owned_check(&state.store, id, user.id).await?;
-    check_update_core(&state, id, form, false).await
+    let csrf = current_csrf(&state, &jar).await;
+    check_update_core(&state, id, form, false, user.is_admin, csrf).await
 }
 
 async fn check_pause(
@@ -1153,6 +1303,7 @@ async fn check_delete(
 #[template(path = "channel_form.html")]
 struct ChannelFormTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     admin: bool,
     project_id: i64,
@@ -1194,12 +1345,14 @@ struct BindForm {
 
 async fn channel_new(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
     Ok(render(&ChannelFormTemplate {
         show_nav: true,
+        csrf: current_csrf(&state, &jar).await,
         is_admin: user.is_admin,
         admin: false,
         project_id: pid,
@@ -1211,19 +1364,23 @@ async fn channel_new(
 
 /// Shared create-channel core: validate config by kind, re-render the form on
 /// error, else create the channel and redirect. `admin` selects the route
-/// surface (form action + redirect target).
+/// surface (form action + redirect target); `is_admin` reflects the current
+/// viewer's admin status and controls the nav Admin link.
 async fn channel_create_core(
     state: &AppState,
     pid: i64,
     form: ChannelForm,
     admin: bool,
+    is_admin: bool,
+    csrf: String,
 ) -> Result<Response, AppError> {
     let base = admin_prefix(admin);
 
     let err = |msg: &str| -> Result<Response, AppError> {
         Ok(render(&ChannelFormTemplate {
             show_nav: true,
-            is_admin: admin,
+            csrf: csrf.clone(),
+            is_admin,
             admin,
             project_id: pid,
             error: Some(msg.to_string()),
@@ -1311,12 +1468,14 @@ async fn channel_create_core(
 
 async fn channel_create(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(pid): Path<i64>,
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    channel_create_core(&state, pid, form, false).await
+    let csrf = current_csrf(&state, &jar).await;
+    channel_create_core(&state, pid, form, false, user.is_admin, csrf).await
 }
 
 async fn channel_delete(
@@ -1366,6 +1525,7 @@ async fn run_channel_test(state: &AppState, channel: &Channel) -> TestResult {
 /// project page with a result banner.
 async fn channel_test(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
@@ -1376,7 +1536,16 @@ async fn channel_test(
         .ok_or(AppError::NotFound)?;
     let project = owned_project(&state.store, channel.project_id, user.id).await?;
     let result = run_channel_test(&state, &channel).await;
-    render_project_page(&state.store, project, Some(result), false, user.is_admin).await
+    let csrf = current_csrf(&state, &jar).await;
+    render_project_page(
+        &state.store,
+        project,
+        Some(result),
+        false,
+        user.is_admin,
+        csrf,
+    )
+    .await
 }
 
 /// Replace a check's bound channel set with exactly the submitted ids (only
@@ -1433,6 +1602,7 @@ async fn check_set_channels(
 #[template(path = "settings.html")]
 struct SettingsTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     scan_interval: String,
     nag_interval: String,
@@ -1444,6 +1614,7 @@ struct SettingsTemplate {
 #[template(path = "users.html")]
 struct UsersTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     users: Vec<User>,
     error: Option<String>,
@@ -1472,6 +1643,7 @@ struct PasswordForm {
 
 async fn settings_page(
     State(state): State<AppState>,
+    jar: CookieJar,
     _admin: AdminUser,
 ) -> Result<Response, AppError> {
     let scan_interval = state
@@ -1496,6 +1668,7 @@ async fn settings_page(
         .unwrap_or_default();
     Ok(render(&SettingsTemplate {
         show_nav: true,
+        csrf: current_csrf(&state, &jar).await,
         is_admin: true,
         scan_interval,
         nag_interval,
@@ -1546,11 +1719,13 @@ async fn settings_save(
 
 async fn users_page(
     State(state): State<AppState>,
+    jar: CookieJar,
     _admin: AdminUser,
 ) -> Result<Response, AppError> {
     let users = state.store.list_users().await?;
     Ok(render(&UsersTemplate {
         show_nav: true,
+        csrf: current_csrf(&state, &jar).await,
         is_admin: true,
         users,
         error: None,
@@ -1560,6 +1735,7 @@ async fn users_page(
 
 async fn users_create(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     Form(form): Form<NewUserForm>,
 ) -> Result<Response, AppError> {
@@ -1567,6 +1743,7 @@ async fn users_create(
         let users = state.store.list_users().await?;
         return Ok(render(&UsersTemplate {
             show_nav: true,
+            csrf: current_csrf(&state, &jar).await,
             is_admin: true,
             users,
             error: Some("username and password are required".into()),
@@ -1609,18 +1786,12 @@ async fn users_delete(
     if id == admin.id {
         return Ok(Redirect::to("/users").into_response());
     }
-    let admins = state
-        .store
-        .list_users()
-        .await?
-        .into_iter()
-        .filter(|u| u.is_admin)
-        .count();
-    let target = state.store.find_user_by_id(id).await?;
-    if let Some(t) = target {
-        if t.is_admin && admins <= 1 {
-            return Ok(Redirect::to("/users").into_response());
-        }
+    let Some(target) = state.store.find_user_by_id(id).await? else {
+        return Ok(Redirect::to("/users").into_response());
+    };
+    // Refuse to delete the last enabled admin.
+    if target.is_admin && !target.disabled && state.store.count_enabled_admins().await? <= 1 {
+        return Ok(Redirect::to("/users").into_response());
     }
     state.store.delete_user(id).await?;
     state
@@ -1647,6 +1818,9 @@ async fn users_set_password(
     Form(form): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
     if form.password.is_empty() {
+        return Ok(Redirect::to("/users").into_response());
+    }
+    if state.store.find_user_by_id(id).await?.is_none() {
         return Ok(Redirect::to("/users").into_response());
     }
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
@@ -1754,6 +1928,7 @@ async fn users_set_disabled(
 #[template(path = "admin_projects.html")]
 struct AdminProjectsTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     projects: Vec<(Project, String)>,
 }
@@ -1765,6 +1940,7 @@ struct AdminProjectsTemplate {
 #[template(path = "admin_dashboard.html")]
 struct AdminDashboardTemplate {
     show_nav: bool,
+    csrf: String,
     is_admin: bool,
     users: i64,
     projects: i64,
@@ -1782,12 +1958,14 @@ struct AdminDashboardTemplate {
 
 async fn admin_dashboard(
     State(state): State<AppState>,
+    jar: CookieJar,
     _admin: AdminUser,
 ) -> Result<Response, AppError> {
     let day_ago = Utc::now() - Duration::days(1);
     let (notif_ok, notif_err) = state.store.notification_counts_since(day_ago).await?;
     Ok(render(&AdminDashboardTemplate {
         show_nav: true,
+        csrf: current_csrf(&state, &jar).await,
         is_admin: true,
         users: state.store.count_users().await?,
         projects: state.store.count_projects().await?,
@@ -1807,11 +1985,13 @@ async fn admin_dashboard(
 
 async fn admin_projects_page(
     State(state): State<AppState>,
+    jar: CookieJar,
     _admin: AdminUser,
 ) -> Result<Response, AppError> {
     let projects = state.store.list_all_projects_with_owner().await?;
     Ok(render(&AdminProjectsTemplate {
         show_nav: true,
+        csrf: current_csrf(&state, &jar).await,
         is_admin: true,
         projects,
     })?
@@ -1821,24 +2001,28 @@ async fn admin_projects_page(
 // -- projects --
 async fn admin_project_show(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
-    render_project_page(&state.store, project, None, true, true).await
+    let csrf = current_csrf(&state, &jar).await;
+    render_project_page(&state.store, project, None, true, true, csrf).await
 }
 
 async fn admin_project_edit(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
-    Ok(render(&project_edit_form(project, true, true))?.into_response())
+    let csrf = current_csrf(&state, &jar).await;
+    Ok(render(&project_edit_form(project, true, true, csrf))?.into_response())
 }
 
 async fn admin_project_update(
@@ -1877,22 +2061,26 @@ async fn admin_project_delete(
 // -- checks --
 async fn admin_check_new(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
+    let csrf = current_csrf(&state, &jar).await;
     Ok(render(&empty_check_form(
         "New check",
         format!("/admin/projects/{pid}/checks"),
         true,
+        csrf,
     ))?
     .into_response())
 }
 
 async fn admin_check_create(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
@@ -1900,33 +2088,39 @@ async fn admin_check_create(
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
-    check_create_core(&state, pid, form, true).await
+    let csrf = current_csrf(&state, &jar).await;
+    check_create_core(&state, pid, form, true, true, csrf).await
 }
 
 async fn admin_check_show(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    render_check_page(&state, check, true, true).await
+    let csrf = current_csrf(&state, &jar).await;
+    render_check_page(&state, check, true, true, csrf).await
 }
 
 async fn admin_check_edit(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    Ok(render(&check_edit_form(check, true, true))?.into_response())
+    let csrf = current_csrf(&state, &jar).await;
+    Ok(render(&check_edit_form(check, true, true, csrf))?.into_response())
 }
 
 async fn admin_check_update(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
@@ -1934,7 +2128,8 @@ async fn admin_check_update(
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    check_update_core(&state, id, form, true).await
+    let csrf = current_csrf(&state, &jar).await;
+    check_update_core(&state, id, form, true, true, csrf).await
 }
 
 async fn admin_check_pause(
@@ -2015,6 +2210,7 @@ async fn admin_check_set_channels(
 // -- channels --
 async fn admin_channel_new(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
@@ -2023,6 +2219,7 @@ async fn admin_channel_new(
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
     Ok(render(&ChannelFormTemplate {
         show_nav: true,
+        csrf: current_csrf(&state, &jar).await,
         is_admin: true,
         admin: true,
         project_id: pid,
@@ -2034,6 +2231,7 @@ async fn admin_channel_new(
 
 async fn admin_channel_create(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
@@ -2041,7 +2239,8 @@ async fn admin_channel_create(
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
-    channel_create_core(&state, pid, form, true).await
+    let csrf = current_csrf(&state, &jar).await;
+    channel_create_core(&state, pid, form, true, true, csrf).await
 }
 
 async fn admin_channel_delete(
@@ -2058,6 +2257,7 @@ async fn admin_channel_delete(
 
 async fn admin_channel_test(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
@@ -2070,7 +2270,8 @@ async fn admin_channel_test(
         .await?
         .ok_or(AppError::NotFound)?;
     let result = run_channel_test(&state, &channel).await;
-    render_project_page(&state.store, project, Some(result), true, true).await
+    let csrf = current_csrf(&state, &jar).await;
+    render_project_page(&state.store, project, Some(result), true, true, csrf).await
 }
 
 #[cfg(test)]

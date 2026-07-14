@@ -1,6 +1,18 @@
 use axum_test::TestServer;
 use pingward::{app, config::Config, db, state::AppState, store::Store};
 
+/// After a session exists, send its CSRF token as a default `X-CSRF-Token`
+/// header so protected POSTs pass `csrf_guard`. Call after every (re)login.
+async fn set_csrf(server: &mut TestServer, store: &Store) {
+    let tok = sqlx::query_scalar::<_, String>(
+        "SELECT csrf_token FROM sessions ORDER BY expires_at DESC LIMIT 1",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    server.add_header("x-csrf-token", tok.as_str());
+}
+
 async fn admin_server() -> (TestServer, Store, i64) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -17,6 +29,7 @@ async fn admin_server() -> (TestServer, Store, i64) {
         .post("/login")
         .form(&[("username", "admin"), ("password", "pw")])
         .await;
+    set_csrf(&mut server, &store).await;
     (server, store, admin_id)
 }
 
@@ -47,6 +60,33 @@ async fn deleting_user_is_audited() {
     assert!(audit.iter().any(|a| a.action == "user.delete"
         && a.target_type.as_deref() == Some("user")
         && a.target_id == Some(dave)));
+}
+
+#[tokio::test]
+async fn deleting_nonexistent_user_writes_no_audit() {
+    let (server, store, _admin) = admin_server().await;
+    let before = store.list_audit(50).await.unwrap().len();
+    server.post("/users/99999/delete").await; // nonexistent id
+    let after = store.list_audit(50).await.unwrap();
+    assert!(!after
+        .iter()
+        .any(|a| a.action == "user.delete" && a.target_id == Some(99999)));
+    assert_eq!(after.len(), before);
+}
+
+#[tokio::test]
+async fn resetting_password_for_nonexistent_user_writes_no_audit() {
+    let (server, store, _admin) = admin_server().await;
+    server
+        .post("/users/99999/password")
+        .form(&[("password", "whatever12")])
+        .await;
+    assert!(!store
+        .list_audit(50)
+        .await
+        .unwrap()
+        .iter()
+        .any(|a| a.action == "user.password_reset" && a.target_id == Some(99999)));
 }
 
 #[tokio::test]

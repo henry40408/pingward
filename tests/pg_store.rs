@@ -142,7 +142,7 @@ async fn postgres_full_round_trip() {
     // sessions
     let future_expiry = now + chrono::Duration::hours(1);
     store
-        .create_session("sess-active", uid, future_expiry)
+        .create_session("sess-active", uid, "csrf-active", future_expiry)
         .await
         .unwrap();
     assert_eq!(
@@ -156,7 +156,7 @@ async fn postgres_full_round_trip() {
 
     let past_expiry = now - chrono::Duration::hours(1);
     store
-        .create_session("sess-expired", uid, past_expiry)
+        .create_session("sess-expired", uid, "csrf-expired", past_expiry)
         .await
         .unwrap();
     assert!(

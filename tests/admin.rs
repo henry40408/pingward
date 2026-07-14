@@ -1,6 +1,19 @@
 use axum_test::TestServer;
 use pingward::{app, config::Config, db, state::AppState, store::Store};
 
+/// After a session exists, configure the `TestServer` to send that session's
+/// CSRF synchronizer token as a default `X-CSRF-Token` header so protected POSTs
+/// are not rejected by `csrf_guard`. Call after every (re)login.
+async fn set_csrf(server: &mut TestServer, store: &Store) {
+    let tok = sqlx::query_scalar::<_, String>(
+        "SELECT csrf_token FROM sessions ORDER BY expires_at DESC LIMIT 1",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    server.add_header("x-csrf-token", tok.as_str());
+}
+
 async fn admin_server() -> (TestServer, Store, i64) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -17,6 +30,7 @@ async fn admin_server() -> (TestServer, Store, i64) {
         .post("/login")
         .form(&[("username", "admin"), ("password", "pw")])
         .await;
+    set_csrf(&mut server, &store).await;
     (server, store, admin_id)
 }
 
@@ -137,4 +151,33 @@ async fn admin_mutation_on_other_project_is_audited() {
         .any(|a| a.target_type.as_deref() == Some("check")
             && a.target_id == Some(cid)
             && a.method.as_deref() == Some("POST")));
+}
+
+#[tokio::test]
+async fn admin_keeps_nav_link_on_owner_form_validation_error() {
+    let (server, store, admin_id) = admin_server().await;
+    let pid = store
+        .create_project(admin_id, "p", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    // Invalid: blank name is allowed, but blank period_secs with schedule_kind
+    // "period" fails `validate_check`, triggering the error re-render branch.
+    let res = server
+        .post(&format!("/projects/{pid}/checks"))
+        .form(&[
+            ("name", "c"),
+            ("schedule_kind", "period"),
+            ("period_secs", ""),
+            ("cron_expr", ""),
+            ("grace_secs", "30"),
+            ("timezone", "UTC"),
+            ("scan_interval_secs", ""),
+            ("max_runtime_secs", ""),
+            ("nag_interval_secs", ""),
+        ])
+        .await;
+    // Error re-render is 200 with the form; it must still show the Admin nav
+    // link since the viewer is an admin (even though this is the owner route).
+    res.assert_status_ok();
+    assert!(res.text().contains("href=\"/admin\""));
 }

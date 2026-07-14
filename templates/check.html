@@ -17,16 +17,16 @@
 <div class="actions">
   <a class="btn" href="{{ base }}/checks/{{ check.id }}/edit">Edit</a>
   {% if check.status.as_str() == "paused" %}
-  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/resume"><button class="btn">Resume</button></form>
+  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/resume"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn">Resume</button></form>
   {% else %}
-  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/pause"><button class="btn">Pause</button></form>
+  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/pause"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn">Pause</button></form>
   {% endif %}
   {% if status == "down" && !check.acknowledged %}
-  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/ack"><button class="btn primary">Acknowledge</button></form>
+  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/ack"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn primary">Acknowledge</button></form>
   {% endif %}
-  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/regenerate"><button class="btn">Regenerate URL</button></form>
+  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/regenerate"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn">Regenerate URL</button></form>
   <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/delete"
-        onsubmit="return confirm('Delete this check?')"><button class="btn danger">Delete</button></form>
+        onsubmit="return confirm('Delete this check?')"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger">Delete</button></form>
 </div>
 
 <div class="card">
@@ -43,6 +43,7 @@
   <div class="ch"><h2>Notify channels</h2></div>
   <div class="cb">
     <form method="post" action="{{ base }}/checks/{{ check.id }}/channels">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
       {% for cb in channel_boxes %}
       <label class="chk"><input type="checkbox" name="channel_ids" value="{{ cb.id }}"{% if cb.bound %} checked{% endif %}><span class="nm">{{ cb.name }}</span><span class="kind">{{ cb.kind }}</span></label>
       {% endfor %}
