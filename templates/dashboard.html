@@ -25,7 +25,7 @@
   </div>
   <div class="list">
     {% for c in g.checks %}
-    <div class="check" tabindex="0" role="link" onclick="location='/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter')location='/checks/{{ c.id }}'">
+    <div class="check" tabindex="0" role="link" onclick="location='/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='/checks/{{ c.id }}'">
       <span class="status-dot {{ c.status }}"></span>
       <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule }}</div></div>
       <div class="spark">{% for b in c.bars %}<i class="{{ b.class }}" style="height:{{ b.height }}px" title="{{ b.title }}"></i>{% endfor %}</div>

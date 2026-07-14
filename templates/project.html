@@ -23,7 +23,7 @@
     <div class="cb"><p style="margin:0;color:var(--muted)">No checks yet.</p></div>
     {% endif %}
     {% for c in checks %}
-    <div class="check" tabindex="0" role="link" onclick="location='/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter')location='/checks/{{ c.id }}'">
+    <div class="check" tabindex="0" role="link" onclick="location='/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='/checks/{{ c.id }}'">
       <span class="status-dot {{ c.status.as_str() }}"></span>
       <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule_kind.as_str() }}</div></div>
       <a class="rowedit" href="/checks/{{ c.id }}/edit" onclick="event.stopPropagation()">edit</a>
