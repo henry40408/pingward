@@ -108,7 +108,7 @@
   document.querySelectorAll('.localtime[data-ts]').forEach(function(el){
     var d = new Date(el.getAttribute('data-ts'));
     if (!isNaN(d.getTime())) {
-      el.textContent = d.toLocaleString();
+      el.textContent = d.toLocaleString(undefined, { hour12: false });
       el.title = el.getAttribute('data-ts');
     }
   });
