@@ -4,6 +4,7 @@
 <div class="card">
   <div class="cb">
     <form method="post" action="{{ action }}">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="field">
         <label for="name">Name</label>
         <input id="name" name="name" value="{{ name }}" required>

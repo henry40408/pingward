@@ -16,7 +16,7 @@
     <nav class="links"><a href="/">Dashboard</a><a href="/settings">Settings</a>{% if is_admin %}<a href="/admin">Admin</a>{% endif %}</nav>
     <div class="right">
       <button class="iconbtn" id="pw-theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
-      <form class="inline" method="post" action="/logout"><button class="ghost" type="submit">Log out</button></form>
+      <form class="inline" method="post" action="/logout"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="ghost" type="submit">Log out</button></form>
     </div>
   </div></header>
   {% endif %}

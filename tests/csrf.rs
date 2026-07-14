@@ -30,6 +30,50 @@ async fn csrf_token(store: &Store) -> String {
     .unwrap()
 }
 
+/// Pull the value of the first `name="_csrf"` hidden input out of a rendered
+/// HTML body — the token a real browser would echo back on form submission.
+fn extract_csrf(html: &str) -> String {
+    let marker = "name=\"_csrf\" value=\"";
+    let start = html
+        .find(marker)
+        .expect("rendered form must embed a _csrf field")
+        + marker.len();
+    let end = html[start..].find('"').expect("unterminated _csrf value");
+    html[start..start + end].to_string()
+}
+
+// End-to-end form path: the token embedded in a rendered form authorizes a real
+// browser-style POST (no `X-CSRF-Token` header), and omitting it is rejected.
+#[tokio::test]
+async fn form_includes_csrf_and_form_post_succeeds() {
+    let (server, _store) = logged_in_server().await;
+    // GET a page carrying a protected form and read the embedded token from the HTML.
+    let body = server.get("/users").await.text();
+    let token = extract_csrf(&body);
+    assert!(
+        !token.is_empty(),
+        "rendered form must embed a non-empty _csrf token"
+    );
+
+    // The embedded token alone (no header) authorizes the form submission.
+    server
+        .post("/users")
+        .form(&[
+            ("_csrf", token.as_str()),
+            ("username", "bob"),
+            ("password", "pw"),
+        ])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    // The same submission with the `_csrf` field omitted is rejected.
+    server
+        .post("/users")
+        .form(&[("username", "carol"), ("password", "pw")])
+        .await
+        .assert_status(axum::http::StatusCode::FORBIDDEN);
+}
+
 // (a) A protected POST with a valid session cookie but NO token → 403.
 #[tokio::test]
 async fn protected_post_without_token_is_forbidden() {

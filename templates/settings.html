@@ -5,6 +5,7 @@
 <div class="card">
   <div class="cb">
     <form method="post" action="/settings">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="two">
         <div class="field">
           <label for="scan_interval">Global scan interval (seconds)</label>
