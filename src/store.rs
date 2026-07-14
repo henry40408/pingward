@@ -969,7 +969,7 @@ impl Store {
              CAST(SUM(CASE WHEN n.status = 'ok' THEN 1 ELSE 0 END) AS BIGINT) AS ok, \
              CAST(SUM(CASE WHEN n.status = 'error' THEN 1 ELSE 0 END) AS BIGINT) AS err \
              FROM notifications n JOIN channels ch ON ch.id = n.channel_id \
-             WHERE n.created_at >= $1 GROUP BY ch.name ORDER BY err DESC",
+             WHERE n.created_at >= $1 GROUP BY ch.id, ch.name ORDER BY err DESC, ch.id",
         )
         .bind(cutoff.to_rfc3339())
         .fetch_all(&self.pool)
@@ -1667,5 +1667,87 @@ mod tests {
             .unwrap();
         assert_eq!(ok, 1);
         assert_eq!(err, 1);
+    }
+
+    #[tokio::test]
+    async fn channel_failure_counts_does_not_merge_same_named_channels() {
+        // Regression test: `channels.name` is NOT unique (only `channels.id`
+        // is). Two distinct channels that happen to share a name must be
+        // reported as two separate rows, not merged into one.
+        let store = seeded().await;
+        let cid = store
+            .create_check(
+                1,
+                "dup-check",
+                "dup-uuid",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        let chan_a = store
+            .create_channel(
+                1,
+                ChannelKind::Webhook,
+                "dup",
+                "{\"url\":\"http://a\"}",
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        let chan_b = store
+            .create_channel(
+                1,
+                ChannelKind::Webhook,
+                "dup",
+                "{\"url\":\"http://b\"}",
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(chan_a, chan_b);
+
+        let now = Utc::now();
+        store
+            .record_notification(
+                cid,
+                chan_a,
+                EventKind::Down,
+                NotifyStatus::Error,
+                Some("boom-a"),
+                now,
+            )
+            .await
+            .unwrap();
+        store
+            .record_notification(
+                cid,
+                chan_b,
+                EventKind::Down,
+                NotifyStatus::Error,
+                Some("boom-b"),
+                now,
+            )
+            .await
+            .unwrap();
+
+        let rows = store
+            .channel_failure_counts_since(Utc::now() - chrono::Duration::days(1))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "same-named channels must not be merged into one row: {rows:?}"
+        );
+        for (name, ok, err) in &rows {
+            assert_eq!(name, "dup");
+            assert_eq!(*ok, 0);
+            assert_eq!(*err, 1);
+        }
     }
 }
