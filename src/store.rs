@@ -409,6 +409,30 @@ impl Store {
         Ok(())
     }
 
+    pub async fn set_user_password(&self, id: i64, password_hash: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+            .bind(password_hash)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_user_admin(&self, id: i64, is_admin: bool) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET is_admin = $1 WHERE id = $2")
+            .bind(is_admin as i64)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn count_enabled_admins(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE is_admin <> 0 AND disabled = 0")
+            .fetch_one(&self.pool)
+            .await
+    }
+
     pub async fn create_session(
         &self,
         id: &str,
@@ -1116,6 +1140,36 @@ mod tests {
         assert!(store.find_user_by_id(id).await.unwrap().unwrap().disabled);
         store.set_user_disabled(id, false).await.unwrap();
         assert!(!store.find_user_by_id(id).await.unwrap().unwrap().disabled);
+    }
+
+    #[tokio::test]
+    async fn set_password_then_login_hash_changes() {
+        let store = seeded().await;
+        let id = store
+            .create_user("u4", Some("old"), false, Utc::now())
+            .await
+            .unwrap();
+        store.set_user_password(id, "newphc").await.unwrap();
+        let u = store.find_user_by_id(id).await.unwrap().unwrap();
+        assert_eq!(u.password_hash.as_deref(), Some("newphc"));
+    }
+
+    #[tokio::test]
+    async fn set_admin_and_count_enabled_admins() {
+        let store = seeded().await;
+        let a = store
+            .create_user("a", Some("p"), true, Utc::now())
+            .await
+            .unwrap();
+        let b = store
+            .create_user("b", Some("p"), false, Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(store.count_enabled_admins().await.unwrap(), 1);
+        store.set_user_admin(b, true).await.unwrap();
+        assert_eq!(store.count_enabled_admins().await.unwrap(), 2);
+        store.set_user_disabled(a, true).await.unwrap();
+        assert_eq!(store.count_enabled_admins().await.unwrap(), 1);
     }
 
     #[tokio::test]
