@@ -83,6 +83,9 @@ pub async fn run_prune_loop(store: Store, interval_secs: u64) {
             }
             Err(e) => tracing::error!("prune_once failed: {e}"),
         }
+        let _ = store
+            .set_setting("last_prune_at", &Utc::now().to_rfc3339())
+            .await;
         sleep(interval).await;
     }
 }
@@ -194,6 +197,17 @@ mod tests {
         let (p, n) = prune_once(&store, now).await.unwrap();
         assert_eq!((p, n), (1, 1));
         assert_eq!(store.list_recent_pings(cid, 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn prune_heartbeat_setting_writes() {
+        let (store, _cid, _chan) = store_with_check_and_channel().await;
+        // Simulate one loop body's heartbeat write.
+        store
+            .set_setting("last_prune_at", &Utc::now().to_rfc3339())
+            .await
+            .unwrap();
+        assert!(store.get_setting("last_prune_at").await.unwrap().is_some());
     }
 
     #[tokio::test]
