@@ -1,7 +1,7 @@
 use crate::db::Pool;
 use crate::models::{
-    Channel, ChannelKind, Check, CheckStatus, Notification, NotifyStatus, Ping, PingKind, Project,
-    ScheduleKind, User,
+    AuditLog, Channel, ChannelKind, Check, CheckStatus, Notification, NotifyStatus, Ping, PingKind,
+    Project, ScheduleKind, User,
 };
 use crate::notify::EventKind;
 use chrono::{DateTime, Utc};
@@ -12,6 +12,19 @@ use std::str::FromStr;
 #[derive(Clone)]
 pub struct Store {
     pub pool: Pool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NewAudit<'a> {
+    pub actor_user_id: i64,
+    pub actor_username: &'a str,
+    pub action: &'a str,
+    pub target_type: Option<&'a str>,
+    pub target_id: Option<i64>,
+    pub target_owner_id: Option<i64>,
+    pub method: Option<&'a str>,
+    pub path: Option<&'a str>,
+    pub detail: Option<&'a str>,
 }
 
 fn parse_ts(s: Option<String>) -> Option<DateTime<Utc>> {
@@ -136,6 +149,23 @@ fn row_to_notification(row: &sqlx::any::AnyRow) -> Result<Notification, sqlx::Er
         error: row.get("error"),
         created_at: parse_ts(row.get("created_at"))
             .ok_or_else(|| decode_err("notifications.created_at must be RFC3339"))?,
+    })
+}
+
+fn row_to_audit(row: &sqlx::any::AnyRow) -> Result<AuditLog, sqlx::Error> {
+    Ok(AuditLog {
+        id: row.get("id"),
+        actor_user_id: row.get("actor_user_id"),
+        actor_username: row.get("actor_username"),
+        action: row.get("action"),
+        target_type: row.get("target_type"),
+        target_id: row.get("target_id"),
+        target_owner_id: row.get("target_owner_id"),
+        method: row.get("method"),
+        path: row.get("path"),
+        detail: row.get("detail"),
+        created_at: parse_ts(row.get("created_at"))
+            .ok_or_else(|| decode_err("audit_log.created_at must be RFC3339"))?,
     })
 }
 
@@ -765,6 +795,41 @@ impl Store {
         .await?;
         Ok(())
     }
+
+    // --- audit log ---
+    pub async fn record_audit(
+        &self,
+        e: &NewAudit<'_>,
+        now: DateTime<Utc>,
+    ) -> Result<i64, sqlx::Error> {
+        let row = sqlx::query(
+            "INSERT INTO audit_log \
+             (actor_user_id, actor_username, action, target_type, target_id, \
+              target_owner_id, method, path, detail, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id",
+        )
+        .bind(e.actor_user_id)
+        .bind(e.actor_username)
+        .bind(e.action)
+        .bind(e.target_type)
+        .bind(e.target_id)
+        .bind(e.target_owner_id)
+        .bind(e.method)
+        .bind(e.path)
+        .bind(e.detail)
+        .bind(now.to_rfc3339())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get::<i64, _>("id"))
+    }
+
+    pub async fn list_audit(&self, limit: i64) -> Result<Vec<AuditLog>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM audit_log ORDER BY id DESC LIMIT $1")
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_audit).collect()
+    }
 }
 
 #[cfg(test)]
@@ -1234,5 +1299,36 @@ mod tests {
         // a far-past cutoff deletes nothing more
         let far = (now - Duration::days(365)).to_rfc3339();
         assert_eq!(store.delete_pings_before(&far).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn audit_roundtrips() {
+        let store = seeded().await;
+        let uid = store
+            .create_user("adm", Some("phc"), true, Utc::now())
+            .await
+            .unwrap();
+        store
+            .record_audit(
+                &NewAudit {
+                    actor_user_id: uid,
+                    actor_username: "adm",
+                    action: "admin.access",
+                    target_type: Some("project"),
+                    target_id: Some(7),
+                    target_owner_id: Some(42),
+                    method: Some("GET"),
+                    path: Some("/admin/projects/7"),
+                    detail: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        let rows = store.list_audit(10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].action, "admin.access");
+        assert_eq!(rows[0].target_owner_id, Some(42));
+        assert_eq!(rows[0].actor_username, "adm");
     }
 }
