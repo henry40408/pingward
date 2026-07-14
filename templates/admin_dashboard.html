@@ -74,7 +74,7 @@
       <tbody>
         {% for n in recent_fail %}
         <tr>
-          <td class="mono">{{ n.created_at }}</td>
+          <td class="mono"><span class="localtime" data-ts="{{ n.created_at.to_rfc3339() }}">{{ n.created_at }}</span></td>
           <td>{{ n.event.as_str() }}</td>
           <td><a href="/admin/checks/{{ n.check_id }}">#{{ n.check_id }}</a></td>
           <td class="fail-txt">{% if let Some(e) = n.error %}{{ e }}{% endif %}</td>
@@ -89,8 +89,8 @@
 <div class="card">
   <div class="ch"><h2>Scheduler</h2></div>
   <div class="cb">
-    <p class="mono" style="margin:0 0 8px">Last scan: {% if let Some(t) = last_scan_at %}{{ t }}{% else %}never{% endif %}</p>
-    <p class="mono" style="margin:0">Last prune: {% if let Some(t) = last_prune_at %}{{ t }}{% else %}never{% endif %}</p>
+    <p class="mono" style="margin:0 0 8px">Last scan: {% if let Some(t) = last_scan_at %}<span class="localtime" data-ts="{{ t }}">{{ t }}</span>{% else %}never{% endif %}</p>
+    <p class="mono" style="margin:0">Last prune: {% if let Some(t) = last_prune_at %}<span class="localtime" data-ts="{{ t }}">{{ t }}</span>{% else %}never{% endif %}</p>
   </div>
 </div>
 {% endblock %}

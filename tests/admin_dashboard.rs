@@ -53,6 +53,79 @@ async fn admin_dashboard_renders_with_figures() {
 }
 
 #[tokio::test]
+async fn admin_dashboard_absolute_times_wrapped_for_local_tz() {
+    let (server, store, _admin) = admin_server().await;
+    let now = chrono::Utc::now();
+    // Scheduler heartbeat timestamps.
+    store
+        .set_setting("last_scan_at", &now.to_rfc3339())
+        .await
+        .unwrap();
+    store
+        .set_setting("last_prune_at", &now.to_rfc3339())
+        .await
+        .unwrap();
+    // A failed notification to populate the "Recent failures" table.
+    let uid = store
+        .create_user("o2", Some("p"), false, now)
+        .await
+        .unwrap();
+    let pid = store
+        .create_project(uid, "p2", None, None, now)
+        .await
+        .unwrap();
+    let cid = store
+        .create_check(
+            pid,
+            "c2",
+            "uuid-c2",
+            pingward::models::ScheduleKind::Period,
+            Some(3600),
+            300,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    let chid = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "hook",
+            "{\"url\":\"http://x\"}",
+            now,
+        )
+        .await
+        .unwrap();
+    store
+        .record_notification(
+            cid,
+            chid,
+            pingward::notify::EventKind::Down,
+            pingward::models::NotifyStatus::Error,
+            Some("boom"),
+            now,
+        )
+        .await
+        .unwrap();
+
+    let body = server.get("/admin").await.text();
+    // Last scan, last prune, and the recent-failure "When" cell are each wrapped
+    // in a `.localtime` span so the shared base.html script converts them to the
+    // viewer's time zone (raw UTC text is only the no-JS fallback).
+    let spans = body.matches(r#"<span class="localtime" data-ts=""#).count();
+    assert!(
+        spans >= 3,
+        "expected >=3 localtime spans (scan, prune, failure), got {spans}"
+    );
+    // The scheduler heartbeat is embedded as its stored RFC3339 data-ts.
+    assert!(
+        body.contains(&format!(r#"data-ts="{}""#, now.to_rfc3339())),
+        "last_scan_at must appear as an RFC3339 data-ts attribute"
+    );
+}
+
+#[tokio::test]
 async fn non_admin_cannot_see_dashboard() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();

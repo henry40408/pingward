@@ -105,14 +105,5 @@
       }
     });
   });
-  // Render absolute timestamps in the viewer's local time zone (falls back to
-  // the server-rendered UTC text when JS is off).
-  document.querySelectorAll('.localtime[data-ts]').forEach(function(el){
-    var d = new Date(el.getAttribute('data-ts'));
-    if (!isNaN(d.getTime())) {
-      el.textContent = d.toLocaleString(undefined, { hour12: false });
-      el.title = el.getAttribute('data-ts');
-    }
-  });
 </script>
 {% endblock %}
