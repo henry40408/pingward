@@ -479,6 +479,22 @@ impl Store {
         row.as_ref().map(row_to_project).transpose()
     }
 
+    /// Every project paired with its owner's username, for the admin
+    /// cross-user projects list. Ordered by project id.
+    pub async fn list_all_projects_with_owner(
+        &self,
+    ) -> Result<Vec<(Project, String)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT p.*, u.username AS owner_username \
+             FROM projects p JOIN users u ON u.id = p.user_id ORDER BY p.id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| Ok((row_to_project(r)?, r.get::<String, _>("owner_username"))))
+            .collect()
+    }
+
     pub async fn list_projects_for_user(&self, user_id: i64) -> Result<Vec<Project>, sqlx::Error> {
         let rows = sqlx::query("SELECT * FROM projects WHERE user_id = $1 ORDER BY id")
             .bind(user_id)

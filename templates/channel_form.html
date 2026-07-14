@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block body %}
+{% let base %}{% if admin %}/admin{% endif %}{% endlet %}
 <h1>New channel</h1>
 {% if let Some(error) = error %}<p class="flash err">{{ error }}</p>{% endif %}
 <div class="card">
   <div class="cb">
-    <form method="post" action="/projects/{{ project_id }}/channels">
+    <form method="post" action="{{ base }}/projects/{{ project_id }}/channels">
       <div class="field">
         <label for="name">Name</label>
         <input id="name" name="name" required>

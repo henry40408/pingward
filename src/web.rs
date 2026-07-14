@@ -52,6 +52,38 @@ pub fn routes() -> Router<AppState> {
         .route("/settings", get(settings_page).post(settings_save))
         .route("/users", get(users_page).post(users_create))
         .route("/users/{id}/delete", post(users_delete))
+        // --- admin cross-user route group (each handler guarded by AdminUser) ---
+        .route("/admin", get(admin_home))
+        .route("/admin/projects", get(admin_projects_page))
+        .route(
+            "/admin/projects/{id}",
+            get(admin_project_show).post(admin_project_update),
+        )
+        .route("/admin/projects/{id}/edit", get(admin_project_edit))
+        .route("/admin/projects/{id}/delete", post(admin_project_delete))
+        .route("/admin/projects/{pid}/checks/new", get(admin_check_new))
+        .route("/admin/projects/{pid}/checks", post(admin_check_create))
+        .route(
+            "/admin/checks/{id}",
+            get(admin_check_show).post(admin_check_update),
+        )
+        .route("/admin/checks/{id}/edit", get(admin_check_edit))
+        .route("/admin/checks/{id}/pause", post(admin_check_pause))
+        .route("/admin/checks/{id}/resume", post(admin_check_resume))
+        .route("/admin/checks/{id}/ack", post(admin_check_ack))
+        .route(
+            "/admin/checks/{id}/regenerate",
+            post(admin_check_regenerate),
+        )
+        .route("/admin/checks/{id}/delete", post(admin_check_delete))
+        .route("/admin/projects/{pid}/channels/new", get(admin_channel_new))
+        .route("/admin/projects/{pid}/channels", post(admin_channel_create))
+        .route("/admin/channels/{id}/delete", post(admin_channel_delete))
+        .route("/admin/channels/{id}/test", post(admin_channel_test))
+        .route(
+            "/admin/checks/{id}/channels",
+            post(admin_check_set_channels),
+        )
 }
 
 // --- templates ---
@@ -59,6 +91,7 @@ pub fn routes() -> Router<AppState> {
 #[template(path = "setup.html")]
 struct SetupTemplate {
     show_nav: bool,
+    is_admin: bool,
     error: Option<String>,
 }
 
@@ -66,6 +99,7 @@ struct SetupTemplate {
 #[template(path = "login.html")]
 struct LoginTemplate {
     show_nav: bool,
+    is_admin: bool,
     error: Option<String>,
 }
 
@@ -73,6 +107,7 @@ struct LoginTemplate {
 #[template(path = "dashboard.html")]
 struct DashboardTemplate {
     show_nav: bool,
+    is_admin: bool,
     total: usize,
     up: usize,
     late: usize,
@@ -126,6 +161,7 @@ async fn setup_page(State(state): State<AppState>) -> Result<Response, AppError>
     }
     Ok(render(&SetupTemplate {
         show_nav: false,
+        is_admin: false,
         error: None,
     })?
     .into_response())
@@ -142,6 +178,7 @@ async fn setup_submit(
     if creds.username.is_empty() || creds.password.is_empty() {
         return Ok(render(&SetupTemplate {
             show_nav: false,
+            is_admin: false,
             error: Some("username and password are required".into()),
         })?
         .into_response());
@@ -164,6 +201,7 @@ async fn login_page(State(state): State<AppState>) -> Result<Response, AppError>
     }
     Ok(render(&LoginTemplate {
         show_nav: false,
+        is_admin: false,
         error: None,
     })?
     .into_response())
@@ -183,6 +221,7 @@ async fn login_submit(
     if !ok {
         return Ok(render(&LoginTemplate {
             show_nav: false,
+            is_admin: false,
             error: Some("invalid username or password".into()),
         })?
         .into_response());
@@ -191,6 +230,7 @@ async fn login_submit(
     if user.disabled {
         return Ok(render(&LoginTemplate {
             show_nav: false,
+            is_admin: false,
             error: Some("account is disabled".into()),
         })?
         .into_response());
@@ -261,6 +301,7 @@ async fn dashboard(
     }
     Ok(render(&DashboardTemplate {
         show_nav: true,
+        is_admin: false,
         total,
         up,
         late,
@@ -288,6 +329,7 @@ async fn start_session(store: &Store, jar: CookieJar, user_id: i64) -> Result<Co
 #[template(path = "project_form.html")]
 struct ProjectFormTemplate {
     show_nav: bool,
+    is_admin: bool,
     heading: String,
     action: String,
     name: String,
@@ -299,6 +341,7 @@ struct ProjectFormTemplate {
 #[template(path = "project.html")]
 struct ProjectTemplate {
     show_nav: bool,
+    is_admin: bool,
     admin: bool,
     project: Project,
     checks: Vec<Check>,
@@ -448,6 +491,7 @@ async fn admin_channel(
 async fn project_new(CurrentUser(_u): CurrentUser) -> Result<Response, AppError> {
     Ok(render(&ProjectFormTemplate {
         show_nav: true,
+        is_admin: false,
         heading: "New project".into(),
         action: "/projects".into(),
         name: String::new(),
@@ -475,17 +519,30 @@ async fn project_create(
     Ok(Redirect::to(&format!("/projects/{id}")).into_response())
 }
 
+/// `/admin` when acting as an admin, otherwise the empty (owner) prefix. Used
+/// to point rendered links, form actions, and redirects at the right route.
+fn admin_prefix(admin: bool) -> &'static str {
+    if admin {
+        "/admin"
+    } else {
+        ""
+    }
+}
+
 /// Render the project page, optionally with a channel-test result banner.
+/// `admin` renders `/admin`-prefixed action URLs and shows the admin nav link.
 async fn render_project_page(
     store: &Store,
     project: Project,
     test_result: Option<TestResult>,
+    admin: bool,
 ) -> Result<Response, AppError> {
     let checks = store.list_checks_for_project(project.id).await?;
     let channels = store.list_channels_for_project(project.id).await?;
     Ok(render(&ProjectTemplate {
         show_nav: true,
-        admin: false,
+        is_admin: admin,
+        admin,
         project,
         checks,
         channels,
@@ -494,25 +551,15 @@ async fn render_project_page(
     .into_response())
 }
 
-async fn project_show(
-    State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
-    Path(id): Path<i64>,
-) -> Result<Response, AppError> {
-    let project = owned_project(&state.store, id, user.id).await?;
-    render_project_page(&state.store, project, None).await
-}
-
-async fn project_edit(
-    State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
-    Path(id): Path<i64>,
-) -> Result<Response, AppError> {
-    let project = owned_project(&state.store, id, user.id).await?;
-    Ok(render(&ProjectFormTemplate {
+/// Build the project edit form, pointing its action at the owner or `/admin`
+/// route depending on `admin`.
+fn project_edit_form(project: Project, admin: bool) -> ProjectFormTemplate {
+    let base = admin_prefix(admin);
+    ProjectFormTemplate {
         show_nav: true,
+        is_admin: admin,
         heading: "Edit project".into(),
-        action: format!("/projects/{id}"),
+        action: format!("{base}/projects/{}", project.id),
         name: project.name,
         scan_interval_secs: project
             .scan_interval_secs
@@ -522,8 +569,25 @@ async fn project_edit(
             .nag_interval_secs
             .map(|v| v.to_string())
             .unwrap_or_default(),
-    })?
-    .into_response())
+    }
+}
+
+async fn project_show(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let project = owned_project(&state.store, id, user.id).await?;
+    render_project_page(&state.store, project, None, false).await
+}
+
+async fn project_edit(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let project = owned_project(&state.store, id, user.id).await?;
+    Ok(render(&project_edit_form(project, false))?.into_response())
 }
 
 async fn project_update(
@@ -614,6 +678,7 @@ struct NotificationRow {
 #[template(path = "check_form.html")]
 struct CheckFormTemplate {
     show_nav: bool,
+    is_admin: bool,
     heading: String,
     action: String,
     error: Option<String>,
@@ -632,6 +697,7 @@ struct CheckFormTemplate {
 #[template(path = "check.html")]
 struct CheckTemplate {
     show_nav: bool,
+    is_admin: bool,
     admin: bool,
     check: Check,
     project_name: String,
@@ -677,9 +743,10 @@ async fn owned_check(store: &Store, id: i64, user_id: i64) -> Result<Check, AppE
     Ok(check)
 }
 
-fn empty_check_form(heading: &str, action: String) -> CheckFormTemplate {
+fn empty_check_form(heading: &str, action: String, admin: bool) -> CheckFormTemplate {
     CheckFormTemplate {
         show_nav: true,
+        is_admin: admin,
         heading: heading.into(),
         action,
         error: None,
@@ -735,21 +802,25 @@ async fn check_new(
     Ok(render(&empty_check_form(
         "New check",
         format!("/projects/{pid}/checks"),
+        false,
     ))?
     .into_response())
 }
 
-async fn check_create(
-    State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
-    Path(pid): Path<i64>,
-    Form(form): Form<CheckForm>,
+/// Shared create-check core: validate, re-render the form on error, else create
+/// the check and redirect. `admin` selects the owner or `/admin` route surface.
+async fn check_create_core(
+    state: &AppState,
+    pid: i64,
+    form: CheckForm,
+    admin: bool,
 ) -> Result<Response, AppError> {
-    owned_project(&state.store, pid, user.id).await?;
+    let base = admin_prefix(admin);
     let (kind, period_secs, grace, cron_expr) = match validate_check(&form) {
         Ok(v) => v,
         Err(msg) => {
-            let mut t = empty_check_form("New check", format!("/projects/{pid}/checks"));
+            let mut t =
+                empty_check_form("New check", format!("{base}/projects/{pid}/checks"), admin);
             t.error = Some(msg);
             t.name = form.name;
             t.schedule_kind = form.schedule_kind;
@@ -792,7 +863,17 @@ async fn check_create(
             parse_opt_i64(&form.nag_interval_secs),
         )
         .await?;
-    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+    Ok(Redirect::to(&format!("{base}/checks/{id}")).into_response())
+}
+
+async fn check_create(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(pid): Path<i64>,
+    Form(form): Form<CheckForm>,
+) -> Result<Response, AppError> {
+    owned_project(&state.store, pid, user.id).await?;
+    check_create_core(&state, pid, form, false).await
 }
 
 async fn check_show(
@@ -801,6 +882,17 @@ async fn check_show(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
+    render_check_page(&state, check, false).await
+}
+
+/// Render the check detail page. `admin` renders `/admin`-prefixed action URLs
+/// and shows the admin nav link.
+async fn render_check_page(
+    state: &AppState,
+    check: Check,
+    admin: bool,
+) -> Result<Response, AppError> {
+    let id = check.id;
     let project = state
         .store
         .find_project(check.project_id)
@@ -880,7 +972,8 @@ async fn check_show(
         .collect();
     Ok(render(&CheckTemplate {
         show_nav: true,
-        admin: false,
+        is_admin: admin,
+        admin,
         check,
         project_name: project.name,
         status,
@@ -895,16 +988,15 @@ async fn check_show(
     .into_response())
 }
 
-async fn check_edit(
-    State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
-    Path(id): Path<i64>,
-) -> Result<Response, AppError> {
-    let check = owned_check(&state.store, id, user.id).await?;
-    Ok(render(&CheckFormTemplate {
+/// Build the check edit form pre-filled from `check`, pointing its action at
+/// the owner or `/admin` route depending on `admin`.
+fn check_edit_form(check: Check, admin: bool) -> CheckFormTemplate {
+    let base = admin_prefix(admin);
+    CheckFormTemplate {
         show_nav: true,
+        is_admin: admin,
         heading: "Edit check".into(),
-        action: format!("/checks/{id}"),
+        action: format!("{base}/checks/{}", check.id),
         error: None,
         name: check.name,
         schedule_kind: check.schedule_kind.as_str().into(),
@@ -924,24 +1016,35 @@ async fn check_edit(
             .nag_interval_secs
             .map(|v| v.to_string())
             .unwrap_or_default(),
-    })?
-    .into_response())
+    }
 }
 
-async fn check_update(
+async fn check_edit(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
-    Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
-    owned_check(&state.store, id, user.id).await?;
+    let check = owned_check(&state.store, id, user.id).await?;
+    Ok(render(&check_edit_form(check, false))?.into_response())
+}
+
+/// Shared update-check core: validate, re-render the form on error, else apply
+/// the schedule update and redirect. `admin` selects the route surface.
+async fn check_update_core(
+    state: &AppState,
+    id: i64,
+    form: CheckForm,
+    admin: bool,
+) -> Result<Response, AppError> {
+    let base = admin_prefix(admin);
     let (kind, period_secs, grace, cron_expr) = match validate_check(&form) {
         Ok(v) => v,
         Err(msg) => {
             let t = CheckFormTemplate {
                 show_nav: true,
+                is_admin: admin,
                 heading: "Edit check".into(),
-                action: format!("/checks/{id}"),
+                action: format!("{base}/checks/{id}"),
                 error: Some(msg),
                 name: form.name,
                 schedule_kind: form.schedule_kind,
@@ -971,7 +1074,17 @@ async fn check_update(
             parse_opt_i64(&form.nag_interval_secs),
         )
         .await?;
-    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+    Ok(Redirect::to(&format!("{base}/checks/{id}")).into_response())
+}
+
+async fn check_update(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+    Form(form): Form<CheckForm>,
+) -> Result<Response, AppError> {
+    owned_check(&state.store, id, user.id).await?;
+    check_update_core(&state, id, form, false).await
 }
 
 async fn check_pause(
@@ -1032,6 +1145,8 @@ async fn check_delete(
 #[template(path = "channel_form.html")]
 struct ChannelFormTemplate {
     show_nav: bool,
+    is_admin: bool,
+    admin: bool,
     project_id: i64,
     error: Option<String>,
     smtp_available: bool,
@@ -1077,6 +1192,8 @@ async fn channel_new(
     owned_project(&state.store, pid, user.id).await?;
     Ok(render(&ChannelFormTemplate {
         show_nav: true,
+        is_admin: false,
+        admin: false,
         project_id: pid,
         error: None,
         smtp_available: state.config.smtp.is_some(),
@@ -1084,17 +1201,22 @@ async fn channel_new(
     .into_response())
 }
 
-async fn channel_create(
-    State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
-    Path(pid): Path<i64>,
-    Form(form): Form<ChannelForm>,
+/// Shared create-channel core: validate config by kind, re-render the form on
+/// error, else create the channel and redirect. `admin` selects the route
+/// surface (form action + redirect target).
+async fn channel_create_core(
+    state: &AppState,
+    pid: i64,
+    form: ChannelForm,
+    admin: bool,
 ) -> Result<Response, AppError> {
-    owned_project(&state.store, pid, user.id).await?;
+    let base = admin_prefix(admin);
 
     let err = |msg: &str| -> Result<Response, AppError> {
         Ok(render(&ChannelFormTemplate {
             show_nav: true,
+            is_admin: admin,
+            admin,
             project_id: pid,
             error: Some(msg.to_string()),
             smtp_available: state.config.smtp.is_some(),
@@ -1176,7 +1298,17 @@ async fn channel_create(
         .store
         .create_channel(pid, kind, name, &config, Utc::now())
         .await?;
-    Ok(Redirect::to(&format!("/projects/{pid}")).into_response())
+    Ok(Redirect::to(&format!("{base}/projects/{pid}")).into_response())
+}
+
+async fn channel_create(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(pid): Path<i64>,
+    Form(form): Form<ChannelForm>,
+) -> Result<Response, AppError> {
+    owned_project(&state.store, pid, user.id).await?;
+    channel_create_core(&state, pid, form, false).await
 }
 
 async fn channel_delete(
@@ -1194,20 +1326,9 @@ async fn channel_delete(
     Ok(Redirect::to(&format!("/projects/{}", project.id)).into_response())
 }
 
-/// Send a one-off test notification to a single channel and re-render the
-/// project page with a result banner. Sends once (no retry) and does not
-/// record the attempt in the notification history.
-async fn channel_test(
-    State(state): State<AppState>,
-    CurrentUser(user): CurrentUser,
-    Path(id): Path<i64>,
-) -> Result<Response, AppError> {
-    let channel = state
-        .store
-        .find_channel(id)
-        .await?
-        .ok_or(AppError::NotFound)?;
-    let project = owned_project(&state.store, channel.project_id, user.id).await?;
+/// Send a one-off test notification to a single channel. Sends once (no retry)
+/// and does not record the attempt in the notification history.
+async fn run_channel_test(state: &AppState, channel: &Channel) -> TestResult {
     let ev = NotificationEvent {
         check_id: 0,
         check_name: channel.name.clone(),
@@ -1215,7 +1336,7 @@ async fn channel_test(
         at: Utc::now(),
         project_id: channel.project_id,
     };
-    let result = match notifier_for(&channel, state.config.smtp.as_ref()) {
+    match notifier_for(channel, state.config.smtp.as_ref()) {
         None => TestResult {
             ok: false,
             message: "channel configuration is incomplete".into(),
@@ -1230,19 +1351,37 @@ async fn channel_test(
                 message: format!("Test notification failed: {e}"),
             },
         },
-    };
-    render_project_page(&state.store, project, Some(result)).await
+    }
 }
 
-/// Replace a check's bound channel set with exactly the submitted ids (only
-/// those that belong to the same project are honored).
-async fn check_set_channels(
+/// Send a one-off test notification to a single channel and re-render the
+/// project page with a result banner.
+async fn channel_test(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
-    HtmlForm(form): HtmlForm<BindForm>,
 ) -> Result<Response, AppError> {
-    let check = owned_check(&state.store, id, user.id).await?;
+    let channel = state
+        .store
+        .find_channel(id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let project = owned_project(&state.store, channel.project_id, user.id).await?;
+    let result = run_channel_test(&state, &channel).await;
+    render_project_page(&state.store, project, Some(result), false).await
+}
+
+/// Replace a check's bound channel set with exactly the submitted ids (only
+/// those that belong to the same project are honored). `admin` selects the
+/// redirect route surface.
+async fn set_channels_core(
+    state: &AppState,
+    check: &Check,
+    form: BindForm,
+    admin: bool,
+) -> Result<Response, AppError> {
+    let base = admin_prefix(admin);
+    let id = check.id;
     let valid: std::collections::HashSet<i64> = state
         .store
         .list_channels_for_project(check.project_id)
@@ -1268,7 +1407,17 @@ async fn check_set_channels(
     for remove in current.difference(&desired) {
         state.store.unbind_channel(id, *remove).await?;
     }
-    Ok(Redirect::to(&format!("/checks/{id}")).into_response())
+    Ok(Redirect::to(&format!("{base}/checks/{id}")).into_response())
+}
+
+async fn check_set_channels(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+    HtmlForm(form): HtmlForm<BindForm>,
+) -> Result<Response, AppError> {
+    let check = owned_check(&state.store, id, user.id).await?;
+    set_channels_core(&state, &check, form, false).await
 }
 
 // --- settings / user administration (admin only) ---
@@ -1276,6 +1425,7 @@ async fn check_set_channels(
 #[template(path = "settings.html")]
 struct SettingsTemplate {
     show_nav: bool,
+    is_admin: bool,
     scan_interval: String,
     nag_interval: String,
     pings_retention_days: String,
@@ -1286,6 +1436,7 @@ struct SettingsTemplate {
 #[template(path = "users.html")]
 struct UsersTemplate {
     show_nav: bool,
+    is_admin: bool,
     users: Vec<User>,
     error: Option<String>,
 }
@@ -1332,6 +1483,7 @@ async fn settings_page(
         .unwrap_or_default();
     Ok(render(&SettingsTemplate {
         show_nav: true,
+        is_admin: false,
         scan_interval,
         nag_interval,
         pings_retention_days,
@@ -1386,6 +1538,7 @@ async fn users_page(
     let users = state.store.list_users().await?;
     Ok(render(&UsersTemplate {
         show_nav: true,
+        is_admin: false,
         users,
         error: None,
     })?
@@ -1401,6 +1554,7 @@ async fn users_create(
         let users = state.store.list_users().await?;
         return Ok(render(&UsersTemplate {
             show_nav: true,
+            is_admin: false,
             users,
             error: Some("username and password are required".into()),
         })?
@@ -1442,6 +1596,294 @@ async fn users_delete(
     }
     state.store.delete_user(id).await?;
     Ok(Redirect::to("/users").into_response())
+}
+
+// --- admin route group (cross-user management, every access audited) ---
+//
+// Each handler resolves its target through the `admin_*` helpers (which fetch
+// unfiltered and write one `admin.access` audit row), then reuses the exact
+// same core logic/render helper/mutator as the owner handler, differing only in
+// pointing links and redirects at the `/admin`-prefixed route surface.
+#[derive(Template)]
+#[template(path = "admin_projects.html")]
+struct AdminProjectsTemplate {
+    show_nav: bool,
+    is_admin: bool,
+    projects: Vec<(Project, String)>,
+}
+
+/// `/admin` landing: for this plan simply a redirect to the projects list
+/// (a later plan replaces it with a cross-user dashboard).
+async fn admin_home(_admin: AdminUser) -> Result<Response, AppError> {
+    Ok(Redirect::to("/admin/projects").into_response())
+}
+
+async fn admin_projects_page(
+    State(state): State<AppState>,
+    _admin: AdminUser,
+) -> Result<Response, AppError> {
+    let projects = state.store.list_all_projects_with_owner().await?;
+    Ok(render(&AdminProjectsTemplate {
+        show_nav: true,
+        is_admin: true,
+        projects,
+    })?
+    .into_response())
+}
+
+// -- projects --
+async fn admin_project_show(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let project = admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
+    render_project_page(&state.store, project, None, true).await
+}
+
+async fn admin_project_edit(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let project = admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
+    Ok(render(&project_edit_form(project, true))?.into_response())
+}
+
+async fn admin_project_update(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+    Form(form): Form<ProjectForm>,
+) -> Result<Response, AppError> {
+    admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
+    state
+        .store
+        .update_project(
+            id,
+            &form.name,
+            parse_opt_i64(&form.scan_interval_secs),
+            parse_opt_i64(&form.nag_interval_secs),
+        )
+        .await?;
+    Ok(Redirect::to(&format!("/admin/projects/{id}")).into_response())
+}
+
+async fn admin_project_delete(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
+    state.store.delete_project(id).await?;
+    Ok(Redirect::to("/admin/projects").into_response())
+}
+
+// -- checks --
+async fn admin_check_new(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(pid): Path<i64>,
+) -> Result<Response, AppError> {
+    admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
+    Ok(render(&empty_check_form(
+        "New check",
+        format!("/admin/projects/{pid}/checks"),
+        true,
+    ))?
+    .into_response())
+}
+
+async fn admin_check_create(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(pid): Path<i64>,
+    Form(form): Form<CheckForm>,
+) -> Result<Response, AppError> {
+    admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
+    check_create_core(&state, pid, form, true).await
+}
+
+async fn admin_check_show(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    render_check_page(&state, check, true).await
+}
+
+async fn admin_check_edit(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    Ok(render(&check_edit_form(check, true))?.into_response())
+}
+
+async fn admin_check_update(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+    Form(form): Form<CheckForm>,
+) -> Result<Response, AppError> {
+    admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    check_update_core(&state, id, form, true).await
+}
+
+async fn admin_check_pause(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    state.store.set_status(id, CheckStatus::Paused).await?;
+    Ok(Redirect::to(&format!("/admin/checks/{id}")).into_response())
+}
+
+async fn admin_check_resume(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    state.store.set_status(id, CheckStatus::New).await?;
+    Ok(Redirect::to(&format!("/admin/checks/{id}")).into_response())
+}
+
+async fn admin_check_ack(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    state.store.acknowledge(id).await?;
+    Ok(Redirect::to(&format!("/admin/checks/{id}")).into_response())
+}
+
+async fn admin_check_regenerate(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    state
+        .store
+        .regenerate_uuid(id, &uuid::Uuid::new_v4().to_string())
+        .await?;
+    Ok(Redirect::to(&format!("/admin/checks/{id}")).into_response())
+}
+
+async fn admin_check_delete(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    state.store.delete_check(id).await?;
+    Ok(Redirect::to(&format!("/admin/projects/{}", check.project_id)).into_response())
+}
+
+async fn admin_check_set_channels(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+    HtmlForm(form): HtmlForm<BindForm>,
+) -> Result<Response, AppError> {
+    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    set_channels_core(&state, &check, form, true).await
+}
+
+// -- channels --
+async fn admin_channel_new(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(pid): Path<i64>,
+) -> Result<Response, AppError> {
+    admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
+    Ok(render(&ChannelFormTemplate {
+        show_nav: true,
+        is_admin: true,
+        admin: true,
+        project_id: pid,
+        error: None,
+        smtp_available: state.config.smtp.is_some(),
+    })?
+    .into_response())
+}
+
+async fn admin_channel_create(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(pid): Path<i64>,
+    Form(form): Form<ChannelForm>,
+) -> Result<Response, AppError> {
+    admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
+    channel_create_core(&state, pid, form, true).await
+}
+
+async fn admin_channel_delete(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let channel = admin_channel(&state, id, &admin, method.as_str(), uri.path()).await?;
+    state.store.delete_channel(id).await?;
+    Ok(Redirect::to(&format!("/admin/projects/{}", channel.project_id)).into_response())
+}
+
+async fn admin_channel_test(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let channel = admin_channel(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let project = state
+        .store
+        .find_project(channel.project_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let result = run_channel_test(&state, &channel).await;
+    render_project_page(&state.store, project, Some(result), true).await
 }
 
 #[cfg(test)]
