@@ -1,6 +1,18 @@
 use axum_test::TestServer;
 use pingward::{app, config::Config, db, state::AppState, store::Store};
 
+/// After a session exists, send its CSRF token as a default `X-CSRF-Token`
+/// header so protected POSTs pass `csrf_guard`. Call after every (re)login.
+async fn set_csrf(server: &mut TestServer, store: &Store) {
+    let tok = sqlx::query_scalar::<_, String>(
+        "SELECT csrf_token FROM sessions ORDER BY expires_at DESC LIMIT 1",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    server.add_header("x-csrf-token", tok.as_str());
+}
+
 async fn admin_server() -> (TestServer, Store, i64) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -17,6 +29,7 @@ async fn admin_server() -> (TestServer, Store, i64) {
         .post("/login")
         .form(&[("username", "admin"), ("password", "pw")])
         .await;
+    set_csrf(&mut server, &store).await;
     (server, store, admin_id)
 }
 

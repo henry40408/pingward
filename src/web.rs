@@ -10,7 +10,9 @@ use crate::notify::{notifier_for, EventKind, NotificationEvent};
 use crate::state::AppState;
 use crate::store::Store;
 use askama::Template;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Request, State};
+use axum::http::{Method, StatusCode};
+use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
@@ -319,14 +321,78 @@ async fn dashboard(
 /// Create a session row and return a jar carrying the session cookie.
 async fn start_session(store: &Store, jar: CookieJar, user_id: i64) -> Result<CookieJar, AppError> {
     let token = new_session_token();
+    // Per-session CSRF synchronizer token, validated by `csrf_guard` on every
+    // state-changing browser request and embedded in POST forms by the render
+    // path (looked up via `Store::session_csrf_token`).
+    let csrf = new_session_token();
     let expires = Utc::now() + Duration::days(SESSION_TTL_DAYS);
-    store.create_session(&token, user_id, expires).await?;
+    store
+        .create_session(&token, user_id, &csrf, expires)
+        .await?;
     let cookie = Cookie::build((SESSION_COOKIE, token))
         .http_only(true)
         .same_site(SameSite::Lax)
         .path("/")
         .build();
     Ok(jar.add(cookie))
+}
+
+/// CSRF synchronizer-token guard, applied to `web::routes()` only (the machine
+/// `/ping/*` endpoints, assets, and `/healthz` live in sibling routers and are
+/// therefore structurally exempt).
+///
+/// Safe methods (GET/HEAD/OPTIONS) and the pre-session `POST /login` and
+/// `POST /setup` paths pass through untouched. Every other state-changing
+/// request must present the session's stored token, taken from the
+/// `X-CSRF-Token` header or, failing that, the `_csrf` urlencoded form field
+/// (in which case the body is buffered and the request rebuilt so the
+/// downstream `Form<T>` extractor still works). The token is a random UUID, so
+/// a plain `==` comparison (no constant-time compare) is adequate here.
+pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    // Safe methods never change state.
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        return next.run(req).await;
+    }
+    // Pre-session paths: no session (and hence no token) exists yet.
+    let path = req.uri().path();
+    if path == "/login" || path == "/setup" {
+        return next.run(req).await;
+    }
+    // Resolve the caller's session token from the cookie, then its stored CSRF.
+    let jar = CookieJar::from_headers(req.headers());
+    let stored = match jar.get(SESSION_COOKIE) {
+        Some(cookie) => match state.store.session_csrf_token(cookie.value()).await {
+            Ok(Some(tok)) if !tok.is_empty() => tok,
+            _ => return StatusCode::FORBIDDEN.into_response(),
+        },
+        None => return StatusCode::FORBIDDEN.into_response(),
+    };
+    // Prefer the header token — this path avoids buffering the body.
+    if let Some(submitted) = req
+        .headers()
+        .get("x-csrf-token")
+        .and_then(|v| v.to_str().ok())
+    {
+        if stored == submitted {
+            return next.run(req).await;
+        }
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // Otherwise read the `_csrf` form field: buffer the body, extract the token,
+    // then rebuild the request with the same bytes for the downstream handler.
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, 1 << 20).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    };
+    let submitted = form_urlencoded::parse(&bytes)
+        .find(|(k, _)| k == "_csrf")
+        .map(|(_, v)| v.into_owned());
+    if submitted.as_deref() != Some(stored.as_str()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let req = Request::from_parts(parts, axum::body::Body::from(bytes));
+    next.run(req).await
 }
 
 // --- project templates ---

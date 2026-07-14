@@ -1674,6 +1674,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "cron",
+ "form_urlencoded",
  "lettre",
  "rand_core 0.6.4",
  "reqwest",

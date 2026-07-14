@@ -1,6 +1,18 @@
 use axum_test::TestServer;
 use pingward::{app, config::Config, db, state::AppState, store::Store};
 
+/// After a session exists, send its CSRF token as a default `X-CSRF-Token`
+/// header so protected POSTs pass `csrf_guard`. Call after every (re)login.
+async fn set_csrf(server: &mut TestServer, store: &Store) {
+    let tok = sqlx::query_scalar::<_, String>(
+        "SELECT csrf_token FROM sessions ORDER BY expires_at DESC LIMIT 1",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    server.add_header("x-csrf-token", tok.as_str());
+}
+
 async fn server() -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -41,7 +53,7 @@ async fn setup_creates_admin_then_dashboard_loads() {
 }
 
 async fn logged_in_server() -> (TestServer, Store, i64) {
-    let (server, store) = server().await;
+    let (mut server, store) = server().await;
     let phc = pingward::auth::hash_password("pw").unwrap();
     let uid = store
         .create_user("admin", Some(&phc), true, chrono::Utc::now())
@@ -51,6 +63,7 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
         .post("/login")
         .form(&[("username", "admin"), ("password", "pw")])
         .await;
+    set_csrf(&mut server, &store).await;
     (server, store, uid)
 }
 
@@ -163,6 +176,7 @@ async fn server_with_project_and_smtp() -> (TestServer, Store, i64) {
         .post("/login")
         .form(&[("username", "admin"), ("password", "pw")])
         .await;
+    set_csrf(&mut server, &store).await;
     let pid = store
         .create_project(uid, "p", None, None, chrono::Utc::now())
         .await
@@ -413,7 +427,7 @@ async fn login_page_uses_auth_card_and_error_is_restyled() {
 
 #[tokio::test]
 async fn login_logout_cycle() {
-    let (server, store) = server().await;
+    let (mut server, store) = server().await;
     let phc = pingward::auth::hash_password("secret1").unwrap();
     store
         .create_user("bob", Some(&phc), false, chrono::Utc::now())
@@ -433,6 +447,7 @@ async fn login_logout_cycle() {
         .form(&[("username", "bob"), ("password", "secret1")])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    set_csrf(&mut server, &store).await;
     server.get("/").await.assert_status_ok();
 
     // logout → redirect, then root bounces to /login

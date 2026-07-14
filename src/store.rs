@@ -446,15 +446,31 @@ impl Store {
         &self,
         id: &str,
         user_id: i64,
+        csrf_token: &str,
         expires_at: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO sessions (id, user_id, expires_at) VALUES ($1,$2,$3)")
-            .bind(id)
-            .bind(user_id)
-            .bind(expires_at.to_rfc3339())
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, csrf_token, expires_at) VALUES ($1,$2,$3,$4)",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(csrf_token)
+        .bind(expires_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
         Ok(())
+    }
+
+    /// Look up the CSRF synchronizer token stored alongside a session row.
+    /// Returns `None` when the session does not exist.
+    pub async fn session_csrf_token(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT csrf_token FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await
     }
 
     pub async fn find_session_user(
@@ -1232,7 +1248,7 @@ mod tests {
             .is_none());
 
         store
-            .create_session("sess-1", uid, now + chrono::Duration::hours(1))
+            .create_session("sess-1", uid, "csrf-1", now + chrono::Duration::hours(1))
             .await
             .unwrap();
         // valid at now
