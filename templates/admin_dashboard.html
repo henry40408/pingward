@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="phead">
+  <div><h1>Admin · Dashboard</h1></div>
+  <a class="btn" href="/admin/projects">All projects →</a>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Scale</h2></div>
+  <div class="cb">
+    <div class="tiles">
+      <div class="tile total"><span class="edge"></span><div class="n">{{ users }}</div><div class="l">Users</div></div>
+      <div class="tile total"><span class="edge"></span><div class="n">{{ projects }}</div><div class="l">Projects</div></div>
+      <div class="tile total"><span class="edge"></span><div class="n">{{ checks }}</div><div class="l">Checks</div></div>
+      <div class="tile total"><span class="edge"></span><div class="n">{{ pings_24h }}</div><div class="l">Pings (24h)</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Check health</h2></div>
+  <div class="cb">
+    <p style="margin:0 0 14px;display:flex;gap:8px;flex-wrap:wrap">
+      <span class="badge new">{{ status.new }} new</span>
+      <span class="badge up">{{ status.up }} up</span>
+      <span class="badge down">{{ status.down }} down</span>
+      <span class="badge paused">{{ status.paused }} paused</span>
+    </p>
+    {% if down.is_empty() %}
+    <p style="margin:0;color:var(--muted)">No checks are currently down.</p>
+    {% else %}
+    <table>
+      <thead><tr><th>Check</th><th>Project</th><th>Owner</th></tr></thead>
+      <tbody>
+        {% for d in down %}
+        <tr>
+          <td><a href="/admin/checks/{{ d.0.id }}">{{ d.0.name }}</a></td>
+          <td>{{ d.1 }}</td>
+          <td>{{ d.2 }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Notification health (24h)</h2></div>
+  <div class="cb">
+    <p style="margin:0 0 14px;display:flex;gap:8px;flex-wrap:wrap">
+      <span class="pill ok">{{ notif_ok }} ok</span>
+      <span class="pill fail">{{ notif_err }} error</span>
+    </p>
+    {% if channel_fail.is_empty() %}
+    <p style="margin:0;color:var(--muted)">No notifications sent in the last 24h.</p>
+    {% else %}
+    <table>
+      <thead><tr><th>Channel</th><th>Ok</th><th>Error</th></tr></thead>
+      <tbody>
+        {% for c in channel_fail %}
+        <tr><td>{{ c.0 }}</td><td class="mono ok-txt">{{ c.1 }}</td><td class="mono fail-txt">{{ c.2 }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <h2 style="margin:20px 0 8px">Recent failures</h2>
+    {% if recent_fail.is_empty() %}
+    <p style="margin:0;color:var(--muted)">No recent notification failures.</p>
+    {% else %}
+    <table>
+      <thead><tr><th>When</th><th>Event</th><th>Check</th><th>Error</th></tr></thead>
+      <tbody>
+        {% for n in recent_fail %}
+        <tr>
+          <td class="mono">{{ n.created_at }}</td>
+          <td>{{ n.event.as_str() }}</td>
+          <td><a href="/admin/checks/{{ n.check_id }}">#{{ n.check_id }}</a></td>
+          <td class="fail-txt">{% if let Some(e) = n.error %}{{ e }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Scheduler</h2></div>
+  <div class="cb">
+    <p class="mono" style="margin:0 0 8px">Last scan: {% if let Some(t) = last_scan_at %}{{ t }}{% else %}never{% endif %}</p>
+    <p class="mono" style="margin:0">Last prune: {% if let Some(t) = last_prune_at %}{{ t }}{% else %}never{% endif %}</p>
+  </div>
+</div>
+{% endblock %}

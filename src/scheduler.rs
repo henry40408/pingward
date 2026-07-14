@@ -184,6 +184,9 @@ pub async fn run_scan_loop(store: Store, env_default_secs: u64, smtp: Option<Smt
             Err(e) => tracing::error!("scan_once failed: {e}"),
         }
 
+        // Heartbeat: record the last successful scan pass for the admin dashboard.
+        let _ = store.set_setting("last_scan_at", &now.to_rfc3339()).await;
+
         match nag_once(&store, Utc::now()).await {
             Ok(events) => {
                 for ev in events {

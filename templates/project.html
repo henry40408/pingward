@@ -1,14 +1,15 @@
 {% extends "base.html" %}
 {% block body %}
+{% let base %}{% if admin %}/admin{% endif %}{% endlet %}
 <div class="phead">
   <div><h1>{{ project.name }}</h1></div>
 </div>
 
 <div class="actions">
-  <a class="btn" href="/projects/{{ project.id }}/edit">Edit</a>
-  <a class="btn" href="/projects/{{ project.id }}/checks/new">New check</a>
-  <a class="btn" href="/projects/{{ project.id }}/channels/new">New channel</a>
-  <form class="inline" method="post" action="/projects/{{ project.id }}/delete"
+  <a class="btn" href="{{ base }}/projects/{{ project.id }}/edit">Edit</a>
+  <a class="btn" href="{{ base }}/projects/{{ project.id }}/checks/new">New check</a>
+  <a class="btn" href="{{ base }}/projects/{{ project.id }}/channels/new">New channel</a>
+  <form class="inline" method="post" action="{{ base }}/projects/{{ project.id }}/delete"
         onsubmit="return confirm('Delete project?')"><button class="btn danger" type="submit">Delete project</button></form>
 </div>
 
@@ -23,10 +24,10 @@
     <div class="cb"><p style="margin:0;color:var(--muted)">No checks yet.</p></div>
     {% endif %}
     {% for c in checks %}
-    <div class="check" tabindex="0" role="link" onclick="location='/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='/checks/{{ c.id }}'">
+    <div class="check" tabindex="0" role="link" onclick="location='{{ base }}/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='{{ base }}/checks/{{ c.id }}'">
       <span class="status-dot {{ c.status.as_str() }}"></span>
       <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule_kind.as_str() }}</div></div>
-      <a class="rowedit" href="/checks/{{ c.id }}/edit" onclick="event.stopPropagation()">edit</a>
+      <a class="rowedit" href="{{ base }}/checks/{{ c.id }}/edit" onclick="event.stopPropagation()">edit</a>
       <span class="badge {{ c.status.as_str() }}">{{ c.status.as_str() }}</span>
     </div>
     {% endfor %}
@@ -43,8 +44,8 @@
     <div class="chk" style="cursor:default">
       <span class="nm">{{ ch.name }}</span>
       <span class="kind">{{ ch.kind.as_str() }}</span>
-      <form class="inline" method="post" action="/channels/{{ ch.id }}/test" style="margin-left:8px"><button class="btn" type="submit">Send test</button></form>
-      <form class="inline" method="post" action="/channels/{{ ch.id }}/delete"><button class="btn danger" type="submit">delete</button></form>
+      <form class="inline" method="post" action="{{ base }}/channels/{{ ch.id }}/test" style="margin-left:8px"><button class="btn" type="submit">Send test</button></form>
+      <form class="inline" method="post" action="{{ base }}/channels/{{ ch.id }}/delete"><button class="btn danger" type="submit">delete</button></form>
     </div>
     {% endfor %}
   </div>

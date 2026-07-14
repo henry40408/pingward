@@ -1,7 +1,7 @@
 use crate::db::Pool;
 use crate::models::{
-    Channel, ChannelKind, Check, CheckStatus, Notification, NotifyStatus, Ping, PingKind, Project,
-    ScheduleKind, User,
+    AuditLog, Channel, ChannelKind, Check, CheckStatus, Notification, NotifyStatus, Ping, PingKind,
+    Project, ScheduleKind, User,
 };
 use crate::notify::EventKind;
 use chrono::{DateTime, Utc};
@@ -12,6 +12,28 @@ use std::str::FromStr;
 #[derive(Clone)]
 pub struct Store {
     pub pool: Pool,
+}
+
+/// Cross-user rollup of check statuses for the admin dashboard.
+#[derive(Debug, Clone, Default)]
+pub struct CheckStatusCounts {
+    pub new: i64,
+    pub up: i64,
+    pub down: i64,
+    pub paused: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NewAudit<'a> {
+    pub actor_user_id: i64,
+    pub actor_username: &'a str,
+    pub action: &'a str,
+    pub target_type: Option<&'a str>,
+    pub target_id: Option<i64>,
+    pub target_owner_id: Option<i64>,
+    pub method: Option<&'a str>,
+    pub path: Option<&'a str>,
+    pub detail: Option<&'a str>,
 }
 
 fn parse_ts(s: Option<String>) -> Option<DateTime<Utc>> {
@@ -71,6 +93,7 @@ fn row_to_user(row: &sqlx::any::AnyRow) -> Result<User, sqlx::Error> {
         username: row.get("username"),
         password_hash: row.get("password_hash"),
         is_admin: row.get::<i64, _>("is_admin") != 0,
+        disabled: row.get::<i64, _>("disabled") != 0,
         created_at: parse_ts(row.get("created_at"))
             .ok_or_else(|| decode_err("users.created_at must be RFC3339"))?,
     })
@@ -135,6 +158,23 @@ fn row_to_notification(row: &sqlx::any::AnyRow) -> Result<Notification, sqlx::Er
         error: row.get("error"),
         created_at: parse_ts(row.get("created_at"))
             .ok_or_else(|| decode_err("notifications.created_at must be RFC3339"))?,
+    })
+}
+
+fn row_to_audit(row: &sqlx::any::AnyRow) -> Result<AuditLog, sqlx::Error> {
+    Ok(AuditLog {
+        id: row.get("id"),
+        actor_user_id: row.get("actor_user_id"),
+        actor_username: row.get("actor_username"),
+        action: row.get("action"),
+        target_type: row.get("target_type"),
+        target_id: row.get("target_id"),
+        target_owner_id: row.get("target_owner_id"),
+        method: row.get("method"),
+        path: row.get("path"),
+        detail: row.get("detail"),
+        created_at: parse_ts(row.get("created_at"))
+            .ok_or_else(|| decode_err("audit_log.created_at must be RFC3339"))?,
     })
 }
 
@@ -369,6 +409,39 @@ impl Store {
         Ok(())
     }
 
+    pub async fn set_user_disabled(&self, id: i64, disabled: bool) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET disabled = $1 WHERE id = $2")
+            .bind(disabled as i64)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_user_password(&self, id: i64, password_hash: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+            .bind(password_hash)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_user_admin(&self, id: i64, is_admin: bool) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET is_admin = $1 WHERE id = $2")
+            .bind(is_admin as i64)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn count_enabled_admins(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE is_admin <> 0 AND disabled = 0")
+            .fetch_one(&self.pool)
+            .await
+    }
+
     pub async fn create_session(
         &self,
         id: &str,
@@ -437,6 +510,22 @@ impl Store {
             .fetch_optional(&self.pool)
             .await?;
         row.as_ref().map(row_to_project).transpose()
+    }
+
+    /// Every project paired with its owner's username, for the admin
+    /// cross-user projects list. Ordered by project id.
+    pub async fn list_all_projects_with_owner(
+        &self,
+    ) -> Result<Vec<(Project, String)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT p.*, u.username AS owner_username \
+             FROM projects p JOIN users u ON u.id = p.user_id ORDER BY p.id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| Ok((row_to_project(r)?, r.get::<String, _>("owner_username"))))
+            .collect()
     }
 
     pub async fn list_projects_for_user(&self, user_id: i64) -> Result<Vec<Project>, sqlx::Error> {
@@ -764,6 +853,169 @@ impl Store {
         .await?;
         Ok(())
     }
+
+    // --- audit log ---
+    pub async fn record_audit(
+        &self,
+        e: &NewAudit<'_>,
+        now: DateTime<Utc>,
+    ) -> Result<i64, sqlx::Error> {
+        let row = sqlx::query(
+            "INSERT INTO audit_log \
+             (actor_user_id, actor_username, action, target_type, target_id, \
+              target_owner_id, method, path, detail, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id",
+        )
+        .bind(e.actor_user_id)
+        .bind(e.actor_username)
+        .bind(e.action)
+        .bind(e.target_type)
+        .bind(e.target_id)
+        .bind(e.target_owner_id)
+        .bind(e.method)
+        .bind(e.path)
+        .bind(e.detail)
+        .bind(now.to_rfc3339())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get::<i64, _>("id"))
+    }
+
+    pub async fn list_audit(&self, limit: i64) -> Result<Vec<AuditLog>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM audit_log ORDER BY id DESC LIMIT $1")
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_audit).collect()
+    }
+
+    // --- admin dashboard aggregates ---
+
+    pub async fn count_checks_by_status(&self) -> Result<CheckStatusCounts, sqlx::Error> {
+        let rows = sqlx::query("SELECT status, COUNT(*) AS n FROM checks GROUP BY status")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut c = CheckStatusCounts::default();
+        for r in &rows {
+            let status: String = r.get("status");
+            let n: i64 = r.get("n");
+            match status.as_str() {
+                "new" => c.new = n,
+                "up" => c.up = n,
+                "down" => c.down = n,
+                "paused" => c.paused = n,
+                _ => {}
+            }
+        }
+        Ok(c)
+    }
+
+    /// Every check currently `down`, paired with its project name and owner
+    /// username, for the admin cross-user incidents view. Ordered by
+    /// `last_ping_at` (oldest first, i.e. longest-down first).
+    pub async fn list_down_checks_with_owner(
+        &self,
+    ) -> Result<Vec<(Check, String, String)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT c.*, p.name AS project_name, u.username AS owner_username \
+             FROM checks c JOIN projects p ON p.id = c.project_id \
+             JOIN users u ON u.id = p.user_id \
+             WHERE c.status = 'down' ORDER BY c.last_ping_at",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    row_to_check(r)?,
+                    r.get::<String, _>("project_name"),
+                    r.get::<String, _>("owner_username"),
+                ))
+            })
+            .collect()
+    }
+
+    /// `(ok, error)` notification counts across all users since `cutoff`.
+    pub async fn notification_counts_since(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<(i64, i64), sqlx::Error> {
+        let ok: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE status = 'ok' AND created_at >= $1",
+        )
+        .bind(cutoff.to_rfc3339())
+        .fetch_one(&self.pool)
+        .await?;
+        let err: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE status = 'error' AND created_at >= $1",
+        )
+        .bind(cutoff.to_rfc3339())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((ok, err))
+    }
+
+    /// Per-channel `(channel_name, ok, error)` notification counts since
+    /// `cutoff`, ordered by most failures first. The conditional sums are
+    /// cast to `BIGINT` so they decode as `i64` on both SQLite and
+    /// PostgreSQL (a bare `SUM()` can come back as a wider/different type
+    /// on PostgreSQL and fail to decode as `i64`).
+    pub async fn channel_failure_counts_since(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Vec<(String, i64, i64)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT ch.name AS channel_name, \
+             CAST(SUM(CASE WHEN n.status = 'ok' THEN 1 ELSE 0 END) AS BIGINT) AS ok, \
+             CAST(SUM(CASE WHEN n.status = 'error' THEN 1 ELSE 0 END) AS BIGINT) AS err \
+             FROM notifications n JOIN channels ch ON ch.id = n.channel_id \
+             WHERE n.created_at >= $1 GROUP BY ch.id, ch.name ORDER BY err DESC, ch.id",
+        )
+        .bind(cutoff.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    r.get::<String, _>("channel_name"),
+                    r.get::<i64, _>("ok"),
+                    r.get::<i64, _>("err"),
+                ))
+            })
+            .collect()
+    }
+
+    pub async fn recent_failed_notifications(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<Notification>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT * FROM notifications WHERE status = 'error' ORDER BY id DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_notification).collect()
+    }
+
+    pub async fn count_projects(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM projects")
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn count_checks(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM checks")
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn count_pings_since(&self, cutoff: DateTime<Utc>) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM pings WHERE created_at >= $1")
+            .bind(cutoff.to_rfc3339())
+            .fetch_one(&self.pool)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -1004,6 +1256,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_user_is_not_disabled() {
+        let store = seeded().await;
+        let id = store
+            .create_user("u2", Some("phc"), false, Utc::now())
+            .await
+            .unwrap();
+        let u = store.find_user_by_id(id).await.unwrap().unwrap();
+        assert!(!u.disabled);
+    }
+
+    #[tokio::test]
+    async fn set_user_disabled_toggles() {
+        let store = seeded().await;
+        let id = store
+            .create_user("u3", Some("phc"), false, Utc::now())
+            .await
+            .unwrap();
+        store.set_user_disabled(id, true).await.unwrap();
+        assert!(store.find_user_by_id(id).await.unwrap().unwrap().disabled);
+        store.set_user_disabled(id, false).await.unwrap();
+        assert!(!store.find_user_by_id(id).await.unwrap().unwrap().disabled);
+    }
+
+    #[tokio::test]
+    async fn set_password_then_login_hash_changes() {
+        let store = seeded().await;
+        let id = store
+            .create_user("u4", Some("old"), false, Utc::now())
+            .await
+            .unwrap();
+        store.set_user_password(id, "newphc").await.unwrap();
+        let u = store.find_user_by_id(id).await.unwrap().unwrap();
+        assert_eq!(u.password_hash.as_deref(), Some("newphc"));
+    }
+
+    #[tokio::test]
+    async fn set_admin_and_count_enabled_admins() {
+        let store = seeded().await;
+        let a = store
+            .create_user("a", Some("p"), true, Utc::now())
+            .await
+            .unwrap();
+        let b = store
+            .create_user("b", Some("p"), false, Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(store.count_enabled_admins().await.unwrap(), 1);
+        store.set_user_admin(b, true).await.unwrap();
+        assert_eq!(store.count_enabled_admins().await.unwrap(), 2);
+        store.set_user_disabled(a, true).await.unwrap();
+        assert_eq!(store.count_enabled_admins().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
     async fn project_channel_binding_and_settings() {
         let store = seeded().await;
         let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
@@ -1222,5 +1528,226 @@ mod tests {
         // a far-past cutoff deletes nothing more
         let far = (now - Duration::days(365)).to_rfc3339();
         assert_eq!(store.delete_pings_before(&far).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn audit_roundtrips() {
+        let store = seeded().await;
+        let uid = store
+            .create_user("adm", Some("phc"), true, Utc::now())
+            .await
+            .unwrap();
+        store
+            .record_audit(
+                &NewAudit {
+                    actor_user_id: uid,
+                    actor_username: "adm",
+                    action: "admin.access",
+                    target_type: Some("project"),
+                    target_id: Some(7),
+                    target_owner_id: Some(42),
+                    method: Some("GET"),
+                    path: Some("/admin/projects/7"),
+                    detail: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        let rows = store.list_audit(10).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].action, "admin.access");
+        assert_eq!(rows[0].target_owner_id, Some(42));
+        assert_eq!(rows[0].actor_username, "adm");
+    }
+
+    #[tokio::test]
+    async fn status_counts_and_scale() {
+        let store = seeded().await;
+        // `seeded()` already pre-seeds one user 'u' (id 1) and one project 'p'
+        // (id 1) with no checks, so `username` must be distinct here to avoid
+        // the UNIQUE constraint on `users.username`.
+        let uid = store
+            .create_user("u2", Some("p"), false, Utc::now())
+            .await
+            .unwrap();
+        let pid = store
+            .create_project(uid, "p2", None, None, Utc::now())
+            .await
+            .unwrap();
+        store
+            .create_check(
+                pid,
+                "a",
+                "uuid-a",
+                ScheduleKind::Period,
+                Some(3600),
+                300,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        store
+            .create_check(
+                pid,
+                "b",
+                "uuid-b",
+                ScheduleKind::Period,
+                Some(3600),
+                300,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+
+        // The two checks just created are the only rows in `checks` (the
+        // seeded project has none), and both start out `new`.
+        let counts = store.count_checks_by_status().await.unwrap();
+        assert_eq!(
+            counts.new + counts.up + counts.down + counts.paused,
+            store.count_checks().await.unwrap()
+        );
+        assert_eq!(counts.new, 2);
+        assert_eq!(counts.up, 0);
+        assert_eq!(counts.down, 0);
+        assert_eq!(counts.paused, 0);
+        assert_eq!(store.count_projects().await.unwrap(), 2); // seeded 'p' + this 'p2'
+        assert_eq!(store.count_checks().await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn notification_counts_split_ok_error() {
+        let store = seeded().await;
+        let cid = store
+            .create_check(
+                1,
+                "c",
+                "notif-uuid",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        let chan = store
+            .create_channel(
+                1,
+                ChannelKind::Webhook,
+                "h",
+                "{\"url\":\"http://x\"}",
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+
+        let now = Utc::now();
+        store
+            .record_notification(cid, chan, EventKind::Up, NotifyStatus::Ok, None, now)
+            .await
+            .unwrap();
+        store
+            .record_notification(
+                cid,
+                chan,
+                EventKind::Down,
+                NotifyStatus::Error,
+                Some("boom"),
+                now,
+            )
+            .await
+            .unwrap();
+
+        let (ok, err) = store
+            .notification_counts_since(Utc::now() - chrono::Duration::days(1))
+            .await
+            .unwrap();
+        assert_eq!(ok, 1);
+        assert_eq!(err, 1);
+    }
+
+    #[tokio::test]
+    async fn channel_failure_counts_does_not_merge_same_named_channels() {
+        // Regression test: `channels.name` is NOT unique (only `channels.id`
+        // is). Two distinct channels that happen to share a name must be
+        // reported as two separate rows, not merged into one.
+        let store = seeded().await;
+        let cid = store
+            .create_check(
+                1,
+                "dup-check",
+                "dup-uuid",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        let chan_a = store
+            .create_channel(
+                1,
+                ChannelKind::Webhook,
+                "dup",
+                "{\"url\":\"http://a\"}",
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        let chan_b = store
+            .create_channel(
+                1,
+                ChannelKind::Webhook,
+                "dup",
+                "{\"url\":\"http://b\"}",
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(chan_a, chan_b);
+
+        let now = Utc::now();
+        store
+            .record_notification(
+                cid,
+                chan_a,
+                EventKind::Down,
+                NotifyStatus::Error,
+                Some("boom-a"),
+                now,
+            )
+            .await
+            .unwrap();
+        store
+            .record_notification(
+                cid,
+                chan_b,
+                EventKind::Down,
+                NotifyStatus::Error,
+                Some("boom-b"),
+                now,
+            )
+            .await
+            .unwrap();
+
+        let rows = store
+            .channel_failure_counts_since(Utc::now() - chrono::Duration::days(1))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "same-named channels must not be merged into one row: {rows:?}"
+        );
+        for (name, ok, err) in &rows {
+            assert_eq!(name, "dup");
+            assert_eq!(*ok, 0);
+            assert_eq!(*err, 1);
+        }
     }
 }

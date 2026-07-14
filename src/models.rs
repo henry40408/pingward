@@ -54,6 +54,7 @@ pub struct User {
     pub username: String,
     pub password_hash: Option<String>,
     pub is_admin: bool,
+    pub disabled: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -96,6 +97,21 @@ pub struct Notification {
     pub event: crate::notify::EventKind,
     pub status: NotifyStatus,
     pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuditLog {
+    pub id: i64,
+    pub actor_user_id: i64,
+    pub actor_username: String,
+    pub action: String,
+    pub target_type: Option<String>,
+    pub target_id: Option<i64>,
+    pub target_owner_id: Option<i64>,
+    pub method: Option<String>,
+    pub path: Option<String>,
+    pub detail: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

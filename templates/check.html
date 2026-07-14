@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block body %}
+{% let base %}{% if admin %}/admin{% endif %}{% endlet %}
 <div class="crumb">
   <a href="/">Checks</a><span class="sep">/</span>
-  <a href="/projects/{{ check.project_id }}">{{ project_name }}</a><span class="sep">/</span>{{ check.name }}
+  <a href="{{ base }}/projects/{{ check.project_id }}">{{ project_name }}</a><span class="sep">/</span>{{ check.name }}
 </div>
 
 <div class="chead">
@@ -14,17 +15,17 @@
 <div class="crumb" style="margin:2px 0 0">{{ schedule }}</div>
 
 <div class="actions">
-  <a class="btn" href="/checks/{{ check.id }}/edit">Edit</a>
+  <a class="btn" href="{{ base }}/checks/{{ check.id }}/edit">Edit</a>
   {% if check.status.as_str() == "paused" %}
-  <form class="inline" method="post" action="/checks/{{ check.id }}/resume"><button class="btn">Resume</button></form>
+  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/resume"><button class="btn">Resume</button></form>
   {% else %}
-  <form class="inline" method="post" action="/checks/{{ check.id }}/pause"><button class="btn">Pause</button></form>
+  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/pause"><button class="btn">Pause</button></form>
   {% endif %}
   {% if status == "down" && !check.acknowledged %}
-  <form class="inline" method="post" action="/checks/{{ check.id }}/ack"><button class="btn primary">Acknowledge</button></form>
+  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/ack"><button class="btn primary">Acknowledge</button></form>
   {% endif %}
-  <form class="inline" method="post" action="/checks/{{ check.id }}/regenerate"><button class="btn">Regenerate URL</button></form>
-  <form class="inline" method="post" action="/checks/{{ check.id }}/delete"
+  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/regenerate"><button class="btn">Regenerate URL</button></form>
+  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/delete"
         onsubmit="return confirm('Delete this check?')"><button class="btn danger">Delete</button></form>
 </div>
 
@@ -41,7 +42,7 @@
 <div class="card">
   <div class="ch"><h2>Notify channels</h2></div>
   <div class="cb">
-    <form method="post" action="/checks/{{ check.id }}/channels">
+    <form method="post" action="{{ base }}/checks/{{ check.id }}/channels">
       {% for cb in channel_boxes %}
       <label class="chk"><input type="checkbox" name="channel_ids" value="{{ cb.id }}"{% if cb.bound %} checked{% endif %}><span class="nm">{{ cb.name }}</span><span class="kind">{{ cb.kind }}</span></label>
       {% endfor %}

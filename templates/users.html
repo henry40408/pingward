@@ -10,8 +10,20 @@
         {% for u in users %}
         <tr>
           <td>{{ u.username }}</td>
-          <td>{% if u.is_admin %}<span class="pill ok">admin</span>{% else %}<span class="pill start">member</span>{% endif %}</td>
-          <td><form class="inline" method="post" action="/users/{{ u.id }}/delete"><button class="btn danger" type="submit">delete</button></form></td>
+          <td>{% if u.is_admin %}<span class="pill ok">admin</span>{% else %}<span class="pill start">member</span>{% endif %}{% if u.disabled %} <span class="pill fail">disabled</span>{% endif %}</td>
+          <td>
+            <form class="inline" method="post" action="/users/{{ u.id }}/password">
+              <input type="password" name="password" placeholder="new password" required>
+              <button class="btn" type="submit">reset</button>
+            </form>
+            <form class="inline" method="post" action="/users/{{ u.id }}/admin">
+              <button class="btn" type="submit">{% if u.is_admin %}revoke admin{% else %}make admin{% endif %}</button>
+            </form>
+            <form class="inline" method="post" action="/users/{{ u.id }}/disabled">
+              <button class="btn" type="submit">{% if u.disabled %}enable{% else %}disable{% endif %}</button>
+            </form>
+            <form class="inline" method="post" action="/users/{{ u.id }}/delete"><button class="btn danger" type="submit">delete</button></form>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
