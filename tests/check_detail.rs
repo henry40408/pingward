@@ -1,0 +1,72 @@
+use axum_test::TestServer;
+use pingward::{app, config::Config, state::AppState, store::Store};
+
+async fn server() -> (TestServer, Store) {
+    let pool = pingward::db::connect("sqlite::memory:").await.unwrap();
+    pingward::db::migrate(&pool, "sqlite::memory:")
+        .await
+        .unwrap();
+    let store = Store::new(pool);
+    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    (server, store)
+}
+
+async fn logged_in_server() -> (TestServer, Store, i64) {
+    let (server, store) = server().await;
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    let uid = store
+        .create_user("admin", Some(&phc), true, chrono::Utc::now())
+        .await
+        .unwrap();
+    server
+        .post("/login")
+        .form(&[("username", "admin"), ("password", "pw")])
+        .await;
+    (server, store, uid)
+}
+
+async fn server_with_project() -> (TestServer, Store, i64) {
+    let (server, store, uid) = logged_in_server().await;
+    let pid = store
+        .create_project(uid, "web", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    (server, store, pid)
+}
+
+#[tokio::test]
+async fn check_detail_shows_heartbeat_body_and_source() {
+    let (server, store, pid) = server_with_project().await;
+    let cid = store
+        .create_check(
+            pid,
+            "backup",
+            "cu",
+            pingward::models::ScheduleKind::Period,
+            Some(3600),
+            300,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    let check = store.find_check(cid).await.unwrap().unwrap();
+
+    let res = server
+        .post(&format!("/ping/{}/fail", check.ping_uuid))
+        .text("boom trace")
+        .await;
+    res.assert_status_ok();
+
+    let res = server.get(&format!("/checks/{cid}")).await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(body.contains("class=\"beat\""), "heartbeat missing: {body}");
+    assert!(
+        body.contains("boom trace"),
+        "captured ping body not surfaced: {body}"
+    );
+    assert!(body.contains("Source"), "source column missing: {body}");
+}

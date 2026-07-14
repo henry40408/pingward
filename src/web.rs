@@ -452,14 +452,25 @@ struct CheckForm {
 }
 
 struct PingRow {
-    created_at: String,
-    kind: PingKindWrap,
-    exit_code_display: String,
+    time: String,
+    kind: &'static str, // pill css class + label: "ok"|"fail"|"start"|"log"
+    exit: String,
+    duration: String,
+    source: String,
+    body: String,
 }
-struct PingKindWrap(crate::models::PingKind);
-impl PingKindWrap {
-    fn as_str(&self) -> &'static str {
-        self.0.as_str()
+
+/// Maps a stored `PingKind` to the pill/output CSS class (and display label)
+/// used on the check-detail page. `Exitcode` never reaches storage — `apply()`
+/// in `ping.rs` rewrites it to `Success`/`Fail` before insert — but is handled
+/// defensively.
+fn ping_pill_class(k: crate::models::PingKind) -> &'static str {
+    use crate::models::PingKind;
+    match k {
+        PingKind::Success | PingKind::Exitcode => "ok",
+        PingKind::Fail => "fail",
+        PingKind::Start => "start",
+        PingKind::Log => "log",
     }
 }
 
@@ -501,10 +512,34 @@ struct CheckFormTemplate {
 struct CheckTemplate {
     show_nav: bool,
     check: Check,
+    project_name: String,
+    status: &'static str,
+    since: String,
+    schedule: String,
     ping_url: String,
+    bars: Vec<crate::view::Bar>,
     channel_boxes: Vec<ChannelBox>,
     pings: Vec<PingRow>,
     notifications: Vec<NotificationRow>,
+}
+
+/// Short status line shown next to the check name on the detail page, e.g.
+/// "down · 2h 14m ago · not acknowledged" or "updated 3m ago".
+fn status_since_label(check: &Check, now: chrono::DateTime<Utc>) -> String {
+    let relative = check
+        .last_ping_at
+        .map(|t| crate::view::fmt_relative(t, now))
+        .unwrap_or_else(|| "never".into());
+    if crate::view::display_status(check, now) == crate::view::DisplayStatus::Down {
+        let ack = if check.acknowledged {
+            "acknowledged"
+        } else {
+            "not acknowledged"
+        };
+        format!("down · {relative} · {ack}")
+    } else {
+        format!("updated {relative}")
+    }
 }
 
 /// Load a check and enforce ownership through its project.
@@ -638,6 +673,12 @@ async fn check_show(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
+    let project = state
+        .store
+        .find_project(check.project_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let now = Utc::now();
     let ping_url = format!(
         "{}/ping/{}",
         state.config.base_url.trim_end_matches('/'),
@@ -661,24 +702,42 @@ async fn check_show(
             bound: bound.contains(&c.id),
         })
         .collect();
-    let pings = state
-        .store
-        .list_recent_pings(id, 20)
-        .await?
-        .into_iter()
+    let recent = state.store.list_recent_pings(id, 40).await?;
+    let durations = crate::view::run_durations(&recent);
+    let bars = crate::view::heartbeat(
+        &recent,
+        check.max_runtime_secs,
+        check.status == CheckStatus::Paused,
+        30,
+    );
+    let pings = recent
+        .iter()
+        .take(20)
         .map(|p| PingRow {
-            created_at: p.created_at.to_rfc3339(),
-            kind: PingKindWrap(p.kind),
-            exit_code_display: p.exit_code.map(|c| c.to_string()).unwrap_or_default(),
+            time: p.created_at.format("%H:%M:%S").to_string(),
+            kind: ping_pill_class(p.kind),
+            exit: p
+                .exit_code
+                .map(|c| format!("exit {c}"))
+                .unwrap_or_else(|| "—".into()),
+            duration: durations
+                .get(&p.id)
+                .map(|d| crate::view::fmt_secs(*d))
+                .unwrap_or_else(|| "—".into()),
+            source: p.source_ip.clone().unwrap_or_else(|| "—".into()),
+            body: p.body.clone(),
         })
         .collect();
+    let status = crate::view::display_status(&check, now).as_str();
+    let since = status_since_label(&check, now);
+    let schedule = schedule_label(&check);
     let notifications = state
         .store
         .list_recent_notifications(id, 20)
         .await?
         .into_iter()
         .map(|n| NotificationRow {
-            created_at: n.created_at.to_rfc3339(),
+            created_at: n.created_at.format("%H:%M:%S").to_string(),
             event: n.event.as_str(),
             status: n.status.as_str(),
             channel: channel_names
@@ -691,7 +750,12 @@ async fn check_show(
     Ok(render(&CheckTemplate {
         show_nav: true,
         check,
+        project_name: project.name,
+        status,
+        since,
+        schedule,
         ping_url,
+        bars,
         channel_boxes,
         pings,
         notifications,
