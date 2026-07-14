@@ -299,6 +299,7 @@ struct ProjectFormTemplate {
 #[template(path = "project.html")]
 struct ProjectTemplate {
     show_nav: bool,
+    admin: bool,
     project: Project,
     checks: Vec<Check>,
     channels: Vec<Channel>,
@@ -484,6 +485,7 @@ async fn render_project_page(
     let channels = store.list_channels_for_project(project.id).await?;
     Ok(render(&ProjectTemplate {
         show_nav: true,
+        admin: false,
         project,
         checks,
         channels,
@@ -630,6 +632,7 @@ struct CheckFormTemplate {
 #[template(path = "check.html")]
 struct CheckTemplate {
     show_nav: bool,
+    admin: bool,
     check: Check,
     project_name: String,
     status: &'static str,
@@ -877,6 +880,7 @@ async fn check_show(
         .collect();
     Ok(render(&CheckTemplate {
         show_nav: true,
+        admin: false,
         check,
         project_name: project.name,
         status,
