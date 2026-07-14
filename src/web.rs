@@ -53,6 +53,7 @@ pub fn routes() -> Router<AppState> {
         .route("/users", get(users_page).post(users_create))
         .route("/users/{id}/delete", post(users_delete))
         .route("/users/{id}/password", post(users_set_password))
+        .route("/users/{id}/admin", post(users_toggle_admin))
         // --- admin cross-user route group (each handler guarded by AdminUser) ---
         .route("/admin", get(admin_home))
         .route("/admin/projects", get(admin_projects_page))
@@ -1653,6 +1654,42 @@ async fn users_set_password(
                 action: "user.password_reset",
                 target_type: Some("user"),
                 target_id: Some(id),
+                ..Default::default()
+            },
+            Utc::now(),
+        )
+        .await?;
+    Ok(Redirect::to("/users").into_response())
+}
+
+async fn users_toggle_admin(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let Some(target) = state.store.find_user_by_id(id).await? else {
+        return Ok(Redirect::to("/users").into_response());
+    };
+    let new_admin = !target.is_admin;
+    // Refuse to remove the last enabled admin.
+    if !new_admin
+        && target.is_admin
+        && !target.disabled
+        && state.store.count_enabled_admins().await? <= 1
+    {
+        return Ok(Redirect::to("/users").into_response());
+    }
+    state.store.set_user_admin(id, new_admin).await?;
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: admin.id,
+                actor_username: &admin.username,
+                action: "user.set_admin",
+                target_type: Some("user"),
+                target_id: Some(id),
+                detail: Some(if new_admin { "promote" } else { "demote" }),
                 ..Default::default()
             },
             Utc::now(),

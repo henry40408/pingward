@@ -50,6 +50,45 @@ async fn deleting_user_is_audited() {
 }
 
 #[tokio::test]
+async fn promote_and_demote_admin() {
+    let (server, store, _admin) = admin_server().await;
+    let uid = store
+        .create_user("erin", Some("p"), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    // promote
+    server
+        .post(&format!("/users/{uid}/admin"))
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(store.find_user_by_id(uid).await.unwrap().unwrap().is_admin);
+    // demote back
+    server.post(&format!("/users/{uid}/admin")).await;
+    assert!(!store.find_user_by_id(uid).await.unwrap().unwrap().is_admin);
+    assert!(store
+        .list_audit(50)
+        .await
+        .unwrap()
+        .iter()
+        .any(|a| a.action == "user.set_admin"));
+}
+
+#[tokio::test]
+async fn cannot_demote_last_admin() {
+    let (server, store, admin_id) = admin_server().await;
+    // The only admin demoting themselves is refused.
+    server.post(&format!("/users/{admin_id}/admin")).await;
+    assert!(
+        store
+            .find_user_by_id(admin_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_admin
+    );
+}
+
+#[tokio::test]
 async fn admin_resets_password_and_target_can_login() {
     let (server, store, _admin) = admin_server().await;
     let phc = pingward::auth::hash_password("original").unwrap();

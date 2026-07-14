@@ -16,6 +16,9 @@
               <input type="password" name="password" placeholder="new password" required>
               <button class="btn" type="submit">reset</button>
             </form>
+            <form class="inline" method="post" action="/users/{{ u.id }}/admin">
+              <button class="btn" type="submit">{% if u.is_admin %}revoke admin{% else %}make admin{% endif %}</button>
+            </form>
             <form class="inline" method="post" action="/users/{{ u.id }}/delete"><button class="btn danger" type="submit">delete</button></form>
           </td>
         </tr>
