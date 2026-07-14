@@ -336,6 +336,114 @@ async fn owned_project(store: &Store, id: i64, user_id: i64) -> Result<Project, 
     Ok(p)
 }
 
+/// Resolve any project by id (no owner filter) and record an admin-access
+/// audit entry. The single choke point for #1 cross-user reads and writes.
+async fn admin_project(
+    state: &AppState,
+    id: i64,
+    admin: &User,
+    method: &str,
+    path: &str,
+) -> Result<Project, AppError> {
+    let p = state
+        .store
+        .find_project(id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: admin.id,
+                actor_username: &admin.username,
+                action: "admin.access",
+                target_type: Some("project"),
+                target_id: Some(p.id),
+                target_owner_id: Some(p.user_id),
+                method: Some(method),
+                path: Some(path),
+                detail: None,
+            },
+            Utc::now(),
+        )
+        .await?;
+    Ok(p)
+}
+
+async fn admin_check(
+    state: &AppState,
+    id: i64,
+    admin: &User,
+    method: &str,
+    path: &str,
+) -> Result<Check, AppError> {
+    let c = state
+        .store
+        .find_check(id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let owner = state
+        .store
+        .find_project(c.project_id)
+        .await?
+        .map(|p| p.user_id);
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: admin.id,
+                actor_username: &admin.username,
+                action: "admin.access",
+                target_type: Some("check"),
+                target_id: Some(c.id),
+                target_owner_id: owner,
+                method: Some(method),
+                path: Some(path),
+                detail: None,
+            },
+            Utc::now(),
+        )
+        .await?;
+    Ok(c)
+}
+
+async fn admin_channel(
+    state: &AppState,
+    id: i64,
+    admin: &User,
+    method: &str,
+    path: &str,
+) -> Result<Channel, AppError> {
+    let ch = state
+        .store
+        .find_channel(id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let owner = state
+        .store
+        .find_project(ch.project_id)
+        .await?
+        .map(|p| p.user_id);
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: admin.id,
+                actor_username: &admin.username,
+                action: "admin.access",
+                target_type: Some("channel"),
+                target_id: Some(ch.id),
+                target_owner_id: owner,
+                method: Some(method),
+                path: Some(path),
+                detail: None,
+            },
+            Utc::now(),
+        )
+        .await?;
+    Ok(ch)
+}
+
 async fn project_new(CurrentUser(_u): CurrentUser) -> Result<Response, AppError> {
     Ok(render(&ProjectFormTemplate {
         show_nav: true,
