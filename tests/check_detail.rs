@@ -70,3 +70,46 @@ async fn check_detail_shows_heartbeat_body_and_source() {
     );
     assert!(body.contains("Source"), "source column missing: {body}");
 }
+
+#[tokio::test]
+async fn ping_timestamps_are_localizable_with_utc_fallback() {
+    let (server, store, pid) = server_with_project().await;
+    let cid = store
+        .create_check(
+            pid,
+            "backup",
+            "cu2",
+            pingward::models::ScheduleKind::Period,
+            Some(3600),
+            300,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    let check = store.find_check(cid).await.unwrap().unwrap();
+
+    server
+        .post(&format!("/ping/{}", check.ping_uuid))
+        .text("ok")
+        .await
+        .assert_status_ok();
+
+    let res = server.get(&format!("/checks/{cid}")).await;
+    res.assert_status_ok();
+    let body = res.text();
+    // Absolute timestamps are emitted as RFC3339 UTC the client localizes.
+    assert!(
+        body.contains("class=\"localtime\" data-ts=\""),
+        "no localizable timestamp emitted: {body}"
+    );
+    assert!(
+        body.contains("+00:00"),
+        "data-ts should be RFC3339 UTC: {body}"
+    );
+    // The no-JS fallback shows a full date labeled UTC (not a bare HH:MM:SS).
+    assert!(
+        body.contains(" UTC</span>"),
+        "fallback should show a UTC date-time: {body}"
+    );
+}
