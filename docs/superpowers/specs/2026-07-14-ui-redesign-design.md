@@ -92,9 +92,8 @@ The current app inlines CSS in `base.html` and serves no static assets.
 system monospace, but loses the exact Inter/Plex texture the mockups were
 approved with.
 
-> **Open for spec review:** self-host the two woff2 families (fidelity, ~tens of
-> KB) **vs** system-stack only (zero assets). Recommendation: **self-host**, to
-> match what was approved. Either way, no runtime CDN.
+> **Resolved:** self-host the two woff2 families (Inter + IBM Plex Mono, latin
+> subset), with system-stack fallbacks. No runtime CDN.
 
 ## 6. Status model
 
@@ -239,9 +238,9 @@ collapsed).
 - Filter/search on the dashboard.
 - Live refresh (poll / SSE) of statuses.
 
-## 14. Open items for spec review
+## 14. Resolved decisions (from spec review)
 
-1. **Fonts:** self-host Inter + IBM Plex Mono woff2 (recommended, matches approved
-   look) vs system-stack only (zero assets).
-2. **Heartbeat window size** N for dashboard (6) and detail (30) — confirm.
-3. **`new` in summary tiles:** fold into Total (proposed) vs its own tile.
+1. **Fonts:** self-host Inter + IBM Plex Mono woff2 (latin subset), system-stack fallback.
+2. **Heartbeat window:** dashboard `N=6`, detail `N=30`.
+3. **`new` in summary tiles:** folds into **Total** (no dedicated tile); new checks
+   show a `new` badge in the list. Summary tiles stay **Total · Up · Late · Down**.
