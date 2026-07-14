@@ -187,7 +187,15 @@ async fn login_submit(
         })?
         .into_response());
     }
-    let jar = start_session(&state.store, jar, user.unwrap().id).await?;
+    let user = user.unwrap();
+    if user.disabled {
+        return Ok(render(&LoginTemplate {
+            show_nav: false,
+            error: Some("account is disabled".into()),
+        })?
+        .into_response());
+    }
+    let jar = start_session(&state.store, jar, user.id).await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
 

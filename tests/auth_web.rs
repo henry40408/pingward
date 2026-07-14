@@ -55,6 +55,35 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
 }
 
 #[tokio::test]
+async fn disabling_user_invalidates_session() {
+    let (server, store, uid) = logged_in_server().await;
+    // Authenticated: dashboard is 200.
+    server.get("/").await.assert_status_ok();
+    // Disable the account, then the same session must redirect to /login.
+    store.set_user_disabled(uid, true).await.unwrap();
+    let res = server.get("/projects/new").await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/login");
+}
+
+#[tokio::test]
+async fn disabled_user_cannot_log_in() {
+    let (server, store) = server().await;
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    let uid = store
+        .create_user("bob", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    store.set_user_disabled(uid, true).await.unwrap();
+    let res = server
+        .post("/login")
+        .form(&[("username", "bob"), ("password", "pw")])
+        .await;
+    // Login page re-renders with an error (200), no session cookie set.
+    res.assert_status_ok();
+}
+
+#[tokio::test]
 async fn create_and_delete_project() {
     let (server, store, uid) = logged_in_server().await;
 

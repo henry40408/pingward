@@ -66,7 +66,9 @@ async fn resolve_user(parts: &mut Parts, state: &AppState) -> Option<User> {
     let jar = CookieJar::from_headers(&parts.headers);
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         if let Ok(Some(user)) = state.store.find_session_user(cookie.value(), now).await {
-            return Some(user);
+            if !user.disabled {
+                return Some(user);
+            }
         }
     }
     // forward-auth fallback
@@ -76,7 +78,11 @@ async fn resolve_user(parts: &mut Parts, state: &AppState) -> Option<User> {
         .map(|ci| ci.0.ip());
     if let Some(username) = forward_auth_username(&parts.headers, peer_ip, &state.config) {
         match state.store.find_user_by_username(&username).await {
-            Ok(Some(user)) => return Some(user),
+            Ok(Some(user)) => {
+                if !user.disabled {
+                    return Some(user);
+                }
+            }
             Ok(None) => {
                 if let Ok(id) = state.store.create_user(&username, None, false, now).await {
                     return state.store.find_user_by_id(id).await.ok().flatten();
