@@ -123,6 +123,72 @@ async fn protected_post_with_form_field_token_succeeds() {
         .assert_status(axum::http::StatusCode::SEE_OTHER);
 }
 
+// (b'') The multi-value "Save channels" form authorizes via the `_csrf` form
+// field even though it also carries repeated `channel_ids` keys — i.e. the guard
+// finds `_csrf` regardless of its position among the urlencoded pairs.
+#[tokio::test]
+async fn multi_value_channels_form_authorizes_via_csrf_field() {
+    let (server, store) = logged_in_server().await;
+    let admin = store.find_user_by_username("admin").await.unwrap().unwrap();
+    let pid = store
+        .create_project(admin.id, "p", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    let cid = store
+        .create_check(
+            pid,
+            "c",
+            "uuid-csrf-chan",
+            pingward::models::ScheduleKind::Period,
+            Some(3600),
+            300,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    let ch1 = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "w1",
+            "{\"url\":\"http://x\"}",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    let ch2 = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "w2",
+            "{\"url\":\"http://y\"}",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    let tok = csrf_token(&store).await;
+    // Repeated `channel_ids` keys plus a trailing `_csrf` field (no header).
+    server
+        .post(&format!("/checks/{cid}/channels"))
+        .form(&[
+            ("channel_ids", ch1.to_string().as_str()),
+            ("channel_ids", ch2.to_string().as_str()),
+            ("_csrf", tok.as_str()),
+        ])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    // Both channels were actually bound (the rebuilt body reached the handler).
+    let bound = store.bound_channel_ids(cid).await.unwrap();
+    assert!(bound.contains(&ch1) && bound.contains(&ch2));
+    // The same submission with `_csrf` omitted is rejected.
+    server
+        .post(&format!("/checks/{cid}/channels"))
+        .form(&[("channel_ids", ch1.to_string().as_str())])
+        .await
+        .assert_status(axum::http::StatusCode::FORBIDDEN);
+}
+
 // A wrong token is rejected even with a valid session.
 #[tokio::test]
 async fn protected_post_with_wrong_token_is_forbidden() {
