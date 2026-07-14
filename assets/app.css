@@ -1028,6 +1028,17 @@ h3.sec {
 .auth .card {
   padding: 4px;
 }
+.auth .cb {
+  padding: 26px 24px;
+}
+.auth .brand {
+  margin-bottom: 18px;
+}
+.auth h1 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
 
 /* ---- Flash / error banners ---- */
 .flash {

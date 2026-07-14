@@ -348,6 +348,41 @@ async fn regenerate_uuid_changes_ping_url() {
 }
 
 #[tokio::test]
+async fn setup_page_uses_auth_card() {
+    let (server, _store) = server().await;
+    let res = server.get("/setup").await;
+    res.assert_status_ok();
+    assert!(res.text().contains("class=\"auth\""));
+}
+
+#[tokio::test]
+async fn login_page_uses_auth_card_and_error_is_restyled() {
+    let (server, store) = server().await;
+    let phc = pingward::auth::hash_password("secret1").unwrap();
+    store
+        .create_user("bob", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let res = server.get("/login").await;
+    res.assert_status_ok();
+    assert!(res.text().contains("class=\"auth\""));
+
+    // Wrong password → re-rendered login page, error still reachable.
+    let res = server
+        .post("/login")
+        .form(&[("username", "bob"), ("password", "nope")])
+        .await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(body.contains("invalid username or password"), "got: {body}");
+    assert!(
+        body.contains("class=\"flash err\""),
+        "missing restyled err banner: {body}"
+    );
+}
+
+#[tokio::test]
 async fn login_logout_cycle() {
     let (server, store) = server().await;
     let phc = pingward::auth::hash_password("secret1").unwrap();
