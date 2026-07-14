@@ -306,7 +306,7 @@ async fn dashboard(
     }
     Ok(render(&DashboardTemplate {
         show_nav: true,
-        is_admin: false,
+        is_admin: user.is_admin,
         total,
         up,
         late,
@@ -493,10 +493,10 @@ async fn admin_channel(
     Ok(ch)
 }
 
-async fn project_new(CurrentUser(_u): CurrentUser) -> Result<Response, AppError> {
+async fn project_new(CurrentUser(user): CurrentUser) -> Result<Response, AppError> {
     Ok(render(&ProjectFormTemplate {
         show_nav: true,
-        is_admin: false,
+        is_admin: user.is_admin,
         heading: "New project".into(),
         action: "/projects".into(),
         name: String::new(),
@@ -535,18 +535,20 @@ fn admin_prefix(admin: bool) -> &'static str {
 }
 
 /// Render the project page, optionally with a channel-test result banner.
-/// `admin` renders `/admin`-prefixed action URLs and shows the admin nav link.
+/// `admin` renders `/admin`-prefixed action URLs; `is_admin` reflects the
+/// current viewer's admin status and controls the nav Admin link.
 async fn render_project_page(
     store: &Store,
     project: Project,
     test_result: Option<TestResult>,
     admin: bool,
+    is_admin: bool,
 ) -> Result<Response, AppError> {
     let checks = store.list_checks_for_project(project.id).await?;
     let channels = store.list_channels_for_project(project.id).await?;
     Ok(render(&ProjectTemplate {
         show_nav: true,
-        is_admin: admin,
+        is_admin,
         admin,
         project,
         checks,
@@ -557,12 +559,13 @@ async fn render_project_page(
 }
 
 /// Build the project edit form, pointing its action at the owner or `/admin`
-/// route depending on `admin`.
-fn project_edit_form(project: Project, admin: bool) -> ProjectFormTemplate {
+/// route depending on `admin`. `is_admin` reflects the current viewer's admin
+/// status and controls the nav Admin link.
+fn project_edit_form(project: Project, admin: bool, is_admin: bool) -> ProjectFormTemplate {
     let base = admin_prefix(admin);
     ProjectFormTemplate {
         show_nav: true,
-        is_admin: admin,
+        is_admin,
         heading: "Edit project".into(),
         action: format!("{base}/projects/{}", project.id),
         name: project.name,
@@ -583,7 +586,7 @@ async fn project_show(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = owned_project(&state.store, id, user.id).await?;
-    render_project_page(&state.store, project, None, false).await
+    render_project_page(&state.store, project, None, false, user.is_admin).await
 }
 
 async fn project_edit(
@@ -592,7 +595,7 @@ async fn project_edit(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = owned_project(&state.store, id, user.id).await?;
-    Ok(render(&project_edit_form(project, false))?.into_response())
+    Ok(render(&project_edit_form(project, false, user.is_admin))?.into_response())
 }
 
 async fn project_update(
@@ -804,12 +807,9 @@ async fn check_new(
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    Ok(render(&empty_check_form(
-        "New check",
-        format!("/projects/{pid}/checks"),
-        false,
-    ))?
-    .into_response())
+    let mut form = empty_check_form("New check", format!("/projects/{pid}/checks"), false);
+    form.is_admin = user.is_admin;
+    Ok(render(&form)?.into_response())
 }
 
 /// Shared create-check core: validate, re-render the form on error, else create
@@ -887,15 +887,17 @@ async fn check_show(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
-    render_check_page(&state, check, false).await
+    render_check_page(&state, check, false, user.is_admin).await
 }
 
-/// Render the check detail page. `admin` renders `/admin`-prefixed action URLs
-/// and shows the admin nav link.
+/// Render the check detail page. `admin` renders `/admin`-prefixed action URLs;
+/// `is_admin` reflects the current viewer's admin status and controls the nav
+/// Admin link.
 async fn render_check_page(
     state: &AppState,
     check: Check,
     admin: bool,
+    is_admin: bool,
 ) -> Result<Response, AppError> {
     let id = check.id;
     let project = state
@@ -977,7 +979,7 @@ async fn render_check_page(
         .collect();
     Ok(render(&CheckTemplate {
         show_nav: true,
-        is_admin: admin,
+        is_admin,
         admin,
         check,
         project_name: project.name,
@@ -994,12 +996,13 @@ async fn render_check_page(
 }
 
 /// Build the check edit form pre-filled from `check`, pointing its action at
-/// the owner or `/admin` route depending on `admin`.
-fn check_edit_form(check: Check, admin: bool) -> CheckFormTemplate {
+/// the owner or `/admin` route depending on `admin`. `is_admin` reflects the
+/// current viewer's admin status and controls the nav Admin link.
+fn check_edit_form(check: Check, admin: bool, is_admin: bool) -> CheckFormTemplate {
     let base = admin_prefix(admin);
     CheckFormTemplate {
         show_nav: true,
-        is_admin: admin,
+        is_admin,
         heading: "Edit check".into(),
         action: format!("{base}/checks/{}", check.id),
         error: None,
@@ -1030,7 +1033,7 @@ async fn check_edit(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
-    Ok(render(&check_edit_form(check, false))?.into_response())
+    Ok(render(&check_edit_form(check, false, user.is_admin))?.into_response())
 }
 
 /// Shared update-check core: validate, re-render the form on error, else apply
@@ -1197,7 +1200,7 @@ async fn channel_new(
     owned_project(&state.store, pid, user.id).await?;
     Ok(render(&ChannelFormTemplate {
         show_nav: true,
-        is_admin: false,
+        is_admin: user.is_admin,
         admin: false,
         project_id: pid,
         error: None,
@@ -1373,7 +1376,7 @@ async fn channel_test(
         .ok_or(AppError::NotFound)?;
     let project = owned_project(&state.store, channel.project_id, user.id).await?;
     let result = run_channel_test(&state, &channel).await;
-    render_project_page(&state.store, project, Some(result), false).await
+    render_project_page(&state.store, project, Some(result), false, user.is_admin).await
 }
 
 /// Replace a check's bound channel set with exactly the submitted ids (only
@@ -1493,7 +1496,7 @@ async fn settings_page(
         .unwrap_or_default();
     Ok(render(&SettingsTemplate {
         show_nav: true,
-        is_admin: false,
+        is_admin: true,
         scan_interval,
         nag_interval,
         pings_retention_days,
@@ -1548,7 +1551,7 @@ async fn users_page(
     let users = state.store.list_users().await?;
     Ok(render(&UsersTemplate {
         show_nav: true,
-        is_admin: false,
+        is_admin: true,
         users,
         error: None,
     })?
@@ -1564,7 +1567,7 @@ async fn users_create(
         let users = state.store.list_users().await?;
         return Ok(render(&UsersTemplate {
             show_nav: true,
-            is_admin: false,
+            is_admin: true,
             users,
             error: Some("username and password are required".into()),
         })?
@@ -1824,7 +1827,7 @@ async fn admin_project_show(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
-    render_project_page(&state.store, project, None, true).await
+    render_project_page(&state.store, project, None, true, true).await
 }
 
 async fn admin_project_edit(
@@ -1835,7 +1838,7 @@ async fn admin_project_edit(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
-    Ok(render(&project_edit_form(project, true))?.into_response())
+    Ok(render(&project_edit_form(project, true, true))?.into_response())
 }
 
 async fn admin_project_update(
@@ -1908,7 +1911,7 @@ async fn admin_check_show(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    render_check_page(&state, check, true).await
+    render_check_page(&state, check, true, true).await
 }
 
 async fn admin_check_edit(
@@ -1919,7 +1922,7 @@ async fn admin_check_edit(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    Ok(render(&check_edit_form(check, true))?.into_response())
+    Ok(render(&check_edit_form(check, true, true))?.into_response())
 }
 
 async fn admin_check_update(
@@ -2067,7 +2070,7 @@ async fn admin_channel_test(
         .await?
         .ok_or(AppError::NotFound)?;
     let result = run_channel_test(&state, &channel).await;
-    render_project_page(&state.store, project, Some(result), true).await
+    render_project_page(&state.store, project, Some(result), true, true).await
 }
 
 #[cfg(test)]

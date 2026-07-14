@@ -44,6 +44,36 @@ async fn non_admin_forbidden_on_admin_routes() {
 }
 
 #[tokio::test]
+async fn admin_sees_admin_nav_link_on_dashboard() {
+    let (server, store, _admin_id) = admin_server().await;
+    let body = server.get("/").await.text();
+    assert!(
+        body.contains(r#"href="/admin""#),
+        "admin's own dashboard should show the Admin nav link"
+    );
+
+    // A separate, non-admin member must NOT see the Admin nav link on their
+    // own dashboard, proving the link reflects the viewer, not the route.
+    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let mut member_server = TestServer::new(app(state));
+    member_server.save_cookies();
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("member", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    member_server
+        .post("/login")
+        .form(&[("username", "member"), ("password", "pw")])
+        .await;
+    let member_body = member_server.get("/").await.text();
+    assert!(
+        !member_body.contains(r#"href="/admin""#),
+        "non-admin member should not see the Admin nav link"
+    );
+}
+
+#[tokio::test]
 async fn admin_views_other_users_project_and_audits() {
     let (server, store, _admin_id) = admin_server().await;
     // A separate user owns a project + check.
