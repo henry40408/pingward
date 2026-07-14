@@ -400,6 +400,15 @@ impl Store {
         Ok(())
     }
 
+    pub async fn set_user_disabled(&self, id: i64, disabled: bool) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET disabled = $1 WHERE id = $2")
+            .bind(disabled as i64)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn create_session(
         &self,
         id: &str,
@@ -1078,6 +1087,19 @@ mod tests {
             .unwrap();
         let u = store.find_user_by_id(id).await.unwrap().unwrap();
         assert!(!u.disabled);
+    }
+
+    #[tokio::test]
+    async fn set_user_disabled_toggles() {
+        let store = seeded().await;
+        let id = store
+            .create_user("u3", Some("phc"), false, Utc::now())
+            .await
+            .unwrap();
+        store.set_user_disabled(id, true).await.unwrap();
+        assert!(store.find_user_by_id(id).await.unwrap().unwrap().disabled);
+        store.set_user_disabled(id, false).await.unwrap();
+        assert!(!store.find_user_by_id(id).await.unwrap().unwrap().disabled);
     }
 
     #[tokio::test]
