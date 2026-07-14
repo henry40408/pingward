@@ -85,6 +85,17 @@ async fn admin_sees_admin_nav_link_on_dashboard() {
         !member_body.contains(r#"href="/admin""#),
         "non-admin member should not see the Admin nav link"
     );
+    // Settings is a global, admin-only page — its nav link must likewise be
+    // hidden from non-admins (the route already 403s, but the link should not
+    // dangle), and shown to admins.
+    assert!(
+        !member_body.contains(r#"href="/settings""#),
+        "non-admin member should not see the Settings nav link"
+    );
+    assert!(
+        server.get("/").await.text().contains(r#"href="/settings""#),
+        "admin should see the Settings nav link"
+    );
 }
 
 #[tokio::test]
