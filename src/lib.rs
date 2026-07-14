@@ -13,6 +13,7 @@ pub mod prune;
 pub mod scheduler;
 pub mod state;
 pub mod store;
+pub mod view;
 pub mod web;
 
 pub fn app(state: AppState) -> Router {
