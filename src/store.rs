@@ -790,6 +790,47 @@ impl Store {
         rows.iter().map(row_to_ping).collect()
     }
 
+    /// Batched form of [`list_recent_pings`]: fetch the most recent
+    /// `per_check_limit` pings (newest id first) for each of `check_ids` in a
+    /// single round-trip, keyed by `check_id`. Avoids the per-check N+1 the
+    /// dashboard would otherwise incur. Checks with no pings are simply absent
+    /// from the map. Uses a `ROW_NUMBER()` window (SQLite >= 3.25 / PostgreSQL).
+    pub async fn list_recent_pings_for_checks(
+        &self,
+        check_ids: &[i64],
+        per_check_limit: i64,
+    ) -> Result<HashMap<i64, Vec<Ping>>, sqlx::Error> {
+        if check_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        // Placeholders `$1..$N` for the IN list; the limit is the final param.
+        let placeholders = (1..=check_ids.len())
+            .map(|i| format!("${i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT * FROM ( \
+               SELECT p.*, ROW_NUMBER() OVER (PARTITION BY p.check_id ORDER BY p.id DESC) AS rn \
+               FROM pings p WHERE p.check_id IN ({placeholders}) \
+             ) sub WHERE rn <= ${} ORDER BY check_id, id DESC",
+            check_ids.len() + 1
+        );
+        // Safe: `sql` interpolates only self-generated `$N` placeholders and a
+        // count — every value is bound below, so there is no injection surface.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for id in check_ids {
+            q = q.bind(*id);
+        }
+        q = q.bind(per_check_limit);
+        let rows = q.fetch_all(&self.pool).await?;
+        let mut map: HashMap<i64, Vec<Ping>> = HashMap::new();
+        for row in &rows {
+            let ping = row_to_ping(row)?;
+            map.entry(ping.check_id).or_default().push(ping);
+        }
+        Ok(map)
+    }
+
     pub async fn record_notification(
         &self,
         check_id: i64,
@@ -1816,5 +1857,77 @@ mod tests {
             ia < ib,
             "expected pinged check before never-pinged: {names:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn batch_recent_pings_matches_per_check_and_honors_limit() {
+        let store = seeded().await;
+        let mk = |n: &'static str, u: &'static str| {
+            let store = &store;
+            async move {
+                store
+                    .create_check(1, n, u, ScheduleKind::Period, Some(60), 30, None, "UTC")
+                    .await
+                    .unwrap()
+            }
+        };
+        let a = mk("A", "uuid-a").await;
+        let b = mk("B", "uuid-b").await;
+        let c = mk("C", "uuid-c").await; // will have no pings
+        let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        // A: 5 pings, B: 2 pings, C: none.
+        for i in 0..5 {
+            store
+                .insert_ping(
+                    a,
+                    PingKind::Success,
+                    Some(0),
+                    "x",
+                    None,
+                    base + chrono::Duration::seconds(i),
+                )
+                .await
+                .unwrap();
+        }
+        for i in 0..2 {
+            store
+                .insert_ping(
+                    b,
+                    PingKind::Success,
+                    Some(0),
+                    "y",
+                    None,
+                    base + chrono::Duration::seconds(i),
+                )
+                .await
+                .unwrap();
+        }
+
+        let batch = store
+            .list_recent_pings_for_checks(&[a, b, c], 3)
+            .await
+            .unwrap();
+        // Per-check limit honored: A capped at 3, B has 2, C absent.
+        assert_eq!(batch.get(&a).unwrap().len(), 3);
+        assert_eq!(batch.get(&b).unwrap().len(), 2);
+        assert!(!batch.contains_key(&c));
+        // Batch matches the per-check query (same ids, same newest-first order).
+        for id in [a, b] {
+            let single: Vec<i64> = store
+                .list_recent_pings(id, 3)
+                .await
+                .unwrap()
+                .iter()
+                .map(|p| p.id)
+                .collect();
+            let batched: Vec<i64> = batch.get(&id).unwrap().iter().map(|p| p.id).collect();
+            assert_eq!(batched, single, "check {id}");
+        }
+        // Empty input short-circuits to an empty map.
+        assert!(store
+            .list_recent_pings_for_checks(&[], 3)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }
