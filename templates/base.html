@@ -23,6 +23,16 @@
   <main class="wrap">{% block body %}{% endblock %}</main>
   <script>
     (function(){var b=document.getElementById('pw-theme-toggle');if(!b)return;b.addEventListener('click',function(){var r=document.documentElement,n=r.getAttribute('data-theme')==='dark'?'light':'dark';r.setAttribute('data-theme',n);try{localStorage.setItem('pw-theme',n);}catch(e){}});})();
+    // Render absolute timestamps (any `.localtime[data-ts]`) in the viewer's
+    // local time zone, falling back to the server-rendered UTC text when JS is
+    // off. Shared across every page so any template can opt in with the span.
+    document.querySelectorAll('.localtime[data-ts]').forEach(function(el){
+      var d = new Date(el.getAttribute('data-ts'));
+      if (!isNaN(d.getTime())) {
+        el.textContent = d.toLocaleString(undefined, { hour12: false });
+        el.title = el.getAttribute('data-ts');
+      }
+    });
   </script>
 </body>
 </html>
