@@ -71,6 +71,7 @@ fn row_to_user(row: &sqlx::any::AnyRow) -> Result<User, sqlx::Error> {
         username: row.get("username"),
         password_hash: row.get("password_hash"),
         is_admin: row.get::<i64, _>("is_admin") != 0,
+        disabled: row.get::<i64, _>("disabled") != 0,
         created_at: parse_ts(row.get("created_at"))
             .ok_or_else(|| decode_err("users.created_at must be RFC3339"))?,
     })
@@ -1001,6 +1002,17 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn new_user_is_not_disabled() {
+        let store = seeded().await;
+        let id = store
+            .create_user("u2", Some("phc"), false, Utc::now())
+            .await
+            .unwrap();
+        let u = store.find_user_by_id(id).await.unwrap().unwrap();
+        assert!(!u.disabled);
     }
 
     #[tokio::test]
