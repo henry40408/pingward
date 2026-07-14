@@ -452,7 +452,8 @@ struct CheckForm {
 }
 
 struct PingRow {
-    time: String,
+    time: String,             // UTC fallback shown when JS is off
+    iso: String,              // RFC3339 UTC; localized to the viewer's zone client-side
     pill_class: &'static str, // pill/output css class: "ok"|"fail"|"start"|"log"
     kind_label: &'static str, // visible kind label (spec §8): "success"|"fail"|"start"|"log"
     exit: String,
@@ -483,7 +484,8 @@ struct ChannelBox {
 }
 
 struct NotificationRow {
-    created_at: String,
+    created_at: String, // UTC fallback shown when JS is off
+    iso: String,        // RFC3339 UTC; localized to the viewer's zone client-side
     event: &'static str,
     status: &'static str,
     channel: String,
@@ -721,7 +723,8 @@ async fn check_show(
         .iter()
         .take(20)
         .map(|p| PingRow {
-            time: p.created_at.format("%H:%M:%S").to_string(),
+            time: p.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            iso: p.created_at.to_rfc3339(),
             pill_class: ping_pill_class(p.kind),
             kind_label: p.kind.as_str(),
             exit: p
@@ -745,7 +748,8 @@ async fn check_show(
         .await?
         .into_iter()
         .map(|n| NotificationRow {
-            created_at: n.created_at.format("%H:%M:%S").to_string(),
+            created_at: n.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            iso: n.created_at.to_rfc3339(),
             event: n.event.as_str(),
             status: n.status.as_str(),
             channel: channel_names

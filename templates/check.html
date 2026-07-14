@@ -58,9 +58,9 @@
       <tbody>
         {% for p in pings %}
         {% if p.body.is_empty() %}
-        <tr><td class="mono"><span class="caret" style="opacity:0">&#9656;</span>{{ p.time }}</td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
+        <tr><td class="mono"><span class="caret" style="opacity:0">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
         {% else %}
-        <tr class="toggle" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span>{{ p.time }}</td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
+        <tr class="toggle" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
         <tr class="exp"><td colspan="5" style="border-top:none;padding-top:0"><div class="out {{ p.pill_class }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
         {% endif %}
         {% endfor %}
@@ -76,7 +76,7 @@
       <thead><tr><th>When</th><th>Event</th><th>Channel</th><th>Result</th></tr></thead>
       <tbody>
         {% for n in notifications %}
-        <tr><td class="mono">{{ n.created_at }}</td><td>{{ n.event }}</td><td>{{ n.channel }}</td>
+        <tr><td class="mono"><span class="localtime" data-ts="{{ n.iso }}">{{ n.created_at }}</span></td><td>{{ n.event }}</td><td>{{ n.channel }}</td>
           {% if n.status == "ok" %}<td class="mono ok-txt">sent</td>{% else %}<td class="mono fail-txt">{{ n.error }}</td>{% endif %}
         </tr>
         {% endfor %}
@@ -102,6 +102,15 @@
         navigator.clipboard.writeText(text);
       }
     });
+  });
+  // Render absolute timestamps in the viewer's local time zone (falls back to
+  // the server-rendered UTC text when JS is off).
+  document.querySelectorAll('.localtime[data-ts]').forEach(function(el){
+    var d = new Date(el.getAttribute('data-ts'));
+    if (!isNaN(d.getTime())) {
+      el.textContent = d.toLocaleString(undefined, { hour12: false });
+      el.title = el.getAttribute('data-ts');
+    }
   });
 </script>
 {% endblock %}
