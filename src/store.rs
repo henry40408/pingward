@@ -14,6 +14,15 @@ pub struct Store {
     pub pool: Pool,
 }
 
+/// Cross-user rollup of check statuses for the admin dashboard.
+#[derive(Debug, Clone, Default)]
+pub struct CheckStatusCounts {
+    pub new: i64,
+    pub up: i64,
+    pub down: i64,
+    pub paused: i64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NewAudit<'a> {
     pub actor_user_id: i64,
@@ -879,6 +888,134 @@ impl Store {
             .await?;
         rows.iter().map(row_to_audit).collect()
     }
+
+    // --- admin dashboard aggregates ---
+
+    pub async fn count_checks_by_status(&self) -> Result<CheckStatusCounts, sqlx::Error> {
+        let rows = sqlx::query("SELECT status, COUNT(*) AS n FROM checks GROUP BY status")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut c = CheckStatusCounts::default();
+        for r in &rows {
+            let status: String = r.get("status");
+            let n: i64 = r.get("n");
+            match status.as_str() {
+                "new" => c.new = n,
+                "up" => c.up = n,
+                "down" => c.down = n,
+                "paused" => c.paused = n,
+                _ => {}
+            }
+        }
+        Ok(c)
+    }
+
+    /// Every check currently `down`, paired with its project name and owner
+    /// username, for the admin cross-user incidents view. Ordered by
+    /// `last_ping_at` (oldest first, i.e. longest-down first).
+    pub async fn list_down_checks_with_owner(
+        &self,
+    ) -> Result<Vec<(Check, String, String)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT c.*, p.name AS project_name, u.username AS owner_username \
+             FROM checks c JOIN projects p ON p.id = c.project_id \
+             JOIN users u ON u.id = p.user_id \
+             WHERE c.status = 'down' ORDER BY c.last_ping_at",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    row_to_check(r)?,
+                    r.get::<String, _>("project_name"),
+                    r.get::<String, _>("owner_username"),
+                ))
+            })
+            .collect()
+    }
+
+    /// `(ok, error)` notification counts across all users since `cutoff`.
+    pub async fn notification_counts_since(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<(i64, i64), sqlx::Error> {
+        let ok: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE status = 'ok' AND created_at >= $1",
+        )
+        .bind(cutoff.to_rfc3339())
+        .fetch_one(&self.pool)
+        .await?;
+        let err: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE status = 'error' AND created_at >= $1",
+        )
+        .bind(cutoff.to_rfc3339())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((ok, err))
+    }
+
+    /// Per-channel `(channel_name, ok, error)` notification counts since
+    /// `cutoff`, ordered by most failures first. The conditional sums are
+    /// cast to `BIGINT` so they decode as `i64` on both SQLite and
+    /// PostgreSQL (a bare `SUM()` can come back as a wider/different type
+    /// on PostgreSQL and fail to decode as `i64`).
+    pub async fn channel_failure_counts_since(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Vec<(String, i64, i64)>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT ch.name AS channel_name, \
+             CAST(SUM(CASE WHEN n.status = 'ok' THEN 1 ELSE 0 END) AS BIGINT) AS ok, \
+             CAST(SUM(CASE WHEN n.status = 'error' THEN 1 ELSE 0 END) AS BIGINT) AS err \
+             FROM notifications n JOIN channels ch ON ch.id = n.channel_id \
+             WHERE n.created_at >= $1 GROUP BY ch.name ORDER BY err DESC",
+        )
+        .bind(cutoff.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    r.get::<String, _>("channel_name"),
+                    r.get::<i64, _>("ok"),
+                    r.get::<i64, _>("err"),
+                ))
+            })
+            .collect()
+    }
+
+    pub async fn recent_failed_notifications(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<Notification>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT * FROM notifications WHERE status = 'error' ORDER BY id DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_notification).collect()
+    }
+
+    pub async fn count_projects(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM projects")
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn count_checks(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM checks")
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn count_pings_since(&self, cutoff: DateTime<Utc>) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM pings WHERE created_at >= $1")
+            .bind(cutoff.to_rfc3339())
+            .fetch_one(&self.pool)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -1422,5 +1559,113 @@ mod tests {
         assert_eq!(rows[0].action, "admin.access");
         assert_eq!(rows[0].target_owner_id, Some(42));
         assert_eq!(rows[0].actor_username, "adm");
+    }
+
+    #[tokio::test]
+    async fn status_counts_and_scale() {
+        let store = seeded().await;
+        // `seeded()` already pre-seeds one user 'u' (id 1) and one project 'p'
+        // (id 1) with no checks, so `username` must be distinct here to avoid
+        // the UNIQUE constraint on `users.username`.
+        let uid = store
+            .create_user("u2", Some("p"), false, Utc::now())
+            .await
+            .unwrap();
+        let pid = store
+            .create_project(uid, "p2", None, None, Utc::now())
+            .await
+            .unwrap();
+        store
+            .create_check(
+                pid,
+                "a",
+                "uuid-a",
+                ScheduleKind::Period,
+                Some(3600),
+                300,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        store
+            .create_check(
+                pid,
+                "b",
+                "uuid-b",
+                ScheduleKind::Period,
+                Some(3600),
+                300,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+
+        // The two checks just created are the only rows in `checks` (the
+        // seeded project has none), and both start out `new`.
+        let counts = store.count_checks_by_status().await.unwrap();
+        assert_eq!(
+            counts.new + counts.up + counts.down + counts.paused,
+            store.count_checks().await.unwrap()
+        );
+        assert_eq!(counts.new, 2);
+        assert_eq!(counts.up, 0);
+        assert_eq!(counts.down, 0);
+        assert_eq!(counts.paused, 0);
+        assert_eq!(store.count_projects().await.unwrap(), 2); // seeded 'p' + this 'p2'
+        assert_eq!(store.count_checks().await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn notification_counts_split_ok_error() {
+        let store = seeded().await;
+        let cid = store
+            .create_check(
+                1,
+                "c",
+                "notif-uuid",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        let chan = store
+            .create_channel(
+                1,
+                ChannelKind::Webhook,
+                "h",
+                "{\"url\":\"http://x\"}",
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+
+        let now = Utc::now();
+        store
+            .record_notification(cid, chan, EventKind::Up, NotifyStatus::Ok, None, now)
+            .await
+            .unwrap();
+        store
+            .record_notification(
+                cid,
+                chan,
+                EventKind::Down,
+                NotifyStatus::Error,
+                Some("boom"),
+                now,
+            )
+            .await
+            .unwrap();
+
+        let (ok, err) = store
+            .notification_counts_since(Utc::now() - chrono::Duration::days(1))
+            .await
+            .unwrap();
+        assert_eq!(ok, 1);
+        assert_eq!(err, 1);
     }
 }
