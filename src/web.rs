@@ -1609,18 +1609,12 @@ async fn users_delete(
     if id == admin.id {
         return Ok(Redirect::to("/users").into_response());
     }
-    let admins = state
-        .store
-        .list_users()
-        .await?
-        .into_iter()
-        .filter(|u| u.is_admin)
-        .count();
-    let target = state.store.find_user_by_id(id).await?;
-    if let Some(t) = target {
-        if t.is_admin && admins <= 1 {
-            return Ok(Redirect::to("/users").into_response());
-        }
+    let Some(target) = state.store.find_user_by_id(id).await? else {
+        return Ok(Redirect::to("/users").into_response());
+    };
+    // Refuse to delete the last enabled admin.
+    if target.is_admin && !target.disabled && state.store.count_enabled_admins().await? <= 1 {
+        return Ok(Redirect::to("/users").into_response());
     }
     state.store.delete_user(id).await?;
     state
@@ -1647,6 +1641,9 @@ async fn users_set_password(
     Form(form): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
     if form.password.is_empty() {
+        return Ok(Redirect::to("/users").into_response());
+    }
+    if state.store.find_user_by_id(id).await?.is_none() {
         return Ok(Redirect::to("/users").into_response());
     }
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;

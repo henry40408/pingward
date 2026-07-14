@@ -50,6 +50,33 @@ async fn deleting_user_is_audited() {
 }
 
 #[tokio::test]
+async fn deleting_nonexistent_user_writes_no_audit() {
+    let (server, store, _admin) = admin_server().await;
+    let before = store.list_audit(50).await.unwrap().len();
+    server.post("/users/99999/delete").await; // nonexistent id
+    let after = store.list_audit(50).await.unwrap();
+    assert!(!after
+        .iter()
+        .any(|a| a.action == "user.delete" && a.target_id == Some(99999)));
+    assert_eq!(after.len(), before);
+}
+
+#[tokio::test]
+async fn resetting_password_for_nonexistent_user_writes_no_audit() {
+    let (server, store, _admin) = admin_server().await;
+    server
+        .post("/users/99999/password")
+        .form(&[("password", "whatever12")])
+        .await;
+    assert!(!store
+        .list_audit(50)
+        .await
+        .unwrap()
+        .iter()
+        .any(|a| a.action == "user.password_reset" && a.target_id == Some(99999)));
+}
+
+#[tokio::test]
 async fn promote_and_demote_admin() {
     let (server, store, _admin) = admin_server().await;
     let uid = store
