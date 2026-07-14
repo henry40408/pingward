@@ -1,26 +1,28 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>pingward</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-    nav a { margin-right: 1rem; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #ccc; padding: .4rem .6rem; text-align: left; }
-    .status-up { color: #2e7d32; } .status-down { color: #c62828; }
-    .status-new, .status-paused { color: #757575; }
-    form.inline { display: inline; }
-    label { display: block; margin: .5rem 0; }
-  </style>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script>
+    (function(){try{var t=localStorage.getItem('pw-theme')||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+  </script>
 </head>
 <body>
-  <nav>
-    <a href="/">Dashboard</a>
-    {% if show_nav %}<a href="/settings">Settings</a>
-    <form class="inline" method="post" action="/logout"><button type="submit">Log out</button></form>{% endif %}
-  </nav>
-  {% block body %}{% endblock %}
+  {% if show_nav %}
+  <header class="bar"><div class="inner">
+    <a class="brand" href="/"><span class="glyph">▚</span>pingward</a>
+    <nav class="links"><a href="/">Dashboard</a><a href="/settings">Settings</a></nav>
+    <div class="right">
+      <button class="iconbtn" id="pw-theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
+      <form class="inline" method="post" action="/logout"><button class="ghost" type="submit">Log out</button></form>
+    </div>
+  </div></header>
+  {% endif %}
+  <main class="wrap">{% block body %}{% endblock %}</main>
+  <script>
+    (function(){var b=document.getElementById('pw-theme-toggle');if(!b)return;b.addEventListener('click',function(){var r=document.documentElement,n=r.getAttribute('data-theme')==='dark'?'light':'dark';r.setAttribute('data-theme',n);try{localStorage.setItem('pw-theme',n);}catch(e){}});})();
+  </script>
 </body>
 </html>
