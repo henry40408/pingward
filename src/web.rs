@@ -353,13 +353,16 @@ async fn start_session(store: &Store, jar: CookieJar, user_id: i64) -> Result<Co
 /// the pre-session `login`/`setup` pages, which carry exempt forms).
 async fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
     match jar.get(SESSION_COOKIE) {
-        Some(cookie) => state
-            .store
-            .session_csrf_token(cookie.value())
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default(),
+        Some(cookie) => match state.store.session_csrf_token(cookie.value()).await {
+            Ok(tok) => tok.unwrap_or_default(),
+            // Fail closed: an empty token yields an unsubmittable form (the guard
+            // rejects it) rather than a token-less bypass. Log so the operator can
+            // see the lookup failed instead of it being silently swallowed.
+            Err(e) => {
+                tracing::error!("failed to load CSRF token for form render: {e}");
+                String::new()
+            }
+        },
         None => String::new(),
     }
 }
@@ -375,6 +378,12 @@ async fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
 /// (in which case the body is buffered and the request rebuilt so the
 /// downstream `Form<T>` extractor still works). The token is a random UUID, so
 /// a plain `==` comparison (no constant-time compare) is adequate here.
+///
+/// Upper bound on the buffered request body when reading the `_csrf` form field.
+/// Browser POSTs to `web::routes()` carry small urlencoded forms; 1 MiB is a
+/// generous ceiling that caps memory a malicious client could force us to buffer.
+const CSRF_MAX_BODY_BYTES: usize = 1 << 20;
+
 pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
     // Safe methods never change state.
     if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
@@ -408,7 +417,7 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
     // Otherwise read the `_csrf` form field: buffer the body, extract the token,
     // then rebuild the request with the same bytes for the downstream handler.
     let (parts, body) = req.into_parts();
-    let bytes = match axum::body::to_bytes(body, 1 << 20).await {
+    let bytes = match axum::body::to_bytes(body, CSRF_MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => return StatusCode::FORBIDDEN.into_response(),
     };
