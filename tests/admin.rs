@@ -67,3 +67,44 @@ async fn admin_views_other_users_project_and_audits() {
         && a.target_id == Some(pid)
         && a.target_owner_id == Some(owner)));
 }
+
+#[tokio::test]
+async fn admin_mutation_on_other_project_is_audited() {
+    let (server, store, _admin_id) = admin_server().await;
+    let owner = store
+        .create_user("owner2", Some("phc"), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let pid = store
+        .create_project(owner, "p", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    let cid = store
+        .create_check(
+            pid,
+            "c",
+            "uuid-c",
+            pingward::models::ScheduleKind::Period,
+            Some(3600),
+            300,
+            None,
+            "UTC",
+        )
+        .await
+        .unwrap();
+    server
+        .post(&format!("/admin/checks/{cid}/pause"))
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    // Check is paused and the access was audited.
+    assert_eq!(
+        store.find_check(cid).await.unwrap().unwrap().status,
+        pingward::models::CheckStatus::Paused
+    );
+    let audit = store.list_audit(50).await.unwrap();
+    assert!(audit
+        .iter()
+        .any(|a| a.target_type.as_deref() == Some("check")
+            && a.target_id == Some(cid)
+            && a.method.as_deref() == Some("POST")));
+}
