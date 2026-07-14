@@ -453,17 +453,18 @@ struct CheckForm {
 
 struct PingRow {
     time: String,
-    kind: &'static str, // pill css class + label: "ok"|"fail"|"start"|"log"
+    pill_class: &'static str, // pill/output css class: "ok"|"fail"|"start"|"log"
+    kind_label: &'static str, // visible kind label (spec §8): "success"|"fail"|"start"|"log"
     exit: String,
     duration: String,
     source: String,
     body: String,
 }
 
-/// Maps a stored `PingKind` to the pill/output CSS class (and display label)
-/// used on the check-detail page. `Exitcode` never reaches storage — `apply()`
-/// in `ping.rs` rewrites it to `Success`/`Fail` before insert — but is handled
-/// defensively.
+/// Maps a stored `PingKind` to the pill/output CSS class used on the
+/// check-detail page (the visible label instead uses `PingKind::as_str()`).
+/// `Exitcode` never reaches storage — `apply()` in `ping.rs` rewrites it to
+/// `Success`/`Fail` before insert — but is handled defensively.
 fn ping_pill_class(k: crate::models::PingKind) -> &'static str {
     use crate::models::PingKind;
     match k {
@@ -721,7 +722,8 @@ async fn check_show(
         .take(20)
         .map(|p| PingRow {
             time: p.created_at.format("%H:%M:%S").to_string(),
-            kind: ping_pill_class(p.kind),
+            pill_class: ping_pill_class(p.kind),
+            kind_label: p.kind.as_str(),
             exit: p
                 .exit_code
                 .map(|c| format!("exit {c}"))

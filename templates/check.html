@@ -9,7 +9,7 @@
   <span class="status-dot {{ status }}"></span>
   <h1>{{ check.name }}</h1>
   <span class="badge {{ status }}">{{ status }}</span>
-  <span class="since">{{ since }}</span>
+  <span class="since {{ status }}">{{ since }}</span>
 </div>
 <div class="crumb" style="margin:2px 0 0">{{ schedule }}</div>
 
@@ -58,10 +58,10 @@
       <tbody>
         {% for p in pings %}
         {% if p.body.is_empty() %}
-        <tr><td class="mono"><span class="caret" style="opacity:0">&#9656;</span>{{ p.time }}</td><td><span class="pill {{ p.kind }}">{{ p.kind }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
+        <tr><td class="mono"><span class="caret" style="opacity:0">&#9656;</span>{{ p.time }}</td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
         {% else %}
-        <tr class="toggle" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span>{{ p.time }}</td><td><span class="pill {{ p.kind }}">{{ p.kind }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
-        <tr class="exp"><td colspan="5" style="border-top:none;padding-top:0"><div class="out {{ p.kind }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
+        <tr class="toggle" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span>{{ p.time }}</td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
+        <tr class="exp"><td colspan="5" style="border-top:none;padding-top:0"><div class="out {{ p.pill_class }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
         {% endif %}
         {% endfor %}
       </tbody>
