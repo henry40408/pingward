@@ -429,6 +429,9 @@ nav.links a:hover {
 .status-dot.paused {
   background: var(--paused);
 }
+.status-dot.new {
+  background: var(--new);
+}
 .status-dot.up::after,
 .status-dot.down::after {
   content: "";
@@ -546,6 +549,11 @@ nav.links a:hover {
 }
 .badge.paused {
   color: var(--paused);
+  background: var(--paused-bg);
+  border-color: var(--paused-bd);
+}
+.badge.new {
+  color: var(--new);
   background: var(--paused-bg);
   border-color: var(--paused-bd);
 }

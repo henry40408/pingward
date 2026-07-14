@@ -73,12 +73,43 @@ struct LoginTemplate {
 #[template(path = "dashboard.html")]
 struct DashboardTemplate {
     show_nav: bool,
-    projects: Vec<ProjectRow>,
+    total: usize,
+    up: usize,
+    late: usize,
+    down: usize,
+    groups: Vec<ProjectGroup>,
 }
 
-pub struct ProjectRow {
-    pub project: Project,
-    pub checks: Vec<Check>,
+struct CheckRow {
+    id: i64,
+    name: String,
+    status: &'static str, // view::DisplayStatus::as_str()
+    schedule: String,     // e.g. "every 1h · 10m grace" or the cron expr
+    last: String,         // fmt_relative or "—"
+    bars: Vec<crate::view::Bar>,
+}
+
+struct ProjectGroup {
+    id: i64,
+    name: String,
+    count: usize,
+    checks: Vec<CheckRow>,
+}
+
+/// Human-readable schedule summary shown under a check's name (dashboard rows
+/// and the check detail page).
+fn schedule_label(c: &Check) -> String {
+    match c.schedule_kind {
+        ScheduleKind::Period => match c.period_secs {
+            Some(s) => format!(
+                "every {} · {} grace",
+                crate::view::fmt_secs(s),
+                crate::view::fmt_secs(c.grace_secs)
+            ),
+            None => format!("{} grace", crate::view::fmt_secs(c.grace_secs)),
+        },
+        ScheduleKind::Cron => c.cron_expr.clone().unwrap_or_default(),
+    }
 }
 
 // --- forms ---
@@ -179,15 +210,54 @@ async fn dashboard(
         Some(u) => u,
         None => return Ok(Redirect::to("/login").into_response()),
     };
-    let projects = state.store.list_projects_for_user(user.id).await?;
-    let mut rows = Vec::with_capacity(projects.len());
-    for project in projects {
+    let now = Utc::now();
+    let (mut total, mut up, mut late, mut down) = (0usize, 0, 0, 0);
+    let mut groups = Vec::new();
+    for project in state.store.list_projects_for_user(user.id).await? {
         let checks = state.store.list_checks_for_project(project.id).await?;
-        rows.push(ProjectRow { project, checks });
+        let mut rows = Vec::with_capacity(checks.len());
+        for c in &checks {
+            let ds = crate::view::display_status(c, now);
+            total += 1;
+            match ds {
+                crate::view::DisplayStatus::Up => up += 1,
+                crate::view::DisplayStatus::Late => late += 1,
+                crate::view::DisplayStatus::Down => down += 1,
+                _ => {}
+            }
+            let pings = state.store.list_recent_pings(c.id, 40).await?;
+            let bars = crate::view::heartbeat(
+                &pings,
+                c.max_runtime_secs,
+                c.status == CheckStatus::Paused,
+                6,
+            );
+            rows.push(CheckRow {
+                id: c.id,
+                name: c.name.clone(),
+                status: ds.as_str(),
+                schedule: schedule_label(c),
+                last: c
+                    .last_ping_at
+                    .map(|t| crate::view::fmt_relative(t, now))
+                    .unwrap_or_else(|| "—".into()),
+                bars,
+            });
+        }
+        groups.push(ProjectGroup {
+            id: project.id,
+            name: project.name,
+            count: checks.len(),
+            checks: rows,
+        });
     }
     Ok(render(&DashboardTemplate {
         show_nav: true,
-        projects: rows,
+        total,
+        up,
+        late,
+        down,
+        groups,
     })?
     .into_response())
 }
