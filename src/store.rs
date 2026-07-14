@@ -912,7 +912,9 @@ impl Store {
 
     /// Every check currently `down`, paired with its project name and owner
     /// username, for the admin cross-user incidents view. Ordered by
-    /// `last_ping_at` (oldest first, i.e. longest-down first).
+    /// `last_ping_at` (oldest first, i.e. longest-down first), with
+    /// never-pinged checks (`NULL`) sorted last on both SQLite and
+    /// PostgreSQL, and `id` as a deterministic final tiebreaker.
     pub async fn list_down_checks_with_owner(
         &self,
     ) -> Result<Vec<(Check, String, String)>, sqlx::Error> {
@@ -920,7 +922,7 @@ impl Store {
             "SELECT c.*, p.name AS project_name, u.username AS owner_username \
              FROM checks c JOIN projects p ON p.id = c.project_id \
              JOIN users u ON u.id = p.user_id \
-             WHERE c.status = 'down' ORDER BY c.last_ping_at",
+             WHERE c.status = 'down' ORDER BY c.last_ping_at IS NULL, c.last_ping_at, c.id",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1749,5 +1751,54 @@ mod tests {
             assert_eq!(*ok, 0);
             assert_eq!(*err, 1);
         }
+    }
+
+    #[tokio::test]
+    async fn down_checks_order_never_pinged_last() {
+        let store = seeded().await;
+        let a = store
+            .create_check(
+                1,
+                "A",
+                "uuid-a",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+        let b = store
+            .create_check(
+                1,
+                "B",
+                "uuid-b",
+                ScheduleKind::Period,
+                Some(60),
+                30,
+                None,
+                "UTC",
+            )
+            .await
+            .unwrap();
+
+        // A has a last_ping_at (was pinged before going down); B never pinged.
+        let t0 = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
+        store
+            .mark_ping(a, CheckStatus::Down, Some(t0), Some(t0), None)
+            .await
+            .unwrap();
+        store.set_status(b, CheckStatus::Down).await.unwrap();
+
+        let rows = store.list_down_checks_with_owner().await.unwrap();
+        let names: Vec<_> = rows.iter().map(|(c, _, _)| c.name.clone()).collect();
+        let ia = names.iter().position(|n| n == "A").unwrap();
+        let ib = names.iter().position(|n| n == "B").unwrap();
+        // A (pinged) must precede B (never pinged) — NULLs sort last.
+        assert!(
+            ia < ib,
+            "expected pinged check before never-pinged: {names:?}"
+        );
     }
 }
