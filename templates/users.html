@@ -43,11 +43,11 @@
       <div class="two">
         <div class="field">
           <label for="username">Username</label>
-          <input id="username" name="username" required>
+          <input id="username" name="username" data-testid="user-username-input" required>
         </div>
         <div class="field">
           <label for="password">Password</label>
-          <input id="password" name="password" type="password" required>
+          <input id="password" name="password" type="password" data-testid="user-password-input" required>
         </div>
       </div>
       <label class="chk">
@@ -55,7 +55,7 @@
         <span class="nm">Admin</span>
       </label>
       <div style="display:flex;gap:8px;margin-top:12px">
-        <button class="btn primary" type="submit">Create user</button>
+        <button class="btn primary" type="submit" data-testid="user-submit">Create user</button>
       </div>
     </form>
   </div>
