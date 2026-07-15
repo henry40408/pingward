@@ -21,4 +21,15 @@ export class ApiHelper {
       );
     }
   }
+
+  // Drive a ping against the exact URL the check page renders. The ping
+  // endpoints are public and CSRF-exempt; a success ping marks the check up,
+  // a fail ping marks it down (both synchronous within the request).
+  async ping(pingUrl, kind) {
+    const target = kind === "fail" ? `${pingUrl}/fail` : pingUrl;
+    const res = await fetch(target);
+    if (!res.ok) {
+      throw new Error(`ping (${kind}) failed: HTTP ${res.status}`);
+    }
+  }
 }
