@@ -1,0 +1,16 @@
+{
+  "name": "pingward-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-level E2E tests for pingward (Playwright + playwright-bdd).",
+  "scripts": {
+    "test": "bddgen && playwright test",
+    "test:headed": "bddgen && playwright test --headed",
+    "test:ui": "bddgen && playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "playwright-bdd": "^9.2.0"
+  }
+}
