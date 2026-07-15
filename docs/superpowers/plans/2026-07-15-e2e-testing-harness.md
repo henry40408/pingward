@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - **Dependency cooldown:** No package version published less than 7 days ago. Pinned versions verified 2026-07-15: `@playwright/test@^1.61.1` (published 2026-06-23), `playwright-bdd@^9.2.0` (published 2026-06-18). If re-resolved later, pick the latest release ≥7 days old.
-- **No pingward application code changes.** E2E must work against the app as-is. Selectors use existing DOM (`#username`, `#password`, button text) — no `data-testid` added.
+- **Selectors:** originally used existing DOM (`#username`, `#password`, button text) with no app-code changes. **Amended 2026-07-15** (post-implementation, at the user's request): templates gained additive `data-testid` hooks (`username-input`, `password-input`, `setup-submit`/`login-submit`, `setup-error`/`login-error`, `logout-button`) and steps use `getByTestId`, since future elements may lack an `id`. Existing `id`s are kept for `<label for>`. Rebuild the binary (`cargo build`) after template edits — askama embeds templates at compile time. See the spec's §11.
 - **Binary spawned with `cwd` = repo root.** sqlx migrations use relative paths (`migrations/sqlite`), so the working directory must be the repo root.
 - **CI actions pinned to commit SHA** with a `# vX` comment, matching `.github/workflows/ci.yml`.
 - **Git:** commits GPG-signed (default config). Stage files explicitly by name — never `git add -A`/`.`.

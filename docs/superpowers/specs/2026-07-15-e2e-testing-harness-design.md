@@ -13,8 +13,9 @@ behavior the way a user experiences it. The first cut covers the authentication
 surface only; the harness is built so later scopes (projects, checks, ping →
 status changes, notification channels) slot in without rework.
 
-Non-goals for this cut: Project/Check/Channel/Ping/notification scenarios, direct
-database seeding, and any change to pingward application code.
+Non-goals for this cut: Project/Check/Channel/Ping/notification scenarios and
+direct database seeding. (The initial cut also avoided app-code changes; this was
+later amended to add `data-testid` selector hooks — see §11.)
 
 ## 2. Reference: how `rdrs` does it
 
@@ -68,8 +69,9 @@ Verified against `src/web.rs`, `src/lib.rs`, `src/config.rs`, `templates/`:
   carries the token automatically.
 - **Selectors:** setup/login templates expose `#username`, `#password`, and
   submit buttons labeled "Create admin" / "Log in". The nav logout control is
-  `<button>Log out</button>`. **No `data-testid` attributes exist**, so E2E uses
-  CSS id + role/name selectors — no template changes required.
+  `<button>Log out</button>`. Originally the E2E used CSS id + role/name
+  selectors with no template changes; this was **amended** (see §11) to add
+  stable `data-testid` hooks, since future elements may lack an `id`.
 
 ## 4. Isolation model (the one architectural decision)
 
@@ -202,3 +204,21 @@ infrastructure. Drop either if considered out of scope during planning.)
 - Worker-scoped server + DB-reset isolation (Approach B) if the suite grows large
   enough that per-scenario spawn cost dominates.
 - Mock upstream servers (SMTP/Mailpit) for notification-channel E2E.
+
+## 11. Amendment (2026-07-15): `data-testid` selectors
+
+The initial cut deliberately used existing DOM (`#id` + role/name) and made no
+app-code changes. This was reversed at the user's request: future UI elements
+may lack an `id`, so the E2E now targets stable `data-testid` hooks (following
+the `rdrs` naming convention). Templates gained additive `data-testid`
+attributes (existing `id`s are kept for `<label for>` association):
+
+- `setup.html`: `username-input`, `password-input`, `setup-submit`, `setup-error`
+- `login.html`: `username-input`, `password-input`, `login-submit`, `login-error`
+- `base.html` nav: `logout-button`
+
+Step definitions use `page.getByTestId(...)`; the login-error assertion tightened
+to `getByTestId("login-error")` + `toHaveText`. Because askama embeds templates
+at compile time, the binary must be rebuilt (`cargo build`) after template edits
+before the E2E picks them up. Verified: Rust suite 187 passed (no rendered-page
+assertion regressions), E2E 5 passed.

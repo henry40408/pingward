@@ -9,21 +9,21 @@ When("I visit {string}", async ({ page, serverUrl }, urlPath) => {
 
 Then("I am on the setup page", async ({ page, serverUrl }) => {
   await expect(page).toHaveURL(`${serverUrl}/setup`);
-  await expect(page.getByRole("button", { name: "Create admin" })).toBeVisible();
+  await expect(page.getByTestId("setup-submit")).toBeVisible();
 });
 
 When(
   "I create the admin {string} with password {string}",
   async ({ page }, username, password) => {
-    await page.locator("#username").fill(username);
-    await page.locator("#password").fill(password);
-    await page.getByRole("button", { name: "Create admin" }).click();
+    await page.getByTestId("username-input").fill(username);
+    await page.getByTestId("password-input").fill(password);
+    await page.getByTestId("setup-submit").click();
   }
 );
 
 Then("I land on the dashboard signed in", async ({ page, serverUrl }) => {
   await expect(page).toHaveURL(`${serverUrl}/`);
-  await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
+  await expect(page.getByTestId("logout-button")).toBeVisible();
 });
 
 Given(
@@ -37,9 +37,9 @@ When(
   "I sign in as {string} with password {string}",
   async ({ page, serverUrl }, username, password) => {
     await page.goto(`${serverUrl}/login`);
-    await page.locator("#username").fill(username);
-    await page.locator("#password").fill(password);
-    await page.getByRole("button", { name: "Log in" }).click();
+    await page.getByTestId("username-input").fill(username);
+    await page.getByTestId("password-input").fill(password);
+    await page.getByTestId("login-submit").click();
   }
 );
 
@@ -47,7 +47,7 @@ Then(
   "the login page shows the error {string}",
   async ({ page, serverUrl }, message) => {
     await expect(page).toHaveURL(`${serverUrl}/login`);
-    await expect(page.getByText(message)).toBeVisible();
+    await expect(page.getByTestId("login-error")).toHaveText(message);
   }
 );
 
@@ -55,18 +55,18 @@ Given(
   "I am signed in as {string} with password {string}",
   async ({ page, serverUrl }, username, password) => {
     await page.goto(`${serverUrl}/login`);
-    await page.locator("#username").fill(username);
-    await page.locator("#password").fill(password);
-    await page.getByRole("button", { name: "Log in" }).click();
+    await page.getByTestId("username-input").fill(username);
+    await page.getByTestId("password-input").fill(password);
+    await page.getByTestId("login-submit").click();
     await expect(page).toHaveURL(`${serverUrl}/`);
   }
 );
 
 When("I sign out", async ({ page }) => {
-  await page.getByRole("button", { name: "Log out" }).click();
+  await page.getByTestId("logout-button").click();
 });
 
 Then("I am on the login page", async ({ page, serverUrl }) => {
   await expect(page).toHaveURL(`${serverUrl}/login`);
-  await expect(page.getByRole("button", { name: "Log in" })).toBeVisible();
+  await expect(page.getByTestId("login-submit")).toBeVisible();
 });
