@@ -45,6 +45,14 @@ Feature: Monitoring core
     When I resume the check
     Then the check status is not "paused"
 
+  Scenario: A ping does not resurrect a paused check
+    Given a project named "Nightly jobs"
+    And a check named "backup" with period 60
+    When I pause the check
+    And I send a "success" ping
+    And I reload the check page
+    Then the check status is "paused"
+
   Scenario: Regenerate the ping URL
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60
