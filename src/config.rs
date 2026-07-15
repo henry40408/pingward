@@ -103,7 +103,7 @@ impl Config {
         Config {
             database_url: get("DATABASE_URL")
                 .unwrap_or_else(|| "sqlite://pingward.sqlite3?mode=rwc".into()),
-            bind: get("PINGWARD_BIND").unwrap_or_else(|| "127.0.0.1:8080".into()),
+            bind: get("PINGWARD_BIND").unwrap_or_else(|| "0.0.0.0:8080".into()),
             base_url: get("PINGWARD_BASE_URL").unwrap_or_else(|| "http://localhost:8080".into()),
             scan_interval_secs,
             prune_interval_secs,
@@ -158,7 +158,7 @@ mod tests {
     fn defaults_apply_when_unset() {
         let c = Config::from_map(|_| None);
         assert_eq!(c.scan_interval_secs, 30);
-        assert_eq!(c.bind, "127.0.0.1:8080");
+        assert_eq!(c.bind, "0.0.0.0:8080");
         assert_eq!(c.database_url, "sqlite://pingward.sqlite3?mode=rwc");
     }
 
