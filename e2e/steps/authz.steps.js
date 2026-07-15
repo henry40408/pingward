@@ -42,7 +42,9 @@ Then("the response status is {int}", async ({ world }, status) => {
 
 // Issue an authenticated POST with no _csrf field. page.request shares the
 // browser context's cookies (the session cookie rides along), so this hits
-// the CSRF guard as a real logged-in request that simply omits the token.
+// the CSRF guard as a real logged-in request that simply omits the token. The
+// scenario asserts a live admin session first (the Admin nav link), so the 403
+// is attributable to the missing token, not a missing session.
 When(
   "I POST to {string} without a CSRF token",
   async ({ page, serverUrl, world }, path) => {
@@ -58,6 +60,15 @@ When(
 When("I remember the current project", async ({ page, world }) => {
   await expect(page).toHaveURL(/\/projects\/\d+$/);
   world.projectUrl = page.url();
+});
+
+// Positive control for the cross-user 404: the owner (currently signed in)
+// reads the remembered project and gets 200, so the later 404 for a different
+// user is attributable to the ownership guard rather than a broken/missing
+// route or a non-existent project.
+Then("the owner can read the remembered project", async ({ page, world }) => {
+  const res = await page.goto(world.projectUrl);
+  expect(res.status()).toBe(200);
 });
 
 // Sign out, sign in as another user, revisit the remembered project URL, and
