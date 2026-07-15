@@ -25,9 +25,11 @@ function findAvailablePort() {
   });
 }
 
-async function waitForServer(url, timeoutMs = 30000) {
+async function waitForServer(url, getSpawnError, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    const spawnError = getSpawnError();
+    if (spawnError) throw spawnError;
     try {
       const res = await fetch(`${url}/healthz`);
       if (res.ok) return;
@@ -56,13 +58,18 @@ export async function spawnPingward() {
     stdio: "ignore",
   });
 
+  let spawnError = null;
+  proc.on("error", (e) => {
+    spawnError = e;
+  });
+
   const cleanup = async () => {
     proc.kill("SIGTERM");
     rmSync(dir, { recursive: true, force: true });
   };
 
   try {
-    await waitForServer(url);
+    await waitForServer(url, () => spawnError);
   } catch (err) {
     await cleanup();
     throw err;
