@@ -50,3 +50,23 @@ Then(
     await expect(page.getByText(message)).toBeVisible();
   }
 );
+
+Given(
+  "I am signed in as {string} with password {string}",
+  async ({ page, serverUrl }, username, password) => {
+    await page.goto(`${serverUrl}/login`);
+    await page.locator("#username").fill(username);
+    await page.locator("#password").fill(password);
+    await page.getByRole("button", { name: "Log in" }).click();
+    await expect(page).toHaveURL(`${serverUrl}/`);
+  }
+);
+
+When("I sign out", async ({ page }) => {
+  await page.getByRole("button", { name: "Log out" }).click();
+});
+
+Then("I am on the login page", async ({ page, serverUrl }) => {
+  await expect(page).toHaveURL(`${serverUrl}/login`);
+  await expect(page.getByRole("button", { name: "Log in" })).toBeVisible();
+});
