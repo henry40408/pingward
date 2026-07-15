@@ -53,6 +53,7 @@ export async function spawnPingward() {
       ...process.env,
       DATABASE_URL: `sqlite://${dbPath}?mode=rwc`,
       PINGWARD_BIND: `127.0.0.1:${port}`,
+      PINGWARD_BASE_URL: url,
       RUST_LOG: "warn",
     },
     stdio: "ignore",

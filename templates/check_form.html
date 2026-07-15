@@ -8,7 +8,7 @@
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="field">
         <label for="name">Name</label>
-        <input id="name" name="name" value="{{ name }}" required>
+        <input id="name" name="name" value="{{ name }}" data-testid="check-name-input" required>
       </div>
       <div class="field">
         <label for="schedule_kind">Schedule kind</label>
@@ -20,7 +20,7 @@
       <div class="two">
         <div class="field">
           <label for="period_secs">Period seconds</label>
-          <input id="period_secs" name="period_secs" value="{{ period_secs }}">
+          <input id="period_secs" name="period_secs" value="{{ period_secs }}" data-testid="check-period-input">
           <div class="help">Used in period mode.</div>
         </div>
         <div class="field">
@@ -55,7 +55,7 @@
         <div class="help">Leave blank to inherit from the project, or to turn off nagging.</div>
       </div>
       <div style="display:flex;gap:8px;margin-top:4px">
-        <button class="btn primary" type="submit">Save changes</button>
+        <button class="btn primary" type="submit" data-testid="check-submit">Save changes</button>
       </div>
     </form>
   </div>

@@ -13,7 +13,7 @@
 </div>
 
 {% if groups.is_empty() %}
-<p>No projects yet. Create one to start watching a job.</p>
+<p data-testid="dashboard-empty">No projects yet. Create one to start watching a job.</p>
 {% else %}
 {% for g in groups %}
 <div class="group">
