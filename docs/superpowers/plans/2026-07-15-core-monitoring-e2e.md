@@ -132,7 +132,7 @@ Run:
 ```bash
 rg -c 'data-testid' templates/project_form.html templates/check_form.html templates/check.html templates/project.html templates/dashboard.html
 ```
-Expected: `project_form.html:2`, `check_form.html:3`, `check.html:8` (2 from prior auth batch on base.html are separate — check.html itself has 8 new), `project.html:3`, `dashboard.html:1`. (Counts are a sanity check, not exact contract — confirm each intended hook exists.)
+Expected: `project_form.html:2`, `check_form.html:3`, `check.html:7`, `project.html:3`, `dashboard.html:1`. (Counts are a sanity check, not exact contract — confirm each intended hook exists.)
 
 - [ ] **Step 7: Rebuild the binary (askama compiles templates in)**
 
