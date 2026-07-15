@@ -7,7 +7,7 @@
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="field">
         <label for="name">Name</label>
-        <input id="name" name="name" value="{{ name }}" required>
+        <input id="name" name="name" value="{{ name }}" data-testid="project-name-input" required>
       </div>
       <div class="field">
         <label for="scan_interval_secs">Scan interval seconds</label>
@@ -20,7 +20,7 @@
         <div class="help">Leave blank to inherit, or to turn off nagging.</div>
       </div>
       <div style="display:flex;gap:8px;margin-top:4px">
-        <button class="btn primary" type="submit">Save changes</button>
+        <button class="btn primary" type="submit" data-testid="project-submit">Save changes</button>
       </div>
     </form>
   </div>
