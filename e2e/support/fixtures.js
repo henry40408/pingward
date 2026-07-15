@@ -19,6 +19,11 @@ export const test = base.extend({
   api: async ({ serverUrl }, use) => {
     await use(new ApiHelper(serverUrl));
   },
+  // Scenario-scoped scratch object for carrying state across steps within a
+  // single scenario (e.g. a remembered project URL, the last HTTP status).
+  world: async ({}, use) => {
+    await use({});
+  },
 });
 
 export { expect };
