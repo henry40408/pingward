@@ -8,24 +8,24 @@
       <thead><tr><th>Username</th><th>Admin</th><th></th></tr></thead>
       <tbody>
         {% for u in users %}
-        <tr>
+        <tr data-testid="user-row-{{ u.username }}">
           <td>{{ u.username }}</td>
-          <td>{% if u.is_admin %}<span class="pill ok">admin</span>{% else %}<span class="pill start">member</span>{% endif %}{% if u.disabled %} <span class="pill fail">disabled</span>{% endif %}</td>
+          <td>{% if u.is_admin %}<span class="pill ok" data-testid="user-role">admin</span>{% else %}<span class="pill start" data-testid="user-role">member</span>{% endif %}{% if u.disabled %} <span class="pill fail" data-testid="user-disabled">disabled</span>{% endif %}</td>
           <td>
             <form class="inline" method="post" action="/users/{{ u.id }}/password">
               <input type="hidden" name="_csrf" value="{{ csrf }}">
-              <input type="password" name="password" placeholder="new password" required>
-              <button class="btn" type="submit">reset</button>
+              <input type="password" name="password" placeholder="new password" data-testid="user-reset-input" required>
+              <button class="btn" type="submit" data-testid="user-reset-submit">reset</button>
             </form>
             <form class="inline" method="post" action="/users/{{ u.id }}/admin">
               <input type="hidden" name="_csrf" value="{{ csrf }}">
-              <button class="btn" type="submit">{% if u.is_admin %}revoke admin{% else %}make admin{% endif %}</button>
+              <button class="btn" type="submit" data-testid="user-toggle-admin">{% if u.is_admin %}revoke admin{% else %}make admin{% endif %}</button>
             </form>
             <form class="inline" method="post" action="/users/{{ u.id }}/disabled">
               <input type="hidden" name="_csrf" value="{{ csrf }}">
-              <button class="btn" type="submit">{% if u.disabled %}enable{% else %}disable{% endif %}</button>
+              <button class="btn" type="submit" data-testid="user-toggle-disabled">{% if u.disabled %}enable{% else %}disable{% endif %}</button>
             </form>
-            <form class="inline" method="post" action="/users/{{ u.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" type="submit">delete</button></form>
+            <form class="inline" method="post" action="/users/{{ u.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" type="submit" data-testid="user-delete">delete</button></form>
           </td>
         </tr>
         {% endfor %}
@@ -51,7 +51,7 @@
         </div>
       </div>
       <label class="chk">
-        <input type="checkbox" name="is_admin" value="1">
+        <input type="checkbox" name="is_admin" value="1" data-testid="user-admin-checkbox">
         <span class="nm">Admin</span>
       </label>
       <div style="display:flex;gap:8px;margin-top:12px">
