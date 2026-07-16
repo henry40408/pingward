@@ -1,0 +1,43 @@
+Feature: Settings
+
+  Background:
+    Given an admin "admin" with password "correct horse" exists
+    And I am signed in as "admin" with password "correct horse"
+
+  Scenario: The settings page loads with empty defaults
+    When I visit "/settings"
+    Then the settings field "scan_interval" shows ""
+    And the settings field "nag_interval" shows ""
+    And the settings field "pings_retention_days" shows ""
+    And the settings field "notifications_retention_days" shows ""
+
+  Scenario: Saving settings persists them across a reload
+    When I visit "/settings"
+    And I fill the settings field "scan_interval" with "45"
+    And I fill the settings field "nag_interval" with "600"
+    And I fill the settings field "pings_retention_days" with "30"
+    And I fill the settings field "notifications_retention_days" with "14"
+    And I save the settings form
+    Then the settings field "scan_interval" shows "45"
+    And the settings field "nag_interval" shows "600"
+    And the settings field "pings_retention_days" shows "30"
+    And the settings field "notifications_retention_days" shows "14"
+
+  Scenario: Blanking a saved setting clears it
+    When I visit "/settings"
+    And I fill the settings field "scan_interval" with "45"
+    And I save the settings form
+    And I fill the settings field "scan_interval" with ""
+    And I save the settings form
+    Then the settings field "scan_interval" shows ""
+
+  Scenario: An invalid setting is rejected, preserved on the form, and not persisted
+    When I visit "/settings"
+    And I fill the settings field "scan_interval" with "99"
+    And I fill the settings field "nag_interval" with "abc"
+    And I save the settings form
+    Then the settings form shows the error "Global nag interval must be a positive integer"
+    And the settings field "scan_interval" shows "99"
+    And the settings field "nag_interval" shows "abc"
+    When I visit "/settings"
+    Then the settings field "scan_interval" shows ""
