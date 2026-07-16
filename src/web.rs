@@ -631,6 +631,9 @@ async fn admin_channel(
 /// Validate a project form's optional numeric override fields, returning the
 /// parsed `(scan_interval_secs, nag_interval_secs)` or an error message.
 fn validate_project(form: &ProjectForm) -> Result<(Option<i64>, Option<i64>), String> {
+    if form.name.trim().is_empty() {
+        return Err("name is required".into());
+    }
     let scan = parse_opt_positive(&form.scan_interval_secs, "scan interval seconds")?;
     let nag = parse_opt_positive(&form.nag_interval_secs, "nag interval seconds")?;
     Ok((scan, nag))
@@ -2586,5 +2589,19 @@ mod tests {
         let mut form = base_project_form();
         form.nag_interval_secs = "0".into();
         assert!(validate_project(&form).is_err());
+    }
+
+    #[test]
+    fn validate_project_rejects_an_empty_name() {
+        let mut form = base_project_form();
+        form.name = String::new();
+        assert_eq!(validate_project(&form).unwrap_err(), "name is required");
+    }
+
+    #[test]
+    fn validate_project_rejects_a_whitespace_only_name() {
+        let mut form = base_project_form();
+        form.name = "   ".into();
+        assert_eq!(validate_project(&form).unwrap_err(), "name is required");
     }
 }
