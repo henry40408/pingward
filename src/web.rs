@@ -456,6 +456,7 @@ struct ProjectFormTemplate {
     name: String,
     scan_interval_secs: String,
     nag_interval_secs: String,
+    error: Option<String>,
 }
 
 #[derive(Template)]
@@ -489,6 +490,23 @@ fn parse_opt_i64(s: &str) -> Option<i64> {
         None
     } else {
         t.parse::<i64>().ok()
+    }
+}
+
+/// Parse an optional positive-integer form field. Blank/whitespace-only input
+/// is `Ok(None)` (the field is intentionally unset — inherit the default, or
+/// off). A non-blank value MUST parse to an integer strictly greater than zero;
+/// anything else is `Err(msg)` naming the field. Unlike `parse_opt_i64`, which
+/// silently maps invalid input to `None`, this surfaces the error so the caller
+/// can re-render the form instead of discarding what the user typed.
+fn parse_opt_positive(s: &str, field: &str) -> Result<Option<i64>, String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    match t.parse::<i64>() {
+        Ok(v) if v > 0 => Ok(Some(v)),
+        _ => Err(format!("{field} must be a positive integer")),
     }
 }
 
@@ -610,6 +628,37 @@ async fn admin_channel(
     Ok(ch)
 }
 
+/// Validate a project form's optional numeric override fields, returning the
+/// parsed `(scan_interval_secs, nag_interval_secs)` or an error message.
+fn validate_project(form: &ProjectForm) -> Result<(Option<i64>, Option<i64>), String> {
+    let scan = parse_opt_positive(&form.scan_interval_secs, "scan interval seconds")?;
+    let nag = parse_opt_positive(&form.nag_interval_secs, "nag interval seconds")?;
+    Ok((scan, nag))
+}
+
+/// Rebuild a project form after a validation error, preserving the submitted
+/// values so the user can fix the invalid field.
+fn project_form_with_error(
+    heading: &str,
+    action: String,
+    is_admin: bool,
+    csrf: String,
+    form: &ProjectForm,
+    error: String,
+) -> ProjectFormTemplate {
+    ProjectFormTemplate {
+        show_nav: true,
+        csrf,
+        is_admin,
+        heading: heading.into(),
+        action,
+        name: form.name.clone(),
+        scan_interval_secs: form.scan_interval_secs.clone(),
+        nag_interval_secs: form.nag_interval_secs.clone(),
+        error: Some(error),
+    }
+}
+
 async fn project_new(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -624,24 +673,35 @@ async fn project_new(
         name: String::new(),
         scan_interval_secs: String::new(),
         nag_interval_secs: String::new(),
+        error: None,
     })?
     .into_response())
 }
 
 async fn project_create(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
+    let (scan, nag) = match validate_project(&form) {
+        Ok(v) => v,
+        Err(msg) => {
+            let csrf = current_csrf(&state, &jar).await;
+            let t = project_form_with_error(
+                "New project",
+                "/projects".into(),
+                user.is_admin,
+                csrf,
+                &form,
+                msg,
+            );
+            return Ok(render(&t)?.into_response());
+        }
+    };
     let id = state
         .store
-        .create_project(
-            user.id,
-            &form.name,
-            parse_opt_i64(&form.scan_interval_secs),
-            parse_opt_i64(&form.nag_interval_secs),
-            Utc::now(),
-        )
+        .create_project(user.id, &form.name, scan, nag, Utc::now())
         .await?;
     Ok(Redirect::to(&format!("/projects/{id}")).into_response())
 }
@@ -707,6 +767,7 @@ fn project_edit_form(
             .nag_interval_secs
             .map(|v| v.to_string())
             .unwrap_or_default(),
+        error: None,
     }
 }
 
@@ -734,19 +795,30 @@ async fn project_edit(
 
 async fn project_update(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, id, user.id).await?;
+    let (scan, nag) = match validate_project(&form) {
+        Ok(v) => v,
+        Err(msg) => {
+            let csrf = current_csrf(&state, &jar).await;
+            let t = project_form_with_error(
+                "Edit project",
+                format!("/projects/{id}"),
+                user.is_admin,
+                csrf,
+                &form,
+                msg,
+            );
+            return Ok(render(&t)?.into_response());
+        }
+    };
     state
         .store
-        .update_project(
-            id,
-            &form.name,
-            parse_opt_i64(&form.scan_interval_secs),
-            parse_opt_i64(&form.nag_interval_secs),
-        )
+        .update_project(id, &form.name, scan, nag)
         .await?;
     Ok(Redirect::to(&format!("/projects/{id}")).into_response())
 }
@@ -912,11 +984,22 @@ fn empty_check_form(
     }
 }
 
-/// Validate a check form into (kind, period_secs, grace_secs, cron_expr). Returns
-/// `Err(message)` on invalid input.
-fn validate_check(
-    form: &CheckForm,
-) -> Result<(ScheduleKind, Option<i64>, i64, Option<String>), String> {
+#[derive(Debug)]
+struct ValidatedCheck {
+    kind: ScheduleKind,
+    period_secs: Option<i64>,
+    grace: i64,
+    cron_expr: Option<String>,
+    scan_interval_secs: Option<i64>,
+    max_runtime_secs: Option<i64>,
+    nag_interval_secs: Option<i64>,
+}
+
+/// Validate a check form into a `ValidatedCheck` (schedule + grace + the three
+/// optional numeric overrides). Returns `Err(message)` on invalid input; a
+/// non-blank override that isn't a positive integer is rejected rather than
+/// silently discarded.
+fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String> {
     if form.name.trim().is_empty() {
         return Err("name is required".into());
     }
@@ -926,14 +1009,14 @@ fn validate_check(
     }
     let kind = ScheduleKind::from_str(&form.schedule_kind)
         .map_err(|_| "invalid schedule kind".to_string())?;
-    match kind {
+    let (period_secs, cron_expr) = match kind {
         ScheduleKind::Period => {
             let secs =
                 parse_opt_i64(&form.period_secs).ok_or("period_secs required for period mode")?;
             if secs <= 0 {
                 return Err("period_secs must be > 0".into());
             }
-            Ok((kind, Some(secs), grace, None))
+            (Some(secs), None)
         }
         ScheduleKind::Cron => {
             let expr = form.cron_expr.trim();
@@ -941,9 +1024,21 @@ fn validate_check(
                 return Err("cron_expr required for cron mode".into());
             }
             Schedule::from_str(expr).map_err(|e| format!("invalid cron expression: {e}"))?;
-            Ok((kind, None, grace, Some(expr.to_string())))
+            (None, Some(expr.to_string()))
         }
-    }
+    };
+    let scan_interval_secs = parse_opt_positive(&form.scan_interval_secs, "scan interval seconds")?;
+    let max_runtime_secs = parse_opt_positive(&form.max_runtime_secs, "max runtime seconds")?;
+    let nag_interval_secs = parse_opt_positive(&form.nag_interval_secs, "nag interval seconds")?;
+    Ok(ValidatedCheck {
+        kind,
+        period_secs,
+        grace,
+        cron_expr,
+        scan_interval_secs,
+        max_runtime_secs,
+        nag_interval_secs,
+    })
 }
 
 async fn check_new(
@@ -976,7 +1071,7 @@ async fn check_create_core(
     csrf: String,
 ) -> Result<Response, AppError> {
     let base = admin_prefix(admin);
-    let (kind, period_secs, grace, cron_expr) = match validate_check(&form) {
+    let v = match validate_check(&form) {
         Ok(v) => v,
         Err(msg) => {
             let mut t = empty_check_form(
@@ -1005,10 +1100,10 @@ async fn check_create_core(
             pid,
             &form.name,
             &uuid,
-            kind,
-            period_secs,
-            grace,
-            cron_expr.as_deref(),
+            v.kind,
+            v.period_secs,
+            v.grace,
+            v.cron_expr.as_deref(),
             &form.timezone,
         )
         .await?;
@@ -1017,14 +1112,14 @@ async fn check_create_core(
         .update_check_schedule(
             id,
             &form.name,
-            kind,
-            period_secs,
-            grace,
-            cron_expr.as_deref(),
+            v.kind,
+            v.period_secs,
+            v.grace,
+            v.cron_expr.as_deref(),
             &form.timezone,
-            parse_opt_i64(&form.scan_interval_secs),
-            parse_opt_i64(&form.max_runtime_secs),
-            parse_opt_i64(&form.nag_interval_secs),
+            v.scan_interval_secs,
+            v.max_runtime_secs,
+            v.nag_interval_secs,
         )
         .await?;
     Ok(Redirect::to(&format!("{base}/checks/{id}")).into_response())
@@ -1217,7 +1312,7 @@ async fn check_update_core(
     csrf: String,
 ) -> Result<Response, AppError> {
     let base = admin_prefix(admin);
-    let (kind, period_secs, grace, cron_expr) = match validate_check(&form) {
+    let v = match validate_check(&form) {
         Ok(v) => v,
         Err(msg) => {
             let t = CheckFormTemplate {
@@ -1245,14 +1340,14 @@ async fn check_update_core(
         .update_check_schedule(
             id,
             &form.name,
-            kind,
-            period_secs,
-            grace,
-            cron_expr.as_deref(),
+            v.kind,
+            v.period_secs,
+            v.grace,
+            v.cron_expr.as_deref(),
             &form.timezone,
-            parse_opt_i64(&form.scan_interval_secs),
-            parse_opt_i64(&form.max_runtime_secs),
-            parse_opt_i64(&form.nag_interval_secs),
+            v.scan_interval_secs,
+            v.max_runtime_secs,
+            v.nag_interval_secs,
         )
         .await?;
     Ok(Redirect::to(&format!("{base}/checks/{id}")).into_response())
@@ -1633,6 +1728,7 @@ struct SettingsTemplate {
     nag_interval: String,
     pings_retention_days: String,
     notifications_retention_days: String,
+    error: Option<String>,
 }
 
 #[derive(Template)]
@@ -1699,45 +1795,64 @@ async fn settings_page(
         nag_interval,
         pings_retention_days,
         notifications_retention_days,
+        error: None,
     })?
     .into_response())
 }
 
 async fn settings_save(
     State(state): State<AppState>,
+    jar: CookieJar,
     _admin: AdminUser,
     Form(form): Form<SettingsForm>,
 ) -> Result<Response, AppError> {
-    let trimmed = form.scan_interval.trim();
-    // Only persist a positive integer; blank clears to default behavior.
-    if trimmed.is_empty() {
-        state.store.set_setting("scan_interval", "").await?;
-    } else if trimmed.parse::<u64>().map(|v| v > 0).unwrap_or(false) {
-        state.store.set_setting("scan_interval", trimmed).await?;
+    let fields = [
+        (
+            "scan_interval",
+            form.scan_interval.as_str(),
+            "Global scan interval",
+        ),
+        (
+            "nag_interval",
+            form.nag_interval.as_str(),
+            "Global nag interval",
+        ),
+        (
+            "pings_retention_days",
+            form.pings_retention_days.as_str(),
+            "Pings retention",
+        ),
+        (
+            "notifications_retention_days",
+            form.notifications_retention_days.as_str(),
+            "Notifications retention",
+        ),
+    ];
+    // Atomic: validate every field before writing any. Blank clears to the
+    // default (`Ok(None)`); a positive integer is stored; any non-blank invalid
+    // value aborts the whole save and re-renders with the submitted values.
+    let mut parsed: Vec<(&str, Option<i64>)> = Vec::with_capacity(fields.len());
+    for (key, raw, label) in fields {
+        match parse_opt_positive(raw, label) {
+            Ok(v) => parsed.push((key, v)),
+            Err(msg) => {
+                return Ok(render(&SettingsTemplate {
+                    show_nav: true,
+                    csrf: current_csrf(&state, &jar).await,
+                    is_admin: true,
+                    scan_interval: form.scan_interval.clone(),
+                    nag_interval: form.nag_interval.clone(),
+                    pings_retention_days: form.pings_retention_days.clone(),
+                    notifications_retention_days: form.notifications_retention_days.clone(),
+                    error: Some(msg),
+                })?
+                .into_response());
+            }
+        }
     }
-    let nag = form.nag_interval.trim();
-    if nag.is_empty() {
-        state.store.set_setting("nag_interval", "").await?;
-    } else if nag.parse::<u64>().map(|v| v > 0).unwrap_or(false) {
-        state.store.set_setting("nag_interval", nag).await?;
-    }
-    let pr = form.pings_retention_days.trim();
-    if pr.is_empty() {
-        state.store.set_setting("pings_retention_days", "").await?;
-    } else if pr.parse::<u64>().map(|v| v > 0).unwrap_or(false) {
-        state.store.set_setting("pings_retention_days", pr).await?;
-    }
-    let nr = form.notifications_retention_days.trim();
-    if nr.is_empty() {
-        state
-            .store
-            .set_setting("notifications_retention_days", "")
-            .await?;
-    } else if nr.parse::<u64>().map(|v| v > 0).unwrap_or(false) {
-        state
-            .store
-            .set_setting("notifications_retention_days", nr)
-            .await?;
+    for (key, v) in parsed {
+        let value = v.map(|n| n.to_string()).unwrap_or_default();
+        state.store.set_setting(key, &value).await?;
     }
     Ok(Redirect::to("/settings").into_response())
 }
@@ -2052,6 +2167,7 @@ async fn admin_project_edit(
 
 async fn admin_project_update(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
@@ -2059,14 +2175,24 @@ async fn admin_project_update(
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
     admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let (scan, nag) = match validate_project(&form) {
+        Ok(v) => v,
+        Err(msg) => {
+            let csrf = current_csrf(&state, &jar).await;
+            let t = project_form_with_error(
+                "Edit project",
+                format!("/admin/projects/{id}"),
+                true,
+                csrf,
+                &form,
+                msg,
+            );
+            return Ok(render(&t)?.into_response());
+        }
+    };
     state
         .store
-        .update_project(
-            id,
-            &form.name,
-            parse_opt_i64(&form.scan_interval_secs),
-            parse_opt_i64(&form.nag_interval_secs),
-        )
+        .update_project(id, &form.name, scan, nag)
         .await?;
     Ok(Redirect::to(&format!("/admin/projects/{id}")).into_response())
 }
@@ -2377,5 +2503,88 @@ mod tests {
         let mut form = base_check_form();
         form.name = "   ".into();
         assert_eq!(validate_check(&form).unwrap_err(), "name is required");
+    }
+
+    fn base_project_form() -> ProjectForm {
+        ProjectForm {
+            name: "proj".into(),
+            scan_interval_secs: String::new(),
+            nag_interval_secs: String::new(),
+        }
+    }
+
+    #[test]
+    fn parse_opt_positive_blank_is_none() {
+        assert_eq!(parse_opt_positive("", "x").unwrap(), None);
+        assert_eq!(parse_opt_positive("   ", "x").unwrap(), None);
+    }
+
+    #[test]
+    fn parse_opt_positive_accepts_positive() {
+        assert_eq!(parse_opt_positive("5", "x").unwrap(), Some(5));
+    }
+
+    #[test]
+    fn parse_opt_positive_rejects_zero_negative_and_non_numeric() {
+        assert_eq!(
+            parse_opt_positive("0", "Scan interval").unwrap_err(),
+            "Scan interval must be a positive integer"
+        );
+        assert!(parse_opt_positive("-3", "x").is_err());
+        assert!(parse_opt_positive("abc", "x").is_err());
+    }
+
+    #[test]
+    fn validate_check_accepts_positive_overrides() {
+        let mut form = base_check_form();
+        form.scan_interval_secs = "10".into();
+        form.max_runtime_secs = "20".into();
+        form.nag_interval_secs = "30".into();
+        let v = validate_check(&form).unwrap();
+        assert_eq!(v.scan_interval_secs, Some(10));
+        assert_eq!(v.max_runtime_secs, Some(20));
+        assert_eq!(v.nag_interval_secs, Some(30));
+    }
+
+    #[test]
+    fn validate_check_rejects_a_non_numeric_scan_interval() {
+        let mut form = base_check_form();
+        form.scan_interval_secs = "abc".into();
+        assert_eq!(
+            validate_check(&form).unwrap_err(),
+            "scan interval seconds must be a positive integer"
+        );
+    }
+
+    #[test]
+    fn validate_check_rejects_a_zero_max_runtime() {
+        let mut form = base_check_form();
+        form.max_runtime_secs = "0".into();
+        assert_eq!(
+            validate_check(&form).unwrap_err(),
+            "max runtime seconds must be a positive integer"
+        );
+    }
+
+    #[test]
+    fn validate_project_accepts_blank_and_positive() {
+        assert_eq!(
+            validate_project(&base_project_form()).unwrap(),
+            (None, None)
+        );
+        let mut form = base_project_form();
+        form.scan_interval_secs = "15".into();
+        form.nag_interval_secs = "25".into();
+        assert_eq!(validate_project(&form).unwrap(), (Some(15), Some(25)));
+    }
+
+    #[test]
+    fn validate_project_rejects_non_numeric_and_zero() {
+        let mut form = base_project_form();
+        form.scan_interval_secs = "abc".into();
+        assert!(validate_project(&form).is_err());
+        let mut form = base_project_form();
+        form.nag_interval_secs = "0".into();
+        assert!(validate_project(&form).is_err());
     }
 }

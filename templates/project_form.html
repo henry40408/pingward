@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block body %}
 <h1>{{ heading }}</h1>
+{% if let Some(error) = error %}<p class="flash err">{{ error }}</p>{% endif %}
 <div class="card">
   <div class="cb">
     <form method="post" action="{{ action }}">

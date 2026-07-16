@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block body %}
 <div class="phead"><div><h1>Settings</h1></div></div>
+{% if let Some(error) = error %}<p class="flash err">{{ error }}</p>{% endif %}
 
 <div class="card">
   <div class="cb">
