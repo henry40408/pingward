@@ -1,5 +1,6 @@
 import { createBdd } from "playwright-bdd";
 import { test, expect } from "../support/fixtures.js";
+import { signIn } from "../support/actions.js";
 
 const { Given, When, Then } = createBdd(test);
 
@@ -36,10 +37,7 @@ Given(
 When(
   "I sign in as {string} with password {string}",
   async ({ page, serverUrl }, username, password) => {
-    await page.goto(`${serverUrl}/login`);
-    await page.getByTestId("username-input").fill(username);
-    await page.getByTestId("password-input").fill(password);
-    await page.getByTestId("login-submit").click();
+    await signIn(page, serverUrl, username, password);
   }
 );
 
@@ -54,10 +52,7 @@ Then(
 Given(
   "I am signed in as {string} with password {string}",
   async ({ page, serverUrl }, username, password) => {
-    await page.goto(`${serverUrl}/login`);
-    await page.getByTestId("username-input").fill(username);
-    await page.getByTestId("password-input").fill(password);
-    await page.getByTestId("login-submit").click();
+    await signIn(page, serverUrl, username, password);
     await expect(page).toHaveURL(`${serverUrl}/`);
   }
 );
