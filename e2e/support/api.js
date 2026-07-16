@@ -22,14 +22,31 @@ export class ApiHelper {
     }
   }
 
-  // Drive a ping against the exact URL the check page renders. The ping
-  // endpoints are public and CSRF-exempt; a success ping marks the check up,
-  // a fail ping marks it down (both synchronous within the request).
-  async ping(pingUrl, kind) {
-    const target = kind === "fail" ? `${pingUrl}/fail` : pingUrl;
-    const res = await fetch(target);
+  // Drive a ping against the check's ping URL. Supports all kinds; exitcode
+  // needs opts.code; opts.method (default GET) and opts.body allow POST-body
+  // capture tests. All valid pings return 200, so a non-ok status is a real
+  // failure and still throws. Returns the Response.
+  async ping(pingUrl, kind, opts = {}) {
+    const { code, method = "GET", body } = opts;
+    let target = pingUrl;
+    if (kind === "fail") target = `${pingUrl}/fail`;
+    else if (kind === "start") target = `${pingUrl}/start`;
+    else if (kind === "log") target = `${pingUrl}/log`;
+    else if (kind === "exitcode") target = `${pingUrl}/${code}`;
+    const res = await fetch(target, {
+      method,
+      ...(body !== undefined ? { body } : {}),
+    });
     if (!res.ok) {
       throw new Error(`ping (${kind}) failed: HTTP ${res.status}`);
     }
+    return res;
+  }
+
+  // Fetch a ping URL and return only the HTTP status, without throwing on
+  // error responses — used to assert the unknown-uuid 404 path.
+  async pingStatus(url, { method = "GET" } = {}) {
+    const res = await fetch(url, { method });
+    return res.status;
   }
 }
