@@ -917,6 +917,9 @@ fn empty_check_form(
 fn validate_check(
     form: &CheckForm,
 ) -> Result<(ScheduleKind, Option<i64>, i64, Option<String>), String> {
+    if form.name.trim().is_empty() {
+        return Err("name is required".into());
+    }
     let grace = parse_opt_i64(&form.grace_secs).ok_or("grace_secs must be an integer")?;
     if grace < 0 {
         return Err("grace_secs must be >= 0".into());
@@ -2341,5 +2344,38 @@ mod tests {
             status_since_label(&c, Utc::now()),
             "down · 2m ago · not acknowledged"
         );
+    }
+
+    fn base_check_form() -> CheckForm {
+        CheckForm {
+            name: "backup".into(),
+            schedule_kind: "period".into(),
+            period_secs: "3600".into(),
+            cron_expr: String::new(),
+            grace_secs: "300".into(),
+            timezone: "UTC".into(),
+            scan_interval_secs: String::new(),
+            max_runtime_secs: String::new(),
+            nag_interval_secs: String::new(),
+        }
+    }
+
+    #[test]
+    fn validate_check_accepts_a_valid_period_form() {
+        assert!(validate_check(&base_check_form()).is_ok());
+    }
+
+    #[test]
+    fn validate_check_rejects_an_empty_name() {
+        let mut form = base_check_form();
+        form.name = String::new();
+        assert_eq!(validate_check(&form).unwrap_err(), "name is required");
+    }
+
+    #[test]
+    fn validate_check_rejects_a_whitespace_only_name() {
+        let mut form = base_check_form();
+        form.name = "   ".into();
+        assert_eq!(validate_check(&form).unwrap_err(), "name is required");
     }
 }
