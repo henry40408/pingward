@@ -33,3 +33,16 @@ Then(
 Then("the settings form shows the error {string}", async ({ page }, message) => {
   await expect(page.locator(".flash.err")).toHaveText(message);
 });
+
+// After saving settings the page shows a one-shot success flash (backed by a
+// flash cookie that is cleared on this render), mirroring the check page's
+// notify-channels flash.
+Then("the settings page shows the flash {string}", async ({ page }, message) => {
+  await expect(page.getByTestId("settings-flash")).toHaveText(message);
+});
+
+// The flash is one-shot: a fresh render (a reload, or a rejected save that
+// re-renders without ever setting the cookie) must not show it.
+Then("the settings page shows no flash", async ({ page }) => {
+  await expect(page.getByTestId("settings-flash")).toHaveCount(0);
+});

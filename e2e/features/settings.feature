@@ -39,8 +39,17 @@ Feature: Settings
     Then the settings form shows the error "Global nag interval must be a positive duration (e.g. 30, 5m, 1h30m)"
     And the settings field "scan_interval" shows "99"
     And the settings field "nag_interval" shows "abc"
+    And the settings page shows no flash
     When I visit "/settings"
     Then the settings field "scan_interval" shows ""
+
+  Scenario: Saving settings shows a one-shot confirmation flash
+    When I visit "/settings"
+    And I fill the settings field "scan_interval" with "45"
+    And I save the settings form
+    Then the settings page shows the flash "Settings saved."
+    When I visit "/settings"
+    Then the settings page shows no flash
 
   Scenario: Retention is a plain day count, not a duration
     When I visit "/settings"
