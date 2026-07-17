@@ -15,6 +15,12 @@ Feature: Check creation branches
     And the check status is "new"
     And the check schedule shows "0 0 * * * *"
 
+  Scenario: The period and cron fields are never both shown
+    Given I open the new check form
+    Then only the period field is shown
+    When I choose the "cron" schedule kind
+    Then only the cron field is shown
+
   Scenario: The new check form requires a name
     Given I open the new check form
     When I fill the check period with 60
