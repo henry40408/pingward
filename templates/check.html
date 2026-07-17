@@ -63,7 +63,7 @@
         <tr><td class="mono"><span class="caret" style="opacity:0">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
         {% else %}
         <tr class="toggle" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
-        <tr class="exp"><td colspan="5" style="border-top:none;padding-top:0"><div class="out {{ p.pill_class }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
+        <tr class="exp"><td colspan="5" style="border-top:none;padding-top:9px"><div class="out {{ p.pill_class }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
         {% endif %}
         {% endfor %}
       </tbody>

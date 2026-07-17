@@ -736,6 +736,14 @@ nav.links a:hover {
   overflow-x: auto;
 }
 
+/* Empty-state message inside a .list box (or standalone) — matches a card
+   body's padding so the text isn't flush against the border. */
+.empty {
+  margin: 0;
+  padding: 16px 18px;
+  color: var(--muted);
+}
+
 /* ---- Ping URL row ---- */
 .urlrow {
   display: flex;

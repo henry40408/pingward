@@ -21,7 +21,7 @@
   <div class="gh"><h2>Checks</h2><span class="line"></span></div>
   <div class="list">
     {% if checks.is_empty() %}
-    <div class="cb"><p style="margin:0;color:var(--muted)" data-testid="checks-empty">No checks yet.</p></div>
+    <p class="empty" data-testid="checks-empty">No checks yet.</p>
     {% endif %}
     {% for c in checks %}
     <div class="check" tabindex="0" role="link" onclick="location='{{ base }}/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='{{ base }}/checks/{{ c.id }}'">

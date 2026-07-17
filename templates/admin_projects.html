@@ -14,7 +14,7 @@
   </div>
   <div class="list">
     {% if projects.is_empty() %}
-    <div class="cb"><p style="margin:0;color:var(--muted)">No projects yet.</p></div>
+    <p class="empty">No projects yet.</p>
     {% endif %}
     {% for p in projects %}
     <div class="check" tabindex="0" role="link" onclick="location='/admin/projects/{{ p.0.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='/admin/projects/{{ p.0.id }}'">
