@@ -10,7 +10,7 @@ use crate::notify::{notifier_for, EventKind, NotificationEvent};
 use crate::state::AppState;
 use crate::store::Store;
 use askama::Template;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -928,6 +928,7 @@ struct CheckTemplate {
     channel_boxes: Vec<ChannelBox>,
     pings: Vec<PingRow>,
     notifications: Vec<NotificationRow>,
+    flash: Option<String>,
 }
 
 /// Short status line shown next to the check name on the detail page, e.g.
@@ -1140,15 +1141,25 @@ async fn check_create(
     check_create_core(&state, pid, form, false, user.is_admin, csrf).await
 }
 
+/// Query params for the check detail page. `saved` carries a one-off
+/// post-redirect confirmation flag (e.g. `?saved=channels` after binding
+/// notify channels).
+#[derive(Deserialize)]
+struct CheckShowQuery {
+    #[serde(default)]
+    saved: Option<String>,
+}
+
 async fn check_show(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
+    Query(q): Query<CheckShowQuery>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar).await;
-    render_check_page(&state, check, false, user.is_admin, csrf).await
+    render_check_page(&state, check, false, user.is_admin, csrf, q.saved).await
 }
 
 /// Render the check detail page. `admin` renders `/admin`-prefixed action URLs;
@@ -1160,6 +1171,7 @@ async fn render_check_page(
     admin: bool,
     is_admin: bool,
     csrf: String,
+    saved: Option<String>,
 ) -> Result<Response, AppError> {
     let id = check.id;
     let project = state
@@ -1239,6 +1251,10 @@ async fn render_check_page(
             error: n.error.unwrap_or_default(),
         })
         .collect();
+    let flash = match saved.as_deref() {
+        Some("channels") => Some("Notify channels saved.".to_string()),
+        _ => None,
+    };
     Ok(render(&CheckTemplate {
         show_nav: true,
         csrf,
@@ -1254,6 +1270,7 @@ async fn render_check_page(
         channel_boxes,
         pings,
         notifications,
+        flash,
     })?
     .into_response())
 }
@@ -1707,7 +1724,7 @@ async fn set_channels_core(
     for remove in current.difference(&desired) {
         state.store.unbind_channel(id, *remove).await?;
     }
-    Ok(Redirect::to(&format!("{base}/checks/{id}")).into_response())
+    Ok(Redirect::to(&format!("{base}/checks/{id}?saved=channels")).into_response())
 }
 
 async fn check_set_channels(
@@ -2253,10 +2270,11 @@ async fn admin_check_show(
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
+    Query(q): Query<CheckShowQuery>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
     let csrf = current_csrf(&state, &jar).await;
-    render_check_page(&state, check, true, true, csrf).await
+    render_check_page(&state, check, true, true, csrf, q.saved).await
 }
 
 async fn admin_check_edit(

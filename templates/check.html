@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block body %}
 {% let base %}{% if admin %}/admin{% endif %}{% endlet %}
+{% if let Some(f) = flash %}<p class="flash ok" data-testid="check-flash">{{ f }}</p>{% endif %}
 <div class="crumb">
   <a href="/">Checks</a><span class="sep">/</span>
   <a href="{{ base }}/projects/{{ check.project_id }}">{{ project_name }}</a><span class="sep">/</span>{{ check.name }}

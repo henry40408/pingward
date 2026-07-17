@@ -127,6 +127,12 @@ Then("the channel {string} is bound to the check", async ({ page }, name) => {
   await expect(box).toBeChecked();
 });
 
+// After saving notify channels the check page redirects with ?saved=channels
+// and shows a success flash.
+Then("a {string} confirmation is shown", async ({ page }, msg) => {
+  await expect(page.getByTestId("check-flash")).toHaveText(msg);
+});
+
 // The "Send test" form re-renders the project page (200, no redirect) with a
 // .flash banner. Click and let the following assertion auto-wait for it.
 When(
