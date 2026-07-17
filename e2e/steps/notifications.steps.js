@@ -127,6 +127,18 @@ Then("the channel {string} is bound to the check", async ({ page }, name) => {
   await expect(box).toBeChecked();
 });
 
+// After saving notify channels the check page shows a one-shot success flash
+// (backed by a flash cookie that is cleared on this render).
+Then("a {string} confirmation is shown", async ({ page }, msg) => {
+  await expect(page.getByTestId("check-flash")).toHaveText(msg);
+});
+
+// The flash is one-shot: reloading the check page must NOT show it again.
+Then("the confirmation is gone after reloading", async ({ page }) => {
+  await page.reload();
+  await expect(page.getByTestId("check-flash")).toHaveCount(0);
+});
+
 // The "Send test" form re-renders the project page (200, no redirect) with a
 // .flash banner. Click and let the following assertion auto-wait for it.
 When(
@@ -157,6 +169,12 @@ Then(
     });
   }
 );
+
+// When the check's project has no channels, the Notify channels card shows an
+// empty state (with a link to create one) instead of the bind form.
+Then("the check's notify channels show an empty state", async ({ page }) => {
+  await expect(page.getByTestId("check-channels-empty")).toBeVisible();
+});
 
 // Delivery records the notification row AFTER the webhook POST returns, so poll
 // by reloading until a "sent" row for the channel appears.

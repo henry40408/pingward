@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block body %}
 {% let base %}{% if admin %}/admin{% endif %}{% endlet %}
+{% if let Some(f) = flash %}<p class="flash ok" data-testid="check-flash">{{ f }}</p>{% endif %}
 <div class="crumb">
   <a href="/">Checks</a><span class="sep">/</span>
   <a href="{{ base }}/projects/{{ check.project_id }}">{{ project_name }}</a><span class="sep">/</span>{{ check.name }}
@@ -42,6 +43,9 @@
 <div class="card">
   <div class="ch"><h2>Notify channels</h2></div>
   <div class="cb">
+    {% if channel_boxes.is_empty() %}
+    <p style="margin:0;color:var(--muted)" data-testid="check-channels-empty">No channels yet. <a href="{{ base }}/projects/{{ check.project_id }}/channels/new">Add one</a> to get notified when this check goes down.</p>
+    {% else %}
     <form method="post" action="{{ base }}/checks/{{ check.id }}/channels">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       {% for cb in channel_boxes %}
@@ -49,6 +53,7 @@
       {% endfor %}
       <div style="margin-top:12px"><button class="btn primary" type="submit">Save channels</button></div>
     </form>
+    {% endif %}
   </div>
 </div>
 
@@ -63,7 +68,7 @@
         <tr><td class="mono"><span class="caret" style="opacity:0">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
         {% else %}
         <tr class="toggle" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
-        <tr class="exp"><td colspan="5" style="border-top:none;padding-top:0"><div class="out {{ p.pill_class }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
+        <tr class="exp"><td colspan="5" style="border-top:none;padding-top:9px"><div class="out {{ p.pill_class }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
         {% endif %}
         {% endfor %}
       </tbody>
