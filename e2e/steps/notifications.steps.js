@@ -127,10 +127,16 @@ Then("the channel {string} is bound to the check", async ({ page }, name) => {
   await expect(box).toBeChecked();
 });
 
-// After saving notify channels the check page redirects with ?saved=channels
-// and shows a success flash.
+// After saving notify channels the check page shows a one-shot success flash
+// (backed by a flash cookie that is cleared on this render).
 Then("a {string} confirmation is shown", async ({ page }, msg) => {
   await expect(page.getByTestId("check-flash")).toHaveText(msg);
+});
+
+// The flash is one-shot: reloading the check page must NOT show it again.
+Then("the confirmation is gone after reloading", async ({ page }) => {
+  await page.reload();
+  await expect(page.getByTestId("check-flash")).toHaveCount(0);
 });
 
 // The "Send test" form re-renders the project page (200, no redirect) with a

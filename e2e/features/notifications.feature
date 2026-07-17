@@ -50,6 +50,7 @@ Feature: Notification channels
     When I bind the channel "hook1" to the check
     Then the channel "hook1" is bound to the check
     And a "Notify channels saved." confirmation is shown
+    And the confirmation is gone after reloading
 
   Scenario: A test notification to a reachable webhook succeeds
     Given a project named "Notify"

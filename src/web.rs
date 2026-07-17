@@ -10,7 +10,7 @@ use crate::notify::{notifier_for, EventKind, NotificationEvent};
 use crate::state::AppState;
 use crate::store::Store;
 use askama::Template;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Path, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -1141,13 +1141,26 @@ async fn check_create(
     check_create_core(&state, pid, form, false, user.is_admin, csrf).await
 }
 
-/// Query params for the check detail page. `saved` carries a one-off
-/// post-redirect confirmation flag (e.g. `?saved=channels` after binding
-/// notify channels).
-#[derive(Deserialize)]
-struct CheckShowQuery {
-    #[serde(default)]
-    saved: Option<String>,
+/// Name of the one-shot flash cookie set after a redirect (e.g. saving a
+/// check's notify channels) and cleared on the next render.
+const FLASH_COOKIE: &str = "pingward_flash";
+
+/// Read and clear the one-shot flash cookie, mapping its key to a fixed
+/// message. Returns the updated jar (with the cookie removed) and the message
+/// if a known flash was set. Only known keys map to a message, so a
+/// user-supplied cookie value never renders as arbitrary text.
+fn take_flash(jar: CookieJar) -> (CookieJar, Option<String>) {
+    let Some(cookie) = jar.get(FLASH_COOKIE) else {
+        return (jar, None);
+    };
+    let message = match cookie.value() {
+        "channels" => Some("Notify channels saved.".to_string()),
+        _ => None,
+    };
+    (
+        jar.remove(Cookie::build((FLASH_COOKIE, "")).path("/").build()),
+        message,
+    )
 }
 
 async fn check_show(
@@ -1155,11 +1168,12 @@ async fn check_show(
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
-    Query(q): Query<CheckShowQuery>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar).await;
-    render_check_page(&state, check, false, user.is_admin, csrf, q.saved).await
+    let (jar, flash) = take_flash(jar);
+    let resp = render_check_page(&state, check, false, user.is_admin, csrf, flash).await?;
+    Ok((jar, resp).into_response())
 }
 
 /// Render the check detail page. `admin` renders `/admin`-prefixed action URLs;
@@ -1171,7 +1185,7 @@ async fn render_check_page(
     admin: bool,
     is_admin: bool,
     csrf: String,
-    saved: Option<String>,
+    flash: Option<String>,
 ) -> Result<Response, AppError> {
     let id = check.id;
     let project = state
@@ -1251,10 +1265,6 @@ async fn render_check_page(
             error: n.error.unwrap_or_default(),
         })
         .collect();
-    let flash = match saved.as_deref() {
-        Some("channels") => Some("Notify channels saved.".to_string()),
-        _ => None,
-    };
     Ok(render(&CheckTemplate {
         show_nav: true,
         csrf,
@@ -1696,6 +1706,7 @@ async fn set_channels_core(
     check: &Check,
     form: BindForm,
     admin: bool,
+    jar: CookieJar,
 ) -> Result<Response, AppError> {
     let base = admin_prefix(admin);
     let id = check.id;
@@ -1724,17 +1735,25 @@ async fn set_channels_core(
     for remove in current.difference(&desired) {
         state.store.unbind_channel(id, *remove).await?;
     }
-    Ok(Redirect::to(&format!("{base}/checks/{id}?saved=channels")).into_response())
+    let jar = jar.add(
+        Cookie::build((FLASH_COOKIE, "channels"))
+            .http_only(true)
+            .same_site(SameSite::Lax)
+            .path("/")
+            .build(),
+    );
+    Ok((jar, Redirect::to(&format!("{base}/checks/{id}"))).into_response())
 }
 
 async fn check_set_channels(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
+    jar: CookieJar,
     HtmlForm(form): HtmlForm<BindForm>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
-    set_channels_core(&state, &check, form, false).await
+    set_channels_core(&state, &check, form, false, jar).await
 }
 
 // --- settings / user administration (admin only) ---
@@ -2270,11 +2289,12 @@ async fn admin_check_show(
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
-    Query(q): Query<CheckShowQuery>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
     let csrf = current_csrf(&state, &jar).await;
-    render_check_page(&state, check, true, true, csrf, q.saved).await
+    let (jar, flash) = take_flash(jar);
+    let resp = render_check_page(&state, check, true, true, csrf, flash).await?;
+    Ok((jar, resp).into_response())
 }
 
 async fn admin_check_edit(
@@ -2373,10 +2393,11 @@ async fn admin_check_set_channels(
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
+    jar: CookieJar,
     HtmlForm(form): HtmlForm<BindForm>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    set_channels_core(&state, &check, form, true).await
+    set_channels_core(&state, &check, form, true, jar).await
 }
 
 // -- channels --
