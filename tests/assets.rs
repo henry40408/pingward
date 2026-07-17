@@ -45,6 +45,25 @@ async fn stylesheet_is_cached_immutably() {
 }
 
 #[tokio::test]
+async fn stylesheet_font_urls_are_cache_busted() {
+    let server = server().await;
+    let res = server.get("/assets/app.css").await;
+    res.assert_status_ok();
+    let css = res.text();
+    // Name-agnostic on purpose: catches a placeholder rename in either
+    // `assets/app.css` or `FONT_PLACEHOLDER` that would silently skip
+    // substitution and ship a literal placeholder in every font URL.
+    assert!(
+        !css.contains("{{"),
+        "unsubstituted placeholder in the served stylesheet"
+    );
+    assert!(
+        css.contains("/assets/fonts/inter-400.woff2?v="),
+        "font URL is not cache-busted"
+    );
+}
+
+#[tokio::test]
 async fn pages_link_the_content_hashed_stylesheet() {
     let server = server().await;
     let res = server.get("/setup").await;
