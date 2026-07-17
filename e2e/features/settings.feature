@@ -18,8 +18,8 @@ Feature: Settings
     And I fill the settings field "pings_retention_days" with "30"
     And I fill the settings field "notifications_retention_days" with "14"
     And I save the settings form
-    Then the settings field "scan_interval" shows "45"
-    And the settings field "nag_interval" shows "600"
+    Then the settings field "scan_interval" shows "45s"
+    And the settings field "nag_interval" shows "10m"
     And the settings field "pings_retention_days" shows "30"
     And the settings field "notifications_retention_days" shows "14"
 
@@ -36,8 +36,14 @@ Feature: Settings
     And I fill the settings field "scan_interval" with "99"
     And I fill the settings field "nag_interval" with "abc"
     And I save the settings form
-    Then the settings form shows the error "Global nag interval must be a positive integer"
+    Then the settings form shows the error "Global nag interval must be a positive duration (e.g. 30, 5m, 1h30m)"
     And the settings field "scan_interval" shows "99"
     And the settings field "nag_interval" shows "abc"
     When I visit "/settings"
     Then the settings field "scan_interval" shows ""
+
+  Scenario: Retention is a plain day count, not a duration
+    When I visit "/settings"
+    And I fill the settings field "pings_retention_days" with "5m"
+    And I save the settings form
+    Then the settings form shows the error "Pings retention must be a positive integer"

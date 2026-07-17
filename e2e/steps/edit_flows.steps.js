@@ -52,3 +52,7 @@ Then("the check name is {string}", async ({ page }, name) => {
 Then("the check timezone field shows {string}", async ({ page }, tz) => {
   await expect(page.locator("#timezone")).toHaveValue(tz);
 });
+
+Then("the check period field shows {string}", async ({ page }, period) => {
+  await expect(page.getByTestId("check-period-input")).toHaveValue(period);
+});

@@ -80,7 +80,14 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
 check's timezone). `due_time` anchors on the last success (else creation) plus
 period/cron + grace. Scan and nag/reminder intervals resolve through a
 **check → project → global → env** cascade (`effective_scan_interval` /
-`effective_nag_interval`); non-positive overrides fall through.
+`effective_nag_interval`); non-positive overrides fall through. Duration form
+fields (period/grace/scan/max-runtime/nag overrides, plus the settings-page
+scan/nag intervals) accept either raw seconds or a human-readable string
+(`5m`, `1h30m`, `2d`) via `duration::parse_duration`, are always stored as
+seconds, and are re-rendered on forms via `duration::fmt_duration`; the
+retention-days settings fields are plain integers, not durations.
+`view::fmt_secs` remains the lossy *display* format used elsewhere (e.g. the
+check page schedule label).
 
 **Notifications** (`src/notify.rs`): a `Notifier` trait with six implementations
 (`webhook`, `telegram`, `slack`, `ntfy`, `pushover`, `email`/SMTP). `notifier_for`

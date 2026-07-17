@@ -41,3 +41,9 @@ Feature: Edit flows
     And I change the check timezone to "America/New_York"
     And I open the check edit form
     Then the check timezone field shows "America/New_York"
+
+  Scenario: The edit form pre-fills the period as a readable duration
+    Given a project named "Nightly jobs"
+    And a check named "backup" with period 300
+    When I open the check edit form
+    Then the check period field shows "5m"

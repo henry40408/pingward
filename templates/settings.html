@@ -9,13 +9,14 @@
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="two">
         <div class="field">
-          <label for="scan_interval">Global scan interval (seconds)</label>
+          <label for="scan_interval">Global scan interval</label>
           <input id="scan_interval" name="scan_interval" value="{{ scan_interval }}">
+          <div class="help">Seconds, or a duration like 5m, 1h30m.</div>
         </div>
         <div class="field">
-          <label for="nag_interval">Global nag interval (seconds)</label>
+          <label for="nag_interval">Global nag interval</label>
           <input id="nag_interval" name="nag_interval" value="{{ nag_interval }}">
-          <div class="help">Leave blank to turn off nagging.</div>
+          <div class="help">Leave blank to turn off nagging. Seconds, or a duration like 5m, 1h30m.</div>
         </div>
       </div>
       <div class="two">
