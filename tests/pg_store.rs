@@ -233,15 +233,17 @@ async fn postgres_full_round_trip() {
     store
         .update_check_schedule(
             cid,
-            "job",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-            None,
-            None,
-            Some(60),
+            &pingward::store::UpdateCheck {
+                name: "job",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                cron_expr: None,
+                timezone: "UTC",
+                scan_interval_secs: None,
+                max_runtime_secs: None,
+                nag_interval_secs: Some(60),
+            },
         )
         .await
         .unwrap();

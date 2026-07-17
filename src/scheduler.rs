@@ -225,7 +225,7 @@ pub async fn run_scan_loop(store: Store, env_default_secs: u64, smtp: Option<Smt
 mod tests {
     use super::*;
     use crate::models::{Check, CheckStatus, ScheduleKind};
-    use crate::store::NewCheck;
+    use crate::store::{NewCheck, UpdateCheck};
     use chrono::{TimeZone, Utc};
 
     fn base_check() -> Check {
@@ -450,15 +450,17 @@ mod tests {
         store
             .update_check_schedule(
                 cid,
-                "job",
-                ScheduleKind::Period,
-                Some(3_600_000),
-                300,
-                None,
-                "UTC",
-                None,
-                Some(60),
-                None,
+                &UpdateCheck {
+                    name: "job",
+                    kind: ScheduleKind::Period,
+                    period_secs: Some(3_600_000),
+                    grace_secs: 300,
+                    cron_expr: None,
+                    timezone: "UTC",
+                    scan_interval_secs: None,
+                    max_runtime_secs: Some(60),
+                    nag_interval_secs: None,
+                },
             )
             .await
             .unwrap();
@@ -516,15 +518,17 @@ mod tests {
         store
             .update_check_schedule(
                 id,
-                "job",
-                ScheduleKind::Period,
-                Some(3600),
-                300,
-                None,
-                "UTC",
-                None,
-                None,
-                Some(60),
+                &UpdateCheck {
+                    name: "job",
+                    kind: ScheduleKind::Period,
+                    period_secs: Some(3600),
+                    grace_secs: 300,
+                    cron_expr: None,
+                    timezone: "UTC",
+                    scan_interval_secs: None,
+                    max_runtime_secs: None,
+                    nag_interval_secs: Some(60),
+                },
             )
             .await
             .unwrap();
@@ -562,15 +566,17 @@ mod tests {
         store
             .update_check_schedule(
                 id,
-                "job",
-                ScheduleKind::Period,
-                Some(3600),
-                300,
-                None,
-                "UTC",
-                None,
-                None,
-                Some(60),
+                &UpdateCheck {
+                    name: "job",
+                    kind: ScheduleKind::Period,
+                    period_secs: Some(3600),
+                    grace_secs: 300,
+                    cron_expr: None,
+                    timezone: "UTC",
+                    scan_interval_secs: None,
+                    max_runtime_secs: None,
+                    nag_interval_secs: Some(60),
+                },
             )
             .await
             .unwrap();
