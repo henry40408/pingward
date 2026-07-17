@@ -1,5 +1,12 @@
 use axum_test::TestServer;
-use pingward::{app, config::Config, db, models::ScheduleKind, state::AppState, store::Store};
+use pingward::{
+    app,
+    config::Config,
+    db,
+    models::ScheduleKind,
+    state::AppState,
+    store::{NewCheck, Store},
+};
 
 /// After a session exists, configure the `TestServer` to send that session's
 /// CSRF synchronizer token as a default `X-CSRF-Token` header so protected
@@ -118,16 +125,16 @@ async fn check_update_stores_a_trimmed_name() {
         .await
         .unwrap();
     let id = store
-        .create_check(
-            pid,
-            "backup",
-            "uuid-test-check",
-            ScheduleKind::Period,
-            Some(60),
-            300,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: "uuid-test-check",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     let res = server

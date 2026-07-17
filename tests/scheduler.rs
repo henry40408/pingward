@@ -4,7 +4,7 @@ use pingward::{
     models::{ChannelKind, CheckStatus, NotifyStatus, ScheduleKind},
     notify::{deliver_event, RetryPolicy},
     scheduler::scan_once,
-    store::Store,
+    store::{NewCheck, Store},
 };
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -26,16 +26,16 @@ async fn empty_store() -> Store {
 async fn store_with_up_check(period: i64, grace: i64, last_ping_ago: i64) -> (Store, i64) {
     let store = empty_store().await;
     let id = store
-        .create_check(
-            1,
-            "job",
-            "u1",
-            ScheduleKind::Period,
-            Some(period),
-            grace,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: 1,
+            name: "job",
+            ping_uuid: "u1",
+            kind: ScheduleKind::Period,
+            period_secs: Some(period),
+            grace_secs: grace,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     let last = Utc::now() - Duration::seconds(last_ping_ago);
@@ -54,16 +54,16 @@ async fn store_with_up_check_at(
 ) -> (Store, i64) {
     let store = empty_store().await;
     let id = store
-        .create_check(
-            1,
-            "job",
-            "u1",
-            ScheduleKind::Period,
-            Some(period),
-            grace,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: 1,
+            name: "job",
+            ping_uuid: "u1",
+            kind: ScheduleKind::Period,
+            period_secs: Some(period),
+            grace_secs: grace,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     store

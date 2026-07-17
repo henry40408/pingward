@@ -96,6 +96,7 @@ mod tests {
     use crate::db;
     use crate::models::{ChannelKind, NotifyStatus, PingKind, ScheduleKind};
     use crate::notify::EventKind;
+    use crate::store::NewCheck;
     use chrono::TimeZone;
 
     async fn store_with_check_and_channel() -> (Store, i64, i64) {
@@ -111,16 +112,16 @@ mod tests {
             .await
             .unwrap();
         let cid = store
-            .create_check(
-                1,
-                "c",
-                "uu",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "c",
+                ping_uuid: "uu",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         let chan = store

@@ -135,16 +135,16 @@ async fn admin_mutation_on_other_project_is_audited() {
         .await
         .unwrap();
     let cid = store
-        .create_check(
-            pid,
-            "c",
-            "uuid-c",
-            pingward::models::ScheduleKind::Period,
-            Some(3600),
-            300,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "c",
+            ping_uuid: "uuid-c",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     server

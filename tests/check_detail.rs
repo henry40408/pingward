@@ -40,16 +40,16 @@ async fn server_with_project() -> (TestServer, Store, i64) {
 async fn check_detail_shows_heartbeat_body_and_source() {
     let (server, store, pid) = server_with_project().await;
     let cid = store
-        .create_check(
-            pid,
-            "backup",
-            "cu",
-            pingward::models::ScheduleKind::Period,
-            Some(3600),
-            300,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: "cu",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     let check = store.find_check(cid).await.unwrap().unwrap();
@@ -75,16 +75,16 @@ async fn check_detail_shows_heartbeat_body_and_source() {
 async fn ping_timestamps_are_localizable_with_utc_fallback() {
     let (server, store, pid) = server_with_project().await;
     let cid = store
-        .create_check(
-            pid,
-            "backup",
-            "cu2",
-            pingward::models::ScheduleKind::Period,
-            Some(3600),
-            300,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: "cu2",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     let check = store.find_check(cid).await.unwrap().unwrap();

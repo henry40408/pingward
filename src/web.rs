@@ -1115,31 +1115,19 @@ async fn check_create_core(
     let uuid = uuid::Uuid::new_v4().to_string();
     let id = state
         .store
-        .create_check(
-            pid,
-            &v.name,
-            &uuid,
-            v.kind,
-            v.period_secs,
-            v.grace,
-            v.cron_expr.as_deref(),
-            &form.timezone,
-        )
-        .await?;
-    state
-        .store
-        .update_check_schedule(
-            id,
-            &v.name,
-            v.kind,
-            v.period_secs,
-            v.grace,
-            v.cron_expr.as_deref(),
-            &form.timezone,
-            v.scan_interval_secs,
-            v.max_runtime_secs,
-            v.nag_interval_secs,
-        )
+        .create_check(&crate::store::NewCheck {
+            project_id: pid,
+            name: &v.name,
+            ping_uuid: &uuid,
+            kind: v.kind,
+            period_secs: v.period_secs,
+            grace_secs: v.grace,
+            cron_expr: v.cron_expr.as_deref(),
+            timezone: &form.timezone,
+            scan_interval_secs: v.scan_interval_secs,
+            max_runtime_secs: v.max_runtime_secs,
+            nag_interval_secs: v.nag_interval_secs,
+        })
         .await?;
     Ok(Redirect::to(&format!("{base}/checks/{id}")).into_response())
 }

@@ -36,6 +36,41 @@ pub struct NewAudit<'a> {
     pub detail: Option<&'a str>,
 }
 
+#[derive(Debug, Clone)]
+pub struct NewCheck<'a> {
+    pub project_id: i64,
+    pub name: &'a str,
+    pub ping_uuid: &'a str,
+    pub kind: ScheduleKind,
+    pub period_secs: Option<i64>,
+    pub grace_secs: i64,
+    pub cron_expr: Option<&'a str>,
+    pub timezone: &'a str,
+    pub scan_interval_secs: Option<i64>,
+    pub max_runtime_secs: Option<i64>,
+    pub nag_interval_secs: Option<i64>,
+}
+
+/// Not `#[derive(Default)]` like `NewAudit`: `ScheduleKind` is `str_enum!`-generated
+/// and has no `Default`. `Period` matches the new-check form's own default.
+impl Default for NewCheck<'_> {
+    fn default() -> Self {
+        Self {
+            project_id: 0,
+            name: "",
+            ping_uuid: "",
+            kind: ScheduleKind::Period,
+            period_secs: None,
+            grace_secs: 0,
+            cron_expr: None,
+            timezone: "",
+            scan_interval_secs: None,
+            max_runtime_secs: None,
+            nag_interval_secs: None,
+        }
+    }
+}
+
 fn parse_ts(s: Option<String>) -> Option<DateTime<Utc>> {
     s.and_then(|v| {
         DateTime::parse_from_rfc3339(&v)
@@ -329,27 +364,27 @@ impl Store {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create_check(
-        &self,
-        project_id: i64,
-        name: &str,
-        ping_uuid: &str,
-        kind: ScheduleKind,
-        period_secs: Option<i64>,
-        grace_secs: i64,
-        cron_expr: Option<&str>,
-        timezone: &str,
-    ) -> Result<i64, sqlx::Error> {
+    pub async fn create_check(&self, c: &NewCheck<'_>) -> Result<i64, sqlx::Error> {
         let row = sqlx::query(
             "INSERT INTO checks (project_id, name, ping_uuid, schedule_kind, period_secs, \
-             grace_secs, cron_expr, timezone, status, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8, 'new', $9) \
-             RETURNING id",
+             grace_secs, cron_expr, timezone, scan_interval_secs, max_runtime_secs, \
+             nag_interval_secs, status, created_at) VALUES \
+             ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'new',$12) RETURNING id",
         )
-        .bind(project_id).bind(name).bind(ping_uuid).bind(kind.as_str())
-        .bind(period_secs).bind(grace_secs).bind(cron_expr).bind(timezone)
+        .bind(c.project_id)
+        .bind(c.name)
+        .bind(c.ping_uuid)
+        .bind(c.kind.as_str())
+        .bind(c.period_secs)
+        .bind(c.grace_secs)
+        .bind(c.cron_expr)
+        .bind(c.timezone)
+        .bind(c.scan_interval_secs)
+        .bind(c.max_runtime_secs)
+        .bind(c.nag_interval_secs)
         .bind(Utc::now().to_rfc3339())
-        .fetch_one(&self.pool).await?;
+        .fetch_one(&self.pool)
+        .await?;
         Ok(row.get::<i64, _>("id"))
     }
 
@@ -1106,16 +1141,16 @@ mod tests {
     async fn find_by_uuid_roundtrip() {
         let store = seeded().await;
         let id = store
-            .create_check(
-                1,
-                "job",
-                "uuid-1",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "job",
+                ping_uuid: "uuid-1",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         let found = store.find_check_by_uuid("uuid-1").await.unwrap().unwrap();
@@ -1128,16 +1163,16 @@ mod tests {
     async fn insert_ping_and_list_active() {
         let store = seeded().await;
         let id = store
-            .create_check(
-                1,
-                "job",
-                "u",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "job",
+                ping_uuid: "u",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         let ping_time = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
@@ -1175,16 +1210,16 @@ mod tests {
     async fn list_active_checks_includes_up_status() {
         let store = seeded().await;
         let id = store
-            .create_check(
-                1,
-                "job",
-                "up-uuid",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "job",
+                ping_uuid: "up-uuid",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         store.set_status(id, CheckStatus::Up).await.unwrap();
@@ -1197,16 +1232,16 @@ mod tests {
     async fn mark_ping_updates_status_and_coalesces_timestamps() {
         let store = seeded().await;
         let id = store
-            .create_check(
-                1,
-                "job",
-                "mark-uuid",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "job",
+                ping_uuid: "mark-uuid",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
 
@@ -1401,16 +1436,16 @@ mod tests {
         assert_eq!(store.list_channels_for_project(pid).await.unwrap().len(), 1);
 
         let chk = store
-            .create_check(
-                pid,
-                "job",
-                "uuid-x",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: pid,
+                name: "job",
+                ping_uuid: "uuid-x",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         store.bind_channel(chk, cid).await.unwrap();
@@ -1452,16 +1487,16 @@ mod tests {
     async fn new_check_has_nag_defaults() {
         let store = seeded().await;
         let id = store
-            .create_check(
-                1,
-                "c",
-                "uu",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "c",
+                ping_uuid: "uu",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         let c = store.find_check(id).await.unwrap().unwrap();
@@ -1474,16 +1509,16 @@ mod tests {
     async fn nag_state_methods_roundtrip() {
         let store = seeded().await;
         let id = store
-            .create_check(
-                1,
-                "c",
-                "uu",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "c",
+                ping_uuid: "uu",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         store.set_status(id, CheckStatus::Down).await.unwrap();
@@ -1524,16 +1559,16 @@ mod tests {
         use chrono::Duration;
         let store = seeded().await;
         let cid = store
-            .create_check(
-                1,
-                "c",
-                "uu",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "c",
+                ping_uuid: "uu",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         let chan = store
@@ -1635,29 +1670,29 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_check(
-                pid,
-                "a",
-                "uuid-a",
-                ScheduleKind::Period,
-                Some(3600),
-                300,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: pid,
+                name: "a",
+                ping_uuid: "uuid-a",
+                kind: ScheduleKind::Period,
+                period_secs: Some(3600),
+                grace_secs: 300,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         store
-            .create_check(
-                pid,
-                "b",
-                "uuid-b",
-                ScheduleKind::Period,
-                Some(3600),
-                300,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: pid,
+                name: "b",
+                ping_uuid: "uuid-b",
+                kind: ScheduleKind::Period,
+                period_secs: Some(3600),
+                grace_secs: 300,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
 
@@ -1680,16 +1715,16 @@ mod tests {
     async fn notification_counts_split_ok_error() {
         let store = seeded().await;
         let cid = store
-            .create_check(
-                1,
-                "c",
-                "notif-uuid",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "c",
+                ping_uuid: "notif-uuid",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         let chan = store
@@ -1735,16 +1770,16 @@ mod tests {
         // reported as two separate rows, not merged into one.
         let store = seeded().await;
         let cid = store
-            .create_check(
-                1,
-                "dup-check",
-                "dup-uuid",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "dup-check",
+                ping_uuid: "dup-uuid",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         let chan_a = store
@@ -1814,29 +1849,29 @@ mod tests {
     async fn down_checks_order_never_pinged_last() {
         let store = seeded().await;
         let a = store
-            .create_check(
-                1,
-                "A",
-                "uuid-a",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "A",
+                ping_uuid: "uuid-a",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         let b = store
-            .create_check(
-                1,
-                "B",
-                "uuid-b",
-                ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "B",
+                ping_uuid: "uuid-b",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
 
@@ -1866,7 +1901,16 @@ mod tests {
             let store = &store;
             async move {
                 store
-                    .create_check(1, n, u, ScheduleKind::Period, Some(60), 30, None, "UTC")
+                    .create_check(&NewCheck {
+                        project_id: 1,
+                        name: n,
+                        ping_uuid: u,
+                        kind: ScheduleKind::Period,
+                        period_secs: Some(60),
+                        grace_secs: 30,
+                        timezone: "UTC",
+                        ..Default::default()
+                    })
                     .await
                     .unwrap()
             }
