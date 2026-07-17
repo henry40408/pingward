@@ -636,15 +636,17 @@ async fn admin_channel(
     Ok(ch)
 }
 
-/// Validate a project form's optional numeric override fields, returning the
-/// parsed `(scan_interval_secs, nag_interval_secs)` or an error message.
-fn validate_project(form: &ProjectForm) -> Result<(Option<i64>, Option<i64>), String> {
-    if form.name.trim().is_empty() {
+/// Validate a project form's name and optional duration override fields,
+/// returning the parsed `(name, scan_interval_secs, nag_interval_secs)` or an
+/// error message. The name is returned trimmed — it is what must be stored.
+fn validate_project(form: &ProjectForm) -> Result<(String, Option<i64>, Option<i64>), String> {
+    let name = form.name.trim();
+    if name.is_empty() {
         return Err("name is required".into());
     }
     let scan = parse_opt_positive_duration(&form.scan_interval_secs, "scan interval")?;
     let nag = parse_opt_positive_duration(&form.nag_interval_secs, "nag interval")?;
-    Ok((scan, nag))
+    Ok((name.to_string(), scan, nag))
 }
 
 /// Rebuild a project form after a validation error, preserving the submitted
@@ -695,7 +697,7 @@ async fn project_create(
     CurrentUser(user): CurrentUser,
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
-    let (scan, nag) = match validate_project(&form) {
+    let (name, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
             let csrf = current_csrf(&state, &jar).await;
@@ -712,7 +714,7 @@ async fn project_create(
     };
     let id = state
         .store
-        .create_project(user.id, &form.name, scan, nag, Utc::now())
+        .create_project(user.id, &name, scan, nag, Utc::now())
         .await?;
     Ok(Redirect::to(&format!("/projects/{id}")).into_response())
 }
@@ -812,7 +814,7 @@ async fn project_update(
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, id, user.id).await?;
-    let (scan, nag) = match validate_project(&form) {
+    let (name, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
             let csrf = current_csrf(&state, &jar).await;
@@ -827,10 +829,7 @@ async fn project_update(
             return Ok(render(&t)?.into_response());
         }
     };
-    state
-        .store
-        .update_project(id, &form.name, scan, nag)
-        .await?;
+    state.store.update_project(id, &name, scan, nag).await?;
     Ok(Redirect::to(&format!("/projects/{id}")).into_response())
 }
 
@@ -998,6 +997,7 @@ fn empty_check_form(
 
 #[derive(Debug)]
 struct ValidatedCheck {
+    name: String,
     kind: ScheduleKind,
     period_secs: Option<i64>,
     grace: i64,
@@ -1012,7 +1012,8 @@ struct ValidatedCheck {
 /// non-blank override that isn't a positive duration is rejected rather than
 /// silently discarded.
 fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String> {
-    if form.name.trim().is_empty() {
+    let name = form.name.trim();
+    if name.is_empty() {
         return Err("name is required".into());
     }
     let grace = crate::duration::parse_duration(&form.grace_secs)
@@ -1048,6 +1049,7 @@ fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String> {
     let max_runtime_secs = parse_opt_positive_duration(&form.max_runtime_secs, "max runtime")?;
     let nag_interval_secs = parse_opt_positive_duration(&form.nag_interval_secs, "nag interval")?;
     Ok(ValidatedCheck {
+        name: name.to_string(),
         kind,
         period_secs,
         grace,
@@ -1115,7 +1117,7 @@ async fn check_create_core(
         .store
         .create_check(
             pid,
-            &form.name,
+            &v.name,
             &uuid,
             v.kind,
             v.period_secs,
@@ -1128,7 +1130,7 @@ async fn check_create_core(
         .store
         .update_check_schedule(
             id,
-            &form.name,
+            &v.name,
             v.kind,
             v.period_secs,
             v.grace,
@@ -1392,7 +1394,7 @@ async fn check_update_core(
         .store
         .update_check_schedule(
             id,
-            &form.name,
+            &v.name,
             v.kind,
             v.period_secs,
             v.grace,
@@ -2271,7 +2273,7 @@ async fn admin_project_update(
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
     admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
-    let (scan, nag) = match validate_project(&form) {
+    let (name, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
             let csrf = current_csrf(&state, &jar).await;
@@ -2286,10 +2288,7 @@ async fn admin_project_update(
             return Ok(render(&t)?.into_response());
         }
     };
-    state
-        .store
-        .update_project(id, &form.name, scan, nag)
-        .await?;
+    state.store.update_project(id, &name, scan, nag).await?;
     Ok(Redirect::to(&format!("/admin/projects/{id}")).into_response())
 }
 
@@ -2604,6 +2603,14 @@ mod tests {
         assert_eq!(validate_check(&form).unwrap_err(), "name is required");
     }
 
+    #[test]
+    fn validate_check_trims_the_name() {
+        let mut form = base_check_form();
+        form.name = "  backup  ".into();
+        let v = validate_check(&form).unwrap();
+        assert_eq!(v.name, "backup");
+    }
+
     fn base_project_form() -> ProjectForm {
         ProjectForm {
             name: "proj".into(),
@@ -2706,12 +2713,15 @@ mod tests {
     fn validate_project_accepts_blank_and_positive() {
         assert_eq!(
             validate_project(&base_project_form()).unwrap(),
-            (None, None)
+            ("proj".to_string(), None, None)
         );
         let mut form = base_project_form();
         form.scan_interval_secs = "15".into();
         form.nag_interval_secs = "25".into();
-        assert_eq!(validate_project(&form).unwrap(), (Some(15), Some(25)));
+        assert_eq!(
+            validate_project(&form).unwrap(),
+            ("proj".to_string(), Some(15), Some(25))
+        );
     }
 
     #[test]
@@ -2729,7 +2739,10 @@ mod tests {
         let mut form = base_project_form();
         form.scan_interval_secs = "5m".into();
         form.nag_interval_secs = "1h".into();
-        assert_eq!(validate_project(&form).unwrap(), (Some(300), Some(3600)));
+        assert_eq!(
+            validate_project(&form).unwrap(),
+            ("proj".to_string(), Some(300), Some(3600))
+        );
     }
 
     #[test]
@@ -2744,6 +2757,14 @@ mod tests {
         let mut form = base_project_form();
         form.name = "   ".into();
         assert_eq!(validate_project(&form).unwrap_err(), "name is required");
+    }
+
+    #[test]
+    fn validate_project_trims_the_name() {
+        let mut form = base_project_form();
+        form.name = "  Nightly jobs  ".into();
+        let (name, _, _) = validate_project(&form).unwrap();
+        assert_eq!(name, "Nightly jobs");
     }
 
     #[test]
