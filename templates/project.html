@@ -26,7 +26,7 @@
     {% for c in checks %}
     <div class="check" tabindex="0" role="link" onclick="location='{{ base }}/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='{{ base }}/checks/{{ c.id }}'">
       <span class="status-dot {{ c.status.as_str() }}"></span>
-      <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule_kind.as_str() }}</div></div>
+      <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ crate::web::schedule_label(c) }}</div></div>
       <a class="rowedit" href="{{ base }}/checks/{{ c.id }}/edit" onclick="event.stopPropagation()">edit</a>
       <span class="badge {{ c.status.as_str() }}">{{ c.status.as_str() }}</span>
     </div>

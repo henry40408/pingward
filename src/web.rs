@@ -141,19 +141,24 @@ struct ProjectGroup {
     checks: Vec<CheckRow>,
 }
 
-/// Human-readable schedule summary shown under a check's name (dashboard rows
-/// and the check detail page).
-fn schedule_label(c: &Check) -> String {
+/// Human-readable schedule summary shown under a check's name (dashboard rows,
+/// the project page, and the check detail page). Uses `duration::fmt_duration`
+/// so the displayed interval matches what the check form accepts and renders.
+pub(crate) fn schedule_label(c: &Check) -> String {
+    let grace = crate::duration::fmt_duration(c.grace_secs);
     match c.schedule_kind {
         ScheduleKind::Period => match c.period_secs {
             Some(s) => format!(
                 "every {} · {} grace",
-                crate::view::fmt_secs(s),
-                crate::view::fmt_secs(c.grace_secs)
+                crate::duration::fmt_duration(s),
+                grace
             ),
-            None => format!("{} grace", crate::view::fmt_secs(c.grace_secs)),
+            None => format!("{grace} grace"),
         },
-        ScheduleKind::Cron => c.cron_expr.clone().unwrap_or_default(),
+        ScheduleKind::Cron => match &c.cron_expr {
+            Some(expr) => format!("{expr} · {grace} grace"),
+            None => format!("{grace} grace"),
+        },
     }
 }
 
@@ -2558,6 +2563,19 @@ mod tests {
             status_since_label(&c, Utc::now()),
             "down · 2m ago · not acknowledged"
         );
+    }
+
+    #[test]
+    fn schedule_label_uses_duration_format_and_shows_cron_grace() {
+        let c = base_check();
+        assert_eq!(schedule_label(&c), "every 1h · 5m grace");
+
+        let mut c = base_check();
+        c.schedule_kind = ScheduleKind::Cron;
+        c.period_secs = None;
+        c.cron_expr = Some("0 0 * * * *".into());
+        c.grace_secs = 600;
+        assert_eq!(schedule_label(&c), "0 0 * * * * · 10m grace");
     }
 
     fn base_check_form() -> CheckForm {

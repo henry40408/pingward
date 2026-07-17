@@ -87,7 +87,7 @@ scan/nag intervals) accept either raw seconds or a human-readable string
 seconds, and are re-rendered on forms via `duration::fmt_duration`; the
 retention-days settings fields are plain integers, not durations.
 `view::fmt_secs` remains the lossy *display* format used elsewhere (e.g. the
-check page schedule label).
+heartbeat strip tooltips, `fmt_secs(d) / fmt_secs(c)`).
 
 **Notifications** (`src/notify.rs`): a `Notifier` trait with six implementations
 (`webhook`, `telegram`, `slack`, `ntfy`, `pushover`, `email`/SMTP). `notifier_for`
