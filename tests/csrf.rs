@@ -135,16 +135,16 @@ async fn multi_value_channels_form_authorizes_via_csrf_field() {
         .await
         .unwrap();
     let cid = store
-        .create_check(
-            pid,
-            "c",
-            "uuid-csrf-chan",
-            pingward::models::ScheduleKind::Period,
-            Some(3600),
-            300,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "c",
+            ping_uuid: "uuid-csrf-chan",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     let ch1 = store

@@ -225,6 +225,7 @@ pub async fn run_scan_loop(store: Store, env_default_secs: u64, smtp: Option<Smt
 mod tests {
     use super::*;
     use crate::models::{Check, CheckStatus, ScheduleKind};
+    use crate::store::NewCheck;
     use chrono::{TimeZone, Utc};
 
     fn base_check() -> Check {
@@ -433,16 +434,16 @@ mod tests {
             .unwrap();
         let start = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
         let cid = store
-            .create_check(
-                1,
-                "job",
-                "u1",
-                ScheduleKind::Period,
-                Some(3_600_000),
-                300,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "job",
+                ping_uuid: "u1",
+                kind: ScheduleKind::Period,
+                period_secs: Some(3_600_000),
+                grace_secs: 300,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         // long period so it is NOT overdue; set an in-flight start + short max runtime
@@ -491,16 +492,16 @@ mod tests {
             .await
             .unwrap();
         let id = store
-            .create_check(
-                1,
-                "job",
-                "u1",
-                ScheduleKind::Period,
-                Some(3600),
-                300,
-                None,
-                "UTC",
-            )
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "job",
+                ping_uuid: "u1",
+                kind: ScheduleKind::Period,
+                period_secs: Some(3600),
+                grace_secs: 300,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         store.set_status(id, CheckStatus::Down).await.unwrap();

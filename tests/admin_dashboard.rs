@@ -32,16 +32,16 @@ async fn admin_dashboard_renders_with_figures() {
         .await
         .unwrap();
     store
-        .create_check(
-            pid,
-            "c",
-            "uuid-c",
-            pingward::models::ScheduleKind::Period,
-            Some(3600),
-            300,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "c",
+            ping_uuid: "uuid-c",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     let res = server.get("/admin").await;
@@ -75,16 +75,16 @@ async fn admin_dashboard_absolute_times_wrapped_for_local_tz() {
         .await
         .unwrap();
     let cid = store
-        .create_check(
-            pid,
-            "c2",
-            "uuid-c2",
-            pingward::models::ScheduleKind::Period,
-            Some(3600),
-            300,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "c2",
+            ping_uuid: "uuid-c2",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     let chid = store

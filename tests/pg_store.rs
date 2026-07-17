@@ -1,7 +1,7 @@
 use pingward::{
     db,
     models::{ChannelKind, ScheduleKind},
-    store::Store,
+    store::{NewCheck, Store},
 };
 
 fn pg_url() -> Option<String> {
@@ -57,16 +57,16 @@ async fn postgres_full_round_trip() {
 
     // checks
     let cid = store
-        .create_check(
-            pid,
-            "job",
-            "uuid-1",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: pid,
+            name: "job",
+            ping_uuid: "uuid-1",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert!(store.find_check(cid).await.unwrap().is_some());
@@ -116,16 +116,16 @@ async fn postgres_full_round_trip() {
     // per-check limit honored, grouped by check_id, and matching the per-check
     // query. cid already has one ping; give cid2 three.
     let cid2 = store
-        .create_check(
-            pid,
-            "job2",
-            "uuid-2",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: pid,
+            name: "job2",
+            ping_uuid: "uuid-2",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     for i in 0..3 {

@@ -28,16 +28,16 @@ async fn server_with_project_and_check() -> (TestServer, Store, i64, i64) {
         .await
         .unwrap();
     let cid = store
-        .create_check(
-            pid,
-            "backup",
-            "cu",
-            pingward::models::ScheduleKind::Period,
-            Some(3600),
-            300,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: "cu",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     (server, store, pid, cid)

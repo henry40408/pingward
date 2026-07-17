@@ -1,5 +1,12 @@
 use axum_test::TestServer;
-use pingward::{app, config::Config, db, models::ScheduleKind, state::AppState, store::Store};
+use pingward::{
+    app,
+    config::Config,
+    db,
+    models::ScheduleKind,
+    state::AppState,
+    store::{NewCheck, Store},
+};
 use sqlx::Row;
 
 async fn test_server() -> (TestServer, Store) {
@@ -34,16 +41,16 @@ async fn healthz_returns_ok() {
 async fn success_ping_marks_up_and_records() {
     let (server, store) = test_server().await;
     store
-        .create_check(
-            1,
-            "job",
-            "abc",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: 1,
+            name: "job",
+            ping_uuid: "abc",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -63,16 +70,16 @@ async fn success_ping_marks_up_and_records() {
 async fn fail_ping_marks_down() {
     let (server, store) = test_server().await;
     store
-        .create_check(
-            1,
-            "job",
-            "abc",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: 1,
+            name: "job",
+            ping_uuid: "abc",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     server.post("/ping/abc/fail").await.assert_status_ok();
@@ -93,16 +100,16 @@ async fn unknown_uuid_is_404() {
 async fn exit_code_nonzero_marks_down() {
     let (server, store) = test_server().await;
     store
-        .create_check(
-            1,
-            "job",
-            "abc",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: 1,
+            name: "job",
+            ping_uuid: "abc",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     server.post("/ping/abc/1").await.assert_status_ok();
@@ -114,16 +121,16 @@ async fn exit_code_nonzero_marks_down() {
 async fn start_does_not_reset_due_clock() {
     let (server, store) = test_server().await;
     store
-        .create_check(
-            1,
-            "job",
-            "abc",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: 1,
+            name: "job",
+            ping_uuid: "abc",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -145,16 +152,16 @@ async fn start_does_not_reset_due_clock() {
 async fn log_records_only_no_state_change() {
     let (server, store) = test_server().await;
     store
-        .create_check(
-            1,
-            "job",
-            "abc",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: 1,
+            name: "job",
+            ping_uuid: "abc",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -172,16 +179,16 @@ async fn log_records_only_no_state_change() {
 async fn exit_code_zero_marks_up() {
     let (server, store) = test_server().await;
     store
-        .create_check(
-            1,
-            "job",
-            "abc",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: 1,
+            name: "job",
+            ping_uuid: "abc",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     server.post("/ping/abc/0").await.assert_status_ok();
@@ -194,16 +201,16 @@ async fn exit_code_zero_marks_up() {
 async fn get_verb_works_for_success() {
     let (server, store) = test_server().await;
     store
-        .create_check(
-            1,
-            "job",
-            "abc",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: 1,
+            name: "job",
+            ping_uuid: "abc",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     server.get("/ping/abc").await.assert_status_ok();
@@ -217,16 +224,16 @@ async fn get_verb_works_for_success() {
 async fn paused_check_is_not_resurrected_by_a_ping() {
     let (server, store) = test_server().await;
     let id = store
-        .create_check(
-            1,
-            "job",
-            "abc",
-            ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&NewCheck {
+            project_id: 1,
+            name: "job",
+            ping_uuid: "abc",
+            kind: ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     store

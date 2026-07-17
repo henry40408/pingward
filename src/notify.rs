@@ -984,16 +984,16 @@ mod tests {
             .await
             .unwrap();
         let chk = store
-            .create_check(
-                1,
-                "job",
-                "u1",
-                crate::models::ScheduleKind::Period,
-                Some(60),
-                30,
-                None,
-                "UTC",
-            )
+            .create_check(&crate::store::NewCheck {
+                project_id: 1,
+                name: "job",
+                ping_uuid: "u1",
+                kind: crate::models::ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
         store.bind_channel(chk, cid).await.unwrap();

@@ -368,16 +368,16 @@ async fn invalid_cron_is_rejected() {
 async fn regenerate_uuid_changes_ping_url() {
     let (server, store, pid) = server_with_project().await;
     let cid = store
-        .create_check(
-            pid,
-            "job",
-            "old-uuid",
-            pingward::models::ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "job",
+            ping_uuid: "old-uuid",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     server
@@ -555,16 +555,16 @@ async fn admin_creates_and_deletes_user() {
 async fn create_channel_and_bind_to_check() {
     let (server, store, pid) = server_with_project().await;
     let cid = store
-        .create_check(
-            pid,
-            "job",
-            "cu",
-            pingward::models::ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "job",
+            ping_uuid: "cu",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
 
@@ -726,16 +726,16 @@ async fn other_users_project(store: &Store) -> (i64, i64, i64) {
         .await
         .unwrap();
     let ocid = store
-        .create_check(
-            opid,
-            "j",
-            "other-uuid",
-            pingward::models::ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: opid,
+            name: "j",
+            ping_uuid: "other-uuid",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     let ochid = store
@@ -913,16 +913,16 @@ async fn settings_and_users_pages_use_restyled_field_class() {
 async fn check_page_shows_notification_channel_and_error() {
     let (server, store, pid) = server_with_project().await;
     let cid = store
-        .create_check(
-            pid,
-            "job",
-            "cu",
-            pingward::models::ScheduleKind::Period,
-            Some(60),
-            30,
-            None,
-            "UTC",
-        )
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "job",
+            ping_uuid: "cu",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(60),
+            grace_secs: 30,
+            timezone: "UTC",
+            ..Default::default()
+        })
         .await
         .unwrap();
     let chid = store
