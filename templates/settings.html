@@ -2,6 +2,7 @@
 {% block body %}
 <div class="phead"><div><h1>Settings</h1></div></div>
 {% if let Some(error) = error %}<p class="flash err">{{ error }}</p>{% endif %}
+{% if let Some(f) = flash %}<p class="flash ok" data-testid="settings-flash">{{ f }}</p>{% endif %}
 
 <div class="card">
   <div class="cb">

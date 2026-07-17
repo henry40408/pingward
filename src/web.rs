@@ -1158,21 +1158,28 @@ async fn check_create(
 /// check's notify channels) and cleared on the next render.
 const FLASH_COOKIE: &str = "pingward_flash";
 
-/// Read and clear the one-shot flash cookie, mapping its key to a fixed
-/// message. Returns the updated jar (with the cookie removed) and the message
-/// if a known flash was set. Only known keys map to a message, so a
+/// Read and clear the one-shot flash cookie **if** it was set for `surface`,
+/// mapping it to that surface's fixed message. The cookie is path-scoped to
+/// `/`, so every page sees it — a flash set for another surface is therefore
+/// left in the jar for that page to consume rather than rendered here, which
+/// keeps a message from surfacing on the wrong page when a redirect is not
+/// followed or two tabs race. Only known keys map to a message, so a
 /// user-supplied cookie value never renders as arbitrary text.
-fn take_flash(jar: CookieJar) -> (CookieJar, Option<String>) {
+fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
     let Some(cookie) = jar.get(FLASH_COOKIE) else {
         return (jar, None);
     };
-    let message = match cookie.value() {
-        "channels" => Some("Notify channels saved.".to_string()),
-        _ => None,
+    if cookie.value() != surface {
+        return (jar, None);
+    }
+    let message = match surface {
+        "channels" => "Notify channels saved.",
+        "settings" => "Settings saved.",
+        _ => return (jar, None),
     };
     (
         jar.remove(Cookie::build((FLASH_COOKIE, "")).path("/").build()),
-        message,
+        Some(message.to_string()),
     )
 }
 
@@ -1184,7 +1191,7 @@ async fn check_show(
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar).await;
-    let (jar, flash) = take_flash(jar);
+    let (jar, flash) = take_flash(jar, "channels");
     let resp = render_check_page(&state, check, false, user.is_admin, csrf, flash).await?;
     Ok((jar, resp).into_response())
 }
@@ -1784,6 +1791,7 @@ struct SettingsTemplate {
     pings_retention_days: String,
     notifications_retention_days: String,
     error: Option<String>,
+    flash: Option<String>,
 }
 
 #[derive(Template)]
@@ -1842,17 +1850,21 @@ async fn settings_page(
         .get_setting("notifications_retention_days")
         .await?
         .unwrap_or_default();
-    Ok(render(&SettingsTemplate {
+    let csrf = current_csrf(&state, &jar).await;
+    let (jar, flash) = take_flash(jar, "settings");
+    let resp = render(&SettingsTemplate {
         show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
+        csrf,
         is_admin: true,
         scan_interval: readable_setting_duration(scan_interval),
         nag_interval: readable_setting_duration(nag_interval),
         pings_retention_days,
         notifications_retention_days,
         error: None,
+        flash,
     })?
-    .into_response())
+    .into_response();
+    Ok((jar, resp).into_response())
 }
 
 /// Settings persist durations as raw seconds; render them in the readable form
@@ -1921,6 +1933,7 @@ async fn settings_save(
                     pings_retention_days: form.pings_retention_days.clone(),
                     notifications_retention_days: form.notifications_retention_days.clone(),
                     error: Some(msg),
+                    flash: None,
                 })?
                 .into_response());
             }
@@ -1930,7 +1943,14 @@ async fn settings_save(
         let value = v.map(|n| n.to_string()).unwrap_or_default();
         state.store.set_setting(key, &value).await?;
     }
-    Ok(Redirect::to("/settings").into_response())
+    let jar = jar.add(
+        Cookie::build((FLASH_COOKIE, "settings"))
+            .http_only(true)
+            .same_site(SameSite::Lax)
+            .path("/")
+            .build(),
+    );
+    Ok((jar, Redirect::to("/settings")).into_response())
 }
 
 async fn users_page(
@@ -2329,7 +2349,7 @@ async fn admin_check_show(
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
     let csrf = current_csrf(&state, &jar).await;
-    let (jar, flash) = take_flash(jar);
+    let (jar, flash) = take_flash(jar, "channels");
     let resp = render_check_page(&state, check, true, true, csrf, flash).await?;
     Ok((jar, resp).into_response())
 }
@@ -2735,5 +2755,43 @@ mod tests {
         assert_eq!(readable_setting_duration(String::new()), "");
         assert_eq!(readable_setting_duration("0".into()), "0");
         assert_eq!(readable_setting_duration("abc".into()), "abc");
+    }
+
+    #[test]
+    fn take_flash_maps_each_surface_to_its_own_message() {
+        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "settings"));
+        let (_, msg) = take_flash(jar, "settings");
+        assert_eq!(msg.as_deref(), Some("Settings saved."));
+
+        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "channels"));
+        let (_, msg) = take_flash(jar, "channels");
+        assert_eq!(msg.as_deref(), Some("Notify channels saved."));
+    }
+
+    #[test]
+    fn take_flash_ignores_a_flash_set_for_another_surface() {
+        // The cookie is path-scoped to "/", so the settings page also sees a
+        // check-page flash. It must neither render nor consume it — the page it
+        // was set for still gets it.
+        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "channels"));
+        let (jar, msg) = take_flash(jar, "settings");
+        assert_eq!(msg, None);
+        let (_, msg) = take_flash(jar, "channels");
+        assert_eq!(msg.as_deref(), Some("Notify channels saved."));
+    }
+
+    #[test]
+    fn take_flash_without_a_cookie_is_none() {
+        let (_, msg) = take_flash(CookieJar::new(), "settings");
+        assert_eq!(msg, None);
+    }
+
+    #[test]
+    fn take_flash_never_renders_an_unknown_cookie_value() {
+        // Even when the surface matches, an unknown key maps to no message, so a
+        // user-supplied cookie value can never render as arbitrary text.
+        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "<script>"));
+        let (_, msg) = take_flash(jar, "<script>");
+        assert_eq!(msg, None);
     }
 }
