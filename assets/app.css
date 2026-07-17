@@ -397,14 +397,22 @@ nav.links a:hover {
   overflow: hidden;
   box-shadow: var(--shadow);
 }
+/* Flex, not grid: three templates reuse this row with different children
+   (dashboard has spark+cwhen, project has rowedit, admin_projects has neither),
+   so a fixed column count can only ever fit one of them. */
 .check {
-  display: grid;
-  grid-template-columns: auto 1fr auto auto auto;
+  display: flex;
   align-items: center;
   gap: 16px;
   padding: 14px 16px;
   cursor: pointer;
   transition: background 0.12s;
+}
+/* Takes the slack the `1fr` column used to; min-width lets a long name
+   truncate instead of pushing the row wide. */
+.cmeta {
+  flex: 1;
+  min-width: 0;
 }
 .check + .check {
   border-top: 1px solid var(--border-soft);
@@ -572,9 +580,6 @@ nav.links a:hover {
 }
 
 @media (max-width: 640px) {
-  .check {
-    grid-template-columns: auto 1fr auto;
-  }
   .spark,
   .cwhen {
     display: none;

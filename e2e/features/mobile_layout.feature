@@ -29,3 +29,19 @@ Feature: Mobile layout
     When I view the site at 375px wide
     And I reload the check page
     Then the page has no horizontal scrollbar
+
+  Scenario: The project page's check rows stay on one line at phone width
+    Given a project named "Nightly jobs"
+    And a check named "backup" with period 60
+    When I view the site at 375px wide
+    And I open the project from the breadcrumb
+    Then the check row's status dot sits next to the name
+    And the check row is a single line
+
+  Scenario: The dashboard's check rows stay on one line at phone width
+    Given a project named "Nightly jobs"
+    And a check named "backup" with period 60
+    When I view the site at 375px wide
+    And I visit "/"
+    Then the check row's status dot sits next to the name
+    And the check row is a single line
