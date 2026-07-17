@@ -6,7 +6,10 @@
   <title>pingward</title>
   <link rel="stylesheet" href="/assets/app.css">
   <script>
-    (function(){try{var t=localStorage.getItem('pw-theme')||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+    // Resolve the applied theme before first paint (avoids a flash). The stored
+    // preference is 'light' | 'dark' | 'system'; anything else (incl. unset)
+    // means follow the OS. 'system' is re-resolved live by the listener below.
+    (function(){try{var p=localStorage.getItem('pw-theme');var eff=(p==='light'||p==='dark')?p:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',eff);}catch(e){}})();
   </script>
 </head>
 <body>
@@ -22,7 +25,31 @@
   {% endif %}
   <main class="wrap">{% block body %}{% endblock %}</main>
   <script>
-    (function(){var b=document.getElementById('pw-theme-toggle');if(!b)return;b.addEventListener('click',function(){var r=document.documentElement,n=r.getAttribute('data-theme')==='dark'?'light':'dark';r.setAttribute('data-theme',n);try{localStorage.setItem('pw-theme',n);}catch(e){}});})();
+    (function(){
+      var b=document.getElementById('pw-theme-toggle');if(!b)return;
+      var mq=matchMedia('(prefers-color-scheme: dark)');
+      var order=['light','dark','system'];
+      // Stored preference, normalized: unset/unknown -> 'system' (follow OS).
+      function pref(){var p=null;try{p=localStorage.getItem('pw-theme');}catch(e){}return (p==='light'||p==='dark'||p==='system')?p:'system';}
+      // Apply preference p: resolve to an effective light/dark for data-theme,
+      // and reflect the current preference in the button glyph + labels.
+      function apply(p){
+        var eff=(p==='light'||p==='dark')?p:(mq.matches?'dark':'light');
+        document.documentElement.setAttribute('data-theme',eff);
+        b.textContent=(p==='light'?'☀':p==='dark'?'☾':'◐');
+        b.setAttribute('title','Theme: '+p+' (click to change)');
+        b.setAttribute('aria-label','Theme: '+p+' (click to change)');
+        b.setAttribute('data-theme-pref',p);
+      }
+      apply(pref());
+      b.addEventListener('click',function(){
+        var next=order[(order.indexOf(pref())+1)%order.length];
+        try{localStorage.setItem('pw-theme',next);}catch(e){}
+        apply(next);
+      });
+      // In 'system' mode, follow live OS colour-scheme changes.
+      mq.addEventListener('change',function(){if(pref()==='system')apply('system');});
+    })();
     // Render absolute timestamps (any `.localtime[data-ts]`) in the viewer's
     // local time zone, falling back to the server-rendered UTC text when JS is
     // off. Shared across every page so any template can opt in with the span.
