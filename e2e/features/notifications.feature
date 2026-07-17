@@ -37,6 +37,11 @@ Feature: Notification channels
     When I delete the channel named "hook1"
     Then the project shows no channels
 
+  Scenario: A check whose project has no channels shows an empty state
+    Given a project named "Notify"
+    And a check named "backup" with period 3600
+    Then the check's notify channels show an empty state
+
   Scenario: Binding a channel to a check persists
     Given a project named "Notify"
     And I remember the current project

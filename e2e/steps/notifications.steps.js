@@ -158,6 +158,12 @@ Then(
   }
 );
 
+// When the check's project has no channels, the Notify channels card shows an
+// empty state (with a link to create one) instead of the bind form.
+Then("the check's notify channels show an empty state", async ({ page }) => {
+  await expect(page.getByTestId("check-channels-empty")).toBeVisible();
+});
+
 // Delivery records the notification row AFTER the webhook POST returns, so poll
 // by reloading until a "sent" row for the channel appears.
 Then(

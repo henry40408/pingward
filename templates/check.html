@@ -42,6 +42,9 @@
 <div class="card">
   <div class="ch"><h2>Notify channels</h2></div>
   <div class="cb">
+    {% if channel_boxes.is_empty() %}
+    <p style="margin:0;color:var(--muted)" data-testid="check-channels-empty">No channels yet. <a href="{{ base }}/projects/{{ check.project_id }}/channels/new">Add one</a> to get notified when this check goes down.</p>
+    {% else %}
     <form method="post" action="{{ base }}/checks/{{ check.id }}/channels">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       {% for cb in channel_boxes %}
@@ -49,6 +52,7 @@
       {% endfor %}
       <div style="margin-top:12px"><button class="btn primary" type="submit">Save channels</button></div>
     </form>
+    {% endif %}
   </div>
 </div>
 
