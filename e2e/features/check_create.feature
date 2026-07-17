@@ -47,4 +47,14 @@ Feature: Check creation branches
     And I fill the check period with "1h30m"
     And I submit the check form
     Then I am on the check page
-    And the check schedule shows "every 1h 30m"
+    And the check schedule shows "every 1h30m"
+
+  Scenario: The project page shows a check's interval, not just its schedule kind
+    When I create a check named "backup" with period 3600
+    And I visit the project page for "Nightly jobs"
+    Then the check schedule shows "every 1h · 5m grace"
+
+  Scenario: A cron check's schedule includes its grace period
+    When I create a cron check named "hourly" with expression "0 0 * * * *"
+    Then I am on the check page
+    And the check schedule shows "· 5m grace"

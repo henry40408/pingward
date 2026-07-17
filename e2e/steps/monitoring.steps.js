@@ -57,6 +57,17 @@ Then("I am on the check page", async ({ page }) => {
   await expect(page).toHaveURL(/\/checks\/\d+$/);
 });
 
+// From the check page, follow the breadcrumb link back to its project. The
+// breadcrumb's accessible name is the project name, and it's the only such
+// link on the page.
+When(
+  "I visit the project page for {string}",
+  async ({ page }, projectName) => {
+    await page.getByRole("link", { name: projectName, exact: true }).click();
+    await expect(page).toHaveURL(/\/projects\/\d+$/);
+  }
+);
+
 Then("the check status is {string}", async ({ page }, status) => {
   await expect(page.getByTestId("check-status")).toHaveText(status);
 });

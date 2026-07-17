@@ -24,7 +24,7 @@ Feature: Edit flows
     When I open the check edit form
     And I change the check period to 300
     Then I am on the check page
-    And the check schedule shows "every 5m 00s"
+    And the check schedule shows "every 5m"
 
   Scenario: Change a check's grace period
     Given a project named "Nightly jobs"
@@ -32,7 +32,7 @@ Feature: Edit flows
     When I open the check edit form
     And I change the check grace to 600
     Then I am on the check page
-    And the check schedule shows "10m 00s grace"
+    And the check schedule shows "10m grace"
 
   Scenario: Change a check's timezone
     Given a project named "Nightly jobs"
