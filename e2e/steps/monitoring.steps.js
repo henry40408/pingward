@@ -130,3 +130,11 @@ When("I delete the project", async ({ page }) => {
 Then("the dashboard shows no projects", async ({ page }) => {
   await expect(page.getByTestId("dashboard-empty")).toBeVisible();
 });
+
+Then("the recent pings table shows an empty state", async ({ page }) => {
+  await expect(page.getByTestId("pings-empty")).toBeVisible();
+});
+
+Then("the recent notifications table shows an empty state", async ({ page }) => {
+  await expect(page.getByTestId("notifications-empty")).toBeVisible();
+});

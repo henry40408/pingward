@@ -60,6 +60,9 @@
 <div class="card">
   <div class="ch"><h2>Recent pings</h2></div>
   <div class="cb" style="padding-top:6px">
+    {% if pings.is_empty() %}
+    <p style="margin:10px 0 0;color:var(--muted)" data-testid="pings-empty">No pings yet.</p>
+    {% else %}
     <table>
       <thead><tr><th>When</th><th>Kind</th><th>Exit</th><th>Duration</th><th>Source</th></tr></thead>
       <tbody>
@@ -73,12 +76,16 @@
         {% endfor %}
       </tbody>
     </table>
+    {% endif %}
   </div>
 </div>
 
 <div class="card" style="margin-bottom:0">
   <div class="ch"><h2>Recent notifications</h2></div>
   <div class="cb" style="padding-top:6px">
+    {% if notifications.is_empty() %}
+    <p style="margin:10px 0 0;color:var(--muted)" data-testid="notifications-empty">No notifications yet.</p>
+    {% else %}
     <table>
       <thead><tr><th>When</th><th>Event</th><th>Channel</th><th>Result</th></tr></thead>
       <tbody>
@@ -89,6 +96,7 @@
         {% endfor %}
       </tbody>
     </table>
+    {% endif %}
   </div>
 </div>
 

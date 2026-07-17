@@ -69,3 +69,9 @@ Feature: Monitoring core
     Given a project named "Nightly jobs"
     When I delete the project
     Then the dashboard shows no projects
+
+  Scenario: A fresh check shows empty ping and notification tables
+    Given a project named "Fresh"
+    And a check named "newbie" with period 3600
+    Then the recent pings table shows an empty state
+    And the recent notifications table shows an empty state
