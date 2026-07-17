@@ -181,6 +181,10 @@ header.bar {
   display: flex;
   align-items: center;
   gap: 20px;
+  /* Without this, the row's intrinsic (min-content) width is fixed and can
+     never shrink below it, so a future extra nav link could reintroduce a
+     horizontal scrollbar on narrow viewports. */
+  flex-wrap: wrap;
 }
 .brand {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
@@ -1034,6 +1038,23 @@ tr.exp > td {
 @media (max-width: 560px) {
   .two {
     grid-template-columns: 1fr;
+  }
+  /* The header row's min-content is ~476px, so it overflowed every phone.
+     Put the brand and controls on one row and the links on their own. */
+  .bar .inner {
+    gap: 8px 14px;
+    padding: 10px 14px;
+  }
+  .brand {
+    order: 1;
+  }
+  .bar .right {
+    order: 2;
+  }
+  nav.links {
+    order: 3;
+    flex-basis: 100%;
+    flex-wrap: wrap;
   }
 }
 
