@@ -41,7 +41,7 @@ async function waitForServer(url, getSpawnError, timeoutMs = 30000) {
   throw new Error(`pingward did not become ready at ${url} within ${timeoutMs}ms`);
 }
 
-export async function spawnPingward() {
+export async function spawnPingward({ scanIntervalSecs } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "pingward-e2e-"));
   const dbPath = path.join(dir, "test.sqlite3");
   const port = await findAvailablePort();
@@ -55,6 +55,9 @@ export async function spawnPingward() {
       PINGWARD_BIND: `127.0.0.1:${port}`,
       PINGWARD_BASE_URL: url,
       RUST_LOG: "warn",
+      ...(scanIntervalSecs != null
+        ? { PINGWARD_SCAN_INTERVAL: String(scanIntervalSecs) }
+        : {}),
     },
     stdio: "ignore",
   });
