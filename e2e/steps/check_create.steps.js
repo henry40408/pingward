@@ -59,6 +59,18 @@ Then("I am still on the new check form", async ({ page }) => {
   await expect(page.getByTestId("check-submit")).toBeVisible();
 });
 
+// The schedule kind select drives an inline script that hides the field for the
+// other kind, so period and cron are never visible at the same time.
+Then("only the period field is shown", async ({ page }) => {
+  await expect(page.getByTestId("check-period-input")).toBeVisible();
+  await expect(page.locator("#cron_expr")).toBeHidden();
+});
+
+Then("only the cron field is shown", async ({ page }) => {
+  await expect(page.locator("#cron_expr")).toBeVisible();
+  await expect(page.getByTestId("check-period-input")).toBeHidden();
+});
+
 Then("the check name field is required", async ({ page }) => {
   await expect(page.getByTestId("check-name-input")).toHaveJSProperty(
     "validity.valueMissing",

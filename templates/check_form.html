@@ -17,16 +17,17 @@
           <option value="cron"{% if schedule_kind == "cron" %} selected{% endif %}>cron</option>
         </select>
       </div>
-      <div class="two">
+      <div class="sched" data-sched="period">
         <div class="field">
           <label for="period_secs">Period seconds</label>
           <input id="period_secs" name="period_secs" value="{{ period_secs }}" data-testid="check-period-input">
-          <div class="help">Used in period mode.</div>
         </div>
+      </div>
+      <div class="sched" data-sched="cron">
         <div class="field">
           <label for="cron_expr">Cron expression</label>
           <input id="cron_expr" name="cron_expr" value="{{ cron_expr }}">
-          <div class="help">Used in cron mode, 6-field "sec min hour dom mon dow".</div>
+          <div class="help">6-field "sec min hour dom mon dow".</div>
         </div>
       </div>
       <div class="two">
@@ -60,4 +61,17 @@
     </form>
   </div>
 </div>
+<script>
+  (function () {
+    var sel = document.getElementById('schedule_kind');
+    function sync() {
+      var k = sel.value;
+      document.querySelectorAll('.sched').forEach(function (d) {
+        d.style.display = d.getAttribute('data-sched') === k ? '' : 'none';
+      });
+    }
+    sel.addEventListener('change', sync);
+    sync();
+  })();
+</script>
 {% endblock %}
