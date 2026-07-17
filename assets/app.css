@@ -717,6 +717,14 @@ nav.links a:hover {
   background: var(--down-bg);
 }
 
+/* ---- Pager (recent pings / notifications keyset nav) ---- */
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 /* ---- Card ---- */
 .card {
   background: var(--surface);
