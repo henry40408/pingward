@@ -4,8 +4,29 @@ use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::LazyLock;
 
 const APP_CSS: &str = include_str!("../assets/app.css");
+
+/// Assets are content-addressed (`app.css` via `?v=<hash>`) or never change
+/// (fonts), so both can be cached for a year without revalidation.
+const IMMUTABLE_CACHE: &str = "public, max-age=31536000, immutable";
+
+/// Content hash of the stylesheet, used to cache-bust `/assets/app.css`.
+/// The URL changes exactly when the CSS content changes, which lets the
+/// response be cached immutably. Not cryptographic — collision resistance is
+/// irrelevant here, and an unstable hash across toolchains only ever costs one
+/// extra fetch.
+static CSS_VERSION: LazyLock<String> = LazyLock::new(|| {
+    let mut hasher = DefaultHasher::new();
+    APP_CSS.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+});
+
+pub fn css_version() -> &'static str {
+    CSS_VERSION.as_str()
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -17,7 +38,7 @@ async fn app_css() -> impl IntoResponse {
     (
         [
             (header::CONTENT_TYPE, "text/css; charset=utf-8"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::CACHE_CONTROL, IMMUTABLE_CACHE),
         ],
         APP_CSS,
     )
@@ -44,7 +65,7 @@ async fn font(Path(file): Path<String>) -> impl IntoResponse {
         Some(b) => (
             [
                 (header::CONTENT_TYPE, "font/woff2"),
-                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                (header::CACHE_CONTROL, IMMUTABLE_CACHE),
             ],
             b,
         )

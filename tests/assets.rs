@@ -32,3 +32,28 @@ async fn serves_a_font() {
     res.assert_status_ok();
     assert_eq!(res.header("content-type"), "font/woff2");
 }
+
+#[tokio::test]
+async fn stylesheet_is_cached_immutably() {
+    let server = server().await;
+    let res = server.get("/assets/app.css").await;
+    res.assert_status_ok();
+    assert_eq!(
+        res.header("cache-control"),
+        "public, max-age=31536000, immutable"
+    );
+}
+
+#[tokio::test]
+async fn pages_link_the_content_hashed_stylesheet() {
+    let server = server().await;
+    let res = server.get("/setup").await;
+    res.assert_status_ok();
+    let version = pingward::assets::css_version();
+    assert!(!version.is_empty(), "css version must not be empty");
+    let expected = format!("/assets/app.css?v={version}");
+    assert!(
+        res.text().contains(&expected),
+        "versioned stylesheet link missing from rendered page"
+    );
+}
