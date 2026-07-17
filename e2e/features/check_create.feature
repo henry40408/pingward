@@ -40,3 +40,11 @@ Feature: Check creation branches
     And I choose the "cron" schedule kind
     And I submit the check form
     Then the check form shows the error "cron_expr required for cron mode"
+
+  Scenario: A human-readable period is accepted
+    Given I open the new check form
+    When I fill the check name with "backup"
+    And I fill the check period with "1h30m"
+    And I submit the check form
+    Then I am on the check page
+    And the check schedule shows "every 1h 30m"

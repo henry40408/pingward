@@ -37,6 +37,12 @@ When("I fill the check period with {int}", async ({ page }, period) => {
   await page.getByTestId("check-period-input").fill(String(period));
 });
 
+// Human-readable duration input (e.g. "1h30m"), as opposed to the bare-integer
+// variant above.
+When("I fill the check period with {string}", async ({ page }, period) => {
+  await page.getByTestId("check-period-input").fill(period);
+});
+
 // schedule_kind is a plain <select> with no data-testid; select by its id.
 When("I choose the {string} schedule kind", async ({ page }, kind) => {
   await page.locator("#schedule_kind").selectOption(kind);

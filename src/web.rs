@@ -484,21 +484,11 @@ struct ProjectForm {
     nag_interval_secs: String,
 }
 
-fn parse_opt_i64(s: &str) -> Option<i64> {
-    let t = s.trim();
-    if t.is_empty() {
-        None
-    } else {
-        t.parse::<i64>().ok()
-    }
-}
-
 /// Parse an optional positive-integer form field. Blank/whitespace-only input
 /// is `Ok(None)` (the field is intentionally unset — inherit the default, or
 /// off). A non-blank value MUST parse to an integer strictly greater than zero;
-/// anything else is `Err(msg)` naming the field. Unlike `parse_opt_i64`, which
-/// silently maps invalid input to `None`, this surfaces the error so the caller
-/// can re-render the form instead of discarding what the user typed.
+/// anything else is `Err(msg)` naming the field, so the caller can re-render
+/// the form instead of discarding what the user typed.
 fn parse_opt_positive(s: &str, field: &str) -> Result<Option<i64>, String> {
     let t = s.trim();
     if t.is_empty() {
@@ -507,6 +497,24 @@ fn parse_opt_positive(s: &str, field: &str) -> Result<Option<i64>, String> {
     match t.parse::<i64>() {
         Ok(v) if v > 0 => Ok(Some(v)),
         _ => Err(format!("{field} must be a positive integer")),
+    }
+}
+
+/// Parse an optional positive *duration* form field (raw seconds or a
+/// human-readable string like `5m` / `1h30m`). Blank/whitespace-only is
+/// `Ok(None)` (unset — inherit the default, or off); a non-blank value must
+/// parse and be strictly greater than zero, else `Err(msg)` naming the field so
+/// the caller can re-render the form instead of discarding what the user typed.
+fn parse_opt_positive_duration(s: &str, field: &str) -> Result<Option<i64>, String> {
+    let t = s.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    match crate::duration::parse_duration(t) {
+        Some(v) if v > 0 => Ok(Some(v)),
+        _ => Err(format!(
+            "{field} must be a positive duration (e.g. 30, 5m, 1h30m)"
+        )),
     }
 }
 
@@ -634,8 +642,8 @@ fn validate_project(form: &ProjectForm) -> Result<(Option<i64>, Option<i64>), St
     if form.name.trim().is_empty() {
         return Err("name is required".into());
     }
-    let scan = parse_opt_positive(&form.scan_interval_secs, "scan interval seconds")?;
-    let nag = parse_opt_positive(&form.nag_interval_secs, "nag interval seconds")?;
+    let scan = parse_opt_positive_duration(&form.scan_interval_secs, "scan interval")?;
+    let nag = parse_opt_positive_duration(&form.nag_interval_secs, "nag interval")?;
     Ok((scan, nag))
 }
 
@@ -764,11 +772,11 @@ fn project_edit_form(
         name: project.name,
         scan_interval_secs: project
             .scan_interval_secs
-            .map(|v| v.to_string())
+            .map(crate::duration::fmt_duration)
             .unwrap_or_default(),
         nag_interval_secs: project
             .nag_interval_secs
-            .map(|v| v.to_string())
+            .map(crate::duration::fmt_duration)
             .unwrap_or_default(),
         error: None,
     }
@@ -980,7 +988,7 @@ fn empty_check_form(
         schedule_kind: "period".into(),
         period_secs: String::new(),
         cron_expr: String::new(),
-        grace_secs: "300".into(),
+        grace_secs: "5m".into(),
         timezone: "UTC".into(),
         scan_interval_secs: String::new(),
         max_runtime_secs: String::new(),
@@ -1000,14 +1008,15 @@ struct ValidatedCheck {
 }
 
 /// Validate a check form into a `ValidatedCheck` (schedule + grace + the three
-/// optional numeric overrides). Returns `Err(message)` on invalid input; a
-/// non-blank override that isn't a positive integer is rejected rather than
+/// optional duration overrides). Returns `Err(message)` on invalid input; a
+/// non-blank override that isn't a positive duration is rejected rather than
 /// silently discarded.
 fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String> {
     if form.name.trim().is_empty() {
         return Err("name is required".into());
     }
-    let grace = parse_opt_i64(&form.grace_secs).ok_or("grace_secs must be an integer")?;
+    let grace = crate::duration::parse_duration(&form.grace_secs)
+        .ok_or("grace_secs must be a duration (e.g. 30, 5m, 1h30m)")?;
     if grace < 0 {
         return Err("grace_secs must be >= 0".into());
     }
@@ -1015,8 +1024,11 @@ fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String> {
         .map_err(|_| "invalid schedule kind".to_string())?;
     let (period_secs, cron_expr) = match kind {
         ScheduleKind::Period => {
-            let secs =
-                parse_opt_i64(&form.period_secs).ok_or("period_secs required for period mode")?;
+            if form.period_secs.trim().is_empty() {
+                return Err("period_secs required for period mode".into());
+            }
+            let secs = crate::duration::parse_duration(&form.period_secs)
+                .ok_or("period_secs must be a duration (e.g. 30, 5m, 1h30m)")?;
             if secs <= 0 {
                 return Err("period_secs must be > 0".into());
             }
@@ -1031,9 +1043,10 @@ fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String> {
             (None, Some(expr.to_string()))
         }
     };
-    let scan_interval_secs = parse_opt_positive(&form.scan_interval_secs, "scan interval seconds")?;
-    let max_runtime_secs = parse_opt_positive(&form.max_runtime_secs, "max runtime seconds")?;
-    let nag_interval_secs = parse_opt_positive(&form.nag_interval_secs, "nag interval seconds")?;
+    let scan_interval_secs =
+        parse_opt_positive_duration(&form.scan_interval_secs, "scan interval")?;
+    let max_runtime_secs = parse_opt_positive_duration(&form.max_runtime_secs, "max runtime")?;
+    let nag_interval_secs = parse_opt_positive_duration(&form.nag_interval_secs, "nag interval")?;
     Ok(ValidatedCheck {
         kind,
         period_secs,
@@ -1299,21 +1312,24 @@ fn check_edit_form(check: Check, admin: bool, is_admin: bool, csrf: String) -> C
         error: None,
         name: check.name,
         schedule_kind: check.schedule_kind.as_str().into(),
-        period_secs: check.period_secs.map(|v| v.to_string()).unwrap_or_default(),
+        period_secs: check
+            .period_secs
+            .map(crate::duration::fmt_duration)
+            .unwrap_or_default(),
         cron_expr: check.cron_expr.unwrap_or_default(),
-        grace_secs: check.grace_secs.to_string(),
+        grace_secs: crate::duration::fmt_duration(check.grace_secs),
         timezone: check.timezone,
         scan_interval_secs: check
             .scan_interval_secs
-            .map(|v| v.to_string())
+            .map(crate::duration::fmt_duration)
             .unwrap_or_default(),
         max_runtime_secs: check
             .max_runtime_secs
-            .map(|v| v.to_string())
+            .map(crate::duration::fmt_duration)
             .unwrap_or_default(),
         nag_interval_secs: check
             .nag_interval_secs
-            .map(|v| v.to_string())
+            .map(crate::duration::fmt_duration)
             .unwrap_or_default(),
     }
 }
@@ -1830,13 +1846,23 @@ async fn settings_page(
         show_nav: true,
         csrf: current_csrf(&state, &jar).await,
         is_admin: true,
-        scan_interval,
-        nag_interval,
+        scan_interval: readable_setting_duration(scan_interval),
+        nag_interval: readable_setting_duration(nag_interval),
         pings_retention_days,
         notifications_retention_days,
         error: None,
     })?
     .into_response())
+}
+
+/// Settings persist durations as raw seconds; render them in the readable form
+/// the field now accepts. Anything unexpected passes through untouched so the
+/// user still sees what is stored.
+fn readable_setting_duration(raw: String) -> String {
+    match raw.trim().parse::<i64>() {
+        Ok(v) if v > 0 => crate::duration::fmt_duration(v),
+        _ => raw,
+    }
 }
 
 async fn settings_save(
@@ -1850,29 +1876,40 @@ async fn settings_save(
             "scan_interval",
             form.scan_interval.as_str(),
             "Global scan interval",
+            true,
         ),
         (
             "nag_interval",
             form.nag_interval.as_str(),
             "Global nag interval",
+            true,
         ),
         (
             "pings_retention_days",
             form.pings_retention_days.as_str(),
             "Pings retention",
+            false,
         ),
         (
             "notifications_retention_days",
             form.notifications_retention_days.as_str(),
             "Notifications retention",
+            false,
         ),
     ];
     // Atomic: validate every field before writing any. Blank clears to the
-    // default (`Ok(None)`); a positive integer is stored; any non-blank invalid
-    // value aborts the whole save and re-renders with the submitted values.
+    // default (`Ok(None)`); scan/nag intervals accept a duration (raw seconds
+    // or e.g. `5m`), the two retention fields are plain positive integers
+    // (days); any non-blank invalid value aborts the whole save and
+    // re-renders with the submitted values.
     let mut parsed: Vec<(&str, Option<i64>)> = Vec::with_capacity(fields.len());
-    for (key, raw, label) in fields {
-        match parse_opt_positive(raw, label) {
+    for (key, raw, label, is_duration) in fields {
+        let result = if is_duration {
+            parse_opt_positive_duration(raw, label)
+        } else {
+            parse_opt_positive(raw, label)
+        };
+        match result {
             Ok(v) => parsed.push((key, v)),
             Err(msg) => {
                 return Ok(render(&SettingsTemplate {
@@ -2594,7 +2631,7 @@ mod tests {
         form.scan_interval_secs = "abc".into();
         assert_eq!(
             validate_check(&form).unwrap_err(),
-            "scan interval seconds must be a positive integer"
+            "scan interval must be a positive duration (e.g. 30, 5m, 1h30m)"
         );
     }
 
@@ -2604,8 +2641,45 @@ mod tests {
         form.max_runtime_secs = "0".into();
         assert_eq!(
             validate_check(&form).unwrap_err(),
-            "max runtime seconds must be a positive integer"
+            "max runtime must be a positive duration (e.g. 30, 5m, 1h30m)"
         );
+    }
+
+    #[test]
+    fn validate_check_accepts_human_readable_durations() {
+        let mut form = base_check_form();
+        form.period_secs = "1h30m".into();
+        form.grace_secs = "5m".into();
+        form.scan_interval_secs = "30s".into();
+        form.max_runtime_secs = "2m".into();
+        form.nag_interval_secs = "1h".into();
+        let v = validate_check(&form).unwrap();
+        assert_eq!(v.period_secs, Some(5400));
+        assert_eq!(v.grace, 300);
+        assert_eq!(v.scan_interval_secs, Some(30));
+        assert_eq!(v.max_runtime_secs, Some(120));
+        assert_eq!(v.nag_interval_secs, Some(3600));
+    }
+
+    #[test]
+    fn parse_opt_positive_duration_blank_is_none() {
+        assert_eq!(parse_opt_positive_duration("", "x").unwrap(), None);
+        assert_eq!(parse_opt_positive_duration("   ", "x").unwrap(), None);
+    }
+
+    #[test]
+    fn parse_opt_positive_duration_accepts_human_readable() {
+        assert_eq!(parse_opt_positive_duration("5m", "x").unwrap(), Some(300));
+    }
+
+    #[test]
+    fn parse_opt_positive_duration_rejects_zero_negative_and_invalid() {
+        for bad in ["0", "-3", "1x"] {
+            assert_eq!(
+                parse_opt_positive_duration(bad, "x").unwrap_err(),
+                "x must be a positive duration (e.g. 30, 5m, 1h30m)"
+            );
+        }
     }
 
     #[test]
@@ -2631,6 +2705,14 @@ mod tests {
     }
 
     #[test]
+    fn validate_project_accepts_human_readable_durations() {
+        let mut form = base_project_form();
+        form.scan_interval_secs = "5m".into();
+        form.nag_interval_secs = "1h".into();
+        assert_eq!(validate_project(&form).unwrap(), (Some(300), Some(3600)));
+    }
+
+    #[test]
     fn validate_project_rejects_an_empty_name() {
         let mut form = base_project_form();
         form.name = String::new();
@@ -2642,5 +2724,16 @@ mod tests {
         let mut form = base_project_form();
         form.name = "   ".into();
         assert_eq!(validate_project(&form).unwrap_err(), "name is required");
+    }
+
+    #[test]
+    fn readable_setting_duration_formats_seconds_and_passes_through_the_rest() {
+        assert_eq!(readable_setting_duration("3600".into()), "1h");
+        assert_eq!(readable_setting_duration("45".into()), "45s");
+        // Blank (unset) and anything that is not a positive integer must survive
+        // untouched so the user still sees exactly what is stored.
+        assert_eq!(readable_setting_duration(String::new()), "");
+        assert_eq!(readable_setting_duration("0".into()), "0");
+        assert_eq!(readable_setting_duration("abc".into()), "abc");
     }
 }

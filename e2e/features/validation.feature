@@ -19,7 +19,7 @@ Feature: Server-side form validation
     When I fill the project name with "Nightly jobs"
     And I fill the project scan interval with "abc"
     And I submit the project form
-    Then the project form shows the error "scan interval seconds must be a positive integer"
+    Then the project form shows the error "scan interval must be a positive duration (e.g. 30, 5m, 1h30m)"
     And the project name field shows "Nightly jobs"
 
   Scenario: An invalid check max runtime is rejected
@@ -29,4 +29,4 @@ Feature: Server-side form validation
     And I fill the check period with 60
     And I fill the check max runtime with "abc"
     And I submit the check form
-    Then the check form shows the error "max runtime seconds must be a positive integer"
+    Then the check form shows the error "max runtime must be a positive duration (e.g. 30, 5m, 1h30m)"

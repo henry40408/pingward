@@ -19,8 +19,9 @@
       </div>
       <div class="sched" data-sched="period">
         <div class="field">
-          <label for="period_secs">Period seconds</label>
+          <label for="period_secs">Period</label>
           <input id="period_secs" name="period_secs" value="{{ period_secs }}" data-testid="check-period-input">
+          <div class="help">Seconds, or a duration like 5m, 1h30m, 2d.</div>
         </div>
       </div>
       <div class="sched" data-sched="cron">
@@ -32,8 +33,9 @@
       </div>
       <div class="two">
         <div class="field">
-          <label for="grace_secs">Grace seconds</label>
+          <label for="grace_secs">Grace</label>
           <input id="grace_secs" name="grace_secs" value="{{ grace_secs }}" required>
+          <div class="help">Seconds, or a duration like 5m, 1h30m.</div>
         </div>
         <div class="field">
           <label for="timezone">Timezone</label>
@@ -41,19 +43,19 @@
         </div>
       </div>
       <div class="field">
-        <label for="scan_interval_secs">Scan interval seconds</label>
+        <label for="scan_interval_secs">Scan interval</label>
         <input id="scan_interval_secs" name="scan_interval_secs" value="{{ scan_interval_secs }}">
-        <div class="help">Leave blank to inherit from the project.</div>
+        <div class="help">Leave blank to inherit from the project. Seconds, or a duration like 5m, 1h30m.</div>
       </div>
       <div class="field">
-        <label for="max_runtime_secs">Max runtime seconds</label>
+        <label for="max_runtime_secs">Max runtime</label>
         <input id="max_runtime_secs" name="max_runtime_secs" value="{{ max_runtime_secs }}">
-        <div class="help">Leave blank to turn off the runtime budget.</div>
+        <div class="help">Leave blank to turn off the runtime budget. Seconds, or a duration like 5m, 1h30m.</div>
       </div>
       <div class="field">
-        <label for="nag_interval_secs">Nag interval seconds</label>
+        <label for="nag_interval_secs">Nag interval</label>
         <input id="nag_interval_secs" name="nag_interval_secs" value="{{ nag_interval_secs }}">
-        <div class="help">Leave blank to inherit from the project, or to turn off nagging.</div>
+        <div class="help">Leave blank to inherit from the project, or to turn off nagging. Seconds, or a duration like 5m, 1h30m.</div>
       </div>
       <div style="display:flex;gap:8px;margin-top:4px">
         <button class="btn primary" type="submit" data-testid="check-submit">Save changes</button>
