@@ -4,8 +4,25 @@ use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::LazyLock;
 
 const APP_CSS: &str = include_str!("../assets/app.css");
+
+/// Content hash of the stylesheet, used to cache-bust `/assets/app.css`.
+/// The URL changes exactly when the CSS content changes, which lets the
+/// response be cached immutably. Not cryptographic — collision resistance is
+/// irrelevant here, and an unstable hash across toolchains only ever costs one
+/// extra fetch.
+static CSS_VERSION: LazyLock<String> = LazyLock::new(|| {
+    let mut hasher = DefaultHasher::new();
+    APP_CSS.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+});
+
+pub fn css_version() -> &'static str {
+    CSS_VERSION.as_str()
+}
 
 pub fn routes() -> Router<AppState> {
     Router::new()
@@ -17,7 +34,7 @@ async fn app_css() -> impl IntoResponse {
     (
         [
             (header::CONTENT_TYPE, "text/css; charset=utf-8"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         APP_CSS,
     )
