@@ -27,6 +27,16 @@ pub struct Config {
     pub smtp: Option<SmtpConfig>,
 }
 
+/// Resolve an env duration to whole seconds: a raw integer (`300`) or a
+/// human-readable string (`5m`), matching what the web UI's duration fields
+/// accept. Anything unparseable or negative falls back to `default` rather
+/// than failing — a typo in an env var must not stop the server booting.
+fn env_duration_secs(raw: Option<String>, default: u64) -> u64 {
+    raw.and_then(|v| crate::duration::parse_duration(&v))
+        .and_then(|s| u64::try_from(s).ok())
+        .unwrap_or(default)
+}
+
 impl Config {
     pub fn from_env() -> Self {
         Self::from_map(|k| std::env::var(k).ok())
@@ -34,12 +44,8 @@ impl Config {
 
     /// Testable core: `get` resolves an env key to an optional value.
     pub fn from_map(get: impl Fn(&str) -> Option<String>) -> Self {
-        let scan_interval_secs = get("PINGWARD_SCAN_INTERVAL")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(30);
-        let prune_interval_secs = get("PINGWARD_PRUNE_INTERVAL_SECS")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3600);
+        let scan_interval_secs = env_duration_secs(get("PINGWARD_SCAN_INTERVAL"), 30);
+        let prune_interval_secs = env_duration_secs(get("PINGWARD_PRUNE_INTERVAL_SECS"), 3600);
         let trusted_proxies = get("PINGWARD_TRUSTED_PROXIES")
             .map(|v| {
                 v.split(',')
@@ -178,6 +184,32 @@ mod tests {
         assert_eq!(Config::from_map(|_| None).prune_interval_secs, 3600);
         let c = Config::from_map(|k| (k == "PINGWARD_PRUNE_INTERVAL_SECS").then(|| "60".into()));
         assert_eq!(c.prune_interval_secs, 60);
+    }
+
+    #[test]
+    fn scan_interval_accepts_human_readable_duration() {
+        let c = Config::from_map(|k| (k == "PINGWARD_SCAN_INTERVAL").then(|| "5m".into()));
+        assert_eq!(c.scan_interval_secs, 300);
+    }
+
+    #[test]
+    fn prune_interval_accepts_human_readable_duration() {
+        let c = Config::from_map(|k| (k == "PINGWARD_PRUNE_INTERVAL_SECS").then(|| "1h".into()));
+        assert_eq!(c.prune_interval_secs, 3600);
+    }
+
+    #[test]
+    fn duration_env_var_invalid_falls_back_to_default() {
+        let c = Config::from_map(|k| (k == "PINGWARD_SCAN_INTERVAL").then(|| "abc".into()));
+        assert_eq!(c.scan_interval_secs, 30);
+        let c = Config::from_map(|k| (k == "PINGWARD_SCAN_INTERVAL").then(|| "-5".into()));
+        assert_eq!(c.scan_interval_secs, 30);
+    }
+
+    #[test]
+    fn duration_env_var_zero_is_preserved() {
+        let c = Config::from_map(|k| (k == "PINGWARD_SCAN_INTERVAL").then(|| "0".into()));
+        assert_eq!(c.scan_interval_secs, 0);
     }
 
     #[test]
