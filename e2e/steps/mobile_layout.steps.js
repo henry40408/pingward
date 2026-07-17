@@ -17,3 +17,37 @@ Then("the page has no horizontal scrollbar", async ({ page }) => {
     `page scrolls horizontally: scrollWidth ${scrollW}px > viewport ${clientW}px`
   ).toBeLessThanOrEqual(clientW);
 });
+
+// The check page's breadcrumb links back to its project (templates/check.html).
+When("I open the project from the breadcrumb", async ({ page }) => {
+  await page.locator(".crumb a").nth(1).click();
+  await expect(page).toHaveURL(/\/projects\/\d+$/);
+});
+
+// The reported symptom: .check hard-coded dashboard.html's child list, so
+// project.html's extra child wrapped the badge onto a second grid row, which
+// widened the auto-sized first column and stranded the 10px dot ~74px from the
+// name. The row's own gap is 16px, so anything much beyond that is the bug.
+Then("the check row's status dot sits next to the name", async ({ page }) => {
+  const gap = await page.evaluate(() => {
+    const row = document.querySelector(".check");
+    const dot = row.querySelector(".status-dot").getBoundingClientRect();
+    const meta = row.querySelector(".cmeta").getBoundingClientRect();
+    return Math.round(meta.left - dot.right);
+  });
+  expect(gap, `.status-dot sits ${gap}px from .cmeta`).toBeLessThanOrEqual(20);
+});
+
+// The mechanism: when the badge wraps to another line its centre drops far
+// below the dot's. On one line the two centres coincide.
+Then("the check row is a single line", async ({ page }) => {
+  const drop = await page.evaluate(() => {
+    const row = document.querySelector(".check");
+    const centre = (sel) => {
+      const r = row.querySelector(sel).getBoundingClientRect();
+      return r.top + r.height / 2;
+    };
+    return Math.round(Math.abs(centre(".badge") - centre(".status-dot")));
+  });
+  expect(drop, `.badge sits ${drop}px below the .status-dot — it wrapped`).toBeLessThanOrEqual(2);
+});
