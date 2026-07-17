@@ -50,9 +50,12 @@ async fn stylesheet_font_urls_are_cache_busted() {
     let res = server.get("/assets/app.css").await;
     res.assert_status_ok();
     let css = res.text();
+    // Name-agnostic on purpose: catches a placeholder rename in either
+    // `assets/app.css` or `FONT_PLACEHOLDER` that would silently skip
+    // substitution and ship a literal placeholder in every font URL.
     assert!(
-        !css.contains("{{FONT_V}}"),
-        "font version placeholder was not substituted"
+        !css.contains("{{"),
+        "unsubstituted placeholder in the served stylesheet"
     );
     assert!(
         css.contains("/assets/fonts/inter-400.woff2?v="),
