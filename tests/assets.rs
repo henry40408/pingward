@@ -49,7 +49,9 @@ async fn pages_link_the_content_hashed_stylesheet() {
     let server = server().await;
     let res = server.get("/setup").await;
     res.assert_status_ok();
-    let expected = format!("/assets/app.css?v={}", pingward::assets::css_version());
+    let version = pingward::assets::css_version();
+    assert!(!version.is_empty(), "css version must not be empty");
+    let expected = format!("/assets/app.css?v={version}");
     assert!(
         res.text().contains(&expected),
         "versioned stylesheet link missing from rendered page"
