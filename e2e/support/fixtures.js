@@ -6,8 +6,14 @@ import { startMockServer } from "./mock-http.js";
 
 export const test = base.extend({
   // One fresh server + temp DB per scenario (test-scoped).
-  pingwardServer: async ({}, use) => {
-    const server = await spawnPingward();
+  pingwardServer: async ({ $tags }, use) => {
+    // Scenarios tagged @fast-scan spawn pingward with a 1s scan interval so the
+    // background scan loop transitions overdue/overrun checks to down within a
+    // couple of seconds (time_states.feature). Untagged scenarios keep the
+    // default (~30s) interval — a fast scan for them would add needless churn.
+    const server = await spawnPingward(
+      $tags.includes("@fast-scan") ? { scanIntervalSecs: 1 } : {}
+    );
     try {
       await use(server);
     } finally {
