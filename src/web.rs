@@ -1382,15 +1382,17 @@ async fn check_update_core(
         .store
         .update_check_schedule(
             id,
-            &v.name,
-            v.kind,
-            v.period_secs,
-            v.grace,
-            v.cron_expr.as_deref(),
-            &form.timezone,
-            v.scan_interval_secs,
-            v.max_runtime_secs,
-            v.nag_interval_secs,
+            &crate::store::UpdateCheck {
+                name: &v.name,
+                kind: v.kind,
+                period_secs: v.period_secs,
+                grace_secs: v.grace,
+                cron_expr: v.cron_expr.as_deref(),
+                timezone: &form.timezone,
+                scan_interval_secs: v.scan_interval_secs,
+                max_runtime_secs: v.max_runtime_secs,
+                nag_interval_secs: v.nag_interval_secs,
+            },
         )
         .await?;
     Ok(Redirect::to(&format!("{base}/checks/{id}")).into_response())

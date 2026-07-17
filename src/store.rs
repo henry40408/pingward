@@ -71,6 +71,23 @@ impl Default for NewCheck<'_> {
     }
 }
 
+/// The new values for a check's schedule. Unlike [`NewCheck`], this has no
+/// `Default`: on an INSERT an unset field just means "no value", but on an
+/// UPDATE it would write the default over whatever is stored — defaulting
+/// `name` would blank the check's name. Every caller must spell out all of it.
+#[derive(Debug, Clone)]
+pub struct UpdateCheck<'a> {
+    pub name: &'a str,
+    pub kind: ScheduleKind,
+    pub period_secs: Option<i64>,
+    pub grace_secs: i64,
+    pub cron_expr: Option<&'a str>,
+    pub timezone: &'a str,
+    pub scan_interval_secs: Option<i64>,
+    pub max_runtime_secs: Option<i64>,
+    pub nag_interval_secs: Option<i64>,
+}
+
 fn parse_ts(s: Option<String>) -> Option<DateTime<Utc>> {
     s.and_then(|v| {
         DateTime::parse_from_rfc3339(&v)
@@ -267,7 +284,6 @@ impl Store {
         Ok(out)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn insert_ping(
         &self,
         check_id: i64,
@@ -760,34 +776,25 @@ impl Store {
         rows.iter().map(row_to_check).collect()
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn update_check_schedule(
         &self,
         id: i64,
-        name: &str,
-        kind: ScheduleKind,
-        period_secs: Option<i64>,
-        grace_secs: i64,
-        cron_expr: Option<&str>,
-        timezone: &str,
-        scan_interval_secs: Option<i64>,
-        max_runtime_secs: Option<i64>,
-        nag_interval_secs: Option<i64>,
+        c: &UpdateCheck<'_>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE checks SET name=$1, schedule_kind=$2, period_secs=$3, grace_secs=$4, \
              cron_expr=$5, timezone=$6, scan_interval_secs=$7, max_runtime_secs=$8, \
              nag_interval_secs=$9 WHERE id=$10",
         )
-        .bind(name)
-        .bind(kind.as_str())
-        .bind(period_secs)
-        .bind(grace_secs)
-        .bind(cron_expr)
-        .bind(timezone)
-        .bind(scan_interval_secs)
-        .bind(max_runtime_secs)
-        .bind(nag_interval_secs)
+        .bind(c.name)
+        .bind(c.kind.as_str())
+        .bind(c.period_secs)
+        .bind(c.grace_secs)
+        .bind(c.cron_expr)
+        .bind(c.timezone)
+        .bind(c.scan_interval_secs)
+        .bind(c.max_runtime_secs)
+        .bind(c.nag_interval_secs)
         .bind(id)
         .execute(&self.pool)
         .await?;
