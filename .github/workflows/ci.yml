@@ -72,6 +72,89 @@ jobs:
           PINGWARD_TEST_MAILPIT_API: http://localhost:8025
         run: cargo nextest run
 
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
+        with:
+          tool: cargo-deny@0.18.9
+
+      - name: cargo deny check
+        run: cargo deny check
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+      mailpit:
+        image: axllent/mailpit:v1.30.3
+        ports:
+          - 1025:1025
+          - 8025:8025
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2
+        with:
+          tool: cargo-nextest
+
+      - name: Wait for mailpit
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8025/readyz && exit 0
+            sleep 1
+          done
+          echo "mailpit did not become ready" >&2
+          exit 1
+
+      - name: Generate coverage
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+          PINGWARD_TEST_SMTP_HOST: localhost
+          PINGWARD_TEST_SMTP_PORT: "1025"
+          PINGWARD_TEST_MAILPIT_API: http://localhost:8025
+        run: cargo llvm-cov nextest --lcov --output-path lcov.info
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: henry40408/pingward
+          files: lcov.info
+          fail_ci_if_error: ${{ github.actor != 'dependabot[bot]' }}
+
   e2e-tests:
     name: e2e (playwright)
     runs-on: ubuntu-latest
