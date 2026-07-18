@@ -1,0 +1,8 @@
+/target
+/e2e/node_modules
+/e2e/test-results
+/e2e/playwright-report
+/e2e/.features-gen
+**/*.sqlite3
+**/*.sqlite3-*
+.git

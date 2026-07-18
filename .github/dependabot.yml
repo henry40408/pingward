@@ -27,3 +27,15 @@ updates:
       cargo:
         patterns:
           - "*"
+
+  # Playwright / BDD E2E harness dependencies (e2e/package.json).
+  - package-ecosystem: "npm"
+    directory: "/e2e"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        patterns:
+          - "*"
