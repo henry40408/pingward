@@ -23,6 +23,31 @@ pub struct CheckStatusCounts {
     pub paused: i64,
 }
 
+/// A keyset cursor for paging the check-detail "recent pings"/"recent
+/// notifications" tables. `id` ordering is used (not `created_at`) since it is
+/// monotonic and covered by the `(check_id, id)` index — stable under
+/// concurrent inserts, unlike offset pagination.
+#[derive(Debug, Clone, Copy)]
+pub enum PageCursor {
+    /// The newest page — no cursor.
+    Latest,
+    /// Rows older than this id (paging "older").
+    Before(i64),
+    /// Rows newer than this id (paging back toward "newer").
+    After(i64),
+}
+
+/// One page of keyset-paginated rows, always newest-first (`id DESC`) for
+/// display regardless of which direction was queried.
+#[derive(Debug)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    /// A row exists with `id` newer than the newest item on this page.
+    pub has_newer: bool,
+    /// A row exists with `id` older than the oldest item on this page.
+    pub has_older: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NewAudit<'a> {
     pub actor_user_id: i64,
@@ -228,6 +253,92 @@ fn row_to_audit(row: &sqlx::any::AnyRow) -> Result<AuditLog, sqlx::Error> {
         created_at: parse_ts(row.get("created_at"))
             .ok_or_else(|| decode_err("audit_log.created_at must be RFC3339"))?,
     })
+}
+
+/// Shared keyset-pagination core for `pings`/`notifications`: both tables are
+/// paged the same way (by `id`, scoped to `check_id`), so the SQL shape and
+/// has_newer/has_older bookkeeping live here once. `table` is a fixed
+/// caller-supplied literal (never user input), so interpolating it into the
+/// query text is safe. Uses a limit+1 fetch to detect another page in the
+/// queried direction rather than a separate `COUNT(*)`.
+async fn keyset_page<T>(
+    pool: &crate::db::Pool,
+    table: &'static str,
+    check_id: i64,
+    cursor: PageCursor,
+    limit: i64,
+    row_to: fn(&sqlx::any::AnyRow) -> Result<T, sqlx::Error>,
+) -> Result<Page<T>, sqlx::Error> {
+    let fetch_limit = limit + 1;
+    match cursor {
+        PageCursor::Latest => {
+            let sql =
+                format!("SELECT * FROM {table} WHERE check_id = $1 ORDER BY id DESC LIMIT $2");
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(check_id)
+                .bind(fetch_limit)
+                .fetch_all(pool)
+                .await?;
+            let has_older = rows.len() as i64 > limit;
+            let items = rows
+                .iter()
+                .take(limit as usize)
+                .map(row_to)
+                .collect::<Result<Vec<T>, _>>()?;
+            Ok(Page {
+                items,
+                has_newer: false,
+                has_older,
+            })
+        }
+        PageCursor::Before(id) => {
+            let sql = format!(
+                "SELECT * FROM {table} WHERE check_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3"
+            );
+            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(check_id)
+                .bind(id)
+                .bind(fetch_limit)
+                .fetch_all(pool)
+                .await?;
+            let has_older = rows.len() as i64 > limit;
+            let items = rows
+                .iter()
+                .take(limit as usize)
+                .map(row_to)
+                .collect::<Result<Vec<T>, _>>()?;
+            Ok(Page {
+                items,
+                has_newer: true,
+                has_older,
+            })
+        }
+        PageCursor::After(id) => {
+            let sql = format!(
+                "SELECT * FROM {table} WHERE check_id = $1 AND id > $2 ORDER BY id ASC LIMIT $3"
+            );
+            let mut rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+                .bind(check_id)
+                .bind(id)
+                .bind(fetch_limit)
+                .fetch_all(pool)
+                .await?;
+            let has_newer = rows.len() as i64 > limit;
+            if has_newer {
+                // Rows are ASC by id; the last row is the farthest-from-cursor
+                // (newest) overflow row — drop it, keeping the `limit` rows
+                // closest to the cursor.
+                rows.pop();
+            }
+            let mut items = rows.iter().map(row_to).collect::<Result<Vec<T>, _>>()?;
+            items.reverse(); // ASC -> newest-first (id DESC) for display
+            Ok(Page {
+                items,
+                has_newer,
+                has_older: true,
+            })
+        }
+    }
 }
 
 impl Store {
@@ -871,6 +982,38 @@ impl Store {
             map.entry(ping.check_id).or_default().push(ping);
         }
         Ok(map)
+    }
+
+    /// Keyset-paginated page of a check's pings for the check-detail table
+    /// (newest-first). See [`PageCursor`]/[`Page`]. Independent of
+    /// [`Store::list_recent_pings`], which the heartbeat strip uses and which
+    /// must never be affected by table paging.
+    pub async fn list_pings_page(
+        &self,
+        check_id: i64,
+        cursor: PageCursor,
+        limit: i64,
+    ) -> Result<Page<Ping>, sqlx::Error> {
+        keyset_page(&self.pool, "pings", check_id, cursor, limit, row_to_ping).await
+    }
+
+    /// Keyset-paginated page of a check's notifications for the check-detail
+    /// table (newest-first). See [`PageCursor`]/[`Page`].
+    pub async fn list_notifications_page(
+        &self,
+        check_id: i64,
+        cursor: PageCursor,
+        limit: i64,
+    ) -> Result<Page<Notification>, sqlx::Error> {
+        keyset_page(
+            &self.pool,
+            "notifications",
+            check_id,
+            cursor,
+            limit,
+            row_to_notification,
+        )
+        .await
     }
 
     pub async fn record_notification(
@@ -1980,5 +2123,194 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_pings_page_keyset_pagination() {
+        let store = seeded().await;
+        let cid = store
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "c",
+                ping_uuid: "page-uuid",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        for i in 0..5 {
+            store
+                .insert_ping(
+                    cid,
+                    PingKind::Success,
+                    Some(0),
+                    "",
+                    None,
+                    base + chrono::Duration::seconds(i),
+                )
+                .await
+                .unwrap();
+        }
+        // Discover the actual (auto-increment) ids, oldest to newest, rather
+        // than assuming literal values.
+        let mut all: Vec<i64> = store
+            .list_recent_pings(cid, 10)
+            .await
+            .unwrap()
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        all.sort();
+        assert_eq!(all.len(), 5);
+        let [id1, id2, id3, id4, id5]: [i64; 5] = all.try_into().unwrap();
+
+        // Latest, limit 2: newest 2 ids, has_newer=false, has_older=true.
+        let page = store
+            .list_pings_page(cid, PageCursor::Latest, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            page.items.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![id5, id4]
+        );
+        assert!(!page.has_newer);
+        assert!(page.has_older);
+
+        // Before(oldest id of the latest page) -> next 2 older ids, both flags true.
+        let page2 = store
+            .list_pings_page(cid, PageCursor::Before(id4), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            page2.items.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![id3, id2]
+        );
+        assert!(page2.has_newer);
+        assert!(page2.has_older);
+
+        // Paging Before again -> the last remaining row, has_older=false.
+        let page3 = store
+            .list_pings_page(cid, PageCursor::Before(id2), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            page3.items.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![id1]
+        );
+        assert!(page3.has_newer);
+        assert!(!page3.has_older);
+
+        // After(newest id of that last page) -> steps back toward newest;
+        // there are still newer rows (id4, id5) beyond this page.
+        let page4 = store
+            .list_pings_page(cid, PageCursor::After(id1), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            page4.items.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![id3, id2]
+        );
+        assert!(page4.has_newer);
+        assert!(page4.has_older);
+    }
+
+    #[tokio::test]
+    async fn list_notifications_page_keyset_pagination() {
+        let store = seeded().await;
+        let cid = store
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "c",
+                ping_uuid: "notif-page-uuid",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let chan = store
+            .create_channel(
+                1,
+                ChannelKind::Webhook,
+                "h",
+                "{\"url\":\"http://x\"}",
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        for i in 0..5 {
+            store
+                .record_notification(
+                    cid,
+                    chan,
+                    EventKind::Down,
+                    NotifyStatus::Ok,
+                    None,
+                    base + chrono::Duration::seconds(i),
+                )
+                .await
+                .unwrap();
+        }
+        let mut all: Vec<i64> = store
+            .list_recent_notifications(cid, 10)
+            .await
+            .unwrap()
+            .iter()
+            .map(|n| n.id)
+            .collect();
+        all.sort();
+        assert_eq!(all.len(), 5);
+        let [id1, id2, id3, id4, id5]: [i64; 5] = all.try_into().unwrap();
+
+        let page = store
+            .list_notifications_page(cid, PageCursor::Latest, 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            page.items.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![id5, id4]
+        );
+        assert!(!page.has_newer);
+        assert!(page.has_older);
+
+        let page2 = store
+            .list_notifications_page(cid, PageCursor::Before(id4), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            page2.items.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![id3, id2]
+        );
+        assert!(page2.has_newer);
+        assert!(page2.has_older);
+
+        let page3 = store
+            .list_notifications_page(cid, PageCursor::Before(id2), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            page3.items.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![id1]
+        );
+        assert!(page3.has_newer);
+        assert!(!page3.has_older);
+
+        let page4 = store
+            .list_notifications_page(cid, PageCursor::After(id1), 2)
+            .await
+            .unwrap();
+        assert_eq!(
+            page4.items.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![id3, id2]
+        );
+        assert!(page4.has_newer);
+        assert!(page4.has_older);
     }
 }

@@ -68,14 +68,20 @@
       <tbody>
         {% for p in pings %}
         {% if p.body.is_empty() %}
-        <tr><td class="mono"><span class="caret" style="opacity:0">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
+        <tr data-testid="ping-row"><td class="mono"><span class="caret" style="opacity:0">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
         {% else %}
-        <tr class="toggle" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
+        <tr class="toggle" data-testid="ping-row" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
         <tr class="exp"><td colspan="5" style="border-top:none;padding-top:9px"><div class="out {{ p.pill_class }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
         {% endif %}
         {% endfor %}
       </tbody>
     </table>
+    {% if pings_newer.is_some() || pings_older.is_some() %}
+    <div class="pager" data-testid="pings-pager">
+      {% if let Some(href) = pings_newer %}<a class="btn" href="{{ href }}" data-testid="pings-newer">&larr; Newer</a>{% endif %}
+      {% if let Some(href) = pings_older %}<a class="btn" href="{{ href }}" data-testid="pings-older">Older &rarr;</a>{% endif %}
+    </div>
+    {% endif %}
     {% endif %}
   </div>
 </div>
@@ -96,6 +102,12 @@
         {% endfor %}
       </tbody>
     </table>
+    {% if notif_newer.is_some() || notif_older.is_some() %}
+    <div class="pager" data-testid="notif-pager">
+      {% if let Some(href) = notif_newer %}<a class="btn" href="{{ href }}" data-testid="notif-newer">&larr; Newer</a>{% endif %}
+      {% if let Some(href) = notif_older %}<a class="btn" href="{{ href }}" data-testid="notif-older">Older &rarr;</a>{% endif %}
+    </div>
+    {% endif %}
     {% endif %}
   </div>
 </div>

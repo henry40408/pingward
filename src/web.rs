@@ -8,9 +8,9 @@ use crate::models::{
 };
 use crate::notify::{notifier_for, EventKind, NotificationEvent};
 use crate::state::AppState;
-use crate::store::Store;
+use crate::store::{PageCursor, Store};
 use askama::Template;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -940,7 +940,44 @@ struct CheckTemplate {
     channel_boxes: Vec<ChannelBox>,
     pings: Vec<PingRow>,
     notifications: Vec<NotificationRow>,
+    pings_newer: Option<String>,
+    pings_older: Option<String>,
+    notif_newer: Option<String>,
+    notif_older: Option<String>,
     flash: Option<String>,
+}
+
+/// Query params for the check-detail page's independent ping/notification
+/// keyset cursors: `pb`/`pa` page pings older/newer, `nb`/`na` page
+/// notifications older/newer. Missing/unparsable params fall back to `None`
+/// (i.e. the "Latest" page) via `#[serde(default)]`, rather than a 400.
+#[derive(Deserialize, Default)]
+struct CheckPageQuery {
+    #[serde(default)]
+    pb: Option<i64>,
+    #[serde(default)]
+    pa: Option<i64>,
+    #[serde(default)]
+    nb: Option<i64>,
+    #[serde(default)]
+    na: Option<i64>,
+}
+
+/// Build a check-page href that sets `this_param` (a `("pb"|"pa"|"nb"|"na",
+/// id)` pair for the table being paged) while carrying forward
+/// `other_param`, the *other* table's currently-active cursor param — so
+/// paging one table never resets the other's position.
+fn check_page_href(
+    base: &str,
+    id: i64,
+    this_param: (&str, i64),
+    other_param: Option<(&str, i64)>,
+) -> String {
+    let mut href = format!("{base}/checks/{id}?{}={}", this_param.0, this_param.1);
+    if let Some((k, v)) = other_param {
+        href.push_str(&format!("&{k}={v}"));
+    }
+    href
 }
 
 /// Short status line shown next to the check name on the detail page, e.g.
@@ -1183,17 +1220,19 @@ async fn check_show(
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
+    Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar).await;
     let (jar, flash) = take_flash(jar, "channels");
-    let resp = render_check_page(&state, check, false, user.is_admin, csrf, flash).await?;
+    let resp = render_check_page(&state, check, false, user.is_admin, csrf, flash, page).await?;
     Ok((jar, resp).into_response())
 }
 
 /// Render the check detail page. `admin` renders `/admin`-prefixed action URLs;
 /// `is_admin` reflects the current viewer's admin status and controls the nav
-/// Admin link.
+/// Admin link. `page` carries the independent ping/notification keyset
+/// cursors read from the request's query string.
 async fn render_check_page(
     state: &AppState,
     check: Check,
@@ -1201,8 +1240,10 @@ async fn render_check_page(
     is_admin: bool,
     csrf: String,
     flash: Option<String>,
+    page: CheckPageQuery,
 ) -> Result<Response, AppError> {
     let id = check.id;
+    let base = admin_prefix(admin);
     let project = state
         .store
         .find_project(check.project_id)
@@ -1232,17 +1273,43 @@ async fn render_check_page(
             bound: bound.contains(&c.id),
         })
         .collect();
+    // The heartbeat/bars strip always shows the latest 40 pings, independent
+    // of the table's paging below — a paged (older) result must never feed it.
     let recent = state.store.list_recent_pings(id, 40).await?;
-    let durations = crate::view::run_durations(&recent);
     let bars = crate::view::heartbeat(
         &recent,
         check.max_runtime_secs,
         check.status == CheckStatus::Paused,
         30,
     );
-    let pings = recent
+
+    let ping_cursor = match (page.pb, page.pa) {
+        (Some(b), _) => PageCursor::Before(b),
+        (None, Some(a)) => PageCursor::After(a),
+        (None, None) => PageCursor::Latest,
+    };
+    let notif_cursor = match (page.nb, page.na) {
+        (Some(b), _) => PageCursor::Before(b),
+        (None, Some(a)) => PageCursor::After(a),
+        (None, None) => PageCursor::Latest,
+    };
+    let ping_page = state.store.list_pings_page(id, ping_cursor, 20).await?;
+    let notif_page = state
+        .store
+        .list_notifications_page(id, notif_cursor, 20)
+        .await?;
+
+    // Pair durations against the wider 40-row heartbeat window on the default
+    // (Latest) page so a run whose start sits just past row 20 still shows its
+    // duration; older/newer pages pair within their own slice.
+    let durations = if matches!(ping_cursor, PageCursor::Latest) {
+        crate::view::run_durations(&recent)
+    } else {
+        crate::view::run_durations(&ping_page.items)
+    };
+    let pings = ping_page
+        .items
         .iter()
-        .take(20)
         .map(|p| PingRow {
             time: p.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
             iso: p.created_at.to_rfc3339(),
@@ -1263,11 +1330,9 @@ async fn render_check_page(
     let status = crate::view::display_status(&check, now).as_str();
     let since = status_since_label(&check, now);
     let schedule = schedule_label(&check);
-    let notifications = state
-        .store
-        .list_recent_notifications(id, 20)
-        .await?
-        .into_iter()
+    let notifications = notif_page
+        .items
+        .iter()
         .map(|n| NotificationRow {
             created_at: n.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
             iso: n.created_at.to_rfc3339(),
@@ -1277,9 +1342,42 @@ async fn render_check_page(
                 .get(&n.channel_id)
                 .cloned()
                 .unwrap_or_else(|| "(deleted)".into()),
-            error: n.error.unwrap_or_default(),
+            error: n.error.clone().unwrap_or_default(),
         })
         .collect();
+
+    // Nav hrefs are built here (not in the template) so each carries the
+    // *other* table's currently-active cursor param forward — paging pings
+    // must not reset notifications, and vice versa.
+    let current_ping_param = page
+        .pb
+        .map(|v| ("pb", v))
+        .or_else(|| page.pa.map(|v| ("pa", v)));
+    let current_notif_param = page
+        .nb
+        .map(|v| ("nb", v))
+        .or_else(|| page.na.map(|v| ("na", v)));
+    let pings_older = ping_page
+        .has_older
+        .then(|| ping_page.items.last())
+        .flatten()
+        .map(|p| check_page_href(base, id, ("pb", p.id), current_notif_param));
+    let pings_newer = ping_page
+        .has_newer
+        .then(|| ping_page.items.first())
+        .flatten()
+        .map(|p| check_page_href(base, id, ("pa", p.id), current_notif_param));
+    let notif_older = notif_page
+        .has_older
+        .then(|| notif_page.items.last())
+        .flatten()
+        .map(|n| check_page_href(base, id, ("nb", n.id), current_ping_param));
+    let notif_newer = notif_page
+        .has_newer
+        .then(|| notif_page.items.first())
+        .flatten()
+        .map(|n| check_page_href(base, id, ("na", n.id), current_ping_param));
+
     Ok(render(&CheckTemplate {
         show_nav: true,
         csrf,
@@ -1295,6 +1393,10 @@ async fn render_check_page(
         channel_boxes,
         pings,
         notifications,
+        pings_newer,
+        pings_older,
+        notif_newer,
+        notif_older,
         flash,
     })?
     .into_response())
@@ -2340,11 +2442,12 @@ async fn admin_check_show(
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
+    Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
     let csrf = current_csrf(&state, &jar).await;
     let (jar, flash) = take_flash(jar, "channels");
-    let resp = render_check_page(&state, check, true, true, csrf, flash).await?;
+    let resp = render_check_page(&state, check, true, true, csrf, flash, page).await?;
     Ok((jar, resp).into_response())
 }
 
