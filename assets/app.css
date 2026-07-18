@@ -1012,7 +1012,15 @@ tbody td.mono {
 .caret.open {
   transform: rotate(90deg);
 }
-tr.toggle:hover {
+/* Row hover cue for the check-history tables (pings + notifications) so the
+   pointed-at row is obvious. Covers plain, clickable (.toggle), and notification
+   rows; the expandable output panel (.exp) keeps its own background. */
+#pings-section tbody tr,
+#notifs-section tbody tr {
+  transition: background 0.12s;
+}
+#pings-section tbody tr:not(.exp):hover,
+#notifs-section tbody tr:hover {
   background: var(--hover);
 }
 tr.exp {
