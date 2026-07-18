@@ -720,7 +720,7 @@ nav.links a:hover {
 /* ---- Pager (recent pings / notifications keyset nav) ---- */
 .pager {
   display: flex;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 8px;
   margin-top: 12px;
 }
