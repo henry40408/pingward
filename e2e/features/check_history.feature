@@ -35,3 +35,11 @@ Feature: Check history pagination
     When I clear the pings filter
     Then the pings table shows 5 rows
     And the pings clear filter link is not visible
+
+  Scenario: A datetime filter is retained after it is applied
+    When I send 3 "success" pings
+    And I reload the check page
+    And I set the pings from date to "2020-01-01T00:00"
+    And I apply the pings filter
+    Then the pings from date is "2020-01-01T00:00"
+    And the pings table shows 3 rows

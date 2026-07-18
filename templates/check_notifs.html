@@ -2,8 +2,8 @@
    Served standalone by GET /checks/{id}/notifications (JS swaps it into
    #notifs-section) and inlined into check.html via |safe. #}
 <form class="filters" data-testid="notifs-filters" onsubmit="return false">
-  <label class="fld">From <input type="datetime-local" step="1" data-testid="notifs-from" data-utc="{{ f_from }}"></label>
-  <label class="fld">To <input type="datetime-local" step="1" data-testid="notifs-to" data-utc="{{ f_to }}"></label>
+  <label class="fld">From <input type="datetime-local" data-testid="notifs-from" data-utc="{{ f_from }}"></label>
+  <label class="fld">To <input type="datetime-local" data-testid="notifs-to" data-utc="{{ f_to }}"></label>
   <label class="fld">Event
     <select data-testid="notifs-event">
       <option value=""{% if f_event == "" %} selected{% endif %}>All</option>

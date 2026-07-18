@@ -50,6 +50,20 @@ When("I clear the pings filter", async ({ page }) => {
   await page.getByTestId("pings-clear").click();
 });
 
+When("I set the pings from date to {string}", async ({ page }, value) => {
+  await page.getByTestId("pings-from").fill(value);
+});
+
+When("I apply the pings filter", async ({ page }) => {
+  await page.getByTestId("pings-apply").click();
+});
+
+// The local wall-clock value round-trips through UTC and back, so the applied
+// value matches what was entered regardless of the runner's time zone.
+Then("the pings from date is {string}", async ({ page }, value) => {
+  await expect(page.getByTestId("pings-from")).toHaveValue(value);
+});
+
 Then("the pings clear filter link is visible", async ({ page }) => {
   await expect(page.getByTestId("pings-clear")).toBeVisible();
 });

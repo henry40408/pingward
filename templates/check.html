@@ -101,11 +101,13 @@
     }
     var pad = function(n){ return String(n).padStart(2,'0'); };
     // Fill each datetime-local from its data-utc (UTC instant) in local time.
+    // Minute precision matches the inputs (no step=1 seconds sub-field, whose
+    // being-left-blank would otherwise make .value empty on submit).
     function fillDates(root){
       root.querySelectorAll('input[type=datetime-local][data-utc]').forEach(function(el){
         var v = el.getAttribute('data-utc'); if (!v) return;
         var d = new Date(v); if (isNaN(d.getTime())) return;
-        el.value = d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());
+        el.value = d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
       });
     }
     // A datetime-local value (local wall clock) -> UTC RFC3339 (Z), '' if blank.

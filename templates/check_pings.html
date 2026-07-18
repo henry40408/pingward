@@ -3,8 +3,8 @@
    inlined into check.html. Rendered content is escaped here; the parent injects
    it with |safe. #}
 <form class="filters" data-testid="pings-filters" onsubmit="return false">
-  <label class="fld">From <input type="datetime-local" step="1" data-testid="pings-from" data-utc="{{ f_from }}"></label>
-  <label class="fld">To <input type="datetime-local" step="1" data-testid="pings-to" data-utc="{{ f_to }}"></label>
+  <label class="fld">From <input type="datetime-local" data-testid="pings-from" data-utc="{{ f_from }}"></label>
+  <label class="fld">To <input type="datetime-local" data-testid="pings-to" data-utc="{{ f_to }}"></label>
   <label class="fld">Kind
     <select data-testid="pings-kind">
       <option value=""{% if f_kind == "" %} selected{% endif %}>All</option>
