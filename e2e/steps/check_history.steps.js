@@ -17,20 +17,18 @@ Then("the pings table shows {int} rows", async ({ page }, count) => {
   await expect(page.getByTestId("ping-row")).toHaveCount(count);
 });
 
-Then("the pings older link is visible", async ({ page }) => {
-  await expect(page.getByTestId("pings-older")).toBeVisible();
+// Pager ends are always shown; reaching one disables (mutes, non-clickable via
+// a rendered <span class="btn disabled">) rather than hiding its button.
+Then("the pings {word} link is enabled", async ({ page }, dir) => {
+  const link = page.getByTestId(`pings-${dir}`);
+  await expect(link).toBeVisible();
+  await expect(link).not.toHaveClass(/\bdisabled\b/);
 });
 
-Then("the pings older link is not visible", async ({ page }) => {
-  await expect(page.getByTestId("pings-older")).toHaveCount(0);
-});
-
-Then("the pings newer link is visible", async ({ page }) => {
-  await expect(page.getByTestId("pings-newer")).toBeVisible();
-});
-
-Then("the pings newer link is not visible", async ({ page }) => {
-  await expect(page.getByTestId("pings-newer")).toHaveCount(0);
+Then("the pings {word} link is disabled", async ({ page }, dir) => {
+  const link = page.getByTestId(`pings-${dir}`);
+  await expect(link).toBeVisible();
+  await expect(link).toHaveClass(/\bdisabled\b/);
 });
 
 When("I click the pings older link", async ({ page }) => {

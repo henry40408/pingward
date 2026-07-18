@@ -14,15 +14,15 @@ Feature: Check history pagination
     When I send 25 "success" pings
     And I reload the check page
     Then the pings table shows 20 rows
-    And the pings older link is visible
-    And the pings newer link is not visible
+    And the pings older link is enabled
+    And the pings newer link is disabled
     When I click the pings older link
     Then the pings table shows 5 rows
-    And the pings newer link is visible
-    And the pings older link is not visible
+    And the pings newer link is enabled
+    And the pings older link is disabled
     When I click the pings newer link
     Then the pings table shows 20 rows
-    And the pings older link is visible
+    And the pings older link is enabled
 
   Scenario: Filtering pings by kind refreshes the table in place
     When I send 3 "success" pings
