@@ -14,12 +14,32 @@ Feature: Check history pagination
     When I send 25 "success" pings
     And I reload the check page
     Then the pings table shows 20 rows
-    And the pings older link is visible
-    And the pings newer link is not visible
+    And the pings older link is enabled
+    And the pings newer link is disabled
     When I click the pings older link
     Then the pings table shows 5 rows
-    And the pings newer link is visible
-    And the pings older link is not visible
+    And the pings newer link is enabled
+    And the pings older link is disabled
     When I click the pings newer link
     Then the pings table shows 20 rows
-    And the pings older link is visible
+    And the pings older link is enabled
+
+  Scenario: Filtering pings by kind refreshes the table in place
+    When I send 3 "success" pings
+    And I send 2 "fail" pings
+    And I reload the check page
+    Then the pings table shows 5 rows
+    When I filter pings by kind "fail"
+    Then the pings table shows 2 rows
+    And the pings clear filter link is visible
+    When I clear the pings filter
+    Then the pings table shows 5 rows
+    And the pings clear filter link is not visible
+
+  Scenario: A datetime filter is retained after it is applied
+    When I send 3 "success" pings
+    And I reload the check page
+    And I set the pings from date to "2020-01-01T00:00"
+    And I apply the pings filter
+    Then the pings from date is "2020-01-01T00:00"
+    And the pings table shows 3 rows

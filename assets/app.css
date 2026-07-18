@@ -716,6 +716,13 @@ nav.links a:hover {
   border-color: var(--down-bd);
   background: var(--down-bg);
 }
+/* A shown-but-inert button (e.g. a pager end reached). Rendered as a <span>, so
+   it is not focusable or clickable; this only mutes it and blocks hover cues. */
+.btn.disabled {
+  cursor: default;
+  opacity: 0.45;
+  pointer-events: none;
+}
 
 /* ---- Pager (recent pings / notifications keyset nav) ---- */
 .pager {
@@ -723,6 +730,52 @@ nav.links a:hover {
   justify-content: center;
   gap: 8px;
   margin-top: 12px;
+}
+
+/* ---- History filter controls (date range + status/kind) ---- */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+  margin: 2px 0 14px;
+}
+.filters .fld {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.filters .fld input,
+.filters .fld select {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink);
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  outline: none;
+}
+.filters .fld input:focus,
+.filters .fld select:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent);
+}
+.filters .btn {
+  align-self: flex-end;
+}
+@media (max-width: 560px) {
+  .filters .fld {
+    flex: 1 1 100%;
+  }
+  .filters .fld input,
+  .filters .fld select {
+    width: 100%;
+  }
 }
 
 /* ---- Card ---- */
@@ -950,8 +1003,8 @@ tbody td.mono {
 
 /* ---- Expandable output rows ---- */
 .caret {
-  color: var(--faint);
-  font-size: 9px;
+  color: var(--muted);
+  font-size: 13px;
   margin-right: 7px;
   display: inline-block;
   transition: transform 0.12s;
@@ -959,8 +1012,32 @@ tbody td.mono {
 .caret.open {
   transform: rotate(90deg);
 }
-tr.toggle:hover {
+/* Row hover cue for the check-history tables (pings + notifications) so the
+   pointed-at row is obvious. Covers plain, clickable (.toggle), and notification
+   rows; the expandable output panel (.exp) keeps its own background. */
+#pings-section tbody tr,
+#notifs-section tbody tr {
+  transition: background 0.12s;
+}
+#pings-section tbody tr:not(.exp):hover,
+#notifs-section tbody tr:hover {
   background: var(--hover);
+}
+/* The card body already scrolls horizontally (.card .cb → overflow-x:auto), so
+   keep every history-table cell on one line and let a narrow (mobile) viewport
+   scroll the table rather than wrap cells into ragged multi-line rows. The
+   expandable output panel (.exp) is excluded — its captured body must wrap. */
+#pings-section table th,
+#pings-section tbody tr:not(.exp) td,
+#notifs-section table th,
+#notifs-section tbody td {
+  white-space: nowrap;
+}
+/* Give the table its own horizontal scroll so the filter controls above it
+   (which wrap to fit the viewport) don't scroll with it — only the wide table
+   needs to pan on a narrow (mobile) screen. */
+.tscroll {
+  overflow-x: auto;
 }
 tr.exp {
   display: none;

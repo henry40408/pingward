@@ -1,0 +1,42 @@
+{# Recent-pings fragment: filter controls + table + keyset pager. Served
+   standalone by GET /checks/{id}/pings (JS swaps it into #pings-section) and
+   inlined into check.html. Rendered content is escaped here; the parent injects
+   it with |safe. #}
+<form class="filters" data-testid="pings-filters" onsubmit="return false">
+  <label class="fld">From <input type="datetime-local" data-testid="pings-from" data-utc="{{ f_from }}"></label>
+  <label class="fld">To <input type="datetime-local" data-testid="pings-to" data-utc="{{ f_to }}"></label>
+  <label class="fld">Kind
+    <select data-testid="pings-kind">
+      <option value=""{% if f_kind == "" %} selected{% endif %}>All</option>
+      <option value="success"{% if f_kind == "success" %} selected{% endif %}>success</option>
+      <option value="fail"{% if f_kind == "fail" %} selected{% endif %}>fail</option>
+      <option value="start"{% if f_kind == "start" %} selected{% endif %}>start</option>
+      <option value="log"{% if f_kind == "log" %} selected{% endif %}>log</option>
+    </select>
+  </label>
+  <button class="btn" type="button" data-apply data-testid="pings-apply">Filter</button>
+  {% if filtered %}<a class="btn ghost" href="{{ base }}/checks/{{ check_id }}/pings" data-testid="pings-clear">Clear</a>{% endif %}
+</form>
+{% if empty %}
+<p class="empty" style="margin:10px 0 0;color:var(--muted)" data-testid="pings-empty">{% if filtered %}No pings match the filter.{% else %}No pings yet.{% endif %}</p>
+{% else %}
+<div class="tscroll">
+<table>
+  <thead><tr><th>When</th><th>Kind</th><th>Exit</th><th>Duration</th><th>Source</th></tr></thead>
+  <tbody>
+    {% for p in rows %}
+    {% if p.body.is_empty() %}
+    <tr data-testid="ping-row"><td class="mono"><span class="caret" style="opacity:0">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
+    {% else %}
+    <tr class="toggle" data-testid="ping-row" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
+    <tr class="exp"><td colspan="5" style="border-top:none;padding-top:9px"><div class="out {{ p.pill_class }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<div class="pager" data-testid="pings-pager">
+  {% if let Some(href) = newer %}<a class="btn" href="{{ href }}" data-testid="pings-newer">&larr; Newer</a>{% else %}<span class="btn disabled" aria-disabled="true" data-testid="pings-newer">&larr; Newer</span>{% endif %}
+  {% if let Some(href) = older %}<a class="btn" href="{{ href }}" data-testid="pings-older">Older &rarr;</a>{% else %}<span class="btn disabled" aria-disabled="true" data-testid="pings-older">Older &rarr;</span>{% endif %}
+</div>
+{% endif %}
