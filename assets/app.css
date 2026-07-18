@@ -1023,10 +1023,14 @@ tbody td.mono {
 #notifs-section tbody tr:hover {
   background: var(--hover);
 }
-/* Keep the "When" cell (caret + localized timestamp) on one line — the
-   timestamp contains a space and otherwise wraps in a narrow column. */
-#pings-section tbody td:first-child,
-#notifs-section tbody td:first-child {
+/* The card body already scrolls horizontally (.card .cb → overflow-x:auto), so
+   keep every history-table cell on one line and let a narrow (mobile) viewport
+   scroll the table rather than wrap cells into ragged multi-line rows. The
+   expandable output panel (.exp) is excluded — its captured body must wrap. */
+#pings-section table th,
+#pings-section tbody tr:not(.exp) td,
+#notifs-section table th,
+#notifs-section tbody td {
   white-space: nowrap;
 }
 tr.exp {
