@@ -25,6 +25,7 @@
 {% if empty %}
 <p class="empty" style="margin:10px 0 0;color:var(--muted)" data-testid="notifications-empty">{% if filtered %}No notifications match the filter.{% else %}No notifications yet.{% endif %}</p>
 {% else %}
+<div class="tscroll">
 <table>
   <thead><tr><th>When</th><th>Event</th><th>Channel</th><th>Result</th></tr></thead>
   <tbody>
@@ -35,6 +36,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 <div class="pager" data-testid="notif-pager">
   {% if let Some(href) = newer %}<a class="btn" href="{{ href }}" data-testid="notif-newer">&larr; Newer</a>{% else %}<span class="btn disabled" aria-disabled="true" data-testid="notif-newer">&larr; Newer</span>{% endif %}
   {% if let Some(href) = older %}<a class="btn" href="{{ href }}" data-testid="notif-older">Older &rarr;</a>{% else %}<span class="btn disabled" aria-disabled="true" data-testid="notif-older">Older &rarr;</span>{% endif %}

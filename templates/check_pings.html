@@ -20,6 +20,7 @@
 {% if empty %}
 <p class="empty" style="margin:10px 0 0;color:var(--muted)" data-testid="pings-empty">{% if filtered %}No pings match the filter.{% else %}No pings yet.{% endif %}</p>
 {% else %}
+<div class="tscroll">
 <table>
   <thead><tr><th>When</th><th>Kind</th><th>Exit</th><th>Duration</th><th>Source</th></tr></thead>
   <tbody>
@@ -33,6 +34,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
 <div class="pager" data-testid="pings-pager">
   {% if let Some(href) = newer %}<a class="btn" href="{{ href }}" data-testid="pings-newer">&larr; Newer</a>{% else %}<span class="btn disabled" aria-disabled="true" data-testid="pings-newer">&larr; Newer</span>{% endif %}
   {% if let Some(href) = older %}<a class="btn" href="{{ href }}" data-testid="pings-older">Older &rarr;</a>{% else %}<span class="btn disabled" aria-disabled="true" data-testid="pings-older">Older &rarr;</span>{% endif %}

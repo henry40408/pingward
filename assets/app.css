@@ -1033,6 +1033,12 @@ tbody td.mono {
 #notifs-section tbody td {
   white-space: nowrap;
 }
+/* Give the table its own horizontal scroll so the filter controls above it
+   (which wrap to fit the viewport) don't scroll with it — only the wide table
+   needs to pan on a narrow (mobile) screen. */
+.tscroll {
+  overflow-x: auto;
+}
 tr.exp {
   display: none;
 }
