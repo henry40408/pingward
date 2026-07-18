@@ -155,6 +155,16 @@ body {
     background-color 0.25s,
     color 0.25s;
 }
+/* Bare content links (prose paragraphs, table cells). Component anchors —
+   .btn, .pill, nav links, breadcrumbs — set their own color via more specific
+   selectors and override this, so this only reaches otherwise-unstyled links
+   that would fall back to the browser default blue (invisible in dark mode). */
+a {
+  color: var(--brand);
+}
+a:hover {
+  color: color-mix(in srgb, var(--brand) 80%, var(--ink));
+}
 .mono {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
     monospace;
