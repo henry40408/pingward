@@ -48,6 +48,90 @@ pub struct Page<T> {
     pub has_older: bool,
 }
 
+/// Filters for the check-detail "recent pings" table. Empty `kinds` and `None`
+/// bounds mean "no constraint". The date bounds are compared against the
+/// RFC3339 `created_at` text; the caller supplies them as UTC `DateTime`s and
+/// they are re-serialized with `to_rfc3339()` here, so the lexicographic
+/// comparison stays chronological (same basis as [`Store::delete_pings_before`]).
+#[derive(Debug, Clone, Default)]
+pub struct PingFilter {
+    pub kinds: Vec<PingKind>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+}
+
+impl PingFilter {
+    /// True when no constraint is set — the default (unfiltered) page.
+    pub fn is_empty(&self) -> bool {
+        self.kinds.is_empty() && self.from.is_none() && self.to.is_none()
+    }
+
+    fn predicates(&self) -> Vec<Predicate> {
+        let mut p = Vec::new();
+        if !self.kinds.is_empty() {
+            p.push(Predicate::TextIn(
+                "kind",
+                self.kinds.iter().map(|k| k.as_str().to_string()).collect(),
+            ));
+        }
+        if let Some(f) = self.from {
+            p.push(Predicate::TextCmp("created_at", ">=", f.to_rfc3339()));
+        }
+        if let Some(t) = self.to {
+            p.push(Predicate::TextCmp("created_at", "<=", t.to_rfc3339()));
+        }
+        p
+    }
+}
+
+/// Filters for the check-detail "recent notifications" table. `events` filters
+/// the notify event (up/down/reminder) and `statuses` the delivery result
+/// (ok/error); both empty means "no constraint". Date bounds behave as in
+/// [`PingFilter`].
+#[derive(Debug, Clone, Default)]
+pub struct NotifFilter {
+    pub events: Vec<EventKind>,
+    pub statuses: Vec<NotifyStatus>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+}
+
+impl NotifFilter {
+    /// True when no constraint is set — the default (unfiltered) page.
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+            && self.statuses.is_empty()
+            && self.from.is_none()
+            && self.to.is_none()
+    }
+
+    fn predicates(&self) -> Vec<Predicate> {
+        let mut p = Vec::new();
+        if !self.events.is_empty() {
+            p.push(Predicate::TextIn(
+                "event",
+                self.events.iter().map(|e| e.as_str().to_string()).collect(),
+            ));
+        }
+        if !self.statuses.is_empty() {
+            p.push(Predicate::TextIn(
+                "status",
+                self.statuses
+                    .iter()
+                    .map(|s| s.as_str().to_string())
+                    .collect(),
+            ));
+        }
+        if let Some(f) = self.from {
+            p.push(Predicate::TextCmp("created_at", ">=", f.to_rfc3339()));
+        }
+        if let Some(t) = self.to {
+            p.push(Predicate::TextCmp("created_at", "<=", t.to_rfc3339()));
+        }
+        p
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NewAudit<'a> {
     pub actor_user_id: i64,
@@ -255,30 +339,106 @@ fn row_to_audit(row: &sqlx::any::AnyRow) -> Result<AuditLog, sqlx::Error> {
     })
 }
 
+/// A value bound into a filtered keyset query. Columns, operators, and
+/// placeholders are always self-generated literals; only these values cross the
+/// query boundary as bound parameters, so the assembled SQL has no injection
+/// surface.
+enum QueryBind {
+    Int(i64),
+    Text(String),
+}
+
+/// One extra `WHERE` predicate layered onto a keyset page (a filter). The
+/// column name and operator are fixed caller literals; values are always bound.
+enum Predicate {
+    /// `col op $n` with a text value (e.g. `created_at >= $n`).
+    TextCmp(&'static str, &'static str, String),
+    /// `col IN ($a,$b,…)` over text values. An empty `vals` is skipped by the
+    /// filter builders, so this never renders as `IN ()`.
+    TextIn(&'static str, Vec<String>),
+}
+
 /// Shared keyset-pagination core for `pings`/`notifications`: both tables are
 /// paged the same way (by `id`, scoped to `check_id`), so the SQL shape and
-/// has_newer/has_older bookkeeping live here once. `table` is a fixed
-/// caller-supplied literal (never user input), so interpolating it into the
-/// query text is safe. Uses a limit+1 fetch to detect another page in the
-/// queried direction rather than a separate `COUNT(*)`.
+/// has_newer/has_older bookkeeping live here once. `table` and every predicate
+/// column/operator are fixed caller literals (never user input); all values —
+/// including filter values — are bound, so interpolating the assembled clause
+/// into the query text is safe. Uses a limit+1 fetch to detect another page in
+/// the queried direction rather than a separate `COUNT(*)`.
 async fn keyset_page<T>(
     pool: &crate::db::Pool,
     table: &'static str,
     check_id: i64,
     cursor: PageCursor,
     limit: i64,
+    filters: &[Predicate],
     row_to: fn(&sqlx::any::AnyRow) -> Result<T, sqlx::Error>,
 ) -> Result<Page<T>, sqlx::Error> {
     let fetch_limit = limit + 1;
+    let mut conds: Vec<String> = Vec::new();
+    let mut binds: Vec<QueryBind> = Vec::new();
+
+    // $1 is always the check scope.
+    conds.push("check_id = $1".to_string());
+    binds.push(QueryBind::Int(check_id));
+
+    // Filter predicates, each allocating fresh placeholders in bind order.
+    for f in filters {
+        match f {
+            Predicate::TextCmp(col, op, v) => {
+                binds.push(QueryBind::Text(v.clone()));
+                conds.push(format!("{col} {op} ${}", binds.len()));
+            }
+            Predicate::TextIn(col, vals) => {
+                let phs: Vec<String> = vals
+                    .iter()
+                    .map(|v| {
+                        binds.push(QueryBind::Text(v.clone()));
+                        format!("${}", binds.len())
+                    })
+                    .collect();
+                conds.push(format!("{col} IN ({})", phs.join(",")));
+            }
+        }
+    }
+
+    // The cursor predicate + scan direction. Latest carries no cursor bound.
+    let order = match cursor {
+        PageCursor::Latest => "DESC",
+        PageCursor::Before(id) => {
+            binds.push(QueryBind::Int(id));
+            conds.push(format!("id < ${}", binds.len()));
+            "DESC"
+        }
+        PageCursor::After(id) => {
+            binds.push(QueryBind::Int(id));
+            conds.push(format!("id > ${}", binds.len()));
+            "ASC"
+        }
+    };
+
+    binds.push(QueryBind::Int(fetch_limit));
+    let sql = format!(
+        "SELECT * FROM {table} WHERE {} ORDER BY id {order} LIMIT ${}",
+        conds.join(" AND "),
+        binds.len()
+    );
+    // Safe: `table`, every column, operator, and placeholder are self-generated
+    // literals; all values (check_id, filter values, cursor, limit) are bound.
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+    for b in &binds {
+        q = match b {
+            QueryBind::Int(i) => q.bind(*i),
+            QueryBind::Text(s) => q.bind(s.clone()),
+        };
+    }
+    let mut rows = q.fetch_all(pool).await?;
+
+    // Interpret the limit+1 overflow row per direction. Before/After always
+    // came from an existing adjacent page, so the opposite-direction flag is
+    // known true regardless of the filter set.
     match cursor {
         PageCursor::Latest => {
-            let sql =
-                format!("SELECT * FROM {table} WHERE check_id = $1 ORDER BY id DESC LIMIT $2");
-            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
-                .bind(check_id)
-                .bind(fetch_limit)
-                .fetch_all(pool)
-                .await?;
             let has_older = rows.len() as i64 > limit;
             let items = rows
                 .iter()
@@ -291,16 +451,7 @@ async fn keyset_page<T>(
                 has_older,
             })
         }
-        PageCursor::Before(id) => {
-            let sql = format!(
-                "SELECT * FROM {table} WHERE check_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3"
-            );
-            let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
-                .bind(check_id)
-                .bind(id)
-                .bind(fetch_limit)
-                .fetch_all(pool)
-                .await?;
+        PageCursor::Before(_) => {
             let has_older = rows.len() as i64 > limit;
             let items = rows
                 .iter()
@@ -313,16 +464,7 @@ async fn keyset_page<T>(
                 has_older,
             })
         }
-        PageCursor::After(id) => {
-            let sql = format!(
-                "SELECT * FROM {table} WHERE check_id = $1 AND id > $2 ORDER BY id ASC LIMIT $3"
-            );
-            let mut rows = sqlx::query(sqlx::AssertSqlSafe(sql))
-                .bind(check_id)
-                .bind(id)
-                .bind(fetch_limit)
-                .fetch_all(pool)
-                .await?;
+        PageCursor::After(_) => {
             let has_newer = rows.len() as i64 > limit;
             if has_newer {
                 // Rows are ASC by id; the last row is the farthest-from-cursor
@@ -985,25 +1127,37 @@ impl Store {
     }
 
     /// Keyset-paginated page of a check's pings for the check-detail table
-    /// (newest-first). See [`PageCursor`]/[`Page`]. Independent of
-    /// [`Store::list_recent_pings`], which the heartbeat strip uses and which
-    /// must never be affected by table paging.
+    /// (newest-first), narrowed by `filter`. See [`PageCursor`]/[`Page`]/
+    /// [`PingFilter`]. Independent of [`Store::list_recent_pings`], which the
+    /// heartbeat strip uses and which must never be affected by table paging.
     pub async fn list_pings_page(
         &self,
         check_id: i64,
         cursor: PageCursor,
         limit: i64,
+        filter: &PingFilter,
     ) -> Result<Page<Ping>, sqlx::Error> {
-        keyset_page(&self.pool, "pings", check_id, cursor, limit, row_to_ping).await
+        keyset_page(
+            &self.pool,
+            "pings",
+            check_id,
+            cursor,
+            limit,
+            &filter.predicates(),
+            row_to_ping,
+        )
+        .await
     }
 
     /// Keyset-paginated page of a check's notifications for the check-detail
-    /// table (newest-first). See [`PageCursor`]/[`Page`].
+    /// table (newest-first), narrowed by `filter`. See [`PageCursor`]/[`Page`]/
+    /// [`NotifFilter`].
     pub async fn list_notifications_page(
         &self,
         check_id: i64,
         cursor: PageCursor,
         limit: i64,
+        filter: &NotifFilter,
     ) -> Result<Page<Notification>, sqlx::Error> {
         keyset_page(
             &self.pool,
@@ -1011,6 +1165,7 @@ impl Store {
             check_id,
             cursor,
             limit,
+            &filter.predicates(),
             row_to_notification,
         )
         .await
@@ -2170,7 +2325,7 @@ mod tests {
 
         // Latest, limit 2: newest 2 ids, has_newer=false, has_older=true.
         let page = store
-            .list_pings_page(cid, PageCursor::Latest, 2)
+            .list_pings_page(cid, PageCursor::Latest, 2, &PingFilter::default())
             .await
             .unwrap();
         assert_eq!(
@@ -2182,7 +2337,7 @@ mod tests {
 
         // Before(oldest id of the latest page) -> next 2 older ids, both flags true.
         let page2 = store
-            .list_pings_page(cid, PageCursor::Before(id4), 2)
+            .list_pings_page(cid, PageCursor::Before(id4), 2, &PingFilter::default())
             .await
             .unwrap();
         assert_eq!(
@@ -2194,7 +2349,7 @@ mod tests {
 
         // Paging Before again -> the last remaining row, has_older=false.
         let page3 = store
-            .list_pings_page(cid, PageCursor::Before(id2), 2)
+            .list_pings_page(cid, PageCursor::Before(id2), 2, &PingFilter::default())
             .await
             .unwrap();
         assert_eq!(
@@ -2207,7 +2362,7 @@ mod tests {
         // After(newest id of that last page) -> steps back toward newest;
         // there are still newer rows (id4, id5) beyond this page.
         let page4 = store
-            .list_pings_page(cid, PageCursor::After(id1), 2)
+            .list_pings_page(cid, PageCursor::After(id1), 2, &PingFilter::default())
             .await
             .unwrap();
         assert_eq!(
@@ -2270,7 +2425,7 @@ mod tests {
         let [id1, id2, id3, id4, id5]: [i64; 5] = all.try_into().unwrap();
 
         let page = store
-            .list_notifications_page(cid, PageCursor::Latest, 2)
+            .list_notifications_page(cid, PageCursor::Latest, 2, &NotifFilter::default())
             .await
             .unwrap();
         assert_eq!(
@@ -2281,7 +2436,7 @@ mod tests {
         assert!(page.has_older);
 
         let page2 = store
-            .list_notifications_page(cid, PageCursor::Before(id4), 2)
+            .list_notifications_page(cid, PageCursor::Before(id4), 2, &NotifFilter::default())
             .await
             .unwrap();
         assert_eq!(
@@ -2292,7 +2447,7 @@ mod tests {
         assert!(page2.has_older);
 
         let page3 = store
-            .list_notifications_page(cid, PageCursor::Before(id2), 2)
+            .list_notifications_page(cid, PageCursor::Before(id2), 2, &NotifFilter::default())
             .await
             .unwrap();
         assert_eq!(
@@ -2303,7 +2458,7 @@ mod tests {
         assert!(!page3.has_older);
 
         let page4 = store
-            .list_notifications_page(cid, PageCursor::After(id1), 2)
+            .list_notifications_page(cid, PageCursor::After(id1), 2, &NotifFilter::default())
             .await
             .unwrap();
         assert_eq!(
@@ -2312,5 +2467,177 @@ mod tests {
         );
         assert!(page4.has_newer);
         assert!(page4.has_older);
+    }
+
+    #[tokio::test]
+    async fn list_pings_page_filters_by_kind_and_date() {
+        let store = seeded().await;
+        let cid = store
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "c",
+                ping_uuid: "ping-filter-uuid",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let kinds = [
+            PingKind::Success,
+            PingKind::Fail,
+            PingKind::Start,
+            PingKind::Success,
+            PingKind::Fail,
+        ];
+        for (i, k) in kinds.iter().enumerate() {
+            store
+                .insert_ping(
+                    cid,
+                    *k,
+                    None,
+                    "",
+                    None,
+                    base + chrono::Duration::seconds(i as i64),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Kind filter: only the two fails, newest-first, no other pages.
+        let f = PingFilter {
+            kinds: vec![PingKind::Fail],
+            ..Default::default()
+        };
+        let page = store
+            .list_pings_page(cid, PageCursor::Latest, 20, &f)
+            .await
+            .unwrap();
+        assert_eq!(
+            page.items.iter().map(|p| p.kind).collect::<Vec<_>>(),
+            vec![PingKind::Fail, PingKind::Fail]
+        );
+        assert!(!page.has_newer && !page.has_older);
+
+        // Inclusive date range [base+1s, base+3s] -> the three middle rows.
+        let f = PingFilter {
+            from: Some(base + chrono::Duration::seconds(1)),
+            to: Some(base + chrono::Duration::seconds(3)),
+            ..Default::default()
+        };
+        let page = store
+            .list_pings_page(cid, PageCursor::Latest, 20, &f)
+            .await
+            .unwrap();
+        let secs: Vec<i64> = page
+            .items
+            .iter()
+            .map(|p| (p.created_at - base).num_seconds())
+            .collect();
+        assert_eq!(secs, vec![3, 2, 1]);
+
+        // Kind + date combined: fails within [base+3s, base+5s] -> just 4s.
+        let f = PingFilter {
+            kinds: vec![PingKind::Fail],
+            from: Some(base + chrono::Duration::seconds(3)),
+            to: Some(base + chrono::Duration::seconds(5)),
+        };
+        let page = store
+            .list_pings_page(cid, PageCursor::Latest, 20, &f)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].kind, PingKind::Fail);
+        assert_eq!((page.items[0].created_at - base).num_seconds(), 4);
+    }
+
+    #[tokio::test]
+    async fn list_notifications_page_filters_by_event_and_status() {
+        let store = seeded().await;
+        let cid = store
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "c",
+                ping_uuid: "notif-filter-uuid",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let chan = store
+            .create_channel(
+                1,
+                ChannelKind::Webhook,
+                "h",
+                "{\"url\":\"http://x\"}",
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let rows = [
+            (EventKind::Down, NotifyStatus::Ok),
+            (EventKind::Up, NotifyStatus::Error),
+            (EventKind::Down, NotifyStatus::Error),
+            (EventKind::Reminder, NotifyStatus::Ok),
+            (EventKind::Up, NotifyStatus::Ok),
+        ];
+        for (i, (event, status)) in rows.iter().enumerate() {
+            let err = (*status == NotifyStatus::Error).then_some("boom");
+            store
+                .record_notification(
+                    cid,
+                    chan,
+                    *event,
+                    *status,
+                    err,
+                    base + chrono::Duration::seconds(i as i64),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Event filter: the two Up events.
+        let f = NotifFilter {
+            events: vec![EventKind::Up],
+            ..Default::default()
+        };
+        let page = store
+            .list_notifications_page(cid, PageCursor::Latest, 20, &f)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert!(page.items.iter().all(|n| n.event == EventKind::Up));
+
+        // Delivery-result filter: the two Error deliveries.
+        let f = NotifFilter {
+            statuses: vec![NotifyStatus::Error],
+            ..Default::default()
+        };
+        let page = store
+            .list_notifications_page(cid, PageCursor::Latest, 20, &f)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert!(page.items.iter().all(|n| n.status == NotifyStatus::Error));
+
+        // Event + status combined: Up AND Error -> just the row at 1s.
+        let f = NotifFilter {
+            events: vec![EventKind::Up],
+            statuses: vec![NotifyStatus::Error],
+            ..Default::default()
+        };
+        let page = store
+            .list_notifications_page(cid, PageCursor::Latest, 20, &f)
+            .await
+            .unwrap();
+        assert_eq!(page.items.len(), 1);
+        assert_eq!((page.items[0].created_at - base).num_seconds(), 1);
     }
 }

@@ -1,0 +1,44 @@
+{# Recent-notifications fragment: filter controls + table + keyset pager.
+   Served standalone by GET /checks/{id}/notifications (JS swaps it into
+   #notifs-section) and inlined into check.html via |safe. #}
+<form class="filters" data-testid="notifs-filters" onsubmit="return false">
+  <label class="fld">From <input type="datetime-local" step="1" data-testid="notifs-from" data-utc="{{ f_from }}"></label>
+  <label class="fld">To <input type="datetime-local" step="1" data-testid="notifs-to" data-utc="{{ f_to }}"></label>
+  <label class="fld">Event
+    <select data-testid="notifs-event">
+      <option value=""{% if f_event == "" %} selected{% endif %}>All</option>
+      <option value="down"{% if f_event == "down" %} selected{% endif %}>down</option>
+      <option value="up"{% if f_event == "up" %} selected{% endif %}>up</option>
+      <option value="reminder"{% if f_event == "reminder" %} selected{% endif %}>reminder</option>
+    </select>
+  </label>
+  <label class="fld">Result
+    <select data-testid="notifs-status">
+      <option value=""{% if f_status == "" %} selected{% endif %}>All</option>
+      <option value="ok"{% if f_status == "ok" %} selected{% endif %}>sent</option>
+      <option value="error"{% if f_status == "error" %} selected{% endif %}>error</option>
+    </select>
+  </label>
+  <button class="btn" type="button" data-apply data-testid="notifs-apply">Filter</button>
+  {% if filtered %}<a class="btn ghost" href="{{ base }}/checks/{{ check_id }}/notifications" data-testid="notifs-clear">Clear</a>{% endif %}
+</form>
+{% if empty %}
+<p class="empty" style="margin:10px 0 0;color:var(--muted)" data-testid="notifications-empty">{% if filtered %}No notifications match the filter.{% else %}No notifications yet.{% endif %}</p>
+{% else %}
+<table>
+  <thead><tr><th>When</th><th>Event</th><th>Channel</th><th>Result</th></tr></thead>
+  <tbody>
+    {% for n in rows %}
+    <tr><td class="mono"><span class="localtime" data-ts="{{ n.iso }}">{{ n.created_at }}</span></td><td>{{ n.event }}</td><td>{{ n.channel }}</td>
+      {% if n.status == "ok" %}<td class="mono ok-txt">sent</td>{% else %}<td class="mono fail-txt">{{ n.error }}</td>{% endif %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if newer.is_some() || older.is_some() %}
+<div class="pager" data-testid="notif-pager">
+  {% if let Some(href) = newer %}<a class="btn" href="{{ href }}" data-testid="notif-newer">&larr; Newer</a>{% endif %}
+  {% if let Some(href) = older %}<a class="btn" href="{{ href }}" data-testid="notif-older">Older &rarr;</a>{% endif %}
+</div>
+{% endif %}
+{% endif %}

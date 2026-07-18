@@ -8,7 +8,7 @@ use crate::models::{
 };
 use crate::notify::{notifier_for, EventKind, NotificationEvent};
 use crate::state::AppState;
-use crate::store::{PageCursor, Store};
+use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{Method, StatusCode};
@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use axum::{Form, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use axum_extra::extract::Form as HtmlForm;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use cron::Schedule;
 use serde::Deserialize;
 use std::str::FromStr;
@@ -42,6 +42,8 @@ pub fn routes() -> Router<AppState> {
         .route("/projects/{pid}/checks/new", get(check_new))
         .route("/projects/{pid}/checks", post(check_create))
         .route("/checks/{id}", get(check_show).post(check_update))
+        .route("/checks/{id}/pings", get(check_pings))
+        .route("/checks/{id}/notifications", get(check_notifications))
         .route("/checks/{id}/edit", get(check_edit))
         .route("/checks/{id}/pause", post(check_pause))
         .route("/checks/{id}/resume", post(check_resume))
@@ -73,6 +75,11 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/admin/checks/{id}",
             get(admin_check_show).post(admin_check_update),
+        )
+        .route("/admin/checks/{id}/pings", get(admin_check_pings))
+        .route(
+            "/admin/checks/{id}/notifications",
+            get(admin_check_notifications),
         )
         .route("/admin/checks/{id}/edit", get(admin_check_edit))
         .route("/admin/checks/{id}/pause", post(admin_check_pause))
@@ -938,19 +945,65 @@ struct CheckTemplate {
     ping_url: String,
     bars: Vec<crate::view::Bar>,
     channel_boxes: Vec<ChannelBox>,
-    pings: Vec<PingRow>,
-    notifications: Vec<NotificationRow>,
-    pings_newer: Option<String>,
-    pings_older: Option<String>,
-    notif_newer: Option<String>,
-    notif_older: Option<String>,
+    /// The "recent pings" card body — filter controls, table, pager — rendered
+    /// from [`CheckPingsTemplate`] so the same fragment is emitted on full-page
+    /// load and on a JS partial refresh. Injected with `|safe`.
+    pings_partial: String,
+    /// The "recent notifications" card body, from [`CheckNotifsTemplate`].
+    notifs_partial: String,
     flash: Option<String>,
 }
 
-/// Query params for the check-detail page's independent ping/notification
-/// keyset cursors: `pb`/`pa` page pings older/newer, `nb`/`na` page
-/// notifications older/newer. Missing/unparsable params fall back to `None`
-/// (i.e. the "Latest" page) via `#[serde(default)]`, rather than a 400.
+/// The "recent pings" fragment: filter controls + table + keyset pager. Served
+/// standalone by `GET /checks/{id}/pings` (JS swaps it into `#pings-section`)
+/// and inlined into the full check page. `base` is `""` or `/admin`.
+#[derive(Template)]
+#[template(path = "check_pings.html")]
+struct CheckPingsTemplate {
+    base: String,
+    check_id: i64,
+    rows: Vec<PingRow>,
+    empty: bool,
+    /// Selected kind filter (`""` = all), canonicalized from the query.
+    f_kind: String,
+    /// Selected date bounds as `Z`-form RFC3339 UTC (`""` = unset); the input is
+    /// `datetime-local`, localized client-side from these `data-utc` values.
+    f_from: String,
+    f_to: String,
+    /// Any filter active — controls the "Clear" affordance.
+    filtered: bool,
+    newer: Option<String>,
+    older: Option<String>,
+}
+
+/// The "recent notifications" fragment, served by
+/// `GET /checks/{id}/notifications`. Filters on event and delivery result.
+#[derive(Template)]
+#[template(path = "check_notifs.html")]
+struct CheckNotifsTemplate {
+    base: String,
+    check_id: i64,
+    rows: Vec<NotificationRow>,
+    empty: bool,
+    /// Selected event filter (`""` = all): up|down|reminder.
+    f_event: String,
+    /// Selected delivery-result filter (`""` = all): ok|error.
+    f_status: String,
+    f_from: String,
+    f_to: String,
+    filtered: bool,
+    newer: Option<String>,
+    older: Option<String>,
+}
+
+/// Query params for the check-detail ping/notification history fragments. Each
+/// table pages and filters independently: `p*` params drive the pings fragment,
+/// `n*` the notifications fragment. Cursors are `pb`/`pa` (pings older/newer)
+/// and `nb`/`na`; filters are `pk` (ping kind), `ne`/`ns` (notify event/result),
+/// and `pfrom`/`pto`/`nfrom`/`nto` (RFC3339 UTC date bounds). Missing/unparsable
+/// params fall back to their unset default via `#[serde(default)]` (the
+/// "Latest", unfiltered view) rather than a 400. The full check page and both
+/// partial endpoints share this struct.
 #[derive(Deserialize, Default)]
 struct CheckPageQuery {
     #[serde(default)]
@@ -961,21 +1014,75 @@ struct CheckPageQuery {
     nb: Option<i64>,
     #[serde(default)]
     na: Option<i64>,
+    #[serde(default)]
+    pk: Option<String>,
+    #[serde(default)]
+    pfrom: Option<String>,
+    #[serde(default)]
+    pto: Option<String>,
+    #[serde(default)]
+    ne: Option<String>,
+    #[serde(default)]
+    ns: Option<String>,
+    #[serde(default)]
+    nfrom: Option<String>,
+    #[serde(default)]
+    nto: Option<String>,
 }
 
-/// Build a check-page href that sets `this_param` (a `("pb"|"pa"|"nb"|"na",
-/// id)` pair for the table being paged) while carrying forward
-/// `other_param`, the *other* table's currently-active cursor param — so
-/// paging one table never resets the other's position.
-fn check_page_href(
+/// Parse a single-select enum filter param (`""`/unset/garbage → empty vec, one
+/// valid token → a one-element vec), matching the `Vec` shape the store filters
+/// accept while the UI only ever offers a single choice.
+fn parse_filter_enum<T: FromStr>(v: &Option<String>) -> Vec<T> {
+    v.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<T>().ok())
+        .into_iter()
+        .collect()
+}
+
+/// Parse a date-bound filter param into a UTC instant. Accepts full RFC3339
+/// (what the JS sends after localizing the `datetime-local` control) and the
+/// bare `YYYY-MM-DDTHH:MM[:SS]` a JS-off submit would produce, treated as UTC.
+/// Anything unparsable is dropped to `None` rather than erroring the request.
+fn parse_date_bound(v: &Option<String>) -> Option<DateTime<Utc>> {
+    let s = v.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"] {
+        if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(ndt.and_utc());
+        }
+    }
+    None
+}
+
+/// Canonical `Z`-form RFC3339 for echoing a parsed date bound back into a
+/// fragment's `data-utc` attribute and pager hrefs (`+00:00` would need
+/// percent-encoding; `Z` is query-safe).
+fn date_bound_token(dt: Option<DateTime<Utc>>) -> String {
+    dt.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_default()
+}
+
+/// Build a history-fragment href (`{base}/checks/{id}/{seg}?…`) for a keyset
+/// pager link. `cursor` is this table's new position; `carry` re-attaches the
+/// currently-active filter tokens so paging preserves the filter. Values are
+/// ids, enum tokens, or `Z`-form datetimes — all query-safe, so no encoding.
+fn history_href(
     base: &str,
     id: i64,
-    this_param: (&str, i64),
-    other_param: Option<(&str, i64)>,
+    seg: &str,
+    cursor: (&str, i64),
+    carry: &[(&str, &str)],
 ) -> String {
-    let mut href = format!("{base}/checks/{id}?{}={}", this_param.0, this_param.1);
-    if let Some((k, v)) = other_param {
-        href.push_str(&format!("&{k}={v}"));
+    let mut href = format!("{base}/checks/{id}/{seg}?{}={}", cursor.0, cursor.1);
+    for (k, v) in carry {
+        if !v.is_empty() {
+            href.push_str(&format!("&{k}={v}"));
+        }
     }
     href
 }
@@ -1283,31 +1390,84 @@ async fn render_check_page(
         30,
     );
 
-    let ping_cursor = match (page.pb, page.pa) {
+    let status = crate::view::display_status(&check, now).as_str();
+    let since = status_since_label(&check, now);
+    let schedule = schedule_label(&check);
+
+    // Both history tables render from the same fragment templates the JS
+    // partial endpoints serve, then get injected here — one source of truth for
+    // the markup. The pings fragment reuses the 40-row heartbeat window for
+    // duration pairing on the default (unfiltered latest) view; the notif
+    // fragment reuses the channel-name map already built above.
+    let pings_partial =
+        render(&build_pings_partial(state, id, base, &page, Some(&recent)).await?)?.0;
+    let notifs_partial =
+        render(&build_notifs_partial(state, id, base, &page, &channel_names).await?)?.0;
+
+    Ok(render(&CheckTemplate {
+        show_nav: true,
+        csrf,
+        is_admin,
+        admin,
+        check,
+        project_name: project.name,
+        status,
+        since,
+        schedule,
+        ping_url,
+        bars,
+        channel_boxes,
+        pings_partial,
+        notifs_partial,
+        flash,
+    })?
+    .into_response())
+}
+
+/// Build the "recent pings" fragment for `check_id`, honoring the `p*` filter
+/// and cursor params in `page`. `recent`, when supplied by the full-page render,
+/// is the 40-row heartbeat window reused for duration pairing on the default
+/// (unfiltered latest) view; the standalone partial endpoint passes `None` and
+/// the window is fetched only when that view is active.
+async fn build_pings_partial(
+    state: &AppState,
+    check_id: i64,
+    base: &str,
+    page: &CheckPageQuery,
+    recent: Option<&[crate::models::Ping]>,
+) -> Result<CheckPingsTemplate, AppError> {
+    let filter = PingFilter {
+        kinds: parse_filter_enum(&page.pk),
+        from: parse_date_bound(&page.pfrom),
+        to: parse_date_bound(&page.pto),
+    };
+    let cursor = match (page.pb, page.pa) {
         (Some(b), _) => PageCursor::Before(b),
         (None, Some(a)) => PageCursor::After(a),
         (None, None) => PageCursor::Latest,
     };
-    let notif_cursor = match (page.nb, page.na) {
-        (Some(b), _) => PageCursor::Before(b),
-        (None, Some(a)) => PageCursor::After(a),
-        (None, None) => PageCursor::Latest,
-    };
-    let ping_page = state.store.list_pings_page(id, ping_cursor, 20).await?;
-    let notif_page = state
+    let ping_page = state
         .store
-        .list_notifications_page(id, notif_cursor, 20)
+        .list_pings_page(check_id, cursor, 20, &filter)
         .await?;
 
-    // Pair durations against the wider 40-row heartbeat window on the default
-    // (Latest) page so a run whose start sits just past row 20 still shows its
-    // duration; older/newer pages pair within their own slice.
-    let durations = if matches!(ping_cursor, PageCursor::Latest) {
-        crate::view::run_durations(&recent)
+    // Pair durations against the wider 40-row window on the default view so a
+    // run whose start sits just past row 20 still shows its duration; a filtered
+    // or paged view pairs within its own slice (a start ping may be filtered
+    // out, so pairing there is best-effort regardless).
+    let durations = if matches!(cursor, PageCursor::Latest) && filter.is_empty() {
+        match recent {
+            Some(r) => crate::view::run_durations(r),
+            None => {
+                let r = state.store.list_recent_pings(check_id, 40).await?;
+                crate::view::run_durations(&r)
+            }
+        }
     } else {
         crate::view::run_durations(&ping_page.items)
     };
-    let pings = ping_page
+
+    let rows: Vec<PingRow> = ping_page
         .items
         .iter()
         .map(|p| PingRow {
@@ -1327,10 +1487,70 @@ async fn render_check_page(
             body: p.body.clone(),
         })
         .collect();
-    let status = crate::view::display_status(&check, now).as_str();
-    let since = status_since_label(&check, now);
-    let schedule = schedule_label(&check);
-    let notifications = notif_page
+
+    let f_kind = filter
+        .kinds
+        .first()
+        .map(|k| k.as_str().to_string())
+        .unwrap_or_default();
+    let f_from = date_bound_token(filter.from);
+    let f_to = date_bound_token(filter.to);
+    let carry = [
+        ("pk", f_kind.as_str()),
+        ("pfrom", f_from.as_str()),
+        ("pto", f_to.as_str()),
+    ];
+    let older = ping_page
+        .has_older
+        .then(|| ping_page.items.last())
+        .flatten()
+        .map(|p| history_href(base, check_id, "pings", ("pb", p.id), &carry));
+    let newer = ping_page
+        .has_newer
+        .then(|| ping_page.items.first())
+        .flatten()
+        .map(|p| history_href(base, check_id, "pings", ("pa", p.id), &carry));
+
+    Ok(CheckPingsTemplate {
+        base: base.to_string(),
+        check_id,
+        empty: rows.is_empty(),
+        rows,
+        f_kind,
+        f_from,
+        f_to,
+        filtered: !filter.is_empty(),
+        newer,
+        older,
+    })
+}
+
+/// Build the "recent notifications" fragment for `check_id`, honoring the `n*`
+/// filter and cursor params in `page`. `channel_names` labels rows by channel.
+async fn build_notifs_partial(
+    state: &AppState,
+    check_id: i64,
+    base: &str,
+    page: &CheckPageQuery,
+    channel_names: &std::collections::HashMap<i64, String>,
+) -> Result<CheckNotifsTemplate, AppError> {
+    let filter = NotifFilter {
+        events: parse_filter_enum(&page.ne),
+        statuses: parse_filter_enum(&page.ns),
+        from: parse_date_bound(&page.nfrom),
+        to: parse_date_bound(&page.nto),
+    };
+    let cursor = match (page.nb, page.na) {
+        (Some(b), _) => PageCursor::Before(b),
+        (None, Some(a)) => PageCursor::After(a),
+        (None, None) => PageCursor::Latest,
+    };
+    let notif_page = state
+        .store
+        .list_notifications_page(check_id, cursor, 20, &filter)
+        .await?;
+
+    let rows: Vec<NotificationRow> = notif_page
         .items
         .iter()
         .map(|n| NotificationRow {
@@ -1346,60 +1566,119 @@ async fn render_check_page(
         })
         .collect();
 
-    // Nav hrefs are built here (not in the template) so each carries the
-    // *other* table's currently-active cursor param forward — paging pings
-    // must not reset notifications, and vice versa.
-    let current_ping_param = page
-        .pb
-        .map(|v| ("pb", v))
-        .or_else(|| page.pa.map(|v| ("pa", v)));
-    let current_notif_param = page
-        .nb
-        .map(|v| ("nb", v))
-        .or_else(|| page.na.map(|v| ("na", v)));
-    let pings_older = ping_page
-        .has_older
-        .then(|| ping_page.items.last())
-        .flatten()
-        .map(|p| check_page_href(base, id, ("pb", p.id), current_notif_param));
-    let pings_newer = ping_page
-        .has_newer
-        .then(|| ping_page.items.first())
-        .flatten()
-        .map(|p| check_page_href(base, id, ("pa", p.id), current_notif_param));
-    let notif_older = notif_page
+    let f_event = filter
+        .events
+        .first()
+        .map(|e| e.as_str().to_string())
+        .unwrap_or_default();
+    let f_status = filter
+        .statuses
+        .first()
+        .map(|s| s.as_str().to_string())
+        .unwrap_or_default();
+    let f_from = date_bound_token(filter.from);
+    let f_to = date_bound_token(filter.to);
+    let carry = [
+        ("ne", f_event.as_str()),
+        ("ns", f_status.as_str()),
+        ("nfrom", f_from.as_str()),
+        ("nto", f_to.as_str()),
+    ];
+    let older = notif_page
         .has_older
         .then(|| notif_page.items.last())
         .flatten()
-        .map(|n| check_page_href(base, id, ("nb", n.id), current_ping_param));
-    let notif_newer = notif_page
+        .map(|n| history_href(base, check_id, "notifications", ("nb", n.id), &carry));
+    let newer = notif_page
         .has_newer
         .then(|| notif_page.items.first())
         .flatten()
-        .map(|n| check_page_href(base, id, ("na", n.id), current_ping_param));
+        .map(|n| history_href(base, check_id, "notifications", ("na", n.id), &carry));
 
-    Ok(render(&CheckTemplate {
-        show_nav: true,
-        csrf,
-        is_admin,
-        admin,
-        check,
-        project_name: project.name,
-        status,
-        since,
-        schedule,
-        ping_url,
-        bars,
-        channel_boxes,
-        pings,
-        notifications,
-        pings_newer,
-        pings_older,
-        notif_newer,
-        notif_older,
-        flash,
-    })?
-    .into_response())
+    Ok(CheckNotifsTemplate {
+        base: base.to_string(),
+        check_id,
+        empty: rows.is_empty(),
+        rows,
+        f_event,
+        f_status,
+        f_from,
+        f_to,
+        filtered: !filter.is_empty(),
+        newer,
+        older,
+    })
+}
+
+/// Channel id → name map for a project, used to label notification rows in the
+/// standalone notifications partial (the full page reuses its own map).
+async fn channel_name_map(
+    state: &AppState,
+    project_id: i64,
+) -> Result<std::collections::HashMap<i64, String>, AppError> {
+    Ok(state
+        .store
+        .list_channels_for_project(project_id)
+        .await?
+        .into_iter()
+        .map(|c| (c.id, c.name))
+        .collect())
+}
+
+/// `GET /checks/{id}/pings` — the pings fragment for a JS partial refresh.
+async fn check_pings(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+    Query(page): Query<CheckPageQuery>,
+) -> Result<Response, AppError> {
+    let check = owned_check(&state.store, id, user.id).await?;
+    Ok(render(&build_pings_partial(&state, check.id, "", &page, None).await?)?.into_response())
+}
+
+/// `GET /checks/{id}/notifications` — the notifications fragment.
+async fn check_notifications(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+    Query(page): Query<CheckPageQuery>,
+) -> Result<Response, AppError> {
+    let check = owned_check(&state.store, id, user.id).await?;
+    let names = channel_name_map(&state, check.project_id).await?;
+    Ok(render(&build_notifs_partial(&state, check.id, "", &page, &names).await?)?.into_response())
+}
+
+/// `GET /admin/checks/{id}/pings` — admin pings fragment (audited access).
+async fn admin_check_pings(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+    Query(page): Query<CheckPageQuery>,
+) -> Result<Response, AppError> {
+    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    Ok(
+        render(&build_pings_partial(&state, check.id, "/admin", &page, None).await?)?
+            .into_response(),
+    )
+}
+
+/// `GET /admin/checks/{id}/notifications` — admin notifications fragment.
+async fn admin_check_notifications(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+    Query(page): Query<CheckPageQuery>,
+) -> Result<Response, AppError> {
+    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let names = channel_name_map(&state, check.project_id).await?;
+    Ok(
+        render(&build_notifs_partial(&state, check.id, "/admin", &page, &names).await?)?
+            .into_response(),
+    )
 }
 
 /// Build the check edit form pre-filled from `check`, pointing its action at

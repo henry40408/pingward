@@ -59,76 +59,106 @@
 
 <div class="card">
   <div class="ch"><h2>Recent pings</h2></div>
-  <div class="cb" style="padding-top:6px">
-    {% if pings.is_empty() %}
-    <p style="margin:10px 0 0;color:var(--muted)" data-testid="pings-empty">No pings yet.</p>
-    {% else %}
-    <table>
-      <thead><tr><th>When</th><th>Kind</th><th>Exit</th><th>Duration</th><th>Source</th></tr></thead>
-      <tbody>
-        {% for p in pings %}
-        {% if p.body.is_empty() %}
-        <tr data-testid="ping-row"><td class="mono"><span class="caret" style="opacity:0">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
-        {% else %}
-        <tr class="toggle" data-testid="ping-row" style="cursor:pointer"><td class="mono"><span class="caret">&#9656;</span><span class="localtime" data-ts="{{ p.iso }}">{{ p.time }}</span></td><td><span class="pill {{ p.pill_class }}">{{ p.kind_label }}</span></td><td class="mono">{{ p.exit }}</td><td class="mono">{{ p.duration }}</td><td class="mono">{{ p.source }}</td></tr>
-        <tr class="exp"><td colspan="5" style="border-top:none;padding-top:9px"><div class="out {{ p.pill_class }}"><span class="tag">captured output &middot; POST body</span>{{ p.body }}</div></td></tr>
-        {% endif %}
-        {% endfor %}
-      </tbody>
-    </table>
-    {% if pings_newer.is_some() || pings_older.is_some() %}
-    <div class="pager" data-testid="pings-pager">
-      {% if let Some(href) = pings_newer %}<a class="btn" href="{{ href }}" data-testid="pings-newer">&larr; Newer</a>{% endif %}
-      {% if let Some(href) = pings_older %}<a class="btn" href="{{ href }}" data-testid="pings-older">Older &rarr;</a>{% endif %}
-    </div>
-    {% endif %}
-    {% endif %}
+  <div class="cb" id="pings-section" data-endpoint="{{ base }}/checks/{{ check.id }}/pings" style="padding-top:6px">
+    {{ pings_partial|safe }}
   </div>
 </div>
 
 <div class="card" style="margin-bottom:0">
   <div class="ch"><h2>Recent notifications</h2></div>
-  <div class="cb" style="padding-top:6px">
-    {% if notifications.is_empty() %}
-    <p style="margin:10px 0 0;color:var(--muted)" data-testid="notifications-empty">No notifications yet.</p>
-    {% else %}
-    <table>
-      <thead><tr><th>When</th><th>Event</th><th>Channel</th><th>Result</th></tr></thead>
-      <tbody>
-        {% for n in notifications %}
-        <tr><td class="mono"><span class="localtime" data-ts="{{ n.iso }}">{{ n.created_at }}</span></td><td>{{ n.event }}</td><td>{{ n.channel }}</td>
-          {% if n.status == "ok" %}<td class="mono ok-txt">sent</td>{% else %}<td class="mono fail-txt">{{ n.error }}</td>{% endif %}
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% if notif_newer.is_some() || notif_older.is_some() %}
-    <div class="pager" data-testid="notif-pager">
-      {% if let Some(href) = notif_newer %}<a class="btn" href="{{ href }}" data-testid="notif-newer">&larr; Newer</a>{% endif %}
-      {% if let Some(href) = notif_older %}<a class="btn" href="{{ href }}" data-testid="notif-older">Older &rarr;</a>{% endif %}
-    </div>
-    {% endif %}
-    {% endif %}
+  <div class="cb" id="notifs-section" data-endpoint="{{ base }}/checks/{{ check.id }}/notifications" style="padding-top:6px">
+    {{ notifs_partial|safe }}
   </div>
 </div>
 
 <script>
-  document.querySelectorAll('tr.toggle').forEach(function(r){
-    r.addEventListener('click', function(){
-      var n = r.nextElementSibling;
-      if (n && n.classList.contains('exp')) {
-        n.classList.toggle('open');
-        r.querySelector('.caret').classList.toggle('open');
-      }
+  (function(){
+    // Copy buttons live outside the swappable sections — bind once.
+    document.querySelectorAll('.copy').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var text = btn.getAttribute('data-copy');
+        if (navigator.clipboard) navigator.clipboard.writeText(text);
+      });
     });
-  });
-  document.querySelectorAll('.copy').forEach(function(btn){
-    btn.addEventListener('click', function(){
-      var text = btn.getAttribute('data-copy');
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(text);
+
+    // Localize any absolute timestamps within `root` to the viewer's zone,
+    // falling back to the server-rendered UTC text (mirrors base.html, re-run
+    // per fragment after a partial swap).
+    function localize(root){
+      root.querySelectorAll('.localtime[data-ts]').forEach(function(el){
+        var d = new Date(el.getAttribute('data-ts'));
+        if (!isNaN(d.getTime())) { el.textContent = d.toLocaleString(undefined,{hour12:false}); el.title = el.getAttribute('data-ts'); }
+      });
+    }
+    // Expand/collapse ping output rows within `root`.
+    function bindToggles(root){
+      root.querySelectorAll('tr.toggle').forEach(function(r){
+        r.addEventListener('click', function(){
+          var n = r.nextElementSibling;
+          if (n && n.classList.contains('exp')) { n.classList.toggle('open'); r.querySelector('.caret').classList.toggle('open'); }
+        });
+      });
+    }
+    var pad = function(n){ return String(n).padStart(2,'0'); };
+    // Fill each datetime-local from its data-utc (UTC instant) in local time.
+    function fillDates(root){
+      root.querySelectorAll('input[type=datetime-local][data-utc]').forEach(function(el){
+        var v = el.getAttribute('data-utc'); if (!v) return;
+        var d = new Date(v); if (isNaN(d.getTime())) return;
+        el.value = d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());
+      });
+    }
+    // A datetime-local value (local wall clock) -> UTC RFC3339 (Z), '' if blank.
+    function toUtc(val){
+      if (!val) return '';
+      var d = new Date(val); if (isNaN(d.getTime())) return '';
+      return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    }
+    function initSection(section){ localize(section); bindToggles(section); fillDates(section); }
+
+    // Wire a swappable history section: its pager/Clear links and Filter button
+    // fetch the fragment endpoint and replace the section's contents in place.
+    function wireSection(id, buildQuery){
+      var section = document.getElementById(id);
+      if (!section) return;
+      var endpoint = section.getAttribute('data-endpoint');
+      function load(url){
+        fetch(url, {headers:{'X-Requested-With':'fetch'}})
+          .then(function(r){ return r.text(); })
+          .then(function(html){ section.innerHTML = html; initSection(section); });
       }
+      section.addEventListener('click', function(e){
+        var a = e.target.closest('a.btn');
+        if (a && section.contains(a)) { e.preventDefault(); load(a.getAttribute('href')); return; }
+        var b = e.target.closest('button[data-apply]');
+        if (b && section.contains(b)) { e.preventDefault(); load(endpoint + buildQuery(section)); }
+      });
+      initSection(section);
+    }
+
+    function param(qs, key, val){ if (val) qs.push(key+'='+encodeURIComponent(val)); }
+    wireSection('pings-section', function(s){
+      var qs = [];
+      var kind = s.querySelector('[data-testid=pings-kind]');
+      var from = s.querySelector('[data-testid=pings-from]');
+      var to = s.querySelector('[data-testid=pings-to]');
+      param(qs, 'pk', kind && kind.value);
+      param(qs, 'pfrom', toUtc(from && from.value));
+      param(qs, 'pto', toUtc(to && to.value));
+      return qs.length ? ('?'+qs.join('&')) : '';
     });
-  });
+    wireSection('notifs-section', function(s){
+      var qs = [];
+      var ev = s.querySelector('[data-testid=notifs-event]');
+      var st = s.querySelector('[data-testid=notifs-status]');
+      var from = s.querySelector('[data-testid=notifs-from]');
+      var to = s.querySelector('[data-testid=notifs-to]');
+      param(qs, 'ne', ev && ev.value);
+      param(qs, 'ns', st && st.value);
+      param(qs, 'nfrom', toUtc(from && from.value));
+      param(qs, 'nto', toUtc(to && to.value));
+      return qs.length ? ('?'+qs.join('&')) : '';
+    });
+  })();
 </script>
 {% endblock %}

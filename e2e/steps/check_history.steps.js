@@ -40,3 +40,22 @@ When("I click the pings older link", async ({ page }) => {
 When("I click the pings newer link", async ({ page }) => {
   await page.getByTestId("pings-newer").click();
 });
+
+// Filtering swaps the pings section in place via a fetch to the fragment
+// endpoint; the subsequent row-count assertion auto-waits for the swap.
+When("I filter pings by kind {string}", async ({ page }, kind) => {
+  await page.getByTestId("pings-kind").selectOption(kind);
+  await page.getByTestId("pings-apply").click();
+});
+
+When("I clear the pings filter", async ({ page }) => {
+  await page.getByTestId("pings-clear").click();
+});
+
+Then("the pings clear filter link is visible", async ({ page }) => {
+  await expect(page.getByTestId("pings-clear")).toBeVisible();
+});
+
+Then("the pings clear filter link is not visible", async ({ page }) => {
+  await expect(page.getByTestId("pings-clear")).toHaveCount(0);
+});

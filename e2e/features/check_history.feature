@@ -23,3 +23,15 @@ Feature: Check history pagination
     When I click the pings newer link
     Then the pings table shows 20 rows
     And the pings older link is visible
+
+  Scenario: Filtering pings by kind refreshes the table in place
+    When I send 3 "success" pings
+    And I send 2 "fail" pings
+    And I reload the check page
+    Then the pings table shows 5 rows
+    When I filter pings by kind "fail"
+    Then the pings table shows 2 rows
+    And the pings clear filter link is visible
+    When I clear the pings filter
+    Then the pings table shows 5 rows
+    And the pings clear filter link is not visible
