@@ -1268,6 +1268,28 @@ tr.exp > td {
 .field input::placeholder {
   color: var(--faint);
 }
+/* Inputs sitting inline in a table action cell (e.g. the per-row
+   reset-password field) aren't wrapped in a .field, so give them a compact
+   styled look instead of the raw browser default. */
+.inline input[type="text"],
+.inline input[type="password"] {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  outline: none;
+}
+.inline input[type="text"]::placeholder,
+.inline input[type="password"]::placeholder {
+  color: var(--faint);
+}
+.inline input[type="text"]:focus,
+.inline input[type="password"]:focus {
+  border-color: var(--brand);
+}
 .two {
   display: grid;
   grid-template-columns: 1fr 1fr;
