@@ -46,7 +46,7 @@ async fn store_with_up_check(period: i64, grace: i64, last_ping_ago: i64) -> (St
     (store, id)
 }
 
-/// Seeds an Up check with a FIXED last_ping_at for precise boundary control.
+/// Seeds an Up check with a FIXED `last_ping_at` for precise boundary control.
 async fn store_with_up_check_at(
     period: i64,
     grace: i64,

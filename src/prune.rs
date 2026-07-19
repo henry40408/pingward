@@ -17,12 +17,11 @@ fn parse_days(v: Option<String>) -> Option<i64> {
 /// rather than panicking the prune task.
 fn retention_cutoff(now: DateTime<Utc>, setting: Option<String>) -> Option<String> {
     let days = parse_days(setting)?;
-    match Duration::try_days(days).and_then(|d| now.checked_sub_signed(d)) {
-        Some(cutoff) => Some(cutoff.to_rfc3339()),
-        None => {
-            tracing::warn!("retention of {days} days is out of range; skipping prune this run");
-            None
-        }
+    if let Some(cutoff) = Duration::try_days(days).and_then(|d| now.checked_sub_signed(d)) {
+        Some(cutoff.to_rfc3339())
+    } else {
+        tracing::warn!("retention of {days} days is out of range; skipping prune this run");
+        None
     }
 }
 

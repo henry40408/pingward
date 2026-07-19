@@ -243,8 +243,7 @@ async fn login_submit(
     let ok = user
         .as_ref()
         .and_then(|u| u.password_hash.as_deref())
-        .map(|phc| verify_password(&creds.password, phc))
-        .unwrap_or(false);
+        .is_some_and(|phc| verify_password(&creds.password, phc));
     if !ok {
         return Ok(render(&LoginTemplate {
             show_nav: false,
@@ -330,8 +329,7 @@ async fn dashboard(
                 schedule: schedule_label(c),
                 last: c
                     .last_ping_at
-                    .map(|t| crate::view::fmt_relative(t, now))
-                    .unwrap_or_else(|| "—".into()),
+                    .map_or_else(|| "—".into(), |t| crate::view::fmt_relative(t, now)),
                 bars,
             });
         }
@@ -1118,16 +1116,15 @@ fn status_since_label(check: &Check, now: chrono::DateTime<Utc>) -> String {
         };
         // A check can go New -> Down (e.g. it never checked in before its
         // first deadline) without ever having received a ping.
-        let relative = check
-            .last_ping_at
-            .map(|t| crate::view::fmt_relative(t, now))
-            .unwrap_or_else(|| "no pings yet".into());
+        let relative = check.last_ping_at.map_or_else(
+            || "no pings yet".into(),
+            |t| crate::view::fmt_relative(t, now),
+        );
         format!("down · {relative} · {ack}")
     } else {
         let relative = check
             .last_ping_at
-            .map(|t| crate::view::fmt_relative(t, now))
-            .unwrap_or_else(|| "never".into());
+            .map_or_else(|| "never".into(), |t| crate::view::fmt_relative(t, now));
         format!("updated {relative}")
     }
 }
@@ -1191,7 +1188,7 @@ pub(crate) fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String>
         return Err("grace_secs must be >= 0".into());
     }
     let kind = ScheduleKind::from_str(&form.schedule_kind)
-        .map_err(|_| "invalid schedule kind".to_string())?;
+        .map_err(|_e| "invalid schedule kind".to_string())?;
     let (period_secs, cron_expr) = match kind {
         ScheduleKind::Period => {
             if form.period_secs.trim().is_empty() {
@@ -1476,12 +1473,11 @@ async fn build_pings_partial(
     // or paged view pairs within its own slice (a start ping may be filtered
     // out, so pairing there is best-effort regardless).
     let durations = if matches!(cursor, PageCursor::Latest) && filter.is_empty() {
-        match recent {
-            Some(r) => crate::view::run_durations(r),
-            None => {
-                let r = state.store.list_recent_pings(check_id, 40).await?;
-                crate::view::run_durations(&r)
-            }
+        if let Some(r) = recent {
+            crate::view::run_durations(r)
+        } else {
+            let r = state.store.list_recent_pings(check_id, 40).await?;
+            crate::view::run_durations(&r)
         }
     } else {
         crate::view::run_durations(&ping_page.items)
@@ -1497,12 +1493,10 @@ async fn build_pings_partial(
             kind_label: p.kind.as_str(),
             exit: p
                 .exit_code
-                .map(|c| format!("exit {c}"))
-                .unwrap_or_else(|| "—".into()),
+                .map_or_else(|| "—".into(), |c| format!("exit {c}")),
             duration: durations
                 .get(&p.id)
-                .map(|d| crate::view::fmt_secs(*d))
-                .unwrap_or_else(|| "—".into()),
+                .map_or_else(|| "—".into(), |d| crate::view::fmt_secs(*d)),
             source: p.source_ip.clone().unwrap_or_else(|| "—".into()),
             body: p.body.clone(),
         })
@@ -1919,7 +1913,8 @@ pub(crate) fn validate_channel(
     if name.is_empty() {
         return Err("a channel name is required".into());
     }
-    let kind = ChannelKind::from_str(&form.kind).map_err(|_| "unknown channel kind".to_string())?;
+    let kind =
+        ChannelKind::from_str(&form.kind).map_err(|_e| "unknown channel kind".to_string())?;
     let config = match kind {
         ChannelKind::Webhook => {
             let url = form.webhook_url.trim();

@@ -1,5 +1,5 @@
 //! The programmatic REST API: a bearer-authenticated `/api/v1` surface (reads
-//! and writes) plus its OpenAPI document and Scalar reference UI.
+//! and writes) plus its `OpenAPI` document and Scalar reference UI.
 //!
 //! Mounted in [`crate::app`] as a sibling router **outside** the `csrf_guard`
 //! middleware. That is safe because every `/api/v1` handler authenticates via
@@ -23,7 +23,7 @@ use axum::{Json, Router};
 use utoipa::OpenApi;
 use utoipa_scalar::Scalar;
 
-/// The OpenAPI document for the `/api/v1` surface. Every operation is
+/// The `OpenAPI` document for the `/api/v1` surface. Every operation is
 /// bearer-authenticated (`api_key` security scheme).
 #[derive(OpenApi)]
 #[openapi(
@@ -101,7 +101,7 @@ impl utoipa::Modify for BearerAuth {
     }
 }
 
-/// Serve the raw OpenAPI document. Gated behind a logged-in web session
+/// Serve the raw `OpenAPI` document. Gated behind a logged-in web session
 /// ([`CurrentUser`]) — the reference describes the surface but is not itself
 /// public; unauthenticated requests redirect to `/login`. The `/api/v1` data
 /// endpoints keep their independent bearer authentication.
@@ -116,7 +116,7 @@ async fn scalar_docs(_user: CurrentUser) -> Html<String> {
 }
 
 /// The API router: the read-only `/api/v1` endpoints (bearer auth) plus the
-/// OpenAPI document and Scalar docs UI (gated behind a logged-in web session).
+/// `OpenAPI` document and Scalar docs UI (gated behind a logged-in web session).
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(
