@@ -207,3 +207,9 @@ pub struct NotificationPage {
     pub has_newer: bool,
     pub has_older: bool,
 }
+
+/// The channel ids bound to a check after a bind update.
+#[derive(Serialize, ToSchema)]
+pub struct BoundChannels {
+    pub channel_ids: Vec<i64>,
+}
