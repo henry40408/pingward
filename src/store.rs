@@ -378,6 +378,10 @@ enum Predicate {
 /// including filter values — are bound, so interpolating the assembled clause
 /// into the query text is safe. Uses a limit+1 fetch to detect another page in
 /// the queried direction rather than a separate `COUNT(*)`.
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "`limit` is a small positive page size supplied by callers, never negative"
+)]
 async fn keyset_page<T>(
     pool: &crate::db::Pool,
     table: &'static str,
@@ -2422,7 +2426,7 @@ mod tests {
             .iter()
             .map(|p| p.id)
             .collect();
-        all.sort();
+        all.sort_unstable();
         assert_eq!(all.len(), 5);
         let [id1, id2, id3, id4, id5]: [i64; 5] = all.try_into().unwrap();
 
@@ -2523,7 +2527,7 @@ mod tests {
             .iter()
             .map(|n| n.id)
             .collect();
-        all.sort();
+        all.sort_unstable();
         assert_eq!(all.len(), 5);
         let [id1, id2, id3, id4, id5]: [i64; 5] = all.try_into().unwrap();
 

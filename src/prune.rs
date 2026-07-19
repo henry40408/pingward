@@ -49,9 +49,8 @@ async fn prune_table(
     now: DateTime<Utc>,
     table: PruneTable,
 ) -> Result<u64, sqlx::Error> {
-    let cutoff = match retention_cutoff(now, store.get_setting(table.setting_key()).await?) {
-        Some(cutoff) => cutoff,
-        None => return Ok(0),
+    let Some(cutoff) = retention_cutoff(now, store.get_setting(table.setting_key()).await?) else {
+        return Ok(0);
     };
     match table {
         PruneTable::Pings => store.delete_pings_before(&cutoff).await,
@@ -139,7 +138,7 @@ mod tests {
     #[test]
     fn parse_days_off_and_positive_cases() {
         assert_eq!(parse_days(None), None);
-        assert_eq!(parse_days(Some("".into())), None);
+        assert_eq!(parse_days(Some(String::new())), None);
         assert_eq!(parse_days(Some("   ".into())), None);
         assert_eq!(parse_days(Some("abc".into())), None);
         assert_eq!(parse_days(Some("0".into())), None);

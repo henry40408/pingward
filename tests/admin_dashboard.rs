@@ -49,7 +49,7 @@ async fn admin_dashboard_renders_with_figures() {
     let body = res.text();
     assert!(body.contains("Dashboard") || body.contains("Admin"));
     // scale figures present
-    assert!(body.contains("proj") || body.contains("1"));
+    assert!(body.contains("proj") || body.contains('1'));
 }
 
 #[tokio::test]

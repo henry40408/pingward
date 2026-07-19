@@ -84,6 +84,10 @@ const HOT_FRACTION: f64 = 0.80;
 
 /// Build the heartbeat strip: the last `n` runs (success/fail pings), height by
 /// fraction of runtime budget used, colour by outcome. See spec §7.
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "`frac` is clamped to [0.0, 1.0] and MAX_H > 0, so the scaled height is non-negative"
+)]
 pub fn heartbeat(
     pings: &[Ping],
     max_runtime_secs: Option<i64>,

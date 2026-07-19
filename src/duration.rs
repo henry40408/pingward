@@ -109,7 +109,7 @@ mod tests {
         assert_eq!(parse_duration("45s"), Some(45));
         assert_eq!(parse_duration("5m"), Some(300));
         assert_eq!(parse_duration("2h"), Some(7200));
-        assert_eq!(parse_duration("3d"), Some(259200));
+        assert_eq!(parse_duration("3d"), Some(259_200));
     }
 
     #[test]
