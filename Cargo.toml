@@ -32,6 +32,8 @@ thiserror = "2"
 sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+utoipa = { version = "5.5.0", features = ["chrono", "axum_extras"] }
+utoipa-scalar = { version = "0.3.0", features = ["axum"] }
 
 [dev-dependencies]
 axum-test = "21"

@@ -1,6 +1,7 @@
 use axum::{routing::get, Router};
 use state::AppState;
 
+pub mod api;
 pub mod apikey;
 pub mod assets;
 pub mod auth;
@@ -30,6 +31,9 @@ pub fn app(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .merge(web)
         .merge(ping::routes())
+        // Bearer-only API: `ApiUser` never reads the session cookie, so like
+        // `ping::routes` it is structurally exempt from CSRF.
+        .merge(api::routes())
         .merge(assets::routes())
         .with_state(state)
 }

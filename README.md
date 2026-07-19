@@ -28,6 +28,11 @@ OS preference and the layout adapts to phones.
 - **Six notification channels** — webhook, Telegram, Slack, ntfy, Pushover, and
   email (SMTP). Delivery is fire-and-forget with a retry policy, so a ping
   response is never blocked on notification I/O.
+- **Read-only REST API** — a bearer-authenticated `/api/v1` (projects, checks,
+  channels, and ping/notification history) using account-bound API keys
+  (`Authorization: Bearer pw_…`), created and revoked from the **API keys** page.
+  An OpenAPI document is served at `/api/openapi.json` with an interactive Scalar
+  reference at `/api/docs`.
 - **Multi-user with admin** — session-cookie auth (argon2), per-user project /
   check ownership (other users' resources return 404, not 403), plus an
   `/admin/*` area for cross-user management. Optional trusted forward-auth header
