@@ -366,6 +366,80 @@ nav.links a:hover {
   background: var(--faint);
 }
 
+/* ---- Scheduler heartbeats (admin dashboard) ---- */
+.heartbeats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+@media (max-width: 560px) {
+  .heartbeats {
+    grid-template-columns: 1fr;
+  }
+}
+.hb {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  padding: 15px 16px;
+}
+.hb-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--brand);
+  animation: hb-pulse 2.4s ease-out infinite;
+}
+/* An idle loop (never run) gets a static, faint dot — no false "alive" pulse. */
+.hb-dot.idle {
+  background: var(--faint);
+  animation: none;
+}
+@keyframes hb-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--brand) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 0%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hb-dot {
+    animation: none;
+  }
+}
+.hb-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.hb-time {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.hb-time.hb-never {
+  color: var(--muted);
+  font-weight: 500;
+}
+.hb-ago {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
 /* ---- Project group ---- */
 .group {
   margin-bottom: 24px;

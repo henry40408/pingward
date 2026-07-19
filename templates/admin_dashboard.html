@@ -89,8 +89,58 @@
 <div class="card">
   <div class="ch"><h2>Scheduler</h2></div>
   <div class="cb">
-    <p class="mono" style="margin:0 0 8px">Last scan: {% if let Some(t) = last_scan_at %}<span class="localtime" data-ts="{{ t }}">{{ t }}</span>{% else %}never{% endif %}</p>
-    <p class="mono" style="margin:0">Last prune: {% if let Some(t) = last_prune_at %}<span class="localtime" data-ts="{{ t }}">{{ t }}</span>{% else %}never{% endif %}</p>
+    <div class="heartbeats">
+      <div class="hb" data-testid="sched-scan">
+        <span class="hb-dot{% if last_scan_at.is_none() %} idle{% endif %}"></span>
+        <div class="hb-body">
+          <div class="hb-label">Last scan</div>
+          {% if let Some(t) = last_scan_at %}
+          <div class="hb-time localtime" data-ts="{{ t }}">{{ t }}</div>
+          <div class="hb-ago" data-ago="{{ t }}"></div>
+          {% else %}
+          <div class="hb-time hb-never">never</div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="hb" data-testid="sched-prune">
+        <span class="hb-dot{% if last_prune_at.is_none() %} idle{% endif %}"></span>
+        <div class="hb-body">
+          <div class="hb-label">Last prune</div>
+          {% if let Some(t) = last_prune_at %}
+          <div class="hb-time localtime" data-ts="{{ t }}">{{ t }}</div>
+          <div class="hb-ago" data-ago="{{ t }}"></div>
+          {% else %}
+          <div class="hb-time hb-never">never</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
   </div>
 </div>
+
+<script>
+  // Render each heartbeat's "… ago" relative to now and keep it ticking. The
+  // absolute time beside it is localized by the shared base.html handler.
+  (function () {
+    function rel(ts) {
+      var d = new Date(ts);
+      if (isNaN(d.getTime())) return "";
+      var s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+      if (s < 60) return s + "s ago";
+      var m = Math.floor(s / 60);
+      if (m < 60) return m + "m ago";
+      var h = Math.floor(m / 60);
+      if (h < 24) return h + "h " + (m % 60) + "m ago";
+      var days = Math.floor(h / 24);
+      return days + "d " + (h % 24) + "h ago";
+    }
+    function tick() {
+      document.querySelectorAll(".hb-ago[data-ago]").forEach(function (el) {
+        el.textContent = rel(el.getAttribute("data-ago"));
+      });
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+</script>
 {% endblock %}
