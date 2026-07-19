@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use pingward::{
     db,
     models::{ChannelKind, CheckStatus, NotifyStatus, ScheduleKind},
-    notify::{deliver_event, RetryPolicy},
+    notify::{RetryPolicy, deliver_event},
     scheduler::scan_once,
     store::{NewCheck, Store},
 };

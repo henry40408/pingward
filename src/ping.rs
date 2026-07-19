@@ -1,16 +1,16 @@
 use crate::config::{Config, SmtpConfig};
 use crate::error::AppError;
 use crate::models::{CheckStatus, PingKind};
-use crate::notify::{deliver_event, EventKind, NotificationEvent, RetryPolicy};
+use crate::notify::{EventKind, NotificationEvent, RetryPolicy, deliver_event};
 use crate::scheduler::due_time;
 use crate::state::AppState;
 use crate::store::Store;
 use axum::{
+    Router,
     body::Bytes,
     extract::{ConnectInfo, FromRequestParts, Path, State},
-    http::{request::Parts, StatusCode},
+    http::{StatusCode, request::Parts},
     routing::get,
-    Router,
 };
 use chrono::Utc;
 use std::convert::Infallible;

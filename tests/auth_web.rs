@@ -544,11 +544,13 @@ async fn admin_creates_and_deletes_user() {
         .post(&format!("/users/{}/delete", carol.id))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
-    assert!(store
-        .find_user_by_username("carol")
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        store
+            .find_user_by_username("carol")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -706,11 +708,13 @@ async fn channel_create_rejects_blank_required_field() {
         ])
         .await;
     res.assert_status_ok();
-    assert!(store
-        .list_channels_for_project(pid)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        store
+            .list_channels_for_project(pid)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Set up a second user owning a project + check + channel, for authorization

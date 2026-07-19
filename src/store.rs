@@ -822,10 +822,10 @@ impl Store {
         let Some(row) = row else {
             return Ok(None);
         };
-        if let Some(exp) = parse_ts(row.get("expires_at")) {
-            if exp <= now {
-                return Ok(None);
-            }
+        if let Some(exp) = parse_ts(row.get("expires_at"))
+            && exp <= now
+        {
+            return Ok(None);
         }
         let id: i64 = row.get("id");
         let user_id: i64 = row.get("user_id");
@@ -1717,11 +1717,13 @@ mod tests {
         assert_eq!(bob.id, uid);
         assert!(bob.is_admin);
         assert_eq!(bob.password_hash.as_deref(), Some("phc"));
-        assert!(store
-            .find_user_by_username("nobody")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .find_user_by_username("nobody")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         store
             .create_session("sess-1", uid, "csrf-1", now + chrono::Duration::hours(1))
@@ -1735,18 +1737,22 @@ mod tests {
             .unwrap();
         assert_eq!(u.id, uid);
         // expired two hours later
-        assert!(store
-            .find_session_user("sess-1", now + chrono::Duration::hours(2))
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .find_session_user("sess-1", now + chrono::Duration::hours(2))
+                .await
+                .unwrap()
+                .is_none()
+        );
         // deleted
         store.delete_session("sess-1").await.unwrap();
-        assert!(store
-            .find_session_user("sess-1", now)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .find_session_user("sess-1", now)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2368,11 +2374,13 @@ mod tests {
             assert_eq!(batched, single, "check {id}");
         }
         // Empty input short-circuits to an empty map.
-        assert!(store
-            .list_recent_pings_for_checks(&[], 3)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .list_recent_pings_for_checks(&[], 3)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

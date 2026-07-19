@@ -18,11 +18,11 @@ use crate::models::{Channel, Check, CheckStatus, Project, User};
 use crate::state::AppState;
 use crate::store::{NewAudit, NewCheck, NotifFilter, PageCursor, PingFilter, UpdateCheck};
 use crate::web::{
-    validate_channel, validate_check, validate_project, ChannelForm, CheckForm, ProjectForm,
+    ChannelForm, CheckForm, ProjectForm, validate_channel, validate_check, validate_project,
 };
+use axum::Json;
 use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::StatusCode;
-use axum::Json;
 use chrono::Utc;
 use serde::Deserialize;
 use std::collections::HashSet;
