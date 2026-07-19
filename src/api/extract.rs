@@ -2,9 +2,11 @@ use crate::api::error::ApiError;
 use crate::apikey::hash_api_key;
 use crate::models::User;
 use crate::state::AppState;
-use axum::extract::FromRequestParts;
+use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::request::Parts;
+use axum::Json;
 use chrono::Utc;
+use serde::de::DeserializeOwned;
 
 /// Extract a bearer token from the `Authorization` header, if present and
 /// well-formed (`Authorization: Bearer <token>`).
@@ -50,5 +52,25 @@ impl FromRequestParts<AppState> for ApiUser {
             .filter(|u| !u.disabled)
             .ok_or_else(ApiError::unauthorized)?;
         Ok(ApiUser(user))
+    }
+}
+
+/// A JSON body extractor that fails as an [`ApiError`] envelope instead of
+/// axum's default plain-text rejection, so malformed or schema-invalid request
+/// bodies return the same `{"error":{code,message}}` shape as every other API
+/// failure (`400 bad_request`).
+pub struct ApiJson<T>(pub T);
+
+impl<T> FromRequest<AppState> for ApiJson<T>
+where
+    T: DeserializeOwned,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        let Json(value) = Json::<T>::from_request(req, state)
+            .await
+            .map_err(|e| ApiError::bad_request(e.body_text()))?;
+        Ok(ApiJson(value))
     }
 }

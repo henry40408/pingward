@@ -28,8 +28,10 @@ OS preference and the layout adapts to phones.
 - **Six notification channels** — webhook, Telegram, Slack, ntfy, Pushover, and
   email (SMTP). Delivery is fire-and-forget with a retry policy, so a ping
   response is never blocked on notification I/O.
-- **Read-only REST API** — a bearer-authenticated `/api/v1` (projects, checks,
-  channels, and ping/notification history) using account-bound API keys
+- **REST API** — a bearer-authenticated `/api/v1` for projects, checks,
+  channels, and ping/notification history: read them, create/update/delete them,
+  and drive the check actions (pause, resume, acknowledge, regenerate ping URL,
+  bind channels). Authenticate with account-bound API keys
   (`Authorization: Bearer pw_…`), created and revoked from the **API keys** page.
   An OpenAPI document (`/api/openapi.json`) and an interactive Scalar reference
   (`/api/docs`) are available to logged-in users.

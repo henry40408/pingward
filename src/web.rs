@@ -492,10 +492,10 @@ struct TestResult {
 }
 
 #[derive(Deserialize)]
-struct ProjectForm {
-    name: String,
-    scan_interval_secs: String,
-    nag_interval_secs: String,
+pub(crate) struct ProjectForm {
+    pub(crate) name: String,
+    pub(crate) scan_interval_secs: String,
+    pub(crate) nag_interval_secs: String,
 }
 
 /// Parse an optional positive-integer form field. Blank/whitespace-only input
@@ -653,7 +653,9 @@ async fn admin_channel(
 /// Validate a project form's name and optional duration override fields,
 /// returning the parsed `(name, scan_interval_secs, nag_interval_secs)` or an
 /// error message. The name is returned trimmed — it is what must be stored.
-fn validate_project(form: &ProjectForm) -> Result<(String, Option<i64>, Option<i64>), String> {
+pub(crate) fn validate_project(
+    form: &ProjectForm,
+) -> Result<(String, Option<i64>, Option<i64>), String> {
     let name = form.name.trim();
     if name.is_empty() {
         return Err("name is required".into());
@@ -859,16 +861,16 @@ async fn project_delete(
 
 // --- check templates ---
 #[derive(Deserialize)]
-struct CheckForm {
-    name: String,
-    schedule_kind: String,
-    period_secs: String,
-    cron_expr: String,
-    grace_secs: String,
-    timezone: String,
-    scan_interval_secs: String,
-    max_runtime_secs: String,
-    nag_interval_secs: String,
+pub(crate) struct CheckForm {
+    pub(crate) name: String,
+    pub(crate) schedule_kind: String,
+    pub(crate) period_secs: String,
+    pub(crate) cron_expr: String,
+    pub(crate) grace_secs: String,
+    pub(crate) timezone: String,
+    pub(crate) scan_interval_secs: String,
+    pub(crate) max_runtime_secs: String,
+    pub(crate) nag_interval_secs: String,
 }
 
 struct PingRow {
@@ -1163,22 +1165,22 @@ fn empty_check_form(
 }
 
 #[derive(Debug)]
-struct ValidatedCheck {
-    name: String,
-    kind: ScheduleKind,
-    period_secs: Option<i64>,
-    grace: i64,
-    cron_expr: Option<String>,
-    scan_interval_secs: Option<i64>,
-    max_runtime_secs: Option<i64>,
-    nag_interval_secs: Option<i64>,
+pub(crate) struct ValidatedCheck {
+    pub(crate) name: String,
+    pub(crate) kind: ScheduleKind,
+    pub(crate) period_secs: Option<i64>,
+    pub(crate) grace: i64,
+    pub(crate) cron_expr: Option<String>,
+    pub(crate) scan_interval_secs: Option<i64>,
+    pub(crate) max_runtime_secs: Option<i64>,
+    pub(crate) nag_interval_secs: Option<i64>,
 }
 
 /// Validate a check form into a `ValidatedCheck` (schedule + grace + the three
 /// optional duration overrides). Returns `Err(message)` on invalid input; a
 /// non-blank override that isn't a positive duration is rejected rather than
 /// silently discarded.
-fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String> {
+pub(crate) fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String> {
     let name = form.name.trim();
     if name.is_empty() {
         return Err("name is required".into());
@@ -1882,29 +1884,103 @@ struct ChannelFormTemplate {
 }
 
 #[derive(Deserialize)]
-struct ChannelForm {
-    name: String,
-    kind: String,
+pub(crate) struct ChannelForm {
+    pub(crate) name: String,
+    pub(crate) kind: String,
     #[serde(default)]
-    webhook_url: String,
+    pub(crate) webhook_url: String,
     #[serde(default)]
-    slack_url: String,
+    pub(crate) slack_url: String,
     #[serde(default)]
-    telegram_token: String,
+    pub(crate) telegram_token: String,
     #[serde(default)]
-    telegram_chat_id: String,
+    pub(crate) telegram_chat_id: String,
     #[serde(default)]
-    ntfy_base_url: String, // optional, defaults to https://ntfy.sh
+    pub(crate) ntfy_base_url: String, // optional, defaults to https://ntfy.sh
     #[serde(default)]
-    ntfy_topic: String,
+    pub(crate) ntfy_topic: String,
     #[serde(default)]
-    ntfy_token: String, // optional
+    pub(crate) ntfy_token: String, // optional
     #[serde(default)]
-    pushover_token: String, // application token
+    pub(crate) pushover_token: String, // application token
     #[serde(default)]
-    pushover_user: String, // user/group key
+    pub(crate) pushover_user: String, // user/group key
     #[serde(default)]
-    email_to: String,
+    pub(crate) email_to: String,
+}
+
+/// Validate a channel form into `(kind, trimmed name, config JSON)` or an error
+/// message. Shared by the web create handler and the programmatic API so both
+/// enforce the same per-kind required fields and build the same stored config.
+pub(crate) fn validate_channel(
+    form: &ChannelForm,
+) -> Result<(ChannelKind, String, String), String> {
+    let name = form.name.trim();
+    if name.is_empty() {
+        return Err("a channel name is required".into());
+    }
+    let kind = ChannelKind::from_str(&form.kind).map_err(|_| "unknown channel kind".to_string())?;
+    let config = match kind {
+        ChannelKind::Webhook => {
+            let url = form.webhook_url.trim();
+            if url.is_empty() {
+                return Err("a webhook URL is required".into());
+            }
+            serde_json::json!({ "url": url }).to_string()
+        }
+        ChannelKind::Slack => {
+            let url = form.slack_url.trim();
+            if url.is_empty() {
+                return Err("a Slack incoming-webhook URL is required".into());
+            }
+            serde_json::json!({ "url": url }).to_string()
+        }
+        ChannelKind::Telegram => {
+            let token = form.telegram_token.trim();
+            let chat_id = form.telegram_chat_id.trim();
+            if token.is_empty() || chat_id.is_empty() {
+                return Err("Telegram requires both a bot token and a chat id".into());
+            }
+            serde_json::json!({ "token": token, "chat_id": chat_id }).to_string()
+        }
+        ChannelKind::Ntfy => {
+            let topic = form.ntfy_topic.trim();
+            if topic.is_empty() {
+                return Err("ntfy requires a topic".into());
+            }
+            let base_url = {
+                let b = form.ntfy_base_url.trim();
+                if b.is_empty() {
+                    "https://ntfy.sh"
+                } else {
+                    b
+                }
+            };
+            let token = form.ntfy_token.trim();
+            serde_json::json!({
+                "base_url": base_url,
+                "topic": topic,
+                "token": token,
+            })
+            .to_string()
+        }
+        ChannelKind::Pushover => {
+            let token = form.pushover_token.trim();
+            let user = form.pushover_user.trim();
+            if token.is_empty() || user.is_empty() {
+                return Err("Pushover requires both an application token and a user key".into());
+            }
+            serde_json::json!({ "token": token, "user": user }).to_string()
+        }
+        ChannelKind::Email => {
+            let to = form.email_to.trim();
+            if to.is_empty() {
+                return Err("an email recipient address is required".into());
+            }
+            serde_json::json!({ "to": to }).to_string()
+        }
+    };
+    Ok((kind, name.to_string(), config))
 }
 
 #[derive(Deserialize)]
@@ -1959,79 +2035,14 @@ async fn channel_create_core(
         .into_response())
     };
 
-    let name = form.name.trim();
-    if name.is_empty() {
-        return err("a channel name is required");
-    }
-
-    let Ok(kind) = ChannelKind::from_str(&form.kind) else {
-        return err("unknown channel kind");
-    };
-
-    let config = match kind {
-        ChannelKind::Webhook => {
-            let url = form.webhook_url.trim();
-            if url.is_empty() {
-                return err("a webhook URL is required");
-            }
-            serde_json::json!({ "url": url }).to_string()
-        }
-        ChannelKind::Slack => {
-            let url = form.slack_url.trim();
-            if url.is_empty() {
-                return err("a Slack incoming-webhook URL is required");
-            }
-            serde_json::json!({ "url": url }).to_string()
-        }
-        ChannelKind::Telegram => {
-            let token = form.telegram_token.trim();
-            let chat_id = form.telegram_chat_id.trim();
-            if token.is_empty() || chat_id.is_empty() {
-                return err("Telegram requires both a bot token and a chat id");
-            }
-            serde_json::json!({ "token": token, "chat_id": chat_id }).to_string()
-        }
-        ChannelKind::Ntfy => {
-            let topic = form.ntfy_topic.trim();
-            if topic.is_empty() {
-                return err("ntfy requires a topic");
-            }
-            let base_url = {
-                let b = form.ntfy_base_url.trim();
-                if b.is_empty() {
-                    "https://ntfy.sh"
-                } else {
-                    b
-                }
-            };
-            let token = form.ntfy_token.trim();
-            serde_json::json!({
-                "base_url": base_url,
-                "topic": topic,
-                "token": token,
-            })
-            .to_string()
-        }
-        ChannelKind::Pushover => {
-            let token = form.pushover_token.trim();
-            let user = form.pushover_user.trim();
-            if token.is_empty() || user.is_empty() {
-                return err("Pushover requires both an application token and a user key");
-            }
-            serde_json::json!({ "token": token, "user": user }).to_string()
-        }
-        ChannelKind::Email => {
-            let to = form.email_to.trim();
-            if to.is_empty() {
-                return err("an email recipient address is required");
-            }
-            serde_json::json!({ "to": to }).to_string()
-        }
+    let (kind, name, config) = match validate_channel(&form) {
+        Ok(v) => v,
+        Err(msg) => return err(&msg),
     };
 
     state
         .store
-        .create_channel(pid, kind, name, &config, Utc::now())
+        .create_channel(pid, kind, &name, &config, Utc::now())
         .await?;
     Ok(Redirect::to(&format!("{base}/projects/{pid}")).into_response())
 }

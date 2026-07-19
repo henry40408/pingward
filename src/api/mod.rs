@@ -1,5 +1,5 @@
-//! The programmatic REST API: a bearer-authenticated `/api/v1` surface plus its
-//! OpenAPI document and Scalar reference UI.
+//! The programmatic REST API: a bearer-authenticated `/api/v1` surface (reads
+//! and writes) plus its OpenAPI document and Scalar reference UI.
 //!
 //! Mounted in [`crate::app`] as a sibling router **outside** the `csrf_guard`
 //! middleware. That is safe because every `/api/v1` handler authenticates via
@@ -12,24 +12,24 @@
 pub mod dto;
 pub mod error;
 pub mod extract;
+pub mod input;
 pub mod v1;
 
 use crate::auth::CurrentUser;
 use crate::state::AppState;
 use axum::response::Html;
-use axum::routing::get;
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use utoipa::OpenApi;
 use utoipa_scalar::Scalar;
 
-/// The OpenAPI document for the read-only `/api/v1` surface. Every operation is
-/// bearer-authenticated (`api_key` security scheme); write endpoints arrive in a
-/// later stage.
+/// The OpenAPI document for the `/api/v1` surface. Every operation is
+/// bearer-authenticated (`api_key` security scheme).
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "pingward API",
-        description = "Programmatic read access to pingward projects, checks, channels, and history. Authenticate with an API key: `Authorization: Bearer pw_…`.",
+        description = "Programmatic access to pingward projects, checks, channels, and history. Authenticate with an API key: `Authorization: Bearer pw_…`.",
         version = "1.0.0"
     ),
     paths(
@@ -42,6 +42,19 @@ use utoipa_scalar::Scalar;
         v1::list_check_notifications,
         v1::get_channel,
         v1::list_keys,
+        v1::create_project,
+        v1::update_project,
+        v1::delete_project,
+        v1::create_check,
+        v1::update_check,
+        v1::delete_check,
+        v1::pause_check,
+        v1::resume_check,
+        v1::ack_check,
+        v1::regenerate_check,
+        v1::set_check_channels,
+        v1::create_channel,
+        v1::delete_channel,
     ),
     components(schemas(
         dto::ProjectDto,
@@ -52,6 +65,11 @@ use utoipa_scalar::Scalar;
         dto::ApiKeyDto,
         dto::PingPage,
         dto::NotificationPage,
+        dto::BoundChannels,
+        input::ProjectInput,
+        input::CheckInput,
+        input::ChannelInput,
+        input::ChannelBindInput,
         error::ApiErrorInner,
     )),
     modifiers(&BearerAuth),
@@ -101,20 +119,44 @@ async fn scalar_docs(_user: CurrentUser) -> Html<String> {
 /// OpenAPI document and Scalar docs UI (gated behind a logged-in web session).
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/projects", get(v1::list_projects))
-        .route("/api/v1/projects/{id}", get(v1::get_project))
-        .route("/api/v1/projects/{id}/checks", get(v1::list_project_checks))
+        .route(
+            "/api/v1/projects",
+            get(v1::list_projects).post(v1::create_project),
+        )
+        .route(
+            "/api/v1/projects/{id}",
+            get(v1::get_project)
+                .patch(v1::update_project)
+                .delete(v1::delete_project),
+        )
+        .route(
+            "/api/v1/projects/{id}/checks",
+            get(v1::list_project_checks).post(v1::create_check),
+        )
         .route(
             "/api/v1/projects/{id}/channels",
-            get(v1::list_project_channels),
+            get(v1::list_project_channels).post(v1::create_channel),
         )
-        .route("/api/v1/checks/{id}", get(v1::get_check))
+        .route(
+            "/api/v1/checks/{id}",
+            get(v1::get_check)
+                .patch(v1::update_check)
+                .delete(v1::delete_check),
+        )
         .route("/api/v1/checks/{id}/pings", get(v1::list_check_pings))
         .route(
             "/api/v1/checks/{id}/notifications",
             get(v1::list_check_notifications),
         )
-        .route("/api/v1/channels/{id}", get(v1::get_channel))
+        .route("/api/v1/checks/{id}/pause", post(v1::pause_check))
+        .route("/api/v1/checks/{id}/resume", post(v1::resume_check))
+        .route("/api/v1/checks/{id}/ack", post(v1::ack_check))
+        .route("/api/v1/checks/{id}/regenerate", post(v1::regenerate_check))
+        .route("/api/v1/checks/{id}/channels", put(v1::set_check_channels))
+        .route(
+            "/api/v1/channels/{id}",
+            get(v1::get_channel).delete(v1::delete_channel),
+        )
         .route("/api/v1/keys", get(v1::list_keys))
         .route("/api/openapi.json", get(openapi_json))
         .route("/api/docs", get(scalar_docs))
