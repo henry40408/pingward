@@ -366,8 +366,34 @@ async fn keys_endpoint_is_self_scoped() {
 }
 
 #[tokio::test]
-async fn openapi_and_docs_are_public() {
+async fn docs_require_a_logged_in_session() {
     let (server, _store) = test_app().await;
+    // The spec and the Scalar page are gated behind a web session: an
+    // unauthenticated request redirects to /login rather than exposing them.
+    server
+        .get("/api/openapi.json")
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    server
+        .get("/api/docs")
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn docs_are_served_to_a_logged_in_user() {
+    let (mut server, store) = test_app().await;
+    server.save_cookies();
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("member", Some(&phc), false, Utc::now())
+        .await
+        .unwrap();
+    server
+        .post("/login")
+        .form(&[("username", "member"), ("password", "pw")])
+        .await;
+
     let spec = server.get("/api/openapi.json").await;
     spec.assert_status_ok();
     assert_eq!(spec.json::<Value>()["info"]["title"], "pingward API");

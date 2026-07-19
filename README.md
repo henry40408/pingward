@@ -31,8 +31,8 @@ OS preference and the layout adapts to phones.
 - **Read-only REST API** — a bearer-authenticated `/api/v1` (projects, checks,
   channels, and ping/notification history) using account-bound API keys
   (`Authorization: Bearer pw_…`), created and revoked from the **API keys** page.
-  An OpenAPI document is served at `/api/openapi.json` with an interactive Scalar
-  reference at `/api/docs`.
+  An OpenAPI document (`/api/openapi.json`) and an interactive Scalar reference
+  (`/api/docs`) are available to logged-in users.
 - **Multi-user with admin** — session-cookie auth (argon2), per-user project /
   check ownership (other users' resources return 404, not 403), plus an
   `/admin/*` area for cross-user management. Optional trusted forward-auth header

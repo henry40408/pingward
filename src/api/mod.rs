@@ -4,13 +4,17 @@
 //! Mounted in [`crate::app`] as a sibling router **outside** the `csrf_guard`
 //! middleware. That is safe because every `/api/v1` handler authenticates via
 //! the [`extract::ApiUser`] bearer extractor and never reads the session
-//! cookie, so there is no ambient authority for a cross-site request to abuse.
+//! cookie. The `/api/docs` and `/api/openapi.json` routes do read the session
+//! cookie ([`CurrentUser`]), but they are read-only `GET`s that render a schema
+//! and change no state, so there is still no ambient authority for a cross-site
+//! request to abuse.
 
 pub mod dto;
 pub mod error;
 pub mod extract;
 pub mod v1;
 
+use crate::auth::CurrentUser;
 use crate::state::AppState;
 use axum::response::Html;
 use axum::routing::get;
@@ -79,20 +83,22 @@ impl utoipa::Modify for BearerAuth {
     }
 }
 
-/// Serve the raw OpenAPI document. Public (schema only, no data) so clients can
-/// discover the API before holding a key.
-async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
+/// Serve the raw OpenAPI document. Gated behind a logged-in web session
+/// ([`CurrentUser`]) — the reference describes the surface but is not itself
+/// public; unauthenticated requests redirect to `/login`. The `/api/v1` data
+/// endpoints keep their independent bearer authentication.
+async fn openapi_json(_user: CurrentUser) -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
-/// Serve the interactive Scalar API reference. Public for the same reason as
-/// [`openapi_json`].
-async fn scalar_docs() -> Html<String> {
+/// Serve the interactive Scalar API reference. Gated behind a logged-in web
+/// session for the same reason as [`openapi_json`].
+async fn scalar_docs(_user: CurrentUser) -> Html<String> {
     Html(Scalar::new(ApiDoc::openapi()).to_html())
 }
 
-/// The API router: the read-only `/api/v1` endpoints plus the (public) OpenAPI
-/// document and Scalar docs UI.
+/// The API router: the read-only `/api/v1` endpoints (bearer auth) plus the
+/// OpenAPI document and Scalar docs UI (gated behind a logged-in web session).
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/projects", get(v1::list_projects))

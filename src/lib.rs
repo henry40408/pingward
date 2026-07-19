@@ -31,8 +31,10 @@ pub fn app(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .merge(web)
         .merge(ping::routes())
-        // Bearer-only API: `ApiUser` never reads the session cookie, so like
-        // `ping::routes` it is structurally exempt from CSRF.
+        // API router: the `/api/v1` data endpoints are bearer-only (`ApiUser`
+        // never reads the session cookie). Its `/api/docs` + `/api/openapi.json`
+        // routes do read the session cookie, but are read-only `GET`s that
+        // change no state, so the whole router stays structurally CSRF-exempt.
         .merge(api::routes())
         .merge(assets::routes())
         .with_state(state)
