@@ -189,3 +189,18 @@ Then(
     }).toPass({ timeout: 5000 });
   }
 );
+
+// Recent-notifications event cell renders as .pill.{class}, mirroring the
+// ping-kind pills. Map the Gherkin event label to its pill class. Scope to the
+// notifications section so a ping's .pill.fail can't satisfy a "down" event.
+const EVENT_PILL_CLASS = { down: "fail", up: "ok", reminder: "start" };
+
+Then(
+  "the recent notifications table shows a {string} event",
+  async ({ page }, event) => {
+    const cls = EVENT_PILL_CLASS[event];
+    await expect(
+      page.locator(`#notifs-section .pill.${cls}`).first()
+    ).toBeVisible();
+  }
+);
