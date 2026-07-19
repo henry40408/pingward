@@ -20,14 +20,14 @@
 <div class="card">
   <div class="ch"><h2>Check health</h2></div>
   <div class="cb">
-    <p style="margin:0 0 14px;display:flex;gap:8px;flex-wrap:wrap">
+    <p class="pillrow">
       <span class="badge new">{{ status.new }} new</span>
       <span class="badge up">{{ status.up }} up</span>
       <span class="badge down">{{ status.down }} down</span>
       <span class="badge paused">{{ status.paused }} paused</span>
     </p>
     {% if down.is_empty() %}
-    <p style="margin:0;color:var(--muted)">No checks are currently down.</p>
+    <p class="note">No checks are currently down.</p>
     {% else %}
     <table>
       <thead><tr><th>Check</th><th>Project</th><th>Owner</th></tr></thead>
@@ -48,12 +48,12 @@
 <div class="card">
   <div class="ch"><h2>Notification health (24h)</h2></div>
   <div class="cb">
-    <p style="margin:0 0 14px;display:flex;gap:8px;flex-wrap:wrap">
+    <p class="pillrow">
       <span class="pill ok">{{ notif_ok }} ok</span>
       <span class="pill fail">{{ notif_err }} error</span>
     </p>
     {% if channel_fail.is_empty() %}
-    <p style="margin:0;color:var(--muted)">No notifications sent in the last 24h.</p>
+    <p class="note">No notifications sent in the last 24h.</p>
     {% else %}
     <table>
       <thead><tr><th>Channel</th><th>Ok</th><th>Error</th></tr></thead>
@@ -65,9 +65,9 @@
     </table>
     {% endif %}
 
-    <h2 style="margin:20px 0 8px">Recent failures</h2>
+    <h2 class="subhead">Recent failures</h2>
     {% if recent_fail.is_empty() %}
-    <p style="margin:0;color:var(--muted)">No recent notification failures.</p>
+    <p class="note">No recent notification failures.</p>
     {% else %}
     <table>
       <thead><tr><th>When</th><th>Event</th><th>Check</th><th>Error</th></tr></thead>

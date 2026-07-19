@@ -1,7 +1,7 @@
 use crate::db::Pool;
 use crate::models::{
-    AuditLog, Channel, ChannelKind, Check, CheckStatus, Notification, NotifyStatus, Ping, PingKind,
-    Project, ScheduleKind, User,
+    ApiKey, AuditLog, Channel, ChannelKind, Check, CheckStatus, Notification, NotifyStatus, Ping,
+    PingKind, Project, ScheduleKind, User,
 };
 use crate::notify::EventKind;
 use chrono::{DateTime, Utc};
@@ -257,6 +257,19 @@ fn row_to_user(row: &sqlx::any::AnyRow) -> Result<User, sqlx::Error> {
         disabled: row.get::<i64, _>("disabled") != 0,
         created_at: parse_ts(row.get("created_at"))
             .ok_or_else(|| decode_err("users.created_at must be RFC3339"))?,
+    })
+}
+
+fn row_to_api_key(row: &sqlx::any::AnyRow) -> Result<ApiKey, sqlx::Error> {
+    Ok(ApiKey {
+        id: row.get("id"),
+        user_id: row.get("user_id"),
+        name: row.get("name"),
+        prefix: row.get("prefix"),
+        created_at: parse_ts(row.get("created_at"))
+            .ok_or_else(|| decode_err("api_keys.created_at must be RFC3339"))?,
+        last_used_at: parse_ts(row.get("last_used_at")),
+        expires_at: parse_ts(row.get("expires_at")),
     })
 }
 
@@ -744,6 +757,90 @@ impl Store {
         sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE is_admin <> 0 AND disabled = 0")
             .fetch_one(&self.pool)
             .await
+    }
+
+    /// Persist a new API key. Only the `token_hash` and non-secret `prefix` are
+    /// stored — the plaintext is never seen here.
+    pub async fn insert_api_key(
+        &self,
+        user_id: i64,
+        name: &str,
+        token_hash: &str,
+        prefix: &str,
+        expires_at: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> Result<i64, sqlx::Error> {
+        let row = sqlx::query(
+            "INSERT INTO api_keys (user_id, name, token_hash, prefix, created_at, expires_at) \
+             VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+        )
+        .bind(user_id)
+        .bind(name)
+        .bind(token_hash)
+        .bind(prefix)
+        .bind(now.to_rfc3339())
+        .bind(expires_at.map(|t| t.to_rfc3339()))
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get::<i64, _>("id"))
+    }
+
+    /// List a user's API keys (metadata only), newest first.
+    pub async fn list_api_keys_for_user(&self, user_id: i64) -> Result<Vec<ApiKey>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM api_keys WHERE user_id = $1 ORDER BY id DESC")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(row_to_api_key).collect()
+    }
+
+    /// Delete an API key, scoped to its owner. Returns `true` if a row was
+    /// removed — `false` means the key does not exist or belongs to another
+    /// user (existence is not distinguished, mirroring the 404-hiding model).
+    pub async fn delete_api_key(&self, id: i64, user_id: i64) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM api_keys WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Resolve a token hash to its owning user id, honoring expiry. Returns
+    /// `None` for an unknown or expired key. On a successful match the key's
+    /// `last_used_at` is refreshed, but writes are throttled to at most once per
+    /// 60s so a hot key doesn't cause a write per request.
+    pub async fn validate_api_key(
+        &self,
+        token_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT id, user_id, expires_at, last_used_at FROM api_keys WHERE token_hash = $1",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        if let Some(exp) = parse_ts(row.get("expires_at")) {
+            if exp <= now {
+                return Ok(None);
+            }
+        }
+        let id: i64 = row.get("id");
+        let user_id: i64 = row.get("user_id");
+        let stale = parse_ts(row.get("last_used_at"))
+            .is_none_or(|t| now - t >= chrono::Duration::seconds(60));
+        if stale {
+            sqlx::query("UPDATE api_keys SET last_used_at = $1 WHERE id = $2")
+                .bind(now.to_rfc3339())
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(Some(user_id))
     }
 
     pub async fn create_session(

@@ -100,6 +100,20 @@ pub struct Notification {
     pub created_at: DateTime<Utc>,
 }
 
+/// A stored API key's metadata. The secret token itself is never held here —
+/// only its SHA-256 hash lives in the database, and the plaintext is shown once
+/// at creation. `prefix` is a non-secret display fragment.
+#[derive(Debug, Clone)]
+pub struct ApiKey {
+    pub id: i64,
+    pub user_id: i64,
+    pub name: String,
+    pub prefix: String,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AuditLog {
     pub id: i64,

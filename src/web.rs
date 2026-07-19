@@ -56,6 +56,8 @@ pub fn routes() -> Router<AppState> {
         .route("/channels/{id}/test", post(channel_test))
         .route("/checks/{id}/channels", post(check_set_channels))
         .route("/settings", get(settings_page).post(settings_save))
+        .route("/api-keys", get(api_keys_page).post(api_keys_create))
+        .route("/api-keys/{id}/delete", post(api_keys_delete))
         .route("/users", get(users_page).post(users_create))
         .route("/users/{id}/delete", post(users_delete))
         .route("/users/{id}/password", post(users_set_password))
@@ -2547,6 +2549,104 @@ async fn users_set_disabled(
         )
         .await?;
     Ok(Redirect::to("/users").into_response())
+}
+
+// --- API keys (session-authenticated management UI for every logged-in user) ---
+#[derive(Template)]
+#[template(path = "api_keys.html")]
+struct ApiKeysTemplate {
+    show_nav: bool,
+    csrf: String,
+    is_admin: bool,
+    keys: Vec<crate::models::ApiKey>,
+    /// The plaintext token, rendered exactly once right after creation and
+    /// never recoverable afterwards.
+    new_token: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NewApiKeyForm {
+    name: String,
+    #[serde(default)]
+    expires_in: String,
+}
+
+async fn api_keys_page(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+) -> Result<Response, AppError> {
+    render_api_keys(&state, &jar, &user, None, None).await
+}
+
+async fn api_keys_create(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+    Form(form): Form<NewApiKeyForm>,
+) -> Result<Response, AppError> {
+    let name = form.name.trim();
+    if name.is_empty() {
+        return render_api_keys(&state, &jar, &user, None, Some("a name is required")).await;
+    }
+    // Optional expiry: blank means never; otherwise a duration from now
+    // (`30d`, `12h`, …) reusing the same parser as the check/duration fields.
+    let expires_at = {
+        let raw = form.expires_in.trim();
+        if raw.is_empty() {
+            None
+        } else {
+            match crate::duration::parse_duration(raw) {
+                Some(secs) if secs > 0 => Some(Utc::now() + Duration::seconds(secs)),
+                _ => {
+                    return render_api_keys(
+                        &state,
+                        &jar,
+                        &user,
+                        None,
+                        Some("expiry must be a duration like 30d, or blank for never"),
+                    )
+                    .await;
+                }
+            }
+        }
+    };
+    let (full, prefix, hash) = crate::apikey::generate_api_key();
+    state
+        .store
+        .insert_api_key(user.id, name, &hash, &prefix, expires_at, Utc::now())
+        .await?;
+    render_api_keys(&state, &jar, &user, Some(full), None).await
+}
+
+async fn api_keys_delete(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    // Owner-scoped delete; a key the caller doesn't own is silently a no-op.
+    state.store.delete_api_key(id, user.id).await?;
+    Ok(Redirect::to("/api-keys").into_response())
+}
+
+async fn render_api_keys(
+    state: &AppState,
+    jar: &CookieJar,
+    user: &User,
+    new_token: Option<String>,
+    error: Option<&str>,
+) -> Result<Response, AppError> {
+    let keys = state.store.list_api_keys_for_user(user.id).await?;
+    Ok(render(&ApiKeysTemplate {
+        show_nav: true,
+        csrf: current_csrf(state, jar).await,
+        is_admin: user.is_admin,
+        keys,
+        new_token,
+        error: error.map(str::to_string),
+    })?
+    .into_response())
 }
 
 // --- admin route group (cross-user management, every access audited) ---

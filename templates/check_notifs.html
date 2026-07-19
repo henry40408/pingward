@@ -23,7 +23,7 @@
   {% if filtered %}<a class="btn ghost" href="{{ base }}/checks/{{ check_id }}/notifications" data-testid="notifs-clear">Clear</a>{% endif %}
 </form>
 {% if empty %}
-<p class="empty" style="margin:10px 0 0;color:var(--muted)" data-testid="notifications-empty">{% if filtered %}No notifications match the filter.{% else %}No notifications yet.{% endif %}</p>
+<p class="empty" data-testid="notifications-empty">{% if filtered %}No notifications match the filter.{% else %}No notifications yet.{% endif %}</p>
 {% else %}
 <div class="tscroll">
 <table>

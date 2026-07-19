@@ -1,0 +1,214 @@
+use axum::http::StatusCode;
+use axum_test::TestServer;
+use pingward::{apikey, app, config::Config, db, state::AppState, store::Store};
+
+/// Send the current session's CSRF token as a default header so protected POSTs
+/// pass `csrf_guard`.
+async fn set_csrf(server: &mut TestServer, store: &Store) {
+    let tok = sqlx::query_scalar::<_, String>(
+        "SELECT csrf_token FROM sessions ORDER BY expires_at DESC LIMIT 1",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .unwrap();
+    server.add_header("x-csrf-token", tok.as_str());
+}
+
+/// A server with a logged-in **non-admin** user — API-key management is
+/// available to every authenticated user, not just admins.
+async fn member_server() -> (TestServer, Store, i64) {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    let uid = store
+        .create_user("member", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    server
+        .post("/login")
+        .form(&[("username", "member"), ("password", "pw")])
+        .await;
+    set_csrf(&mut server, &store).await;
+    (server, store, uid)
+}
+
+/// Pull the one-time plaintext token out of the create response (it's on the
+/// copy button's `data-copy` attribute).
+fn extract_token(html: &str) -> String {
+    let marker = "data-copy=\"";
+    let start = html.find(marker).expect("token banner present") + marker.len();
+    let rest = &html[start..];
+    let end = rest.find('"').unwrap();
+    rest[..end].to_string()
+}
+
+#[tokio::test]
+async fn nav_shows_api_keys_link_for_member() {
+    let (server, _store, _uid) = member_server().await;
+    assert!(server.get("/").await.text().contains("nav-api-keys"));
+}
+
+#[tokio::test]
+async fn create_shows_token_once_then_only_the_prefix() {
+    let (server, store, uid) = member_server().await;
+    server.get("/api-keys").await.assert_status_ok();
+
+    let res = server
+        .post("/api-keys")
+        .form(&[("name", "CI deploy"), ("expires_in", "")])
+        .await;
+    res.assert_status_ok();
+    let token = extract_token(&res.text());
+    assert!(token.starts_with("pw_"));
+    assert_eq!(token.len(), 67); // "pw_" + 64 hex
+
+    // Persisted for this user, and the hash resolves back to the user.
+    let keys = store.list_api_keys_for_user(uid).await.unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(
+        store
+            .validate_api_key(&apikey::hash_api_key(&token), chrono::Utc::now())
+            .await
+            .unwrap(),
+        Some(uid)
+    );
+
+    // Reloading the list never re-exposes the plaintext — only the prefix.
+    let body = server.get("/api-keys").await.text();
+    assert!(!body.contains(&token), "plaintext token must not reappear");
+    assert!(body.contains(&keys[0].prefix));
+}
+
+#[tokio::test]
+async fn keys_are_caller_scoped() {
+    let (server, store, _uid) = member_server().await;
+    let now = chrono::Utc::now();
+    let other = store
+        .create_user("other", Some("x"), false, now)
+        .await
+        .unwrap();
+    let (_full, prefix, hash) = apikey::generate_api_key();
+    let other_kid = store
+        .insert_api_key(other, "theirs", &hash, &prefix, None, now)
+        .await
+        .unwrap();
+
+    // The member's list shows nothing belonging to `other`.
+    let body = server.get("/api-keys").await.text();
+    assert!(!body.contains("theirs"));
+    assert!(!body.contains(&prefix));
+
+    // And they can't revoke it — the delete is a silent no-op, key survives.
+    server
+        .post(&format!("/api-keys/{other_kid}/delete"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert_eq!(store.list_api_keys_for_user(other).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn revoke_own_key() {
+    let (server, store, uid) = member_server().await;
+    let now = chrono::Utc::now();
+    let (_full, prefix, hash) = apikey::generate_api_key();
+    let kid = store
+        .insert_api_key(uid, "k", &hash, &prefix, None, now)
+        .await
+        .unwrap();
+
+    server
+        .post(&format!("/api-keys/{kid}/delete"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn create_without_csrf_is_forbidden() {
+    // Log in but never install the CSRF header, proving the route sits inside
+    // csrf_guard (unlike the machine ping API).
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    let uid = store
+        .create_user("member", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    server
+        .post("/login")
+        .form(&[("username", "member"), ("password", "pw")])
+        .await;
+
+    let res = server
+        .post("/api-keys")
+        .form(&[("name", "x"), ("expires_in", "")])
+        .await;
+    res.assert_status(StatusCode::FORBIDDEN);
+    assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn create_with_expiry_sets_expires_at() {
+    let (server, store, uid) = member_server().await;
+    server
+        .post("/api-keys")
+        .form(&[("name", "temp"), ("expires_in", "30d")])
+        .await
+        .assert_status_ok();
+    let keys = store.list_api_keys_for_user(uid).await.unwrap();
+    assert!(keys[0].expires_at.is_some());
+}
+
+#[tokio::test]
+async fn create_with_bad_expiry_is_rejected() {
+    let (server, store, uid) = member_server().await;
+    let res = server
+        .post("/api-keys")
+        .form(&[("name", "temp"), ("expires_in", "banana")])
+        .await;
+    res.assert_status_ok();
+    assert!(res.text().contains("expiry must be"));
+    assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn create_with_blank_name_is_rejected() {
+    let (server, store, uid) = member_server().await;
+    let res = server
+        .post("/api-keys")
+        .form(&[("name", "   "), ("expires_in", "")])
+        .await;
+    res.assert_status_ok();
+    assert!(res.text().contains("a name is required"));
+    assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn validate_rejects_expired_and_unknown_keys() {
+    let (_server, store, uid) = member_server().await;
+    let now = chrono::Utc::now();
+    let (_full, prefix, hash) = apikey::generate_api_key();
+    store
+        .insert_api_key(
+            uid,
+            "old",
+            &hash,
+            &prefix,
+            Some(now - chrono::Duration::hours(1)),
+            now,
+        )
+        .await
+        .unwrap();
+    // Expired → rejected.
+    assert_eq!(store.validate_api_key(&hash, now).await.unwrap(), None);
+    // Unknown hash → rejected.
+    assert_eq!(store.validate_api_key("deadbeef", now).await.unwrap(), None);
+}

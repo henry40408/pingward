@@ -323,8 +323,47 @@ async fn postgres_full_round_trip() {
     assert_eq!(store.delete_pings_before(&far).await.unwrap(), 0);
     assert_eq!(store.delete_notifications_before(&far).await.unwrap(), 0);
 
-    // cascade delete: removing the user removes project → checks → channels → pings
+    // api keys: insert/list/validate/owner-scoped-delete/expiry, all on PG.
+    let (_full, prefix, hash) = pingward::apikey::generate_api_key();
+    let kid = store
+        .insert_api_key(uid, "ci", &hash, &prefix, None, now)
+        .await
+        .unwrap();
+    assert_eq!(store.list_api_keys_for_user(uid).await.unwrap().len(), 1);
+    assert_eq!(store.validate_api_key(&hash, now).await.unwrap(), Some(uid));
+    // Owner-scoped delete: a non-owner id can't remove it; the owner can.
+    let stranger = store
+        .create_user("stranger", Some("phc"), false, now)
+        .await
+        .unwrap();
+    assert!(!store.delete_api_key(kid, stranger).await.unwrap());
+    assert!(store.delete_api_key(kid, uid).await.unwrap());
+    assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
+    // Expired keys are rejected.
+    let (_f2, p2, h2) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(
+            uid,
+            "old",
+            &h2,
+            &p2,
+            Some(now - chrono::Duration::hours(1)),
+            now,
+        )
+        .await
+        .unwrap();
+    assert_eq!(store.validate_api_key(&h2, now).await.unwrap(), None);
+    // A live key remains, to prove the user-delete cascade removes it below.
+    let (_f3, p3, h3) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(uid, "live", &h3, &p3, None, now)
+        .await
+        .unwrap();
+
+    // cascade delete: removing the user removes project → checks → channels →
+    // pings, and the user's api keys.
     store.delete_user(uid).await.unwrap();
     assert!(store.list_projects_for_user(uid).await.unwrap().is_empty());
     assert!(store.find_check(cid).await.unwrap().is_none());
+    assert_eq!(store.validate_api_key(&h3, now).await.unwrap(), None);
 }
