@@ -902,12 +902,28 @@ struct ChannelBox {
 }
 
 struct NotificationRow {
-    created_at: String, // UTC fallback shown when JS is off
-    iso: String,        // RFC3339 UTC; localized to the viewer's zone client-side
-    event: &'static str,
+    created_at: String,             // UTC fallback shown when JS is off
+    iso: String,                    // RFC3339 UTC; localized to the viewer's zone client-side
+    event: &'static str,            // visible event label: "down"|"up"|"reminder"
+    event_pill_class: &'static str, // pill css class, mirroring the ping-kind pills
     status: &'static str,
     channel: String,
     error: String,
+}
+
+/// Maps a notification `EventKind` to a pill CSS class, reusing the same
+/// palette as the ping-kind pills (`ping_pill_class`): a recovery is "ok"
+/// (green), a downtime alert is "fail" (red), a reminder is neutral, and a
+/// test uses the brand "log" tone. Test deliveries aren't recorded in the
+/// history table, but the match stays exhaustive.
+fn notif_event_pill_class(e: crate::notify::EventKind) -> &'static str {
+    use crate::notify::EventKind;
+    match e {
+        EventKind::Up => "ok",
+        EventKind::Down => "fail",
+        EventKind::Reminder => "start",
+        EventKind::Test => "log",
+    }
 }
 
 #[derive(Template)]
@@ -1557,6 +1573,7 @@ async fn build_notifs_partial(
             created_at: n.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
             iso: n.created_at.to_rfc3339(),
             event: n.event.as_str(),
+            event_pill_class: notif_event_pill_class(n.event),
             status: n.status.as_str(),
             channel: channel_names
                 .get(&n.channel_id)
@@ -2926,6 +2943,15 @@ mod tests {
             acknowledged: false,
             created_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn notif_event_pill_class_maps_each_event_to_the_ping_kind_palette() {
+        use crate::notify::EventKind;
+        assert_eq!(notif_event_pill_class(EventKind::Up), "ok");
+        assert_eq!(notif_event_pill_class(EventKind::Down), "fail");
+        assert_eq!(notif_event_pill_class(EventKind::Reminder), "start");
+        assert_eq!(notif_event_pill_class(EventKind::Test), "log");
     }
 
     #[test]

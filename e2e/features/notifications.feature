@@ -78,3 +78,5 @@ Feature: Notification channels
     When I send a "success" ping
     Then the mock server receives a "up" notification
     And the check's recent notifications show a delivery to "hook1"
+    And the recent notifications table shows a "down" event
+    And the recent notifications table shows a "up" event
