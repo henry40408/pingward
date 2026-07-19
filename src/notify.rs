@@ -274,9 +274,8 @@ impl Notifier for NtfyNotifier {
         Box::pin(async move {
             let url = format!("{}/{}", self.base_url, self.topic);
             let (priority, tags) = match ev.event {
-                EventKind::Down => ("high", "red_circle"),
+                EventKind::Down | EventKind::Reminder => ("high", "red_circle"),
                 EventKind::Up => ("default", "green_circle"),
-                EventKind::Reminder => ("high", "red_circle"),
                 EventKind::Test => ("default", "bell"),
             };
             let mut req = self
@@ -333,10 +332,8 @@ impl Notifier for PushoverNotifier {
         Box::pin(async move {
             let url = format!("{}/1/messages.json", self.base_url);
             let priority = match ev.event {
-                EventKind::Down => "1",
-                EventKind::Up => "0",
-                EventKind::Reminder => "1",
-                EventKind::Test => "0",
+                EventKind::Down | EventKind::Reminder => "1",
+                EventKind::Up | EventKind::Test => "0",
             };
             let title = event_title(ev);
             let message = event_text(ev);

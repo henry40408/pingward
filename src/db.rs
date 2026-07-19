@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 pub type Pool = sqlx::AnyPool;
 
-/// SQLite's `:memory:` database is scoped to a single physical connection.
+/// `SQLite`'s `:memory:` database is scoped to a single physical connection.
 fn is_in_memory_url(url: &str) -> bool {
     url.contains(":memory:") || url.contains("mode=memory")
 }
@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(check_count, 0, "check should cascade-delete with project");
     }
 
-    /// File-based SQLite connections must enable WAL + a busy timeout so a
+    /// File-based `SQLite` connections must enable WAL + a busy timeout so a
     /// writer blocked by another writer waits and retries instead of failing
     /// immediately with `SQLITE_BUSY` ("database is locked").
     #[tokio::test]
@@ -197,7 +197,7 @@ mod tests {
         }
     }
 
-    /// In-memory SQLite still gets a busy timeout but WAL does not apply (a
+    /// In-memory `SQLite` still gets a busy timeout but WAL does not apply (a
     /// `:memory:` database reports its journal mode as `memory`).
     #[tokio::test]
     async fn sqlite_memory_sets_busy_timeout_but_not_wal() {
@@ -223,7 +223,7 @@ mod tests {
         );
     }
 
-    /// Regression test for a SQLite file URL with no `?mode=` query param:
+    /// Regression test for a `SQLite` file URL with no `?mode=` query param:
     /// pre-`Any`-driver, `create_if_missing(true)` made this auto-create the
     /// database file. `connect()` must still do so by appending `mode=rwc`.
     #[tokio::test]

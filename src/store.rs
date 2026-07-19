@@ -373,7 +373,7 @@ enum Predicate {
 
 /// Shared keyset-pagination core for `pings`/`notifications`: both tables are
 /// paged the same way (by `id`, scoped to `check_id`), so the SQL shape and
-/// has_newer/has_older bookkeeping live here once. `table` and every predicate
+/// `has_newer/has_older` bookkeeping live here once. `table` and every predicate
 /// column/operator are fixed caller literals (never user input); all values —
 /// including filter values — are bound, so interpolating the assembled clause
 /// into the query text is safe. Uses a limit+1 fetch to detect another page in
@@ -523,7 +523,6 @@ impl Store {
                 Err(e) => {
                     let id: i64 = row.get("id");
                     tracing::error!("skipping corrupt checks row id={id}: {e}");
-                    continue;
                 }
             }
         }
@@ -543,7 +542,6 @@ impl Store {
                 Err(e) => {
                     let id: i64 = row.get("id");
                     tracing::error!("skipping corrupt checks row id={id}: {e}");
-                    continue;
                 }
             }
         }
@@ -1186,7 +1184,7 @@ impl Store {
     /// `per_check_limit` pings (newest id first) for each of `check_ids` in a
     /// single round-trip, keyed by `check_id`. Avoids the per-check N+1 the
     /// dashboard would otherwise incur. Checks with no pings are simply absent
-    /// from the map. Uses a `ROW_NUMBER()` window (SQLite >= 3.25 / PostgreSQL).
+    /// from the map. Uses a `ROW_NUMBER()` window (`SQLite` >= 3.25 / `PostgreSQL`).
     pub async fn list_recent_pings_for_checks(
         &self,
         check_ids: &[i64],
@@ -1407,8 +1405,8 @@ impl Store {
     /// Every check currently `down`, paired with its project name and owner
     /// username, for the admin cross-user incidents view. Ordered by
     /// `last_ping_at` (oldest first, i.e. longest-down first), with
-    /// never-pinged checks (`NULL`) sorted last on both SQLite and
-    /// PostgreSQL, and `id` as a deterministic final tiebreaker.
+    /// never-pinged checks (`NULL`) sorted last on both `SQLite` and
+    /// `PostgreSQL`, and `id` as a deterministic final tiebreaker.
     pub async fn list_down_checks_with_owner(
         &self,
     ) -> Result<Vec<(Check, String, String)>, sqlx::Error> {
@@ -1453,9 +1451,9 @@ impl Store {
 
     /// Per-channel `(channel_name, ok, error)` notification counts since
     /// `cutoff`, ordered by most failures first. The conditional sums are
-    /// cast to `BIGINT` so they decode as `i64` on both SQLite and
-    /// PostgreSQL (a bare `SUM()` can come back as a wider/different type
-    /// on PostgreSQL and fail to decode as `i64`).
+    /// cast to `BIGINT` so they decode as `i64` on both `SQLite` and
+    /// `PostgreSQL` (a bare `SUM()` can come back as a wider/different type
+    /// on `PostgreSQL` and fail to decode as `i64`).
     pub async fn channel_failure_counts_since(
         &self,
         cutoff: DateTime<Utc>,

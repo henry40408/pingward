@@ -121,8 +121,7 @@ impl From<CheckInput> for CheckForm {
             // "no grace" — `validate_check` rejects a blank grace outright.
             grace_secs: i
                 .grace_secs
-                .map(DurationInput::into_form_string)
-                .unwrap_or_else(|| "0".to_string()),
+                .map_or_else(|| "0".to_string(), DurationInput::into_form_string),
             timezone: i.timezone,
             scan_interval_secs: opt_form(i.scan_interval_secs),
             max_runtime_secs: opt_form(i.max_runtime_secs),
