@@ -76,6 +76,7 @@ All configuration is via environment variables:
 | `PINGWARD_BASE_URL` | `http://localhost:8080` | Base URL used to render ping URLs in the UI. |
 | `PINGWARD_SCAN_INTERVAL` | `30s` | How often the scan loop re-evaluates checks. Accepts raw seconds or a duration (`5m`, `1h30m`). |
 | `PINGWARD_PRUNE_INTERVAL_SECS` | — | How often the prune loop runs. |
+| `PINGWARD_LOG_FORMAT` | `text` | Log renderer: `text` (human-readable) or `json` (one JSON object per line for a log aggregator). Verbosity is set with `RUST_LOG`. |
 | `PINGWARD_FORWARD_AUTH_HEADER` + `PINGWARD_TRUSTED_PROXIES` | — | Trusted forward-auth header and the proxy CIDRs allowed to set it. |
 | `PINGWARD_SMTP_*` | — | Instance SMTP for the email channel (`HOST`/`FROM` required to enable; port/TLS defaulted). |
 

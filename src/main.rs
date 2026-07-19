@@ -1,14 +1,28 @@
-use pingward::{config::Config, db, scheduler, state::AppState, store::Store};
+use pingward::{
+    config::{Config, LogFormat},
+    db, scheduler,
+    state::AppState,
+    store::Store,
+};
+
+/// Install the global tracing subscriber. `RUST_LOG` (via `EnvFilter`) controls
+/// verbosity; `format` selects the human-readable text renderer or line-delimited
+/// JSON for a log aggregator.
+fn init_tracing(format: LogFormat) {
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    match format {
+        LogFormat::Json => builder.json().init(),
+        LogFormat::Text => builder.init(),
+    }
+}
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-
     let config = Config::from_env();
+    init_tracing(config.log_format);
+
     let bind = config.bind.clone();
     let scan_interval_secs = config.scan_interval_secs;
     let prune_interval_secs = config.prune_interval_secs;

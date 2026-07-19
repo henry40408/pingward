@@ -15,6 +15,16 @@ pub struct SmtpConfig {
     pub tls: SmtpTls,
 }
 
+/// How log lines are formatted at startup. `Text` is the human-readable console
+/// format; `Json` emits one JSON object per line for ingestion by a log
+/// aggregator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -25,6 +35,7 @@ pub struct Config {
     pub forward_auth_header: Option<String>,
     pub trusted_proxies: Vec<String>,
     pub smtp: Option<SmtpConfig>,
+    pub log_format: LogFormat,
 }
 
 /// Resolve an env duration to whole seconds: a raw integer (`300`) or a
@@ -46,6 +57,17 @@ impl Config {
     pub fn from_map(get: impl Fn(&str) -> Option<String>) -> Self {
         let scan_interval_secs = env_duration_secs(get("PINGWARD_SCAN_INTERVAL"), 30);
         let prune_interval_secs = env_duration_secs(get("PINGWARD_PRUNE_INTERVAL_SECS"), 3600);
+        // Log format: only "json" (any case) switches to structured output; an
+        // unset or unrecognized value keeps the human-readable text format.
+        let log_format = match get("PINGWARD_LOG_FORMAT")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "json" => LogFormat::Json,
+            _ => LogFormat::Text,
+        };
         let trusted_proxies = get("PINGWARD_TRUSTED_PROXIES")
             .map(|v| {
                 v.split(',')
@@ -116,6 +138,7 @@ impl Config {
             forward_auth_header: get("PINGWARD_FORWARD_AUTH_HEADER"),
             trusted_proxies,
             smtp,
+            log_format,
         }
     }
 }
@@ -166,6 +189,25 @@ mod tests {
         assert_eq!(c.scan_interval_secs, 30);
         assert_eq!(c.bind, "127.0.0.1:8080");
         assert_eq!(c.database_url, "sqlite://pingward.sqlite3?mode=rwc");
+    }
+
+    #[test]
+    fn log_format_defaults_to_text() {
+        assert_eq!(Config::from_map(|_| None).log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn log_format_json_is_case_insensitive_and_trimmed() {
+        let c = Config::from_map(|k| (k == "PINGWARD_LOG_FORMAT").then(|| "JSON".into()));
+        assert_eq!(c.log_format, LogFormat::Json);
+        let c = Config::from_map(|k| (k == "PINGWARD_LOG_FORMAT").then(|| "  json  ".into()));
+        assert_eq!(c.log_format, LogFormat::Json);
+    }
+
+    #[test]
+    fn log_format_unrecognized_falls_back_to_text() {
+        let c = Config::from_map(|k| (k == "PINGWARD_LOG_FORMAT").then(|| "yaml".into()));
+        assert_eq!(c.log_format, LogFormat::Text);
     }
 
     #[test]

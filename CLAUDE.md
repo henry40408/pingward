@@ -103,7 +103,9 @@ also derives `as_str()` / `FromStr` — add variants there.
 
 `DATABASE_URL` (default `sqlite://pingward.sqlite3?mode=rwc`), `PINGWARD_BIND`,
 `PINGWARD_BASE_URL` (used to render ping URLs), `PINGWARD_SCAN_INTERVAL`,
-`PINGWARD_PRUNE_INTERVAL_SECS`, `PINGWARD_FORWARD_AUTH_HEADER` +
+`PINGWARD_PRUNE_INTERVAL_SECS`, `PINGWARD_LOG_FORMAT` (`text` default, or `json`
+for line-delimited structured logs — parsed into `config::LogFormat`, applied by
+`init_tracing` in `main.rs`), `PINGWARD_FORWARD_AUTH_HEADER` +
 `PINGWARD_TRUSTED_PROXIES`, and `PINGWARD_SMTP_*` (host/from required to enable
 email; port/TLS defaulted). The scan and prune interval env vars accept raw
 seconds or a human-readable duration (`5m`, `1h30m`) via
