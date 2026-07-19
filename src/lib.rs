@@ -1,6 +1,7 @@
 use axum::{routing::get, Router};
 use state::AppState;
 
+pub mod apikey;
 pub mod assets;
 pub mod auth;
 pub mod config;

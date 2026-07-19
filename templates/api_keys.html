@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="phead">
+  <div>
+    <h1>API keys</h1>
+    <p class="crumb" style="margin-top:2px">Authenticate programmatic requests with <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+  </div>
+</div>
+
+{% if let Some(token) = new_token %}
+<div class="card" style="border-color:var(--brand)">
+  <div class="cb">
+    <p class="flash ok" data-testid="api-key-created">Key created — copy it now. For security it won't be shown again.</p>
+    <div class="urlrow"><code data-testid="api-key-token">{{ token }}</code><button class="copy" type="button" data-copy="{{ token }}">Copy</button></div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="cb" style="padding-top:6px">
+    {% if keys.is_empty() %}
+    <p style="margin:0;color:var(--muted)" data-testid="api-keys-empty">No API keys yet. Create one below.</p>
+    {% else %}
+    <div class="tscroll">
+      <table>
+        <thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+        <tbody>
+          {% for k in keys %}
+          <tr data-testid="api-key-row-{{ k.id }}">
+            <td>{{ k.name }}</td>
+            <td class="mono">{{ k.prefix }}&hellip;</td>
+            <td class="mono"><span class="localtime" data-ts="{{ k.created_at.to_rfc3339() }}">{{ k.created_at }}</span></td>
+            <td class="mono">{% if let Some(t) = k.last_used_at %}<span class="localtime" data-ts="{{ t.to_rfc3339() }}">{{ t }}</span>{% else %}never{% endif %}</td>
+            <td class="mono">{% if let Some(t) = k.expires_at %}<span class="localtime" data-ts="{{ t.to_rfc3339() }}">{{ t }}</span>{% else %}never{% endif %}</td>
+            <td><form class="inline" method="post" action="/api-keys/{{ k.id }}/delete" onsubmit="return confirm('Revoke this API key?')"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" type="submit" data-testid="api-key-delete">revoke</button></form></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:0">
+  <div class="ch"><h2>Create API key</h2></div>
+  <div class="cb">
+    {% if let Some(error) = error %}<p class="flash err" data-testid="api-key-error">{{ error }}</p>{% endif %}
+    <form method="post" action="/api-keys">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="two">
+        <div class="field">
+          <label for="name">Name</label>
+          <input id="name" name="name" data-testid="api-key-name-input" placeholder="e.g. CI deploy" required>
+        </div>
+        <div class="field">
+          <label for="expires_in">Expires in (optional)</label>
+          <input id="expires_in" name="expires_in" data-testid="api-key-expires-input" placeholder="30d — blank = never">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn primary" type="submit" data-testid="api-key-submit">Create key</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  // Copy the one-time token to the clipboard.
+  document.querySelectorAll(".copy").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var t = btn.getAttribute("data-copy");
+      if (navigator.clipboard) navigator.clipboard.writeText(t);
+    });
+  });
+</script>
+{% endblock %}
