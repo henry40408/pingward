@@ -30,7 +30,7 @@
   <thead><tr><th>When</th><th>Event</th><th>Channel</th><th>Result</th></tr></thead>
   <tbody>
     {% for n in rows %}
-    <tr><td class="mono"><span class="localtime" data-ts="{{ n.iso }}">{{ n.created_at }}</span></td><td>{{ n.event }}</td><td>{{ n.channel }}</td>
+    <tr><td class="mono"><span class="localtime" data-ts="{{ n.iso }}">{{ n.created_at }}</span></td><td><span class="pill {{ n.event_pill_class }}">{{ n.event }}</span></td><td>{{ n.channel }}</td>
       {% if n.status == "ok" %}<td class="mono ok-txt">sent</td>{% else %}<td class="mono fail-txt">{{ n.error }}</td>{% endif %}
     </tr>
     {% endfor %}
