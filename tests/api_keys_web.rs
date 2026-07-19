@@ -84,6 +84,49 @@ async fn create_shows_token_once_then_only_the_prefix() {
 }
 
 #[tokio::test]
+async fn expired_key_is_flagged_but_a_live_one_is_not() {
+    let (server, store, uid) = member_server().await;
+    let now = chrono::Utc::now();
+
+    // A key whose expiry is already in the past.
+    let (_f1, p1, h1) = apikey::generate_api_key();
+    let dead = store
+        .insert_api_key(
+            uid,
+            "dead",
+            &h1,
+            &p1,
+            Some(now - chrono::Duration::hours(1)),
+            now,
+        )
+        .await
+        .unwrap();
+    // A key that is still valid (or never expires).
+    let (_f2, p2, h2) = apikey::generate_api_key();
+    let live = store
+        .insert_api_key(
+            uid,
+            "live",
+            &h2,
+            &p2,
+            Some(now + chrono::Duration::days(30)),
+            now,
+        )
+        .await
+        .unwrap();
+
+    let body = server.get("/api-keys").await.text();
+    assert!(
+        body.contains(&format!("api-key-expired-{dead}")),
+        "expired key should carry the expired badge"
+    );
+    assert!(
+        !body.contains(&format!("api-key-expired-{live}")),
+        "a live key must not be flagged expired"
+    );
+}
+
+#[tokio::test]
 async fn keys_are_caller_scoped() {
     let (server, store, _uid) = member_server().await;
     let now = chrono::Utc::now();

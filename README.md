@@ -91,6 +91,43 @@ Duration-valued settings (scan/nag/prune intervals and per-check period, grace,
 max-runtime) accept either raw seconds or a human-readable string (`5m`,
 `1h30m`, `2d`).
 
+## REST API
+
+pingward exposes a bearer-authenticated JSON API under `/api/v1`. Create a key
+on the **API keys** page (it is shown once), then send it as a bearer token:
+
+```sh
+BASE=https://pingward.example.com
+KEY=pw_…                                   # from the API keys page
+
+# Create a project, then a check under it
+pid=$(curl -s -X POST "$BASE/api/v1/projects" \
+  -H "authorization: Bearer $KEY" -H "content-type: application/json" \
+  -d '{"name":"Backups","scan_interval_secs":"5m"}' | jq -r .id)
+
+curl -s -X POST "$BASE/api/v1/projects/$pid/checks" \
+  -H "authorization: Bearer $KEY" -H "content-type: application/json" \
+  -d '{"name":"nightly","period_secs":"1h","grace_secs":"5m"}'
+
+# Read a check's ping history (keyset pagination)
+curl -s "$BASE/api/v1/checks/1/pings?limit=20" -H "authorization: Bearer $KEY"
+
+# Drive a check: pause / resume / acknowledge / regenerate the ping URL
+curl -s -X POST "$BASE/api/v1/checks/1/pause" -H "authorization: Bearer $KEY"
+```
+
+Duration fields (`period_secs`, `grace_secs`, the interval overrides) accept
+either an integer number of seconds or a human-readable string (`"5m"`,
+`"1h30m"`). Paginated list responses carry `has_newer`/`has_older` plus
+`next_after`/`next_before` cursor ids — pass `next_before` as `?before=` to
+fetch the next (older) page. An admin key may reach another user's resources;
+every such cross-user access is recorded in the audit log.
+
+The full operation list — with request/response schemas — is served as an
+OpenAPI document at `/api/openapi.json`, with an interactive
+[Scalar](https://github.com/scalar/scalar) reference at `/api/docs` (both
+require a logged-in session).
+
 ## Development
 
 ```sh
