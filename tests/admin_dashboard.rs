@@ -110,13 +110,16 @@ async fn admin_dashboard_absolute_times_wrapped_for_local_tz() {
         .unwrap();
 
     let body = server.get("/admin").await.text();
-    // Last scan, last prune, and the recent-failure "When" cell are each wrapped
-    // in a `.localtime` span so the shared base.html script converts them to the
-    // viewer's time zone (raw UTC text is only the no-JS fallback).
-    let spans = body.matches(r#"<span class="localtime" data-ts=""#).count();
+    // Last scan, last prune, and the recent-failure "When" cell each carry the
+    // `.localtime` class with a `data-ts` so the shared base.html script converts
+    // them to the viewer's time zone (raw UTC text is only the no-JS fallback).
+    // The scheduler heartbeats render the class on a <div> (not a <span>), so
+    // match the class+attr pair rather than a specific tag; the trailing quote
+    // after `localtime` also excludes the script's `.localtime[data-ts]` selector.
+    let spans = body.matches(r#"localtime" data-ts=""#).count();
     assert!(
         spans >= 3,
-        "expected >=3 localtime spans (scan, prune, failure), got {spans}"
+        "expected >=3 localtime elements (scan, prune, failure), got {spans}"
     );
     // The scheduler heartbeat is embedded as its stored RFC3339 data-ts.
     assert!(

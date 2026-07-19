@@ -902,9 +902,9 @@ struct ChannelBox {
 }
 
 struct NotificationRow {
-    created_at: String,           // UTC fallback shown when JS is off
-    iso: String,                  // RFC3339 UTC; localized to the viewer's zone client-side
-    event: &'static str,          // visible event label: "down"|"up"|"reminder"
+    created_at: String,             // UTC fallback shown when JS is off
+    iso: String,                    // RFC3339 UTC; localized to the viewer's zone client-side
+    event: &'static str,            // visible event label: "down"|"up"|"reminder"
     event_pill_class: &'static str, // pill css class, mirroring the ping-kind pills
     status: &'static str,
     channel: String,
