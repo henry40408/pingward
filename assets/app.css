@@ -1053,6 +1053,17 @@ tbody td.mono {
   font-size: 12px;
   color: var(--muted);
 }
+/* A result cell that is both `.mono` and a colored utility (e.g. the
+   notifications "sent"/error column) must keep its status color: `tbody td.mono`
+   above would otherwise mute it, so re-assert the color at equal specificity.
+   Without this the check page showed failed notifications in grey while the
+   admin table (no `.mono`) showed them red — now both match. */
+tbody td.ok-txt {
+  color: var(--up);
+}
+tbody td.fail-txt {
+  color: var(--down);
+}
 
 /* ---- Pills ---- */
 .pill {
