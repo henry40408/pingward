@@ -44,6 +44,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-
 # without extra flags (CI additionally runs `clippy --all-targets -- -D warnings`,
 # which promotes every one of these warnings to a hard error). Kept in sync with
 # the sibling `noadd` project's curated set so both repos enforce the same rules.
+# Source: Embark Studios' rust-ecosystem lint list (as vendored by noadd).
+# https://github.com/EmbarkStudios/rust-ecosystem/blob/732513edfd9172f4eda358b2d0cefc6cad1585ee/lints.rs
 [lints.rust]
 unexpected_cfgs = "deny"
 unsafe_code = "deny"
