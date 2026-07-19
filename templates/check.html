@@ -33,6 +33,34 @@
 <div class="card">
   <div class="cb">
     <div class="urlrow"><code data-testid="ping-url">{{ ping_url }}</code><button class="copy" type="button" data-copy="{{ ping_url }}">Copy</button></div>
+    <details class="pinghelp" data-testid="ping-help">
+      <summary>How do I ping this check?</summary>
+      <div class="pinghelp-body">
+        <p>Have your job call the URL above when it runs — a plain <code>GET</code> or <code>POST</code> reports <strong>success</strong>. Add a suffix for other signals:</p>
+        <div class="tscroll">
+          <table>
+            <thead><tr><th>Signal</th><th>URL</th><th>Effect</th></tr></thead>
+            <tbody>
+              <tr><td><span class="pill ok">success</span></td><td class="mono">{{ ping_url }}</td><td>marks the check up</td></tr>
+              <tr><td><span class="pill fail">fail</span></td><td class="mono">{{ ping_url }}/fail</td><td>marks the check down</td></tr>
+              <tr><td><span class="pill start">start</span></td><td class="mono">{{ ping_url }}/start</td><td>opens a run so an overrun can be caught</td></tr>
+              <tr><td><span class="pill log">log</span></td><td class="mono">{{ ping_url }}/log</td><td>records a note, status unchanged</td></tr>
+              <tr><td class="mono">exit code</td><td class="mono">{{ ping_url }}/&lt;code&gt;</td><td><code>0</code> = up, anything else = down</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="out log pinghelp-code"><span class="tag">shell examples</span># report success when the job finishes
+curl -fsS {{ ping_url }}
+
+# wrap a job: start it, run, then report the exit code
+curl -fsS {{ ping_url }}/start
+mybackup.sh
+curl -fsS {{ ping_url }}/$?
+
+# report failure and attach the output (shown in Recent pings)
+mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
+      </div>
+    </details>
     <div class="beat" style="margin-top:16px" title="last 30 runs">
       {% for b in bars %}<i class="{{ b.class }}" style="height:{{ b.height }}px" title="{{ b.title }}"></i>{% endfor %}
     </div>
