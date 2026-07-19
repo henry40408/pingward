@@ -17,10 +17,10 @@
 {% endif %}
 
 <div class="card">
+  {% if keys.is_empty() %}
+  <p class="empty" data-testid="api-keys-empty">No API keys yet — create one below.</p>
+  {% else %}
   <div class="cb" style="padding-top:6px">
-    {% if keys.is_empty() %}
-    <p style="margin:0;color:var(--muted)" data-testid="api-keys-empty">No API keys yet. Create one below.</p>
-    {% else %}
     <div class="tscroll">
       <table>
         <thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
@@ -38,8 +38,8 @@
         </tbody>
       </table>
     </div>
-    {% endif %}
   </div>
+  {% endif %}
 </div>
 
 <div class="card" style="margin-bottom:0">
