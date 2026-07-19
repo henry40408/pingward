@@ -84,6 +84,16 @@ async fn create_shows_token_once_then_only_the_prefix() {
 }
 
 #[tokio::test]
+async fn api_keys_page_links_to_the_docs() {
+    let (server, _store, _uid) = member_server().await;
+    let body = server.get("/api-keys").await.text();
+    // The page points users at the interactive reference and the raw spec.
+    assert!(body.contains("data-testid=\"api-docs-link\""));
+    assert!(body.contains("href=\"/api/docs\""));
+    assert!(body.contains("href=\"/api/openapi.json\""));
+}
+
+#[tokio::test]
 async fn expired_key_is_flagged_but_a_live_one_is_not() {
     let (server, store, uid) = member_server().await;
     let now = chrono::Utc::now();
