@@ -9,8 +9,7 @@
 //! valid resource is.
 
 use crate::api::dto::{
-    ApiKeyDto, BoundChannels, ChannelDto, CheckDto, NotificationDto, NotificationPage, PingDto,
-    PingPage, ProjectDto,
+    ApiKeyDto, BoundChannels, ChannelDto, CheckDto, NotificationPage, PingPage, ProjectDto,
 };
 use crate::api::error::ApiError;
 use crate::api::extract::{ApiJson, ApiUser};
@@ -299,11 +298,7 @@ pub async fn list_check_pings(
             &PingFilter::default(),
         )
         .await?;
-    Ok(Json(PingPage {
-        items: page.items.into_iter().map(PingDto::from).collect(),
-        has_newer: page.has_newer,
-        has_older: page.has_older,
-    }))
+    Ok(Json(PingPage::from_page(page)))
 }
 
 /// List a check's notifications, newest-first, keyset-paginated.
@@ -333,11 +328,7 @@ pub async fn list_check_notifications(
             &NotifFilter::default(),
         )
         .await?;
-    Ok(Json(NotificationPage {
-        items: page.items.into_iter().map(NotificationDto::from).collect(),
-        has_newer: page.has_newer,
-        has_older: page.has_older,
-    }))
+    Ok(Json(NotificationPage::from_page(page)))
 }
 
 /// List the caller's own API keys (metadata only — the secret token is never

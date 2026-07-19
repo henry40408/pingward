@@ -187,11 +187,15 @@ async fn check_pings_are_paginated_newest_first() {
     assert_eq!(page["items"].as_array().unwrap().len(), 20);
     assert_eq!(page["has_older"], true);
     assert_eq!(page["has_newer"], false);
-
-    // Page older than the last item id → remaining 5.
+    // Cursor envelope: next_before points at the last (oldest) item on the
+    // page; there is no newer page, so next_after is null.
     let last_id = page["items"].as_array().unwrap()[19]["id"]
         .as_i64()
         .unwrap();
+    assert_eq!(page["next_before"], last_id);
+    assert!(page["next_after"].is_null());
+
+    // Follow next_before to fetch the older page → remaining 5.
     let res2 = server
         .get(&format!("/api/v1/checks/{cid}/pings?before={last_id}"))
         .add_header("authorization", format!("Bearer {token}"))
@@ -200,6 +204,14 @@ async fn check_pings_are_paginated_newest_first() {
     assert_eq!(page2["items"].as_array().unwrap().len(), 5);
     assert_eq!(page2["has_newer"], true);
     assert_eq!(page2["has_older"], false);
+    // Now the newer direction is populated and the older one is exhausted.
+    assert_eq!(
+        page2["next_after"],
+        page2["items"].as_array().unwrap()[0]["id"]
+            .as_i64()
+            .unwrap()
+    );
+    assert!(page2["next_before"].is_null());
 }
 
 #[tokio::test]

@@ -17,6 +17,7 @@ pub struct ProjectDto {
     pub id: i64,
     /// Id of the user who owns this project.
     pub owner_id: i64,
+    #[schema(example = "Backups")]
     pub name: String,
     /// Per-project scan-interval override in seconds, if set.
     pub scan_interval_secs: Option<i64>,
@@ -44,10 +45,13 @@ pub struct CheckDto {
     pub project_id: i64,
     pub name: String,
     /// The per-check UUID embedded in this check's ping URL.
+    #[schema(example = "b1946ac9-2f8a-4e6d-9c3b-6f0e2d1a7c55")]
     pub ping_uuid: String,
     /// One of `new`, `up`, `down`, `paused`.
+    #[schema(example = "up")]
     pub status: String,
     /// Schedule type: `period` or `cron`.
+    #[schema(example = "period")]
     pub schedule_kind: String,
     /// Expected interval between pings, in seconds (period schedules).
     pub period_secs: Option<i64>,
@@ -92,7 +96,9 @@ pub struct ChannelDto {
     pub id: i64,
     pub project_id: i64,
     /// Channel type: `webhook`, `telegram`, `slack`, `ntfy`, `pushover`, `email`.
+    #[schema(example = "webhook")]
     pub kind: String,
+    #[schema(example = "On-call webhook")]
     pub name: String,
     pub created_at: DateTime<Utc>,
 }
@@ -191,13 +197,41 @@ impl From<ApiKey> for ApiKeyDto {
 }
 
 /// A keyset-paginated slice of pings, newest-first. `has_older`/`has_newer`
-/// report whether adjacent pages exist; page with `?before=<id>` /
-/// `?after=<id>` using the boundary item ids.
+/// report whether adjacent pages exist; `next_before`/`next_after` carry the
+/// boundary ids to fetch them — pass `next_before` as `?before=` for the next
+/// (older) page and `next_after` as `?after=` for the previous (newer) page.
+/// Each is `null` when there is no adjacent page in that direction.
 #[derive(Serialize, ToSchema)]
 pub struct PingPage {
     pub items: Vec<PingDto>,
     pub has_newer: bool,
     pub has_older: bool,
+    /// Id to pass as `?before=` for the next (older) page; `null` if none.
+    pub next_before: Option<i64>,
+    /// Id to pass as `?after=` for the previous (newer) page; `null` if none.
+    pub next_after: Option<i64>,
+}
+
+impl PingPage {
+    /// Build the response envelope from a store [`crate::store::Page`], deriving
+    /// the next/previous cursor ids from the (newest-first) item boundaries.
+    pub fn from_page(page: crate::store::Page<Ping>) -> Self {
+        let next_before = page
+            .has_older
+            .then(|| page.items.last().map(|p| p.id))
+            .flatten();
+        let next_after = page
+            .has_newer
+            .then(|| page.items.first().map(|p| p.id))
+            .flatten();
+        Self {
+            has_newer: page.has_newer,
+            has_older: page.has_older,
+            next_before,
+            next_after,
+            items: page.items.into_iter().map(PingDto::from).collect(),
+        }
+    }
 }
 
 /// A keyset-paginated slice of notifications, newest-first. See [`PingPage`].
@@ -206,6 +240,32 @@ pub struct NotificationPage {
     pub items: Vec<NotificationDto>,
     pub has_newer: bool,
     pub has_older: bool,
+    /// Id to pass as `?before=` for the next (older) page; `null` if none.
+    pub next_before: Option<i64>,
+    /// Id to pass as `?after=` for the previous (newer) page; `null` if none.
+    pub next_after: Option<i64>,
+}
+
+impl NotificationPage {
+    /// Build the response envelope from a store [`crate::store::Page`]. See
+    /// [`PingPage::from_page`].
+    pub fn from_page(page: crate::store::Page<Notification>) -> Self {
+        let next_before = page
+            .has_older
+            .then(|| page.items.last().map(|n| n.id))
+            .flatten();
+        let next_after = page
+            .has_newer
+            .then(|| page.items.first().map(|n| n.id))
+            .flatten();
+        Self {
+            has_newer: page.has_newer,
+            has_older: page.has_older,
+            next_before,
+            next_after,
+            items: page.items.into_iter().map(NotificationDto::from).collect(),
+        }
+    }
 }
 
 /// The channel ids bound to a check after a bind update.

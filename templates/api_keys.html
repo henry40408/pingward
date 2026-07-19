@@ -3,8 +3,9 @@
 <div class="phead">
   <div>
     <h1>API keys</h1>
-    <p class="crumb tight">Authenticate programmatic requests with <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+    <p class="crumb tight">Authenticate programmatic requests with <code>Authorization: Bearer &lt;token&gt;</code>. <a href="/api/openapi.json" data-testid="api-openapi-link">OpenAPI spec</a>.</p>
   </div>
+  <a class="btn-primary" href="/api/docs" data-testid="api-docs-link">API reference &rarr;</a>
 </div>
 
 {% if let Some(token) = new_token %}
@@ -32,7 +33,7 @@
             <td class="mono">{{ k.prefix }}&hellip;</td>
             <td class="mono"><span class="localtime" data-ts="{{ k.created_at.to_rfc3339() }}">{{ k.created_at }}</span></td>
             <td class="mono">{% if let Some(t) = k.last_used_at %}<span class="localtime" data-ts="{{ t.to_rfc3339() }}">{{ t }}</span>{% else %}never{% endif %}</td>
-            <td class="mono">{% if let Some(t) = k.expires_at %}<span class="localtime" data-ts="{{ t.to_rfc3339() }}">{{ t }}</span>{% else %}never{% endif %}</td>
+            <td class="mono">{% if let Some(t) = k.expires_at %}<span class="localtime" data-ts="{{ t.to_rfc3339() }}">{{ t }}</span>{% if k.expired %} <span class="pill fail" data-testid="api-key-expired-{{ k.id }}">expired</span>{% endif %}{% else %}never{% endif %}</td>
             <td><form class="inline" method="post" action="/api-keys/{{ k.id }}/delete" onsubmit="return confirm('Revoke this API key?')"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" type="submit" data-testid="api-key-delete">revoke</button></form></td>
           </tr>
           {% endfor %}

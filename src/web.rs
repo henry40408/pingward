@@ -2569,11 +2569,39 @@ struct ApiKeysTemplate {
     show_nav: bool,
     csrf: String,
     is_admin: bool,
-    keys: Vec<crate::models::ApiKey>,
+    keys: Vec<ApiKeyRow>,
     /// The plaintext token, rendered exactly once right after creation and
     /// never recoverable afterwards.
     new_token: Option<String>,
     error: Option<String>,
+}
+
+/// One row of the API-keys table. Mirrors [`crate::models::ApiKey`] plus a
+/// precomputed `expired` flag (an expired key still lists so it can be revoked,
+/// but is flagged so the user knows it no longer authenticates).
+struct ApiKeyRow {
+    id: i64,
+    name: String,
+    prefix: String,
+    created_at: DateTime<Utc>,
+    last_used_at: Option<DateTime<Utc>>,
+    expires_at: Option<DateTime<Utc>>,
+    expired: bool,
+}
+
+impl ApiKeyRow {
+    fn from_key(k: crate::models::ApiKey, now: DateTime<Utc>) -> Self {
+        let expired = k.expires_at.is_some_and(|t| t <= now);
+        Self {
+            id: k.id,
+            name: k.name,
+            prefix: k.prefix,
+            created_at: k.created_at,
+            last_used_at: k.last_used_at,
+            expires_at: k.expires_at,
+            expired,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -2648,7 +2676,14 @@ async fn render_api_keys(
     new_token: Option<String>,
     error: Option<&str>,
 ) -> Result<Response, AppError> {
-    let keys = state.store.list_api_keys_for_user(user.id).await?;
+    let now = Utc::now();
+    let keys = state
+        .store
+        .list_api_keys_for_user(user.id)
+        .await?
+        .into_iter()
+        .map(|k| ApiKeyRow::from_key(k, now))
+        .collect();
     Ok(render(&ApiKeysTemplate {
         show_nav: true,
         csrf: current_csrf(state, jar).await,
