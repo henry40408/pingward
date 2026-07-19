@@ -36,3 +36,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 axum-test = "21"
 wiremock = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "test-util"] }
+
+# Release profile tuned for a smaller, faster binary (the published Docker
+# image builds in release). LTO + a single codegen unit let the optimizer work
+# across crate boundaries; `strip` drops debug symbols. Trades longer compile
+# time for size — acceptable for release/image builds, not dev.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
