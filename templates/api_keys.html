@@ -3,8 +3,9 @@
 <div class="phead">
   <div>
     <h1>API keys</h1>
-    <p class="crumb tight">Authenticate programmatic requests with <code>Authorization: Bearer &lt;token&gt;</code>. See the <a href="/api/docs" data-testid="api-docs-link">interactive API reference</a> or the <a href="/api/openapi.json" data-testid="api-openapi-link">OpenAPI document</a>.</p>
+    <p class="crumb tight">Authenticate programmatic requests with <code>Authorization: Bearer &lt;token&gt;</code>. <a href="/api/openapi.json" data-testid="api-openapi-link">OpenAPI spec</a>.</p>
   </div>
+  <a class="btn-primary" href="/api/docs" data-testid="api-docs-link">API reference &rarr;</a>
 </div>
 
 {% if let Some(token) = new_token %}
