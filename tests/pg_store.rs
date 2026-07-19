@@ -342,7 +342,14 @@ async fn postgres_full_round_trip() {
     // Expired keys are rejected.
     let (_f2, p2, h2) = pingward::apikey::generate_api_key();
     store
-        .insert_api_key(uid, "old", &h2, &p2, Some(now - chrono::Duration::hours(1)), now)
+        .insert_api_key(
+            uid,
+            "old",
+            &h2,
+            &p2,
+            Some(now - chrono::Duration::hours(1)),
+            now,
+        )
         .await
         .unwrap();
     assert_eq!(store.validate_api_key(&h2, now).await.unwrap(), None);

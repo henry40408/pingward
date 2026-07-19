@@ -210,8 +210,5 @@ async fn validate_rejects_expired_and_unknown_keys() {
     // Expired → rejected.
     assert_eq!(store.validate_api_key(&hash, now).await.unwrap(), None);
     // Unknown hash → rejected.
-    assert_eq!(
-        store.validate_api_key("deadbeef", now).await.unwrap(),
-        None
-    );
+    assert_eq!(store.validate_api_key("deadbeef", now).await.unwrap(), None);
 }
