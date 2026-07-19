@@ -2946,6 +2946,15 @@ mod tests {
     }
 
     #[test]
+    fn notif_event_pill_class_maps_each_event_to_the_ping_kind_palette() {
+        use crate::notify::EventKind;
+        assert_eq!(notif_event_pill_class(EventKind::Up), "ok");
+        assert_eq!(notif_event_pill_class(EventKind::Down), "fail");
+        assert_eq!(notif_event_pill_class(EventKind::Reminder), "start");
+        assert_eq!(notif_event_pill_class(EventKind::Test), "log");
+    }
+
+    #[test]
     fn status_since_label_down_never_pinged_reads_no_pings_yet() {
         let c = base_check();
         assert_eq!(
