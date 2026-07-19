@@ -1,10 +1,10 @@
 use crate::models::User;
 use crate::state::AppState;
+use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
 use axum::extract::FromRequestParts;
-use axum::http::{request::Parts, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, request::Parts};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
 use chrono::Utc;
@@ -64,12 +64,11 @@ pub fn verify_password(plain: &str, phc: &str) -> bool {
 async fn resolve_user(parts: &mut Parts, state: &AppState) -> Option<User> {
     let now = Utc::now();
     let jar = CookieJar::from_headers(&parts.headers);
-    if let Some(cookie) = jar.get(SESSION_COOKIE) {
-        if let Ok(Some(user)) = state.store.find_session_user(cookie.value(), now).await {
-            if !user.disabled {
-                return Some(user);
-            }
-        }
+    if let Some(cookie) = jar.get(SESSION_COOKIE)
+        && let Ok(Some(user)) = state.store.find_session_user(cookie.value(), now).await
+        && !user.disabled
+    {
+        return Some(user);
     }
     // forward-auth fallback
     let peer_ip = parts

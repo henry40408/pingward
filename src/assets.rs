@@ -1,9 +1,9 @@
 use crate::state::AppState;
+use axum::Router;
 use axum::extract::Path;
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::LazyLock;
 

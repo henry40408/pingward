@@ -364,8 +364,8 @@ use crate::config::SmtpTls;
 use crate::models::{Channel, ChannelKind, NotifyStatus};
 use crate::store::Store;
 use lettre::message::Message;
-use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::AsyncSmtpTransport;
+use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncTransport, Tokio1Executor};
 
 #[derive(Debug, Clone, Copy)]
@@ -899,54 +899,70 @@ mod tests {
 
     #[test]
     fn notifier_for_builds_each_kind_with_valid_config() {
-        assert!(notifier_for(
-            &channel_with(ChannelKind::Webhook, "{\"url\":\"http://x\"}"),
-            None
-        )
-        .is_some());
-        assert!(notifier_for(
-            &channel_with(ChannelKind::Slack, "{\"url\":\"http://x\"}"),
-            None
-        )
-        .is_some());
-        assert!(notifier_for(
-            &channel_with(ChannelKind::Telegram, "{\"token\":\"t\",\"chat_id\":\"1\"}"),
-            None
-        )
-        .is_some());
-        assert!(notifier_for(
-            &channel_with(
-                ChannelKind::Ntfy,
-                "{\"base_url\":\"https://ntfy.sh\",\"topic\":\"t\"}"
-            ),
-            None
-        )
-        .is_some());
-        assert!(notifier_for(
-            &channel_with(ChannelKind::Pushover, "{\"token\":\"t\",\"user\":\"u\"}"),
-            None
-        )
-        .is_some());
+        assert!(
+            notifier_for(
+                &channel_with(ChannelKind::Webhook, "{\"url\":\"http://x\"}"),
+                None
+            )
+            .is_some()
+        );
+        assert!(
+            notifier_for(
+                &channel_with(ChannelKind::Slack, "{\"url\":\"http://x\"}"),
+                None
+            )
+            .is_some()
+        );
+        assert!(
+            notifier_for(
+                &channel_with(ChannelKind::Telegram, "{\"token\":\"t\",\"chat_id\":\"1\"}"),
+                None
+            )
+            .is_some()
+        );
+        assert!(
+            notifier_for(
+                &channel_with(
+                    ChannelKind::Ntfy,
+                    "{\"base_url\":\"https://ntfy.sh\",\"topic\":\"t\"}"
+                ),
+                None
+            )
+            .is_some()
+        );
+        assert!(
+            notifier_for(
+                &channel_with(ChannelKind::Pushover, "{\"token\":\"t\",\"user\":\"u\"}"),
+                None
+            )
+            .is_some()
+        );
     }
 
     #[test]
     fn notifier_for_returns_none_on_missing_config() {
         assert!(notifier_for(&channel_with(ChannelKind::Slack, "{}"), None).is_none());
-        assert!(notifier_for(
-            &channel_with(ChannelKind::Telegram, "{\"token\":\"t\"}"),
-            None
-        )
-        .is_none());
-        assert!(notifier_for(
-            &channel_with(ChannelKind::Ntfy, "{\"base_url\":\"x\"}"),
-            None
-        )
-        .is_none());
-        assert!(notifier_for(
-            &channel_with(ChannelKind::Pushover, "{\"token\":\"t\"}"),
-            None
-        )
-        .is_none());
+        assert!(
+            notifier_for(
+                &channel_with(ChannelKind::Telegram, "{\"token\":\"t\"}"),
+                None
+            )
+            .is_none()
+        );
+        assert!(
+            notifier_for(
+                &channel_with(ChannelKind::Ntfy, "{\"base_url\":\"x\"}"),
+                None
+            )
+            .is_none()
+        );
+        assert!(
+            notifier_for(
+                &channel_with(ChannelKind::Pushover, "{\"token\":\"t\"}"),
+                None
+            )
+            .is_none()
+        );
     }
 
     use crate::db;
@@ -1101,11 +1117,13 @@ mod tests {
 
     #[test]
     fn notifier_for_email_needs_recipient() {
-        assert!(notifier_for(
-            &channel_with(ChannelKind::Email, "{\"to\":\"ops@example.com\"}"),
-            None
-        )
-        .is_some());
+        assert!(
+            notifier_for(
+                &channel_with(ChannelKind::Email, "{\"to\":\"ops@example.com\"}"),
+                None
+            )
+            .is_some()
+        );
         assert!(notifier_for(&channel_with(ChannelKind::Email, "{}"), None).is_none());
     }
 

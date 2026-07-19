@@ -53,9 +53,11 @@ mod tests {
         assert!(full.starts_with(API_KEY_PREFIX));
         // prefix + 64 hex body.
         assert_eq!(full.len(), API_KEY_PREFIX.len() + 64);
-        assert!(full[API_KEY_PREFIX.len()..]
-            .chars()
-            .all(|c| c.is_ascii_hexdigit()));
+        assert!(
+            full[API_KEY_PREFIX.len()..]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit())
+        );
         // Display prefix is the shared prefix plus the first few body chars.
         assert_eq!(prefix.len(), API_KEY_PREFIX.len() + DISPLAY_BODY_CHARS);
         assert!(full.starts_with(&prefix));

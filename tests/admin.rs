@@ -157,11 +157,13 @@ async fn admin_mutation_on_other_project_is_audited() {
         pingward::models::CheckStatus::Paused
     );
     let audit = store.list_audit(50).await.unwrap();
-    assert!(audit
-        .iter()
-        .any(|a| a.target_type.as_deref() == Some("check")
-            && a.target_id == Some(cid)
-            && a.method.as_deref() == Some("POST")));
+    assert!(
+        audit
+            .iter()
+            .any(|a| a.target_type.as_deref() == Some("check")
+                && a.target_id == Some(cid)
+                && a.method.as_deref() == Some("POST"))
+    );
 }
 
 #[tokio::test]

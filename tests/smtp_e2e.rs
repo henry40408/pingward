@@ -10,7 +10,7 @@
 use chrono::Utc;
 use pingward::config::{SmtpConfig, SmtpTls};
 use pingward::models::{Channel, ChannelKind};
-use pingward::notify::{notifier_for, EventKind, NotificationEvent};
+use pingward::notify::{EventKind, NotificationEvent, notifier_for};
 
 #[tokio::test]
 async fn email_channel_delivers_over_smtp_to_relay() {

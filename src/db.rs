@@ -1,4 +1,4 @@
-use sqlx::any::{install_default_drivers, AnyConnectOptions, AnyPoolOptions};
+use sqlx::any::{AnyConnectOptions, AnyPoolOptions, install_default_drivers};
 use sqlx::migrate::Migrator;
 use std::path::Path;
 use std::str::FromStr;

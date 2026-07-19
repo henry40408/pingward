@@ -1,6 +1,6 @@
 use crate::store::Store;
 use chrono::{DateTime, Duration, Utc};
-use tokio::time::{sleep, Duration as TokioDuration};
+use tokio::time::{Duration as TokioDuration, sleep};
 
 /// Parse a `settings` retention value into a positive day count, or `None`
 /// (retention off) when unset, blank, non-numeric, or non-positive.

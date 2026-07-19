@@ -68,9 +68,11 @@ async fn deleting_nonexistent_user_writes_no_audit() {
     let before = store.list_audit(50).await.unwrap().len();
     server.post("/users/99999/delete").await; // nonexistent id
     let after = store.list_audit(50).await.unwrap();
-    assert!(!after
-        .iter()
-        .any(|a| a.action == "user.delete" && a.target_id == Some(99999)));
+    assert!(
+        !after
+            .iter()
+            .any(|a| a.action == "user.delete" && a.target_id == Some(99999))
+    );
     assert_eq!(after.len(), before);
 }
 
@@ -81,12 +83,14 @@ async fn resetting_password_for_nonexistent_user_writes_no_audit() {
         .post("/users/99999/password")
         .form(&[("password", "whatever12")])
         .await;
-    assert!(!store
-        .list_audit(50)
-        .await
-        .unwrap()
-        .iter()
-        .any(|a| a.action == "user.password_reset" && a.target_id == Some(99999)));
+    assert!(
+        !store
+            .list_audit(50)
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.action == "user.password_reset" && a.target_id == Some(99999))
+    );
 }
 
 #[tokio::test]
@@ -105,12 +109,14 @@ async fn promote_and_demote_admin() {
     // demote back
     server.post(&format!("/users/{uid}/admin")).await;
     assert!(!store.find_user_by_id(uid).await.unwrap().unwrap().is_admin);
-    assert!(store
-        .list_audit(50)
-        .await
-        .unwrap()
-        .iter()
-        .any(|a| a.action == "user.set_admin"));
+    assert!(
+        store
+            .list_audit(50)
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.action == "user.set_admin")
+    );
 }
 
 #[tokio::test]
@@ -147,12 +153,14 @@ async fn admin_resets_password_and_target_can_login() {
         "brandnew1",
         updated.password_hash.as_deref().unwrap()
     ));
-    assert!(store
-        .list_audit(50)
-        .await
-        .unwrap()
-        .iter()
-        .any(|a| a.action == "user.password_reset" && a.target_id == Some(dave.id)));
+    assert!(
+        store
+            .list_audit(50)
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.action == "user.password_reset" && a.target_id == Some(dave.id))
+    );
 }
 
 #[tokio::test]
@@ -169,12 +177,14 @@ async fn disable_and_enable_member() {
     assert!(store.find_user_by_id(uid).await.unwrap().unwrap().disabled);
     server.post(&format!("/users/{uid}/disabled")).await;
     assert!(!store.find_user_by_id(uid).await.unwrap().unwrap().disabled);
-    assert!(store
-        .list_audit(50)
-        .await
-        .unwrap()
-        .iter()
-        .any(|a| a.action == "user.set_disabled"));
+    assert!(
+        store
+            .list_audit(50)
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.action == "user.set_disabled")
+    );
 }
 
 #[tokio::test]

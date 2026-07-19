@@ -1,12 +1,12 @@
-use crate::config::{effective_nag_interval, effective_scan_interval, SmtpConfig};
+use crate::config::{SmtpConfig, effective_nag_interval, effective_scan_interval};
 use crate::models::{Check, CheckStatus, ScheduleKind};
-use crate::notify::{deliver_event, EventKind, NotificationEvent, RetryPolicy};
+use crate::notify::{EventKind, NotificationEvent, RetryPolicy, deliver_event};
 use crate::store::Store;
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
 use std::str::FromStr;
-use tokio::time::{sleep, Duration as TokioDuration};
+use tokio::time::{Duration as TokioDuration, sleep};
 
 /// Anchor for the next expected check-in: last successful ping, else creation.
 fn anchor(check: &Check) -> DateTime<Utc> {
@@ -268,7 +268,7 @@ mod tests {
         c.schedule_kind = ScheduleKind::Cron;
         c.period_secs = None;
         c.cron_expr = Some("0 0 * * * *".into()); // top of every hour (sec min hour ...)
-                                                  // last_ping 12:00 → next trigger 13:00 + 300s grace = 13:05
+        // last_ping 12:00 → next trigger 13:00 + 300s grace = 13:05
         assert_eq!(
             due_time(&c).unwrap(),
             Utc.with_ymd_and_hms(2026, 7, 12, 13, 5, 0).unwrap()
@@ -535,19 +535,23 @@ mod tests {
         store.begin_down_alert(id, t0).await.unwrap();
 
         // not yet due
-        assert!(nag_once(&store, t0 + Duration::seconds(59))
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            nag_once(&store, t0 + Duration::seconds(59))
+                .await
+                .unwrap()
+                .is_empty()
+        );
         // due
         let evs = nag_once(&store, t0 + Duration::seconds(60)).await.unwrap();
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].event, EventKind::Reminder);
         // baseline advanced, so immediately after it is not due again
-        assert!(nag_once(&store, t0 + Duration::seconds(61))
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            nag_once(&store, t0 + Duration::seconds(61))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -557,10 +561,12 @@ mod tests {
 
         // no nag interval configured anywhere → off
         store.begin_down_alert(id, t0).await.unwrap();
-        assert!(nag_once(&store, t0 + Duration::seconds(3600))
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            nag_once(&store, t0 + Duration::seconds(3600))
+                .await
+                .unwrap()
+                .is_empty()
+        );
 
         // configure interval, but acknowledged → skipped
         store
@@ -581,9 +587,11 @@ mod tests {
             .await
             .unwrap();
         store.acknowledge(id).await.unwrap();
-        assert!(nag_once(&store, t0 + Duration::seconds(3600))
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            nag_once(&store, t0 + Duration::seconds(3600))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

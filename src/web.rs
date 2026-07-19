@@ -1,12 +1,12 @@
 use crate::auth::{
-    hash_password, new_session_token, verify_password, AdminUser, CurrentUser, OptionalUser,
-    SESSION_COOKIE, SESSION_TTL_DAYS,
+    AdminUser, CurrentUser, OptionalUser, SESSION_COOKIE, SESSION_TTL_DAYS, hash_password,
+    new_session_token, verify_password,
 };
 use crate::error::AppError;
 use crate::models::{
     Channel, ChannelKind, Check, CheckStatus, Notification, Project, ScheduleKind, User,
 };
-use crate::notify::{notifier_for, EventKind, NotificationEvent};
+use crate::notify::{EventKind, NotificationEvent, notifier_for};
 use crate::state::AppState;
 use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
@@ -16,8 +16,8 @@ use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
-use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use axum_extra::extract::Form as HtmlForm;
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Duration, Utc};
 use cron::Schedule;
 use serde::Deserialize;
@@ -736,11 +736,7 @@ async fn project_create(
 /// `/admin` when acting as an admin, otherwise the empty (owner) prefix. Used
 /// to point rendered links, form actions, and redirects at the right route.
 fn admin_prefix(admin: bool) -> &'static str {
-    if admin {
-        "/admin"
-    } else {
-        ""
-    }
+    if admin { "/admin" } else { "" }
 }
 
 /// Render the project page, optionally with a channel-test result banner.
@@ -1945,11 +1941,7 @@ pub(crate) fn validate_channel(
             }
             let base_url = {
                 let b = form.ntfy_base_url.trim();
-                if b.is_empty() {
-                    "https://ntfy.sh"
-                } else {
-                    b
-                }
+                if b.is_empty() { "https://ntfy.sh" } else { b }
             };
             let token = form.ntfy_token.trim();
             serde_json::json!({

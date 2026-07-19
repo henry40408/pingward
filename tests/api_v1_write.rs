@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum_test::TestServer;
 use chrono::Utc;
 use pingward::{apikey, app, config::Config, db, state::AppState, store::Store};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 async fn test_app() -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
