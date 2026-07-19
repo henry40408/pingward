@@ -6,6 +6,10 @@ Feature: Ping kinds
     And a project named "Nightly jobs"
     And a check named "backup" with period 60
 
+  Scenario: The check page documents how to ping
+    When I reload the check page
+    Then the ping help documents the fail and start endpoints
+
   Scenario: A start ping is recorded and leaves the status unchanged
     When I send a "start" ping
     And I reload the check page

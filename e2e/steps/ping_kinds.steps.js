@@ -34,16 +34,31 @@ Then("the ping response status is {int}", async ({ world }, status) => {
   expect(world.pingStatus).toBe(status);
 });
 
+// The collapsible "How do I ping this check?" help documents every ping signal.
+// Its content is present but hidden until the summary is clicked, so expand it
+// before asserting the fail/start endpoints are shown.
+Then(
+  "the ping help documents the fail and start endpoints",
+  async ({ page }) => {
+    const help = page.getByTestId("ping-help");
+    await help.locator("summary").click();
+    await expect(help).toContainText("/fail");
+    await expect(help).toContainText("/start");
+  }
+);
+
 // Recent-pings kind cell renders as .pill.{class}; map the Gherkin kind label
-// to its pill class. Use .pill (not .badge) since .badge is the status badge
-// at the top of the page, not this table.
+// to its pill class. Scope to #pings-section: .badge is the status badge at the
+// top, and the "How do I ping" help also uses .pill for its endpoint legend.
 const PILL_CLASS = { success: "ok", fail: "fail", start: "start", log: "log" };
 
 Then(
   "the recent pings table shows a {string} ping",
   async ({ page }, kind) => {
     const cls = PILL_CLASS[kind];
-    await expect(page.locator(`.pill.${cls}`).first()).toBeVisible();
+    await expect(
+      page.locator(`#pings-section .pill.${cls}`).first()
+    ).toBeVisible();
   }
 );
 
@@ -61,7 +76,8 @@ When("I expand the latest ping row", async ({ page }) => {
 });
 
 Then("the captured output shows {string}", async ({ page }, text) => {
-  const out = page.locator(".out").first();
+  // Scope to the pings section: the ping-help card also renders a .out block.
+  const out = page.locator("#pings-section .out").first();
   await expect(out).toBeVisible();
   await expect(out).toContainText(text);
 });

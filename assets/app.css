@@ -1101,7 +1101,7 @@ tbody td.fail-txt {
 /* ---- Expandable output rows ---- */
 .caret {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   margin-right: 7px;
   display: inline-block;
   transition: transform 0.12s;
@@ -1178,6 +1178,57 @@ tr.exp > td {
   font-size: 9.5px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+/* ---- Ping help (check page) ---- */
+.pinghelp {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 13px;
+}
+.pinghelp > summary {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand);
+  list-style: none;
+}
+.pinghelp > summary::-webkit-details-marker {
+  display: none;
+}
+.pinghelp > summary::before {
+  /* U+25B6 (▶, full triangle) not U+25B8 (▸, "small triangle") — the small
+     glyph carries so much internal whitespace it reads tiny even at 14px. */
+  content: "\25B6"; /* ▶ */
+  font-size: 13px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+.pinghelp[open] > summary::before {
+  transform: rotate(90deg);
+}
+.pinghelp-body {
+  margin-top: 12px;
+}
+.pinghelp-body > p {
+  margin: 0 0 12px;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.pinghelp-body > p code {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+  font-size: 12px;
+}
+.pinghelp-body table {
+  margin-bottom: 14px;
+}
+.pinghelp-code {
+  margin-top: 0;
 }
 
 /* ---- Form controls ---- */
