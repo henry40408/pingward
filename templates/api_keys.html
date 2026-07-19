@@ -3,12 +3,12 @@
 <div class="phead">
   <div>
     <h1>API keys</h1>
-    <p class="crumb" style="margin-top:2px">Authenticate programmatic requests with <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+    <p class="crumb tight">Authenticate programmatic requests with <code>Authorization: Bearer &lt;token&gt;</code>.</p>
   </div>
 </div>
 
 {% if let Some(token) = new_token %}
-<div class="card" style="border-color:var(--brand)">
+<div class="card accent">
   <div class="cb">
     <p class="flash ok" data-testid="api-key-created">Key created — copy it now. For security it won't be shown again.</p>
     <div class="urlrow"><code data-testid="api-key-token">{{ token }}</code><button class="copy" type="button" data-copy="{{ token }}">Copy</button></div>
@@ -43,7 +43,7 @@
   {% endif %}
 </div>
 
-<div class="card" style="margin-bottom:0">
+<div class="card flush">
   <div class="ch"><h2>Create API key</h2></div>
   <div class="cb">
     {% if let Some(error) = error %}<p class="flash err" data-testid="api-key-error">{{ error }}</p>{% endif %}
@@ -59,7 +59,7 @@
           <input id="expires_in" name="expires_in" data-testid="api-key-expires-input" placeholder="30d — blank = never">
         </div>
       </div>
-      <div style="display:flex;gap:8px;margin-top:12px">
+      <div class="formactions">
         <button class="btn primary" type="submit" data-testid="api-key-submit">Create key</button>
       </div>
     </form>

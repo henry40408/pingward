@@ -34,17 +34,17 @@
   </div>
 </div>
 
-<div class="card" style="margin-bottom:0">
+<div class="card flush">
   <div class="ch"><h2>Channels</h2></div>
   <div class="cb">
     {% if channels.is_empty() %}
-    <p style="margin:0;color:var(--muted)">No channels yet.</p>
+    <p class="note">No channels yet.</p>
     {% endif %}
     {% for ch in channels %}
-    <div class="chk" style="cursor:default">
+    <div class="chk readonly">
       <span class="nm">{{ ch.name }}</span>
       <span class="kind">{{ ch.kind.as_str() }}</span>
-      <form class="inline" method="post" action="{{ base }}/channels/{{ ch.id }}/test" style="margin-left:8px"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn" type="submit">Send test</button></form>
+      <form class="inline ml-8" method="post" action="{{ base }}/channels/{{ ch.id }}/test"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn" type="submit">Send test</button></form>
       <form class="inline" method="post" action="{{ base }}/channels/{{ ch.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" type="submit">delete</button></form>
     </div>
     {% endfor %}

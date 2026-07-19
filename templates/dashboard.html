@@ -38,13 +38,13 @@
 {% endfor %}
 
 <div class="legend">
-  <span style="color:var(--ink);font-weight:600">Heartbeat</span>
-  <span class="k"><span class="mini"><i style="height:6px;background:var(--up)"></i></span>short = fast run · lots of headroom</span>
-  <span class="k"><span class="mini"><i style="height:15px;background:var(--up)"></i></span>tall = long run · nearing timeout</span>
-  <span class="k"><span class="mini"><i style="height:15px;background:var(--late)"></i></span>amber = used ≥80% of budget</span>
-  <span class="k"><span class="mini"><i style="height:15px;background:var(--down)"></i></span>red = failed</span>
-  <span class="k"><span class="mini"><i style="height:16px;background:color-mix(in srgb,var(--bar-none) 22%,transparent);border:1.5px solid var(--bar-none)"></i></span>hollow = duration unknown</span>
-  <span class="k"><span class="mini"><i style="height:4px;background:var(--paused);opacity:.6"></i></span>flat = paused</span>
+  <span class="legendhead">Heartbeat</span>
+  <span class="k"><span class="mini"><i class="sw-short"></i></span>short = fast run · lots of headroom</span>
+  <span class="k"><span class="mini"><i class="sw-tall"></i></span>tall = long run · nearing timeout</span>
+  <span class="k"><span class="mini"><i class="sw-late"></i></span>amber = used ≥80% of budget</span>
+  <span class="k"><span class="mini"><i class="sw-down"></i></span>red = failed</span>
+  <span class="k"><span class="mini"><i class="sw-none"></i></span>hollow = duration unknown</span>
+  <span class="k"><span class="mini"><i class="sw-paused"></i></span>flat = paused</span>
 </div>
 {% endif %}
 {% endblock %}

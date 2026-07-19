@@ -35,7 +35,7 @@
   </div>
 </div>
 
-<div class="card" style="margin-bottom:0">
+<div class="card flush">
   <div class="ch"><h2>Add user</h2></div>
   <div class="cb">
     {% if let Some(error) = error %}<p class="flash err">{{ error }}</p>{% endif %}
@@ -55,7 +55,7 @@
         <input type="checkbox" name="is_admin" value="1" data-testid="user-admin-checkbox">
         <span class="nm">Admin</span>
       </label>
-      <div style="display:flex;gap:8px;margin-top:12px">
+      <div class="formactions">
         <button class="btn primary" type="submit" data-testid="user-submit">Create user</button>
       </div>
     </form>

@@ -940,6 +940,7 @@ nav.links a:hover {
   align-items: flex-end;
   gap: 3px;
   height: 30px;
+  margin-top: 16px;
 }
 .beat i {
   width: 7px;
@@ -1229,6 +1230,111 @@ tr.exp > td {
 }
 .pinghelp-code {
   margin-top: 0;
+}
+
+/* ---- Shared bits extracted from inline styles ---- */
+/* Muted note / inline empty-state text inside a card body. */
+.note {
+  margin: 0;
+  color: var(--muted);
+}
+/* The last card in a stack drops its trailing gap. */
+.card.flush {
+  margin-bottom: 0;
+}
+/* A highlighted card (e.g. the one-time API-key banner). */
+.card.accent {
+  border-color: var(--brand);
+}
+/* A row of buttons directly under a form field. */
+.btnrow {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+/* A form's primary submit row (a little more separation than .btnrow). */
+.formactions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+/* A horizontal, wrapping row of status pills/badges. */
+.pillrow {
+  margin: 0 0 14px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* Full-width button (auth submit). */
+.btn.block {
+  width: 100%;
+}
+/* A crumb line hugging the element directly above it. */
+.crumb.tight {
+  margin: 2px 0 0;
+}
+/* A read-only channel row (no pointer affordance). */
+.chk.readonly {
+  cursor: default;
+}
+/* A secondary heading inside a card body (e.g. "Recent failures"). */
+.subhead {
+  margin: 20px 0 8px;
+}
+/* The history section bodies lead with a filter form, so tighten their top pad. */
+#pings-section,
+#notifs-section {
+  padding-top: 6px;
+}
+/* Small spacing utilities for one-off gaps. */
+.mt-16 {
+  margin-top: 16px;
+}
+.ml-8 {
+  margin-left: 8px;
+}
+/* Expandable ping-output row: the caret placeholder keeps the layout but is
+   invisible on non-toggle rows; the output cell drops the row border. */
+.caret.blank {
+  opacity: 0;
+}
+tr.toggle {
+  cursor: pointer;
+}
+tr.exp > td {
+  border-top: none;
+  padding-top: 9px;
+}
+/* Heartbeat legend: the "Heartbeat" caption + the fixed-size swatch bars. */
+.legendhead {
+  color: var(--ink);
+  font-weight: 600;
+}
+.mini i.sw-short {
+  height: 6px;
+  background: var(--up);
+}
+.mini i.sw-tall {
+  height: 15px;
+  background: var(--up);
+}
+.mini i.sw-late {
+  height: 15px;
+  background: var(--late);
+}
+.mini i.sw-down {
+  height: 15px;
+  background: var(--down);
+}
+.mini i.sw-none {
+  height: 16px;
+  background: color-mix(in srgb, var(--bar-none) 22%, transparent);
+  border: 1.5px solid var(--bar-none);
+}
+.mini i.sw-paused {
+  height: 4px;
+  background: var(--paused);
+  opacity: 0.6;
 }
 
 /* ---- Form controls ---- */
