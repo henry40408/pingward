@@ -17,6 +17,13 @@ Feature: Admin cross-user management
     When I open the admin dashboard
     Then the admin dashboard is shown
 
+  # .subhead ("Recent failures", the Environment groups, "Add user") only set
+  # spacing, so it inherited the global h2 and rendered at 21px/700 inside a
+  # card whose own heading is 13px — the section shouting over its container.
+  Scenario: A subheading inside a card does not outweigh the card's own heading
+    When I open the admin dashboard
+    Then no card subheading renders larger than its card heading
+
   @smtp-env
   Scenario: The admin Environment card shows SMTP config as configured without leaking the secret
     When I open the admin dashboard
