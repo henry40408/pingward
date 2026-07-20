@@ -1,7 +1,7 @@
 use crate::db::Pool;
 use crate::models::{
     ApiKey, AuditLog, Channel, ChannelKind, Check, CheckStatus, Notification, NotifyStatus, Ping,
-    PingKind, Project, ScheduleKind, User,
+    PingKind, Project, ScheduleKind, Session, User,
 };
 use crate::notify::EventKind;
 use chrono::{DateTime, Utc};
@@ -270,6 +270,19 @@ fn row_to_api_key(row: &sqlx::any::AnyRow) -> Result<ApiKey, sqlx::Error> {
             .ok_or_else(|| decode_err("api_keys.created_at must be RFC3339"))?,
         last_used_at: parse_ts(row.get("last_used_at")),
         expires_at: parse_ts(row.get("expires_at")),
+    })
+}
+
+fn row_to_session(row: &sqlx::any::AnyRow) -> Result<Session, sqlx::Error> {
+    Ok(Session {
+        id: row.get("id"),
+        user_id: row.get("user_id"),
+        created_at: parse_ts(row.get("created_at")),
+        last_seen_at: parse_ts(row.get("last_seen_at")),
+        expires_at: parse_ts(row.get("expires_at"))
+            .ok_or_else(|| decode_err("sessions.expires_at must be RFC3339"))?,
+        user_agent: row.get("user_agent"),
+        ip: row.get("ip"),
     })
 }
 
@@ -845,20 +858,28 @@ impl Store {
         Ok(Some(user_id))
     }
 
+    #[allow(clippy::too_many_arguments, reason = "mirrors the sessions row shape")]
     pub async fn create_session(
         &self,
         id: &str,
         user_id: i64,
         csrf_token: &str,
         expires_at: DateTime<Utc>,
+        user_agent: Option<&str>,
+        ip: Option<&str>,
+        now: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, csrf_token, expires_at) VALUES ($1,$2,$3,$4)",
+            "INSERT INTO sessions (id, user_id, csrf_token, expires_at, created_at, user_agent, ip) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7)",
         )
         .bind(id)
         .bind(user_id)
         .bind(csrf_token)
         .bind(expires_at.to_rfc3339())
+        .bind(now.to_rfc3339())
+        .bind(user_agent)
+        .bind(ip)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -876,20 +897,38 @@ impl Store {
             .await
     }
 
+    /// Resolve a session to its owning user, honoring expiry. On a match the
+    /// session's `last_seen_at` is refreshed, but writes are throttled to at
+    /// most once per 60s (mirroring [`Store::validate_api_key`]'s
+    /// `last_used_at` throttle) so a hot session doesn't cause a write per
+    /// request.
     pub async fn find_session_user(
         &self,
         session_id: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<User>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id \
+            "SELECT u.*, s.last_seen_at AS session_last_seen_at FROM sessions s \
+             JOIN users u ON u.id = s.user_id \
              WHERE s.id = $1 AND s.expires_at > $2",
         )
         .bind(session_id)
         .bind(now.to_rfc3339())
         .fetch_optional(&self.pool)
         .await?;
-        row.as_ref().map(row_to_user).transpose()
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let stale = parse_ts(row.get("session_last_seen_at"))
+            .is_none_or(|t| now - t >= chrono::Duration::seconds(60));
+        if stale {
+            sqlx::query("UPDATE sessions SET last_seen_at = $1 WHERE id = $2")
+                .bind(now.to_rfc3339())
+                .bind(session_id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(Some(row_to_user(&row)?))
     }
 
     pub async fn delete_session(&self, id: &str) -> Result<(), sqlx::Error> {
@@ -898,6 +937,52 @@ impl Store {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// List a user's currently-valid sessions (not expired), newest-created
+    /// first, for the `/account` management page.
+    pub async fn list_sessions_for_user(
+        &self,
+        user_id: i64,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<Session>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT * FROM sessions WHERE user_id = $1 AND expires_at > $2 \
+             ORDER BY created_at DESC, id",
+        )
+        .bind(user_id)
+        .bind(now.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_session).collect()
+    }
+
+    /// Delete a session, scoped to its owner. Returns `true` if a row was
+    /// removed — `false` means the session does not exist or belongs to
+    /// another user (existence is not distinguished, mirroring
+    /// [`Store::delete_api_key`]'s 404-hiding model).
+    pub async fn delete_session_owned(&self, id: &str, user_id: i64) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM sessions WHERE id = $1 AND user_id = $2")
+            .bind(id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Delete every session for `user_id` except `keep_id` ("revoke all other
+    /// sessions"). Returns the number of sessions removed.
+    pub async fn delete_other_sessions_for_user(
+        &self,
+        user_id: i64,
+        keep_id: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND id <> $2")
+            .bind(user_id)
+            .bind(keep_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
     }
 
     // --- projects ---
@@ -1730,7 +1815,15 @@ mod tests {
         );
 
         store
-            .create_session("sess-1", uid, "csrf-1", now + chrono::Duration::hours(1))
+            .create_session(
+                "sess-1",
+                uid,
+                "csrf-1",
+                now + chrono::Duration::hours(1),
+                Some("curl/8.0"),
+                Some("127.0.0.1"),
+                now,
+            )
             .await
             .unwrap();
         // valid at now
@@ -1748,11 +1841,96 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        // deleted
-        store.delete_session("sess-1").await.unwrap();
+
+        // Listing surfaces the metadata stamped at creation, and the
+        // `last_seen_at` throttle stamped it on the first `find_session_user`
+        // lookup above (both happened "at now", so it reads back as `now`).
+        let rows = store.list_sessions_for_user(uid, now).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "sess-1");
+        assert_eq!(rows[0].created_at, Some(now));
+        assert_eq!(rows[0].last_seen_at, Some(now));
+        assert_eq!(rows[0].user_agent.as_deref(), Some("curl/8.0"));
+        assert_eq!(rows[0].ip.as_deref(), Some("127.0.0.1"));
+
+        // A lookup less than 60s later must not move `last_seen_at` (throttled).
+        store
+            .find_session_user("sess-1", now + chrono::Duration::seconds(30))
+            .await
+            .unwrap();
+        let rows = store.list_sessions_for_user(uid, now).await.unwrap();
+        assert_eq!(rows[0].last_seen_at, Some(now));
+
+        // 60s+ later, the throttle lets the timestamp advance.
+        let later = now + chrono::Duration::seconds(61);
+        store.find_session_user("sess-1", later).await.unwrap();
+        let rows = store.list_sessions_for_user(uid, later).await.unwrap();
+        assert_eq!(rows[0].last_seen_at, Some(later));
+
+        // A second session for the same user, newer than the first.
+        let created2 = now + chrono::Duration::seconds(5);
+        store
+            .create_session(
+                "sess-2",
+                uid,
+                "csrf-2",
+                now + chrono::Duration::hours(2),
+                None,
+                None,
+                created2,
+            )
+            .await
+            .unwrap();
+        let rows = store.list_sessions_for_user(uid, later).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "sess-2", "newest-created session lists first");
+
+        // Revoking "other" sessions keeps only sess-2.
+        let removed = store
+            .delete_other_sessions_for_user(uid, "sess-2")
+            .await
+            .unwrap();
+        assert_eq!(removed, 1);
+        let rows = store.list_sessions_for_user(uid, later).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "sess-2");
+
+        // Owner-scoped delete: another user's id is a silent no-op.
+        assert!(!store.delete_session_owned("sess-2", 1).await.unwrap());
+        assert_eq!(
+            store
+                .list_sessions_for_user(uid, later)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store.delete_session_owned("sess-2", uid).await.unwrap());
         assert!(
             store
-                .find_session_user("sess-1", now)
+                .list_sessions_for_user(uid, later)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Plain `delete_session` (used by logout) still works unscoped.
+        store
+            .create_session(
+                "sess-3",
+                uid,
+                "csrf-3",
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                now,
+            )
+            .await
+            .unwrap();
+        store.delete_session("sess-3").await.unwrap();
+        assert!(
+            store
+                .find_session_user("sess-3", now)
                 .await
                 .unwrap()
                 .is_none()

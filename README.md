@@ -32,7 +32,7 @@ OS preference and the layout adapts to phones.
   channels, and ping/notification history: read them, create/update/delete them,
   and drive the check actions (pause, resume, acknowledge, regenerate ping URL,
   bind channels). Authenticate with account-bound API keys
-  (`Authorization: Bearer pw_…`), created and revoked from the **API keys** page.
+  (`Authorization: Bearer pw_…`), created and revoked from the **Account** page.
   An OpenAPI document (`/api/openapi.json`) and an interactive Scalar reference
   (`/api/docs`) are available to logged-in users.
 - **Multi-user with admin** — session-cookie auth (argon2), per-user project /
@@ -94,11 +94,11 @@ max-runtime) accept either raw seconds or a human-readable string (`5m`,
 ## REST API
 
 pingward exposes a bearer-authenticated JSON API under `/api/v1`. Create a key
-on the **API keys** page (it is shown once), then send it as a bearer token:
+on the **Account** page (it is shown once), then send it as a bearer token:
 
 ```sh
 BASE=https://pingward.example.com
-KEY=pw_…                                   # from the API keys page
+KEY=pw_…                                   # from the Account page
 
 # Create a project, then a check under it
 pid=$(curl -s -X POST "$BASE/api/v1/projects" \

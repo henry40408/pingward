@@ -11,7 +11,7 @@ use crate::state::AppState;
 use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -56,8 +56,17 @@ pub fn routes() -> Router<AppState> {
         .route("/channels/{id}/test", post(channel_test))
         .route("/checks/{id}/channels", post(check_set_channels))
         .route("/settings", get(settings_page).post(settings_save))
-        .route("/api-keys", get(api_keys_page).post(api_keys_create))
-        .route("/api-keys/{id}/delete", post(api_keys_delete))
+        .route("/account", get(account_page))
+        .route("/account/api-keys", post(api_keys_create))
+        .route("/account/api-keys/{id}/delete", post(api_keys_delete))
+        .route("/account/sessions/{handle}/revoke", post(sessions_revoke))
+        .route(
+            "/account/sessions/revoke-others",
+            post(sessions_revoke_others),
+        )
+        // Legacy paths, kept so existing bookmarks/links still land somewhere.
+        .route("/api-keys", get(redirect_to_account))
+        .route("/sessions", get(redirect_to_account))
         .route("/users", get(users_page).post(users_create))
         .route("/users/{id}/delete", post(users_delete))
         .route("/users/{id}/password", post(users_set_password))
@@ -195,6 +204,8 @@ async fn setup_page(State(state): State<AppState>) -> Result<Response, AppError>
 async fn setup_submit(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
+    conn: crate::ping::ClientIp,
     Form(creds): Form<Credentials>,
 ) -> Result<Response, AppError> {
     if state.store.count_users().await? > 0 {
@@ -217,7 +228,9 @@ async fn setup_submit(
         .store
         .create_user(&creds.username, Some(&phc), true, Utc::now())
         .await?;
-    let jar = start_session(&state.store, jar, uid).await?;
+    let ua = request_user_agent(&headers);
+    let ip = conn.0.map(|a| a.ip().to_string());
+    let jar = start_session(&state.store, jar, uid, ua.as_deref(), ip.as_deref()).await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
 
@@ -237,6 +250,8 @@ async fn login_page(State(state): State<AppState>) -> Result<Response, AppError>
 async fn login_submit(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
+    conn: crate::ping::ClientIp,
     Form(creds): Form<Credentials>,
 ) -> Result<Response, AppError> {
     let user = state.store.find_user_by_username(&creds.username).await?;
@@ -263,7 +278,9 @@ async fn login_submit(
         })?
         .into_response());
     }
-    let jar = start_session(&state.store, jar, user.id).await?;
+    let ua = request_user_agent(&headers);
+    let ip = conn.0.map(|a| a.ip().to_string());
+    let jar = start_session(&state.store, jar, user.id, ua.as_deref(), ip.as_deref()).await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
 
@@ -352,8 +369,32 @@ async fn dashboard(
     .into_response())
 }
 
+/// Column-bounding cap for a stored `user_agent` (raw browser headers can be
+/// arbitrarily long; the value is display-only, so it is simply truncated).
+const MAX_USER_AGENT_CHARS: usize = 300;
+
+/// Extract the `User-Agent` request header as a bounded, valid-UTF-8 string
+/// for storage alongside a session row.
+fn request_user_agent(headers: &HeaderMap) -> Option<String> {
+    headers.get(axum::http::header::USER_AGENT).and_then(|v| {
+        v.to_str().ok().map(|s| {
+            let end = s
+                .char_indices()
+                .nth(MAX_USER_AGENT_CHARS)
+                .map_or(s.len(), |(i, _)| i);
+            s[..end].to_string()
+        })
+    })
+}
+
 /// Create a session row and return a jar carrying the session cookie.
-async fn start_session(store: &Store, jar: CookieJar, user_id: i64) -> Result<CookieJar, AppError> {
+async fn start_session(
+    store: &Store,
+    jar: CookieJar,
+    user_id: i64,
+    user_agent: Option<&str>,
+    ip: Option<&str>,
+) -> Result<CookieJar, AppError> {
     let token = new_session_token();
     // Per-session CSRF synchronizer token, validated by `csrf_guard` on every
     // state-changing browser request and embedded in POST forms by the render
@@ -361,7 +402,7 @@ async fn start_session(store: &Store, jar: CookieJar, user_id: i64) -> Result<Co
     let csrf = new_session_token();
     let expires = Utc::now() + Duration::days(SESSION_TTL_DAYS);
     store
-        .create_session(&token, user_id, &csrf, expires)
+        .create_session(&token, user_id, &csrf, expires, user_agent, ip, Utc::now())
         .await?;
     let cookie = Cookie::build((SESSION_COOKIE, token))
         .http_only(true)
@@ -2547,18 +2588,43 @@ async fn users_set_disabled(
     Ok(Redirect::to("/users").into_response())
 }
 
-// --- API keys (session-authenticated management UI for every logged-in user) ---
+// --- account (session-authenticated self-service page for every logged-in
+// user: sessions, then API keys, merged onto a single `/account` page) ---
+//
+// `sessions.id` is the session cookie value — a bearer secret — and must
+// never be rendered or appear in a URL. Rows are identified in the UI (and in
+// the revoke route) by `handle`, the SHA-256 hex of the id, computed with the
+// same helper the API-key hashing uses. Session lists are tiny, so resolving
+// a handle back to a row is a linear scan rather than an indexed lookup.
 #[derive(Template)]
-#[template(path = "api_keys.html")]
-struct ApiKeysTemplate {
+#[template(path = "account.html")]
+struct AccountTemplate {
     show_nav: bool,
     csrf: String,
     is_admin: bool,
+    // sessions section
+    sessions: Vec<SessionRow>,
+    /// Count of non-current sessions, so the template can hide the "revoke
+    /// others" control when there is nothing else to revoke.
+    other_count: usize,
+    // api-keys section
     keys: Vec<ApiKeyRow>,
     /// The plaintext token, rendered exactly once right after creation and
     /// never recoverable afterwards.
     new_token: Option<String>,
-    error: Option<String>,
+    key_error: Option<String>,
+}
+
+/// One row of the sessions table. Mirrors [`crate::models::Session`], minus
+/// the raw `id` (never exposed) and plus the derived `handle` + `current`.
+struct SessionRow {
+    handle: String,
+    created_at: Option<DateTime<Utc>>,
+    last_seen_at: Option<DateTime<Utc>>,
+    expires_at: DateTime<Utc>,
+    user_agent: Option<String>,
+    ip: Option<String>,
+    current: bool,
 }
 
 /// One row of the API-keys table. Mirrors [`crate::models::ApiKey`] plus a
@@ -2596,12 +2662,78 @@ struct NewApiKeyForm {
     expires_in: String,
 }
 
-async fn api_keys_page(
+async fn account_page(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
-    render_api_keys(&state, &jar, &user, None, None).await
+    render_account(&state, &jar, &user, None, None).await
+}
+
+/// Redirects the legacy `/api-keys` and `/sessions` paths to the merged
+/// `/account` page, so existing bookmarks/links still land somewhere.
+async fn redirect_to_account() -> Redirect {
+    Redirect::to("/account")
+}
+
+/// Gather both the sessions and API-keys datasets and render the merged
+/// `/account` page.
+async fn render_account(
+    state: &AppState,
+    jar: &CookieJar,
+    user: &User,
+    new_token: Option<String>,
+    key_error: Option<&str>,
+) -> Result<Response, AppError> {
+    let now = Utc::now();
+
+    let current_handle = jar
+        .get(SESSION_COOKIE)
+        .map(|c| crate::apikey::hash_api_key(c.value()));
+    let mut sessions: Vec<SessionRow> = state
+        .store
+        .list_sessions_for_user(user.id, now)
+        .await?
+        .into_iter()
+        .map(|s| {
+            let handle = crate::apikey::hash_api_key(&s.id);
+            let current = current_handle.as_deref() == Some(handle.as_str());
+            SessionRow {
+                handle,
+                created_at: s.created_at,
+                last_seen_at: s.last_seen_at,
+                expires_at: s.expires_at,
+                user_agent: s.user_agent,
+                ip: s.ip,
+                current,
+            }
+        })
+        .collect();
+    // `list_sessions_for_user` already returns newest-created-first; a stable
+    // sort on "is this the current session" preserves that ordering within
+    // each group while pulling the current row to the top.
+    sessions.sort_by_key(|r| !r.current);
+    let other_count = sessions.iter().filter(|r| !r.current).count();
+
+    let keys = state
+        .store
+        .list_api_keys_for_user(user.id)
+        .await?
+        .into_iter()
+        .map(|k| ApiKeyRow::from_key(k, now))
+        .collect();
+
+    Ok(render(&AccountTemplate {
+        show_nav: true,
+        csrf: current_csrf(state, jar).await,
+        is_admin: user.is_admin,
+        sessions,
+        other_count,
+        keys,
+        new_token,
+        key_error: key_error.map(str::to_string),
+    })?
+    .into_response())
 }
 
 async fn api_keys_create(
@@ -2612,7 +2744,7 @@ async fn api_keys_create(
 ) -> Result<Response, AppError> {
     let name = form.name.trim();
     if name.is_empty() {
-        return render_api_keys(&state, &jar, &user, None, Some("a name is required")).await;
+        return render_account(&state, &jar, &user, None, Some("a name is required")).await;
     }
     // Optional expiry: blank means never; otherwise a duration from now
     // (`30d`, `12h`, …) reusing the same parser as the check/duration fields.
@@ -2624,7 +2756,7 @@ async fn api_keys_create(
             match crate::duration::parse_duration(raw) {
                 Some(secs) if secs > 0 => Some(Utc::now() + Duration::seconds(secs)),
                 _ => {
-                    return render_api_keys(
+                    return render_account(
                         &state,
                         &jar,
                         &user,
@@ -2641,7 +2773,7 @@ async fn api_keys_create(
         .store
         .insert_api_key(user.id, name, &hash, &prefix, expires_at, Utc::now())
         .await?;
-    render_api_keys(&state, &jar, &user, Some(full), None).await
+    render_account(&state, &jar, &user, Some(full), None).await
 }
 
 async fn api_keys_delete(
@@ -2651,33 +2783,58 @@ async fn api_keys_delete(
 ) -> Result<Response, AppError> {
     // Owner-scoped delete; a key the caller doesn't own is silently a no-op.
     state.store.delete_api_key(id, user.id).await?;
-    Ok(Redirect::to("/api-keys").into_response())
+    Ok(Redirect::to("/account").into_response())
 }
 
-async fn render_api_keys(
-    state: &AppState,
-    jar: &CookieJar,
-    user: &User,
-    new_token: Option<String>,
-    error: Option<&str>,
+async fn sessions_revoke(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+    Path(handle): Path<String>,
 ) -> Result<Response, AppError> {
-    let now = Utc::now();
-    let keys = state
+    // Resolve the handle among the caller's own sessions; an unknown or
+    // foreign handle is a silent no-op (never a 500), mirroring the
+    // API-key/project/check owner-scoped delete pattern.
+    let sessions = state
         .store
-        .list_api_keys_for_user(user.id)
-        .await?
-        .into_iter()
-        .map(|k| ApiKeyRow::from_key(k, now))
-        .collect();
-    Ok(render(&ApiKeysTemplate {
-        show_nav: true,
-        csrf: current_csrf(state, jar).await,
-        is_admin: user.is_admin,
-        keys,
-        new_token,
-        error: error.map(str::to_string),
-    })?
-    .into_response())
+        .list_sessions_for_user(user.id, Utc::now())
+        .await?;
+    let Some(target) = sessions
+        .iter()
+        .find(|s| crate::apikey::hash_api_key(&s.id) == handle)
+    else {
+        return Ok((jar, Redirect::to("/account")).into_response());
+    };
+    let is_current = jar
+        .get(SESSION_COOKIE)
+        .is_some_and(|c| c.value() == target.id);
+    state
+        .store
+        .delete_session_owned(&target.id, user.id)
+        .await?;
+    if is_current {
+        // Must carry `path("/")` to match how the cookie was set — a
+        // pathless removal cookie gets this route's own path
+        // (`/account/sessions/{handle}/revoke`) and would not clear a
+        // `path=/` cookie.
+        let jar = jar.remove(Cookie::build((SESSION_COOKIE, "")).path("/").build());
+        return Ok((jar, Redirect::to("/login")).into_response());
+    }
+    Ok((jar, Redirect::to("/account")).into_response())
+}
+
+async fn sessions_revoke_others(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+) -> Result<Response, AppError> {
+    if let Some(cookie) = jar.get(SESSION_COOKIE) {
+        state
+            .store
+            .delete_other_sessions_for_user(user.id, cookie.value())
+            .await?;
+    }
+    Ok(Redirect::to("/account").into_response())
 }
 
 // --- admin route group (cross-user management, every access audited) ---

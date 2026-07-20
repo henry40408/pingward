@@ -70,6 +70,13 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   `AdminUser` (403 if not admin).
 - Owner scoping goes through `owned_project` / `owned_check` in `web.rs`, which
   return **404 (not 403)** for another user's resource — existence is hidden.
+- `/account` is the per-user account page (sessions, then API keys, stacked as
+  ordinary cards — no tabs). It lets a user list and revoke their own login
+  sessions (each row's `last_seen_at` is refreshed on use, throttled like
+  `ApiKey.last_used_at`); since `sessions.id` is the cookie's bearer secret,
+  rows are identified in the UI/URLs by a SHA-256 handle
+  (`apikey::hash_api_key`) rather than the id itself. The legacy `/sessions`
+  and `/api-keys` paths redirect there.
 - Admin cross-user management lives under `/admin/*` (each handler guarded by
   `AdminUser`). These handlers **reuse the owner templates** by passing an
   `is_admin`/base-prefix flag, so `data-testid`s and most step definitions are

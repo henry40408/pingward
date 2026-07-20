@@ -3,8 +3,18 @@ import { test, expect } from "../support/fixtures.js";
 
 const { When, Then } = createBdd(test);
 
-When("I open the API keys page", async ({ page, serverUrl }) => {
-  await page.goto(`${serverUrl}/api-keys`);
+When("I open the account page", async ({ page, serverUrl }) => {
+  await page.goto(`${serverUrl}/account`);
+});
+
+Then("the current session is marked as this device", async ({ page }) => {
+  await expect(page.getByTestId("session-current")).toBeVisible();
+});
+
+// The revoke button triggers a confirm() dialog; auto-accept it.
+When("I revoke the current session", async ({ page }) => {
+  page.once("dialog", (d) => d.accept());
+  await page.getByTestId("session-revoke").first().click();
 });
 
 When("I create an API key named {string}", async ({ page }, name) => {
