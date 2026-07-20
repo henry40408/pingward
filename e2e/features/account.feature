@@ -8,6 +8,16 @@ Feature: Account
     When I open the account page
     Then the current session is marked as this device
 
+  # The server is spawned with 127.0.0.1 trusted, so the forwarded header is
+  # honoured; signing in again is what creates the session that records it.
+  @trusted-proxy
+  Scenario: A session behind a trusted proxy records the forwarded client IP
+    Given requests arrive through a trusted proxy as "203.0.113.7"
+    And I sign out
+    And I am signed in as "admin" with password "correct horse"
+    When I open the account page
+    Then the current session shows the IP "203.0.113.7"
+
   Scenario: Revoking the current session signs you out
     When I open the account page
     And I revoke the current session

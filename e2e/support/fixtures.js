@@ -23,6 +23,12 @@ export const test = base.extend({
         PINGWARD_SMTP_PASSWORD: "e2e-secret-password",
       };
     }
+    // Scenarios tagged @trusted-proxy trust the loopback address the harness
+    // connects from, so auth::client_ip honours their X-Forwarded-For instead
+    // of recording the peer (account.feature).
+    if ($tags.includes("@trusted-proxy")) {
+      opts.extraEnv = { ...opts.extraEnv, PINGWARD_TRUSTED_PROXIES: "127.0.0.1" };
+    }
     const server = await spawnPingward(opts);
     try {
       await use(server);
