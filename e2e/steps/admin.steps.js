@@ -50,6 +50,31 @@ Then("the admin dashboard is shown", async ({ page }) => {
   await expect(page.getByTestId("admin-scale").locator(".tile")).toHaveCount(4);
 });
 
+// A .subhead sits inside a card body, so it must read as a level BELOW the
+// card's own .ch h2, never above it. Compare computed font sizes rather than
+// the declaration, since the bug was an inherited global h2 rather than
+// anything written in the .subhead rule. The 2px allowance lets a subhead be
+// nominally a touch larger than the uppercase, letter-spaced card label
+// without reopening the 21px-vs-13px gap this guards.
+Then("no card subheading renders larger than its card heading", async ({ page }) => {
+  const m = await page.evaluate(() => {
+    const size = (el) => parseFloat(getComputedStyle(el).fontSize);
+    const heading = size(document.querySelector(".card .ch h2"));
+    const subheads = [...document.querySelectorAll(".card .subhead")].map((el) => ({
+      text: el.textContent.trim(),
+      size: size(el),
+    }));
+    return { heading, subheads };
+  });
+  expect(m.subheads.length, "no .subhead rendered — the check would be vacuous").toBeGreaterThan(0);
+  for (const s of m.subheads) {
+    expect(
+      s.size,
+      `subheading "${s.text}" renders at ${s.size}px inside a ${m.heading}px card heading`
+    ).toBeLessThanOrEqual(m.heading + 2);
+  }
+});
+
 // `/admin/projects` is now a legacy redirect to `/admin`, where the "All
 // projects" section lives.
 When("I open the admin projects list", async ({ page, serverUrl }) => {

@@ -1297,9 +1297,15 @@ tr.exp > td {
 .chk.readonly {
   cursor: default;
 }
-/* A secondary heading inside a card body (e.g. "Recent failures"). */
+/* A secondary heading inside a card body (e.g. "Recent failures"). It only set
+   spacing, so it fell through to the global h2 (21px/700) and outweighed the
+   13px card heading containing it — a section inside a card reading louder than
+   the card. Match .group .gh h2 instead: same weight as the card heading, at
+   content colour so it still reads as a level below it. */
 .subhead {
   margin: 20px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
 }
 /* The history section bodies lead with a filter form, so tighten their top pad. */
 #pings-section,
