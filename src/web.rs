@@ -233,7 +233,7 @@ async fn setup_submit(
         .create_user(&creds.username, Some(&phc), true, Utc::now())
         .await?;
     let ua = request_user_agent(&headers);
-    let ip = conn.0.map(|a| a.ip().to_string());
+    let ip = crate::auth::client_ip(&headers, conn.0.map(|a| a.ip()), &state.config);
     let jar = start_session(&state.store, jar, uid, ua.as_deref(), ip.as_deref()).await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
@@ -283,7 +283,7 @@ async fn login_submit(
         .into_response());
     }
     let ua = request_user_agent(&headers);
-    let ip = conn.0.map(|a| a.ip().to_string());
+    let ip = crate::auth::client_ip(&headers, conn.0.map(|a| a.ip()), &state.config);
     let jar = start_session(&state.store, jar, user.id, ua.as_deref(), ip.as_deref()).await?;
     Ok((jar, Redirect::to("/")).into_response())
 }

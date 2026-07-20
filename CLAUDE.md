@@ -76,7 +76,10 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   `ApiKey.last_used_at`); since `sessions.id` is the cookie's bearer secret,
   rows are identified in the UI/URLs by a SHA-256 handle
   (`apikey::hash_api_key`) rather than the id itself. The legacy `/sessions`
-  and `/api-keys` paths redirect there.
+  and `/api-keys` paths redirect there. A session's stored IP comes from
+  `auth::client_ip`: the socket peer, unless that peer is a configured trusted
+  proxy, in which case the first `X-Forwarded-For` entry wins — the same trust
+  gate `forward_auth_username` uses, so an untrusted caller cannot spoof it.
 - `/admin` is the single merged admin page (each handler guarded by
   `AdminUser`): site-wide overview, global settings, user management, and
   every project across all users, stacked as ordinary cards top to bottom —
