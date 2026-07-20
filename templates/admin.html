@@ -159,6 +159,38 @@
 </div>
 
 <div class="card">
+  <div class="ch"><h2>Environment</h2></div>
+  <div class="cb">
+    <p class="crumb tight">Configured via environment variables — changing these requires restarting the server.</p>
+    {% for group in env_rows %}
+    <h2 class="subhead">{{ group.0 }}</h2>
+    <div class="tscroll">
+      <table>
+        <thead><tr><th>Variable</th><th>Current</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          {% for row in group.1 %}
+          <tr data-testid="env-row-{{ row.var }}">
+            <td class="mono">{{ row.var }}</td>
+            <td class="envval"{% if row.var == "PINGWARD_SMTP_PASSWORD" %} data-testid="env-smtp-password"{% endif %}>
+            {% match row.value %}
+            {% when EnvValue::Set(v) %}<code>{{ v }}</code>
+            {% when EnvValue::Unset %}<span class="note">not set</span>
+            {% when EnvValue::Secret(true) %}<span class="pill ok">configured</span>
+            {% when EnvValue::Secret(false) %}<span class="note">not set</span>
+            {% endmatch %}
+            </td>
+            <td class="mono">{{ row.default }}</td>
+            <td>{{ row.description }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="card">
   <div class="ch"><h2>All users</h2></div>
   <div class="cb">
     {% if let Some(f) = user_flash %}<p class="flash err" data-testid="users-flash">{{ f }}</p>{% endif %}
@@ -195,12 +227,8 @@
         {% endfor %}
       </tbody>
     </table>
-  </div>
-</div>
 
-<div class="card">
-  <div class="ch"><h2>Add user</h2></div>
-  <div class="cb">
+    <h2 class="subhead">Add user</h2>
     {% if let Some(error) = user_error %}<p class="flash err">{{ error }}</p>{% endif %}
     <form method="post" action="/admin/users">
       <input type="hidden" name="_csrf" value="{{ csrf }}">

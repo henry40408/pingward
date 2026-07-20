@@ -1142,6 +1142,13 @@ tbody td.fail-txt {
 .tscroll {
   overflow-x: auto;
 }
+/* The Environment card's "Current" column can hold a long database URL. Let it
+   break anywhere (not `break-word`, which leaves min-content width unchanged)
+   so the table stays within the card instead of scrolling the Description
+   column out of sight. */
+.envval code {
+  overflow-wrap: anywhere;
+}
 tr.exp {
   display: none;
 }

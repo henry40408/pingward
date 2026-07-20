@@ -123,3 +123,13 @@ When("I delete the member's project", async ({ page, serverUrl }) => {
 Then("the admin projects list has no projects", async ({ page }) => {
   await expect(page.getByText("No projects yet.")).toBeVisible();
 });
+
+// --- Environment card (read-only env-var settings on /admin) ---
+
+Then("the Environment card shows the SMTP password as configured", async ({ page }) => {
+  await expect(page.getByTestId("env-smtp-password")).toContainText("configured");
+});
+
+Then("the page does not contain the SMTP secret", async ({ page }) => {
+  await expect(page.locator("body")).not.toContainText("e2e-secret-password");
+});

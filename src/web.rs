@@ -2921,6 +2921,192 @@ async fn sessions_revoke_others(
 // unfiltered and write one `admin.access` audit row), then reuses the exact
 // same core logic/render helper/mutator as the owner handler, differing only in
 // pointing links and redirects at the `/admin`-prefixed route surface.
+/// One environment-configured setting, as displayed on `/admin`. The value is
+/// redacted or summarised in Rust *before* it lands here, so a secret never
+/// crosses into the template and no template change can print one.
+struct EnvSetting {
+    var: &'static str,
+    value: EnvValue,
+    default: &'static str,
+    description: &'static str,
+}
+
+/// How a setting's current value is presented. `Secret` carries only whether
+/// something is configured — never the value itself.
+enum EnvValue {
+    Set(String),
+    Unset,
+    Secret(bool),
+}
+
+/// Group every env-configured setting (nothing in this DB) into the sections
+/// shown on the read-only `/admin` "Environment" card. Values are the
+/// process's *current effective* config, so this reflects what's actually
+/// running, not just what's documented as a default.
+fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSetting>)> {
+    let log_format = match config.log_format {
+        crate::config::LogFormat::Text => "text",
+        crate::config::LogFormat::Json => "json",
+    };
+    let server = vec![
+        EnvSetting {
+            var: "DATABASE_URL",
+            value: EnvValue::Set(redact_db_url(&config.database_url)),
+            default: "sqlite://pingward.sqlite3?mode=rwc",
+            description: "The database connection string (SQLite or Postgres).",
+        },
+        EnvSetting {
+            var: "PINGWARD_BIND",
+            value: EnvValue::Set(config.bind.clone()),
+            default: "127.0.0.1:8080",
+            description: "The socket address the server listens on.",
+        },
+        EnvSetting {
+            var: "PINGWARD_BASE_URL",
+            value: EnvValue::Set(config.base_url.clone()),
+            default: "http://localhost:8080",
+            description: "Used to render absolute ping URLs.",
+        },
+        EnvSetting {
+            var: "PINGWARD_LOG_FORMAT",
+            value: EnvValue::Set(log_format.to_string()),
+            default: "text",
+            description: "Log line format (text or json); applied at process startup — changing it requires a restart.",
+        },
+    ];
+    let scheduling = vec![
+        EnvSetting {
+            var: "PINGWARD_SCAN_INTERVAL",
+            value: EnvValue::Set(config.scan_interval_secs.to_string()),
+            default: "30",
+            description: "Fallback scan interval — only used when no check, project, or global setting overrides it (check → project → global setting → env cascade).",
+        },
+        EnvSetting {
+            var: "PINGWARD_PRUNE_INTERVAL_SECS",
+            value: EnvValue::Set(config.prune_interval_secs.to_string()),
+            default: "3600",
+            description: "How often old pings/notifications are deleted.",
+        },
+    ];
+    let auth = vec![
+        EnvSetting {
+            var: "PINGWARD_FORWARD_AUTH_HEADER",
+            value: match &config.forward_auth_header {
+                Some(h) => EnvValue::Set(h.clone()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "Header name for the trusted-proxy forward-auth mechanism.",
+        },
+        EnvSetting {
+            var: "PINGWARD_TRUSTED_PROXIES",
+            value: if config.trusted_proxies.is_empty() {
+                EnvValue::Unset
+            } else {
+                EnvValue::Set(config.trusted_proxies.join(", "))
+            },
+            default: "(unset)",
+            description: "Proxy addresses trusted to set the forward-auth header.",
+        },
+    ];
+    let smtp = &config.smtp;
+    let email = vec![
+        EnvSetting {
+            var: "PINGWARD_SMTP_HOST",
+            value: match smtp {
+                Some(s) => EnvValue::Set(s.host.clone()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "Instance SMTP server host.",
+        },
+        EnvSetting {
+            var: "PINGWARD_SMTP_PORT",
+            value: match smtp {
+                Some(s) => EnvValue::Set(s.port.to_string()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "Instance SMTP server port.",
+        },
+        EnvSetting {
+            var: "PINGWARD_SMTP_FROM",
+            value: match smtp {
+                Some(s) => EnvValue::Set(s.from.clone()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "The From address used for outgoing email notifications.",
+        },
+        EnvSetting {
+            var: "PINGWARD_SMTP_TLS",
+            value: match smtp {
+                Some(s) => EnvValue::Set(
+                    match s.tls {
+                        crate::config::SmtpTls::Starttls => "starttls",
+                        crate::config::SmtpTls::Tls => "tls",
+                        crate::config::SmtpTls::None => "none",
+                    }
+                    .to_string(),
+                ),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "SMTP transport security mode (starttls, tls, or none).",
+        },
+        EnvSetting {
+            var: "PINGWARD_SMTP_USERNAME",
+            value: match smtp.as_ref().and_then(|s| s.username.as_deref()) {
+                Some(u) => EnvValue::Set(u.to_string()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "SMTP AUTH username (an identity, not a credential — shown verbatim).",
+        },
+        EnvSetting {
+            var: "PINGWARD_SMTP_PASSWORD",
+            value: EnvValue::Secret(smtp.as_ref().is_some_and(|s| s.password.is_some())),
+            default: "(unset)",
+            description: "SMTP AUTH password — never displayed, only whether it's configured.",
+        },
+    ];
+    vec![
+        ("Server", server),
+        ("Scheduling", scheduling),
+        ("Auth", auth),
+        ("Email (SMTP)", email),
+    ]
+}
+
+/// Strip credentials from a database URL for display: `scheme://user:pw@host/db`
+/// becomes `scheme://***@host/db`. Anything without an `@` in its authority
+/// (e.g. a plain `SQLite` path) is returned unchanged. Never returns the password.
+fn redact_db_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let rest = &url[authority_start..];
+    // Only an `@` found before any of `/`, `?`, `#` counts as authority
+    // credentials — an `@` in a later path/query/fragment must not be treated
+    // as one (e.g. `...?callback=user@host`).
+    let mut at_pos = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '@' => {
+                at_pos = Some(i);
+                break;
+            }
+            '/' | '?' | '#' => break,
+            _ => {}
+        }
+    }
+    match at_pos {
+        Some(i) => format!("{}***@{}", &url[..authority_start], &rest[i + 1..]),
+        None => url.to_string(),
+    }
+}
+
 /// `/admin` landing: one merged page — site-wide overview (scale, check
 /// health, notification health, scheduler heartbeat), global settings, user
 /// management, and every project across all users — stacked as ordinary
@@ -2961,6 +3147,8 @@ struct AdminTemplate {
     user_error: Option<String>,
     // all projects
     projects: Vec<(Project, String)>,
+    // environment
+    env_rows: Vec<(&'static str, Vec<EnvSetting>)>,
 }
 
 /// One row of the `/admin` "All users" table. Mirrors [`crate::models::User`]
@@ -3033,6 +3221,7 @@ async fn render_admin(
         user_flash: r.user_flash,
         user_error: r.user_error,
         projects: state.store.list_all_projects_with_owner().await?,
+        env_rows: env_settings(&state.config),
     })?
     .into_response())
 }
@@ -3647,5 +3836,45 @@ mod tests {
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "<script>"));
         let (_, msg) = take_flash(jar, "<script>");
         assert_eq!(msg, None);
+    }
+
+    #[test]
+    fn redact_db_url_leaves_a_plain_sqlite_url_unchanged() {
+        let url = "sqlite://pingward.sqlite3?mode=rwc";
+        assert_eq!(redact_db_url(url), url);
+    }
+
+    #[test]
+    fn redact_db_url_leaves_a_bare_path_unchanged() {
+        let url = "pingward.sqlite3";
+        assert_eq!(redact_db_url(url), url);
+    }
+
+    #[test]
+    fn redact_db_url_strips_user_and_password() {
+        let url = "postgres://user:pass@host/db";
+        let out = redact_db_url(url);
+        assert_eq!(out, "postgres://***@host/db");
+        assert!(!out.contains("pass"));
+        assert!(!out.contains("user"));
+    }
+
+    #[test]
+    fn redact_db_url_strips_bare_username_with_no_password() {
+        let url = "postgres://user@host/db";
+        let out = redact_db_url(url);
+        assert_eq!(out, "postgres://***@host/db");
+        assert!(!out.contains("user@"));
+    }
+
+    #[test]
+    fn redact_db_url_ignores_an_at_sign_only_in_the_query_string() {
+        let url = "postgres://host/db?target_session_attrs=x&opt=a@b";
+        assert_eq!(redact_db_url(url), url);
+    }
+
+    #[test]
+    fn redact_db_url_empty_string_is_unchanged() {
+        assert_eq!(redact_db_url(""), "");
     }
 }

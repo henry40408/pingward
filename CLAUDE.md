@@ -129,4 +129,6 @@ email; port/TLS defaulted). The scan and prune interval env vars accept raw
 seconds or a human-readable duration (`5m`, `1h30m`) via
 `duration::parse_duration`; an unparseable value falls back to the default
 rather than failing at boot. `Config::from_map` is the testable core —
-unit-test config parsing through it rather than real env.
+unit-test config parsing through it rather than real env. These env vars are
+also surfaced read-only on `/admin`'s "Environment" card, with secrets (the
+SMTP password) shown only as configured/not-set, never their value.
