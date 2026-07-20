@@ -192,7 +192,15 @@ async fn postgres_full_round_trip() {
     // sessions
     let future_expiry = now + chrono::Duration::hours(1);
     store
-        .create_session("sess-active", uid, "csrf-active", future_expiry)
+        .create_session(
+            "sess-active",
+            uid,
+            "csrf-active",
+            future_expiry,
+            Some("curl/8.0"),
+            Some("127.0.0.1"),
+            now,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -206,7 +214,15 @@ async fn postgres_full_round_trip() {
 
     let past_expiry = now - chrono::Duration::hours(1);
     store
-        .create_session("sess-expired", uid, "csrf-expired", past_expiry)
+        .create_session(
+            "sess-expired",
+            uid,
+            "csrf-expired",
+            past_expiry,
+            None,
+            None,
+            now,
+        )
         .await
         .unwrap();
     assert!(
@@ -218,6 +234,78 @@ async fn postgres_full_round_trip() {
         "expired session must not resolve to a user"
     );
 
+    // list_sessions_for_user only surfaces the still-valid session, with the
+    // metadata stamped at creation and `last_seen_at` stamped by the
+    // `find_session_user` lookup above.
+    let sessions = store.list_sessions_for_user(uid, now).await.unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, "sess-active");
+    assert_eq!(sessions[0].user_agent.as_deref(), Some("curl/8.0"));
+    assert_eq!(sessions[0].ip.as_deref(), Some("127.0.0.1"));
+    assert_eq!(sessions[0].last_seen_at, Some(now));
+
+    // A second session, then "revoke others" keeps only it.
+    store
+        .create_session(
+            "sess-second",
+            uid,
+            "csrf-second",
+            future_expiry,
+            None,
+            None,
+            now + chrono::Duration::seconds(1),
+        )
+        .await
+        .unwrap();
+    // Removes both "sess-active" and the already-expired "sess-expired" —
+    // "revoke others" is not conditioned on expiry, only on not being `keep_id`.
+    let removed = store
+        .delete_other_sessions_for_user(uid, "sess-second")
+        .await
+        .unwrap();
+    assert_eq!(removed, 2);
+    let sessions = store.list_sessions_for_user(uid, now).await.unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, "sess-second");
+
+    // Owner-scoped delete: another user's id is a no-op, the owner's id works.
+    assert!(
+        !store
+            .delete_session_owned("sess-second", uid + 1)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        store.list_sessions_for_user(uid, now).await.unwrap().len(),
+        1
+    );
+    assert!(
+        store
+            .delete_session_owned("sess-second", uid)
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .list_sessions_for_user(uid, now)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Plain `delete_session` (used by logout) still works unscoped.
+    store
+        .create_session(
+            "sess-active",
+            uid,
+            "csrf-active",
+            future_expiry,
+            None,
+            None,
+            now,
+        )
+        .await
+        .unwrap();
     store.delete_session("sess-active").await.unwrap();
     assert!(
         store

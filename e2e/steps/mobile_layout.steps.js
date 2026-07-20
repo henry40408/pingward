@@ -18,6 +18,64 @@ Then("the page has no horizontal scrollbar", async ({ page }) => {
   ).toBeLessThanOrEqual(clientW);
 });
 
+// A card body sets its own overflow-x, so a table placed directly in one makes
+// the whole body scroll — dragging the Add-user form below it off-screen too
+// (its left edge went 41px -> -20px). Wrapping the table in .tscroll confines
+// the overflow to the table, leaving the body itself unscrollable.
+Then("only the users table scrolls sideways, not the card around it", async ({ page }) => {
+  const m = await page.evaluate(() => {
+    const cb = document.querySelector('[data-testid="user-submit"]').closest(".cb");
+    const table = cb.querySelector("table");
+    return {
+      bodyOverflow: cb.scrollWidth - cb.clientWidth,
+      wrapper: table.parentElement.className,
+    };
+  });
+  // Assert the symptom first so a failure names it; the wrapper check that
+  // follows is a diagnostic pointing at the usual cause.
+  expect(
+    m.bodyOverflow,
+    `the card body itself scrolls by ${m.bodyOverflow}px, so the Add-user form moves with the table`
+  ).toBeLessThanOrEqual(0);
+  expect(m.wrapper, "the users table is not wrapped in .tscroll").toContain("tscroll");
+});
+
+// The Environment table is wider than a phone and scrolls inside .tscroll, so
+// wrapping its cells buys nothing and costs a lot of height: a breakable
+// database URL made one row 331px tall, and a description column squeezed
+// toward min-content made even "not set" rows ~195px.
+//
+// Two assertions, because they fail for different reasons. The value being one
+// line box is exact and font-independent. The height bound is not — the same
+// text measured 58px on macOS and 78px in Linux CI — so it is set from the
+// defect side (195px+) rather than the fixed side, leaving room for whatever a
+// third platform's metrics do.
+Then("Environment rows do not wrap", async ({ page }) => {
+  const m = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('tr[data-testid^="env-row-"]')];
+    const tallest = rows.reduce(
+      (worst, r) => {
+        const h = Math.round(r.getBoundingClientRect().height);
+        return h > worst.h ? { h, id: r.dataset.testid } : worst;
+      },
+      { h: 0, id: "none" }
+    );
+    // The database URL is the longest value and has no spaces to break on.
+    const code = document
+      .querySelector('tr[data-testid="env-row-DATABASE_URL"]')
+      .querySelector("code");
+    return { tallest, valueLines: code.getClientRects().length };
+  });
+  expect(
+    m.valueLines,
+    `the DATABASE_URL value spans ${m.valueLines} lines — it is wrapping`
+  ).toBe(1);
+  expect(
+    m.tallest.h,
+    `${m.tallest.id} is ${m.tallest.h}px tall — the description column is being squeezed`
+  ).toBeLessThanOrEqual(120);
+});
+
 // The check page's breadcrumb links back to its project (templates/check.html).
 When("I open the project from the breadcrumb", async ({ page }) => {
   await page.locator(".crumb a").nth(1).click();

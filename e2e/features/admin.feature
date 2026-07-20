@@ -17,6 +17,12 @@ Feature: Admin cross-user management
     When I open the admin dashboard
     Then the admin dashboard is shown
 
+  @smtp-env
+  Scenario: The admin Environment card shows SMTP config as configured without leaking the secret
+    When I open the admin dashboard
+    Then the Environment card shows the SMTP password as configured
+    And the page does not contain the SMTP secret
+
   Scenario: The admin projects list shows every user's project with its owner
     When I open the admin projects list
     Then the admin projects list shows "Member jobs" owned by "member"

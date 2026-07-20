@@ -70,10 +70,31 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   `AdminUser` (403 if not admin).
 - Owner scoping goes through `owned_project` / `owned_check` in `web.rs`, which
   return **404 (not 403)** for another user's resource — existence is hidden.
-- Admin cross-user management lives under `/admin/*` (each handler guarded by
-  `AdminUser`). These handlers **reuse the owner templates** by passing an
-  `is_admin`/base-prefix flag, so `data-testid`s and most step definitions are
-  shared with the owner flow.
+- `/account` is the per-user account page (sessions, then API keys, stacked as
+  ordinary cards — no tabs). It lets a user list and revoke their own login
+  sessions (each row's `last_seen_at` is refreshed on use, throttled like
+  `ApiKey.last_used_at`); since `sessions.id` is the cookie's bearer secret,
+  rows are identified in the UI/URLs by a SHA-256 handle
+  (`apikey::hash_api_key`) rather than the id itself. The legacy `/sessions`
+  and `/api-keys` paths redirect there. A session's stored IP comes from
+  `auth::client_ip`: the socket peer, unless that peer is a configured trusted
+  proxy, in which case the first `X-Forwarded-For` entry wins — the same trust
+  gate `forward_auth_username` uses, so an untrusted caller cannot spoof it.
+- `/admin` is the single merged admin page (each handler guarded by
+  `AdminUser`): site-wide overview, global settings, user management, and
+  every project across all users, stacked as ordinary cards top to bottom —
+  no tabs, no sub-nav, mirroring how `/account` merges its sections. The
+  legacy `/settings`, `/users` and `/admin/projects` paths redirect there;
+  their former POST routes moved under `/admin/…` (`/admin/settings`,
+  `/admin/users`, `/admin/users/{id}/…`) so path grouping matches permission
+  grouping. Deeper per-project/per-check cross-user management still lives
+  under `/admin/projects/{id}`, `/admin/checks/{id}`, etc. — those handlers
+  **reuse the owner templates** by passing an `is_admin`/base-prefix flag, so
+  `data-testid`s and most step definitions are shared with the owner flow.
+  An admin can never delete, disable, or demote their own account — the "All
+  users" row renders those controls inert (delete/toggle-admin/toggle-disabled
+  become a `<span class="btn disabled">`; reset password stays live) and the
+  handlers refuse the same self-targeted request with a one-shot flash.
 
 **Scheduling** (`src/scheduler.rs`, `src/config.rs`): a check is `Period`
 (interval) or `Cron` (6-field `sec min hour dom mon dow`, evaluated in the
@@ -111,4 +132,6 @@ email; port/TLS defaulted). The scan and prune interval env vars accept raw
 seconds or a human-readable duration (`5m`, `1h30m`) via
 `duration::parse_duration`; an unparseable value falls back to the default
 rather than failing at boot. `Config::from_map` is the testable core —
-unit-test config parsing through it rather than real env.
+unit-test config parsing through it rather than real env. These env vars are
+also surfaced read-only on `/admin`'s "Environment" card, with secrets (the
+SMTP password) shown only as configured/not-set, never their value.

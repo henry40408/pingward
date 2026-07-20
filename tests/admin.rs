@@ -85,17 +85,53 @@ async fn admin_sees_admin_nav_link_on_dashboard() {
         !member_body.contains(r#"href="/admin""#),
         "non-admin member should not see the Admin nav link"
     );
-    // Settings is a global, admin-only page — its nav link must likewise be
-    // hidden from non-admins (the route already 403s, but the link should not
-    // dangle), and shown to admins.
-    assert!(
-        !member_body.contains(r#"href="/settings""#),
-        "non-admin member should not see the Settings nav link"
-    );
-    assert!(
-        server.get("/").await.text().contains(r#"href="/settings""#),
-        "admin should see the Settings nav link"
-    );
+}
+
+// Settings and user management moved from their own pages under the merged
+// `/admin` page, so the guard now lives on `/admin` and on the `/admin/…`
+// POST routes those forms submit to. This closes a real gap: previously only
+// `GET /admin` was covered for the 403 case, and moving routes is exactly
+// when a guard gets dropped by accident.
+#[tokio::test]
+async fn non_admin_forbidden_on_moved_settings_and_users_post_routes() {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("member", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    server
+        .post("/login")
+        .form(&[("username", "member"), ("password", "pw")])
+        .await;
+    // A valid session + CSRF token proves the 403 below comes from the
+    // `AdminUser` guard, not a missing/invalid CSRF token.
+    set_csrf(&mut server, &store).await;
+
+    server
+        .get("/admin")
+        .await
+        .assert_status(axum::http::StatusCode::FORBIDDEN);
+    server
+        .post("/admin/settings")
+        .form(&[
+            ("scan_interval", ""),
+            ("nag_interval", ""),
+            ("pings_retention_days", ""),
+            ("notifications_retention_days", ""),
+        ])
+        .await
+        .assert_status(axum::http::StatusCode::FORBIDDEN);
+    server
+        .post("/admin/users")
+        .form(&[("username", "x"), ("password", "y")])
+        .await
+        .assert_status(axum::http::StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

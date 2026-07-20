@@ -114,6 +114,20 @@ pub struct ApiKey {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+/// One stored login session. `id` is the session cookie value (a bearer
+/// secret) and must never be rendered — the UI identifies a session by the
+/// SHA-256 hash of this id instead.
+#[derive(Debug, Clone)]
+pub struct Session {
+    pub id: String,
+    pub user_id: i64,
+    pub created_at: Option<DateTime<Utc>>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
+    pub user_agent: Option<String>,
+    pub ip: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AuditLog {
     pub id: i64,

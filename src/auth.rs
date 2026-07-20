@@ -40,6 +40,42 @@ pub fn forward_auth_username(
         .filter(|s| !s.is_empty())
 }
 
+/// Resolve the client IP to record against a session.
+///
+/// The socket peer is the answer only when pingward is reached directly. The
+/// expected deployment is behind a reverse proxy, where every peer is the
+/// proxy — recording that would stamp every session with the same address and
+/// make the column useless for spotting a session you did not start. So when
+/// the peer is a configured trusted proxy, the first `X-Forwarded-For` entry
+/// (the original client) wins instead.
+///
+/// The trust check is what makes this safe: a request arriving from anywhere
+/// else can set `X-Forwarded-For` freely and is ignored, exactly as
+/// [`forward_auth_username`] treats its header. A trusted proxy that sends
+/// something unparseable falls back to the peer rather than storing junk.
+pub fn client_ip(
+    headers: &HeaderMap,
+    peer_ip: Option<IpAddr>,
+    config: &crate::config::Config,
+) -> Option<String> {
+    let peer = peer_ip?;
+    if !config
+        .trusted_proxies
+        .iter()
+        .any(|p| p == &peer.to_string())
+    {
+        return Some(peer.to_string());
+    }
+    let forwarded = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse::<IpAddr>().ok());
+    Some(forwarded.map_or_else(|| peer.to_string(), |ip| ip.to_string()))
+}
+
 /// Hash a plaintext password into a PHC string (`$argon2id$...`).
 pub fn hash_password(plain: &str) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
@@ -194,6 +230,60 @@ mod tests {
         headers.insert("X-Forwarded-User", HeaderValue::from_static("alice"));
         let trusted = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         assert_eq!(forward_auth_username(&headers, Some(trusted), &cfg), None);
+    }
+
+    #[test]
+    fn client_ip_prefers_forwarded_for_only_from_a_trusted_proxy() {
+        let cfg = cfg_with_forward_auth(); // trusts 10.0.0.1
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.7"));
+        let proxy = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let stranger = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+
+        assert_eq!(
+            client_ip(&headers, Some(proxy), &cfg).as_deref(),
+            Some("203.0.113.7")
+        );
+        // An untrusted peer cannot spoof its own address away.
+        assert_eq!(
+            client_ip(&headers, Some(stranger), &cfg).as_deref(),
+            Some("8.8.8.8")
+        );
+        assert_eq!(client_ip(&headers, None, &cfg), None);
+    }
+
+    #[test]
+    fn client_ip_takes_the_first_forwarded_entry_and_ignores_junk() {
+        let cfg = cfg_with_forward_auth();
+        let proxy = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let with = |v: &'static str| {
+            let mut h = HeaderMap::new();
+            h.insert("x-forwarded-for", HeaderValue::from_static(v));
+            client_ip(&h, Some(proxy), &cfg).unwrap()
+        };
+        // The original client is the leftmost entry; later hops are proxies.
+        assert_eq!(with("203.0.113.7, 10.0.0.1"), "203.0.113.7");
+        assert_eq!(with("  203.0.113.7  "), "203.0.113.7");
+        // A trusted proxy sending nonsense falls back to the peer, never junk.
+        assert_eq!(with("not-an-ip"), "10.0.0.1");
+        assert_eq!(with(""), "10.0.0.1");
+        // No header at all: the peer is all we have.
+        assert_eq!(
+            client_ip(&HeaderMap::new(), Some(proxy), &cfg).as_deref(),
+            Some("10.0.0.1")
+        );
+    }
+
+    #[test]
+    fn client_ip_without_trusted_proxies_always_uses_the_peer() {
+        let cfg = Config::from_map(|_| None);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.7"));
+        let peer = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(
+            client_ip(&headers, Some(peer), &cfg).as_deref(),
+            Some("10.0.0.1")
+        );
     }
 
     #[test]

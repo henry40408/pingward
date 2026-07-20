@@ -11,9 +11,25 @@ export const test = base.extend({
     // background scan loop transitions overdue/overrun checks to down within a
     // couple of seconds (time_states.feature). Untagged scenarios keep the
     // default (~30s) interval — a fast scan for them would add needless churn.
-    const server = await spawnPingward(
-      $tags.includes("@fast-scan") ? { scanIntervalSecs: 1 } : {}
-    );
+    const opts = {};
+    if ($tags.includes("@fast-scan")) opts.scanIntervalSecs = 1;
+    // Scenarios tagged @smtp-env spawn pingward with instance SMTP configured,
+    // so the /admin Environment card's SMTP group has something to show as
+    // "configured" (admin.feature).
+    if ($tags.includes("@smtp-env")) {
+      opts.extraEnv = {
+        PINGWARD_SMTP_HOST: "smtp.e2e.test",
+        PINGWARD_SMTP_FROM: "alerts@e2e.test",
+        PINGWARD_SMTP_PASSWORD: "e2e-secret-password",
+      };
+    }
+    // Scenarios tagged @trusted-proxy trust the loopback address the harness
+    // connects from, so auth::client_ip honours their X-Forwarded-For instead
+    // of recording the peer (account.feature).
+    if ($tags.includes("@trusted-proxy")) {
+      opts.extraEnv = { ...opts.extraEnv, PINGWARD_TRUSTED_PROXIES: "127.0.0.1" };
+    }
+    const server = await spawnPingward(opts);
     try {
       await use(server);
     } finally {

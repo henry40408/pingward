@@ -18,10 +18,17 @@ Feature: Mobile layout
     Examples:
       | page             |
       | /                |
-      | /settings        |
-      | /users           |
       | /admin           |
-      | /admin/projects  |
+
+  Scenario: The admin Add user form does not scroll with the users table
+    When I view the site at 375px wide
+    And I visit "/admin"
+    Then only the users table scrolls sideways, not the card around it
+
+  Scenario: The admin Environment rows stay short at phone width
+    When I view the site at 375px wide
+    And I visit "/admin"
+    Then Environment rows do not wrap
 
   Scenario: The check detail page has no horizontal scrollbar on a narrow viewport
     Given a project named "Nightly jobs"

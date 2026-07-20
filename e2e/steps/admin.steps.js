@@ -40,13 +40,16 @@ When("I open the admin dashboard", async ({ page, serverUrl }) => {
   await page.goto(`${serverUrl}/admin`);
 });
 
-// The admin dashboard/projects templates carry no data-testid attributes, so we
-// assert against their headings and link text instead.
+// The merged /admin page carries no data-testid on its section headings, so we
+// assert against heading text instead. There's no dedicated dashboard/projects
+// page anymore — both live as sections of the same page.
 Then("the admin dashboard is shown", async ({ page }) => {
-  await expect(page.getByRole("heading", { name: "Admin · Dashboard" })).toBeVisible();
-  await expect(page.getByRole("link", { name: /All projects/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Admin", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Scale" })).toBeVisible();
 });
 
+// `/admin/projects` is now a legacy redirect to `/admin`, where the "All
+// projects" section lives.
 When("I open the admin projects list", async ({ page, serverUrl }) => {
   await page.goto(`${serverUrl}/admin/projects`);
 });
@@ -54,7 +57,7 @@ When("I open the admin projects list", async ({ page, serverUrl }) => {
 Then(
   "the admin projects list shows {string} owned by {string}",
   async ({ page }, projectName, owner) => {
-    await expect(page.getByRole("heading", { name: "Admin · Projects" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "All projects" })).toBeVisible();
     const row = page.locator(".check", { hasText: projectName });
     await expect(row).toBeVisible();
     await expect(row).toContainText(`owner: ${owner}`);
@@ -107,14 +110,26 @@ Then("the channel {string} is listed on the project", async ({ page }, name) => 
   await expect(page.locator(".chk .nm", { hasText: name })).toBeVisible();
 });
 
-// Admin project delete redirects to /admin/projects (the owner flow redirects to
-// the dashboard "/"), so it needs its own step rather than reusing monitoring's.
+// Admin project delete redirects to /admin/projects (the owner flow redirects
+// to the dashboard "/"), so it needs its own step rather than reusing
+// monitoring's. /admin/projects is itself now a legacy redirect to /admin, so
+// the final landing page is /admin.
 When("I delete the member's project", async ({ page, serverUrl }) => {
   page.on("dialog", (d) => d.accept());
   await page.getByTestId("delete-project-button").click();
-  await expect(page).toHaveURL(`${serverUrl}/admin/projects`);
+  await expect(page).toHaveURL(`${serverUrl}/admin`);
 });
 
 Then("the admin projects list has no projects", async ({ page }) => {
   await expect(page.getByText("No projects yet.")).toBeVisible();
+});
+
+// --- Environment card (read-only env-var settings on /admin) ---
+
+Then("the Environment card shows the SMTP password as configured", async ({ page }) => {
+  await expect(page.getByTestId("env-smtp-password")).toContainText("configured");
+});
+
+Then("the page does not contain the SMTP secret", async ({ page }) => {
+  await expect(page.locator("body")).not.toContainText("e2e-secret-password");
 });

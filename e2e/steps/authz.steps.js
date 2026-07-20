@@ -4,21 +4,22 @@ import { signIn } from "../support/actions.js";
 
 const { Given, When, Then } = createBdd(test);
 
-// Human nav label -> its data-testid on the admin-only nav links.
-const NAV_TESTID = { Settings: "nav-settings", Admin: "nav-admin" };
+// Human nav label -> its data-testid on the admin-only nav link.
+const NAV_TESTID = { Admin: "nav-admin" };
 
-// Create a non-admin user through the admin-only /users form. Assumes the
-// admin is signed in (the form is guarded by AdminUser). The is_admin
-// checkbox is left unchecked, so the created user is a non-admin. On success
-// the handler redirects back to /users, where the new username is listed.
+// Create a non-admin user through the admin-only /admin "Add user" form.
+// Assumes the admin is signed in (the form is guarded by AdminUser). The
+// is_admin checkbox is left unchecked, so the created user is a non-admin. On
+// success the handler redirects back to /admin, where the new username is
+// listed.
 Given(
   "a non-admin user {string} with password {string} exists",
   async ({ page, serverUrl }, username, password) => {
-    await page.goto(`${serverUrl}/users`);
+    await page.goto(`${serverUrl}/admin`);
     await page.getByTestId("user-username-input").fill(username);
     await page.getByTestId("user-password-input").fill(password);
     await page.getByTestId("user-submit").click();
-    await expect(page).toHaveURL(`${serverUrl}/users`);
+    await expect(page).toHaveURL(`${serverUrl}/admin`);
     await expect(page.getByText(username, { exact: true }).first()).toBeVisible();
   }
 );

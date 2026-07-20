@@ -36,7 +36,10 @@ fn truncate(bytes: &Bytes) -> String {
 /// the handlers fail to compile (confirmed with a minimal repro against the
 /// pinned axum 0.8.9). This local wrapper reads the extension manually and
 /// is infallible, preserving the brief's "optional connect info" behavior.
-struct ClientIp(Option<SocketAddr>);
+///
+/// `pub(crate)` so `web.rs` can reuse it for the same purpose (stamping a
+/// session's IP at login), rather than duplicating this extractor.
+pub(crate) struct ClientIp(pub(crate) Option<SocketAddr>);
 
 impl<S> FromRequestParts<S> for ClientIp
 where

@@ -16,7 +16,7 @@
   {% if show_nav %}
   <header class="bar"><div class="inner">
     <a class="brand" href="/"><span class="glyph">▚</span>pingward</a>
-    <nav class="links"><a href="/">Dashboard</a><a href="/api-keys" data-testid="nav-api-keys">API keys</a>{% if is_admin %}<a href="/settings" data-testid="nav-settings">Settings</a><a href="/admin" data-testid="nav-admin">Admin</a>{% endif %}</nav>
+    <nav class="links"><a href="/">Dashboard</a><a href="/account" data-testid="nav-account">Account</a>{% if is_admin %}<a href="/admin" data-testid="nav-admin">Admin</a>{% endif %}</nav>
     <div class="right">
       <button class="iconbtn" id="pw-theme-toggle" title="Toggle theme" aria-label="Toggle theme">◐</button>
       <form class="inline" method="post" action="/logout"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="ghost" type="submit" data-testid="logout-button">Log out</button></form>

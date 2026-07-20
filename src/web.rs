@@ -11,7 +11,7 @@ use crate::state::AppState;
 use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -55,17 +55,30 @@ pub fn routes() -> Router<AppState> {
         .route("/channels/{id}/delete", post(channel_delete))
         .route("/channels/{id}/test", post(channel_test))
         .route("/checks/{id}/channels", post(check_set_channels))
-        .route("/settings", get(settings_page).post(settings_save))
-        .route("/api-keys", get(api_keys_page).post(api_keys_create))
-        .route("/api-keys/{id}/delete", post(api_keys_delete))
-        .route("/users", get(users_page).post(users_create))
-        .route("/users/{id}/delete", post(users_delete))
-        .route("/users/{id}/password", post(users_set_password))
-        .route("/users/{id}/admin", post(users_toggle_admin))
-        .route("/users/{id}/disabled", post(users_set_disabled))
-        // --- admin cross-user route group (each handler guarded by AdminUser) ---
-        .route("/admin", get(admin_dashboard))
-        .route("/admin/projects", get(admin_projects_page))
+        .route("/account", get(account_page))
+        .route("/account/api-keys", post(api_keys_create))
+        .route("/account/api-keys/{id}/delete", post(api_keys_delete))
+        .route("/account/sessions/{handle}/revoke", post(sessions_revoke))
+        .route(
+            "/account/sessions/revoke-others",
+            post(sessions_revoke_others),
+        )
+        // Legacy paths, kept so existing bookmarks/links still land somewhere.
+        .route("/api-keys", get(redirect_to_account))
+        .route("/sessions", get(redirect_to_account))
+        .route("/settings", get(redirect_to_admin))
+        .route("/users", get(redirect_to_admin))
+        // --- admin cross-user route group (each handler guarded by AdminUser,
+        // except the legacy-redirect handlers above/below, which expose no
+        // data and mirror `redirect_to_account`) ---
+        .route("/admin", get(admin_page))
+        .route("/admin/settings", post(settings_save))
+        .route("/admin/users", post(users_create))
+        .route("/admin/users/{id}/delete", post(users_delete))
+        .route("/admin/users/{id}/password", post(users_set_password))
+        .route("/admin/users/{id}/admin", post(users_toggle_admin))
+        .route("/admin/users/{id}/disabled", post(users_set_disabled))
+        .route("/admin/projects", get(redirect_to_admin))
         .route(
             "/admin/projects/{id}",
             get(admin_project_show).post(admin_project_update),
@@ -195,6 +208,8 @@ async fn setup_page(State(state): State<AppState>) -> Result<Response, AppError>
 async fn setup_submit(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
+    conn: crate::ping::ClientIp,
     Form(creds): Form<Credentials>,
 ) -> Result<Response, AppError> {
     if state.store.count_users().await? > 0 {
@@ -217,7 +232,9 @@ async fn setup_submit(
         .store
         .create_user(&creds.username, Some(&phc), true, Utc::now())
         .await?;
-    let jar = start_session(&state.store, jar, uid).await?;
+    let ua = request_user_agent(&headers);
+    let ip = crate::auth::client_ip(&headers, conn.0.map(|a| a.ip()), &state.config);
+    let jar = start_session(&state.store, jar, uid, ua.as_deref(), ip.as_deref()).await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
 
@@ -237,6 +254,8 @@ async fn login_page(State(state): State<AppState>) -> Result<Response, AppError>
 async fn login_submit(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
+    conn: crate::ping::ClientIp,
     Form(creds): Form<Credentials>,
 ) -> Result<Response, AppError> {
     let user = state.store.find_user_by_username(&creds.username).await?;
@@ -263,7 +282,9 @@ async fn login_submit(
         })?
         .into_response());
     }
-    let jar = start_session(&state.store, jar, user.id).await?;
+    let ua = request_user_agent(&headers);
+    let ip = crate::auth::client_ip(&headers, conn.0.map(|a| a.ip()), &state.config);
+    let jar = start_session(&state.store, jar, user.id, ua.as_deref(), ip.as_deref()).await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
 
@@ -352,8 +373,32 @@ async fn dashboard(
     .into_response())
 }
 
+/// Column-bounding cap for a stored `user_agent` (raw browser headers can be
+/// arbitrarily long; the value is display-only, so it is simply truncated).
+const MAX_USER_AGENT_CHARS: usize = 300;
+
+/// Extract the `User-Agent` request header as a bounded, valid-UTF-8 string
+/// for storage alongside a session row.
+fn request_user_agent(headers: &HeaderMap) -> Option<String> {
+    headers.get(axum::http::header::USER_AGENT).and_then(|v| {
+        v.to_str().ok().map(|s| {
+            let end = s
+                .char_indices()
+                .nth(MAX_USER_AGENT_CHARS)
+                .map_or(s.len(), |(i, _)| i);
+            s[..end].to_string()
+        })
+    })
+}
+
 /// Create a session row and return a jar carrying the session cookie.
-async fn start_session(store: &Store, jar: CookieJar, user_id: i64) -> Result<CookieJar, AppError> {
+async fn start_session(
+    store: &Store,
+    jar: CookieJar,
+    user_id: i64,
+    user_agent: Option<&str>,
+    ip: Option<&str>,
+) -> Result<CookieJar, AppError> {
     let token = new_session_token();
     // Per-session CSRF synchronizer token, validated by `csrf_guard` on every
     // state-changing browser request and embedded in POST forms by the render
@@ -361,7 +406,7 @@ async fn start_session(store: &Store, jar: CookieJar, user_id: i64) -> Result<Co
     let csrf = new_session_token();
     let expires = Utc::now() + Duration::days(SESSION_TTL_DAYS);
     store
-        .create_session(&token, user_id, &csrf, expires)
+        .create_session(&token, user_id, &csrf, expires, user_agent, ip, Utc::now())
         .await?;
     let cookie = Cookie::build((SESSION_COOKIE, token))
         .http_only(true)
@@ -1325,12 +1370,30 @@ fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
     let message = match surface {
         "channels" => "Notify channels saved.",
         "settings" => "Settings saved.",
+        "users_blocked" => {
+            "That action was refused: you cannot remove your own access, and the last enabled admin cannot be removed."
+        }
         _ => return (jar, None),
     };
     (
         jar.remove(Cookie::build((FLASH_COOKIE, "")).path("/").build()),
         Some(message.to_string()),
     )
+}
+
+/// Set the `users_blocked` flash cookie and redirect to `/admin`. Used by the
+/// self-guard and last-enabled-admin-guard branches in `users_delete`,
+/// `users_toggle_admin` and `users_set_disabled` — mirrors how
+/// `settings_save` sets `FLASH_COOKIE` for its own surface (~line 2413).
+fn users_blocked(jar: CookieJar) -> Response {
+    let jar = jar.add(
+        Cookie::build((FLASH_COOKIE, "users_blocked"))
+            .http_only(true)
+            .same_site(SameSite::Lax)
+            .path("/")
+            .build(),
+    );
+    (jar, Redirect::to("/admin")).into_response()
 }
 
 async fn check_show(
@@ -2173,30 +2236,6 @@ async fn check_set_channels(
 }
 
 // --- settings / user administration (admin only) ---
-#[derive(Template)]
-#[template(path = "settings.html")]
-struct SettingsTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    scan_interval: String,
-    nag_interval: String,
-    pings_retention_days: String,
-    notifications_retention_days: String,
-    error: Option<String>,
-    flash: Option<String>,
-}
-
-#[derive(Template)]
-#[template(path = "users.html")]
-struct UsersTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    users: Vec<User>,
-    error: Option<String>,
-}
-
 #[derive(Deserialize)]
 struct SettingsForm {
     scan_interval: String,
@@ -2218,11 +2257,23 @@ struct PasswordForm {
     password: String,
 }
 
-async fn settings_page(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    _admin: AdminUser,
-) -> Result<Response, AppError> {
+/// Settings persist durations as raw seconds; render them in the readable form
+/// the field now accepts. Anything unexpected passes through untouched so the
+/// user still sees what is stored.
+fn readable_setting_duration(raw: String) -> String {
+    match raw.trim().parse::<i64>() {
+        Ok(v) if v > 0 => crate::duration::fmt_duration(v),
+        _ => raw,
+    }
+}
+
+/// The four global settings fields as currently persisted, rendered in their
+/// readable (duration-string) form. Shared by `render_admin`'s default path
+/// and by `users_create`'s error re-render, which needs the same fields but
+/// isn't otherwise touching settings.
+async fn load_settings_fields(
+    state: &AppState,
+) -> Result<(String, String, String, String), AppError> {
     let scan_interval = state
         .store
         .get_setting("scan_interval")
@@ -2243,37 +2294,80 @@ async fn settings_page(
         .get_setting("notifications_retention_days")
         .await?
         .unwrap_or_default();
-    let csrf = current_csrf(&state, &jar).await;
-    let (jar, flash) = take_flash(jar, "settings");
-    let resp = render(&SettingsTemplate {
-        show_nav: true,
-        csrf,
-        is_admin: true,
-        scan_interval: readable_setting_duration(scan_interval),
-        nag_interval: readable_setting_duration(nag_interval),
+    Ok((
+        readable_setting_duration(scan_interval),
+        readable_setting_duration(nag_interval),
         pings_retention_days,
         notifications_retention_days,
-        error: None,
-        flash,
-    })?
-    .into_response();
+    ))
+}
+
+/// The settings-form fields to render on the merged `/admin` page: either the
+/// four persisted values (the default path) or the raw values just submitted
+/// to an invalid save, so the user can see and fix what they typed.
+struct SettingsFields {
+    scan_interval: String,
+    nag_interval: String,
+    pings_retention_days: String,
+    notifications_retention_days: String,
+}
+
+/// The re-render inputs `render_admin` needs beyond the data it always
+/// gathers itself (overview stats, users, projects): the settings section's
+/// fields/error/flash, the users section's flash, and the add-user form's
+/// error.
+struct AdminRender {
+    settings: SettingsFields,
+    settings_error: Option<String>,
+    settings_flash: Option<String>,
+    user_flash: Option<String>,
+    user_error: Option<String>,
+}
+
+async fn admin_page(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    AdminUser(admin): AdminUser,
+) -> Result<Response, AppError> {
+    let (scan_interval, nag_interval, pings_retention_days, notifications_retention_days) =
+        load_settings_fields(&state).await?;
+    // Chain both surfaces through the same jar: the cookie is path-scoped to
+    // "/", so each `take_flash` call only consumes it if the value matches
+    // its own surface, leaving it for the other to check.
+    let (jar, settings_flash) = take_flash(jar, "settings");
+    let (jar, user_flash) = take_flash(jar, "users_blocked");
+    let resp = render_admin(
+        &state,
+        &jar,
+        admin.id,
+        AdminRender {
+            settings: SettingsFields {
+                scan_interval,
+                nag_interval,
+                pings_retention_days,
+                notifications_retention_days,
+            },
+            settings_error: None,
+            settings_flash,
+            user_flash,
+            user_error: None,
+        },
+    )
+    .await?;
     Ok((jar, resp).into_response())
 }
 
-/// Settings persist durations as raw seconds; render them in the readable form
-/// the field now accepts. Anything unexpected passes through untouched so the
-/// user still sees what is stored.
-fn readable_setting_duration(raw: String) -> String {
-    match raw.trim().parse::<i64>() {
-        Ok(v) if v > 0 => crate::duration::fmt_duration(v),
-        _ => raw,
-    }
+/// Redirects the legacy `/settings`, `/users` and `/admin/projects` paths to
+/// the merged `/admin` page, so existing bookmarks/links still land somewhere.
+/// Unguarded like `redirect_to_account` — it exposes no data, only a redirect.
+async fn redirect_to_admin() -> Redirect {
+    Redirect::to("/admin")
 }
 
 async fn settings_save(
     State(state): State<AppState>,
     jar: CookieJar,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
     Form(form): Form<SettingsForm>,
 ) -> Result<Response, AppError> {
     let fields = [
@@ -2317,18 +2411,25 @@ async fn settings_save(
         match result {
             Ok(v) => parsed.push((key, v)),
             Err(msg) => {
-                return Ok(render(&SettingsTemplate {
-                    show_nav: true,
-                    csrf: current_csrf(&state, &jar).await,
-                    is_admin: true,
-                    scan_interval: form.scan_interval.clone(),
-                    nag_interval: form.nag_interval.clone(),
-                    pings_retention_days: form.pings_retention_days.clone(),
-                    notifications_retention_days: form.notifications_retention_days.clone(),
-                    error: Some(msg),
-                    flash: None,
-                })?
-                .into_response());
+                let resp = render_admin(
+                    &state,
+                    &jar,
+                    admin.id,
+                    AdminRender {
+                        settings: SettingsFields {
+                            scan_interval: form.scan_interval.clone(),
+                            nag_interval: form.nag_interval.clone(),
+                            pings_retention_days: form.pings_retention_days.clone(),
+                            notifications_retention_days: form.notifications_retention_days.clone(),
+                        },
+                        settings_error: Some(msg),
+                        settings_flash: None,
+                        user_flash: None,
+                        user_error: None,
+                    },
+                )
+                .await?;
+                return Ok(resp);
             }
         }
     }
@@ -2343,23 +2444,7 @@ async fn settings_save(
             .path("/")
             .build(),
     );
-    Ok((jar, Redirect::to("/settings")).into_response())
-}
-
-async fn users_page(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    _admin: AdminUser,
-) -> Result<Response, AppError> {
-    let users = state.store.list_users().await?;
-    Ok(render(&UsersTemplate {
-        show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
-        is_admin: true,
-        users,
-        error: None,
-    })?
-    .into_response())
+    Ok((jar, Redirect::to("/admin")).into_response())
 }
 
 async fn users_create(
@@ -2369,15 +2454,27 @@ async fn users_create(
     Form(form): Form<NewUserForm>,
 ) -> Result<Response, AppError> {
     if form.username.trim().is_empty() || form.password.is_empty() {
-        let users = state.store.list_users().await?;
-        return Ok(render(&UsersTemplate {
-            show_nav: true,
-            csrf: current_csrf(&state, &jar).await,
-            is_admin: true,
-            users,
-            error: Some("username and password are required".into()),
-        })?
-        .into_response());
+        let (scan_interval, nag_interval, pings_retention_days, notifications_retention_days) =
+            load_settings_fields(&state).await?;
+        let resp = render_admin(
+            &state,
+            &jar,
+            admin.id,
+            AdminRender {
+                settings: SettingsFields {
+                    scan_interval,
+                    nag_interval,
+                    pings_retention_days,
+                    notifications_retention_days,
+                },
+                settings_error: None,
+                settings_flash: None,
+                user_flash: None,
+                user_error: Some("username and password are required".into()),
+            },
+        )
+        .await?;
+        return Ok(resp);
     }
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
     // A checked checkbox submits `is_admin=1`; an unchecked one is either
@@ -2403,24 +2500,30 @@ async fn users_create(
             Utc::now(),
         )
         .await?;
-    Ok(Redirect::to("/users").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 async fn users_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    // Never allow deleting yourself or the last admin (lockout guard).
+    // Never allow deleting yourself — you'd lose your own account mid-session.
     if id == admin.id {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(users_blocked(jar));
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     };
-    // Refuse to delete the last enabled admin.
+    // Refuse to delete the last enabled admin. Provably unreachable today:
+    // the actor is always an enabled admin (AdminUser/resolve_user rejects
+    // disabled users), and the self-guard above already rules out
+    // target == actor, so a target that is a *different* enabled admin
+    // implies count_enabled_admins() is already >= 2. Kept as
+    // defence-in-depth behind the self-guard.
     if target.is_admin && !target.disabled && state.store.count_enabled_admins().await? <= 1 {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(users_blocked(jar));
     }
     state.store.delete_user(id).await?;
     state
@@ -2437,7 +2540,7 @@ async fn users_delete(
             Utc::now(),
         )
         .await?;
-    Ok(Redirect::to("/users").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 async fn users_set_password(
@@ -2447,10 +2550,10 @@ async fn users_set_password(
     Form(form): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
     if form.password.is_empty() {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     }
     if state.store.find_user_by_id(id).await?.is_none() {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     }
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
     state.store.set_user_password(id, &phc).await?;
@@ -2468,25 +2571,36 @@ async fn users_set_password(
             Utc::now(),
         )
         .await?;
-    Ok(Redirect::to("/users").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 async fn users_toggle_admin(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
+    // Never allow revoking your own admin rights — it would lock you out of
+    // `/admin` immediately (the very next request re-resolves AdminUser and
+    // 403s), mirroring the self-guards in `users_delete`/`users_set_disabled`.
+    if id == admin.id {
+        return Ok(users_blocked(jar));
+    }
     let Some(target) = state.store.find_user_by_id(id).await? else {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     };
     let new_admin = !target.is_admin;
-    // Refuse to remove the last enabled admin.
+    // Refuse to remove the last enabled admin. Provably unreachable today:
+    // see `users_delete`'s comment — the self-guard above already rules out
+    // target == actor, so a target that is a *different* enabled admin
+    // implies count_enabled_admins() is already >= 2. Kept as
+    // defence-in-depth behind the self-guard.
     if !new_admin
         && target.is_admin
         && !target.disabled
         && state.store.count_enabled_admins().await? <= 1
     {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(users_blocked(jar));
     }
     state.store.set_user_admin(id, new_admin).await?;
     state
@@ -2504,29 +2618,34 @@ async fn users_toggle_admin(
             Utc::now(),
         )
         .await?;
-    Ok(Redirect::to("/users").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 async fn users_set_disabled(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     // Never disable yourself.
     if id == admin.id {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(users_blocked(jar));
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     };
     let new_disabled = !target.disabled;
-    // Refuse to disable the last enabled admin.
+    // Refuse to disable the last enabled admin. Provably unreachable today:
+    // see `users_delete`'s comment — the self-guard above already rules out
+    // target == actor, so a target that is a *different* enabled admin
+    // implies count_enabled_admins() is already >= 2. Kept as
+    // defence-in-depth behind the self-guard.
     if new_disabled
         && target.is_admin
         && !target.disabled
         && state.store.count_enabled_admins().await? <= 1
     {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(users_blocked(jar));
     }
     state.store.set_user_disabled(id, new_disabled).await?;
     state
@@ -2544,21 +2663,46 @@ async fn users_set_disabled(
             Utc::now(),
         )
         .await?;
-    Ok(Redirect::to("/users").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
-// --- API keys (session-authenticated management UI for every logged-in user) ---
+// --- account (session-authenticated self-service page for every logged-in
+// user: sessions, then API keys, merged onto a single `/account` page) ---
+//
+// `sessions.id` is the session cookie value — a bearer secret — and must
+// never be rendered or appear in a URL. Rows are identified in the UI (and in
+// the revoke route) by `handle`, the SHA-256 hex of the id, computed with the
+// same helper the API-key hashing uses. Session lists are tiny, so resolving
+// a handle back to a row is a linear scan rather than an indexed lookup.
 #[derive(Template)]
-#[template(path = "api_keys.html")]
-struct ApiKeysTemplate {
+#[template(path = "account.html")]
+struct AccountTemplate {
     show_nav: bool,
     csrf: String,
     is_admin: bool,
+    // sessions section
+    sessions: Vec<SessionRow>,
+    /// Count of non-current sessions, so the template can hide the "revoke
+    /// others" control when there is nothing else to revoke.
+    other_count: usize,
+    // api-keys section
     keys: Vec<ApiKeyRow>,
     /// The plaintext token, rendered exactly once right after creation and
     /// never recoverable afterwards.
     new_token: Option<String>,
-    error: Option<String>,
+    key_error: Option<String>,
+}
+
+/// One row of the sessions table. Mirrors [`crate::models::Session`], minus
+/// the raw `id` (never exposed) and plus the derived `handle` + `current`.
+struct SessionRow {
+    handle: String,
+    created_at: Option<DateTime<Utc>>,
+    last_seen_at: Option<DateTime<Utc>>,
+    expires_at: DateTime<Utc>,
+    user_agent: Option<String>,
+    ip: Option<String>,
+    current: bool,
 }
 
 /// One row of the API-keys table. Mirrors [`crate::models::ApiKey`] plus a
@@ -2596,12 +2740,78 @@ struct NewApiKeyForm {
     expires_in: String,
 }
 
-async fn api_keys_page(
+async fn account_page(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
-    render_api_keys(&state, &jar, &user, None, None).await
+    render_account(&state, &jar, &user, None, None).await
+}
+
+/// Redirects the legacy `/api-keys` and `/sessions` paths to the merged
+/// `/account` page, so existing bookmarks/links still land somewhere.
+async fn redirect_to_account() -> Redirect {
+    Redirect::to("/account")
+}
+
+/// Gather both the sessions and API-keys datasets and render the merged
+/// `/account` page.
+async fn render_account(
+    state: &AppState,
+    jar: &CookieJar,
+    user: &User,
+    new_token: Option<String>,
+    key_error: Option<&str>,
+) -> Result<Response, AppError> {
+    let now = Utc::now();
+
+    let current_handle = jar
+        .get(SESSION_COOKIE)
+        .map(|c| crate::apikey::hash_api_key(c.value()));
+    let mut sessions: Vec<SessionRow> = state
+        .store
+        .list_sessions_for_user(user.id, now)
+        .await?
+        .into_iter()
+        .map(|s| {
+            let handle = crate::apikey::hash_api_key(&s.id);
+            let current = current_handle.as_deref() == Some(handle.as_str());
+            SessionRow {
+                handle,
+                created_at: s.created_at,
+                last_seen_at: s.last_seen_at,
+                expires_at: s.expires_at,
+                user_agent: s.user_agent,
+                ip: s.ip,
+                current,
+            }
+        })
+        .collect();
+    // `list_sessions_for_user` already returns newest-created-first; a stable
+    // sort on "is this the current session" preserves that ordering within
+    // each group while pulling the current row to the top.
+    sessions.sort_by_key(|r| !r.current);
+    let other_count = sessions.iter().filter(|r| !r.current).count();
+
+    let keys = state
+        .store
+        .list_api_keys_for_user(user.id)
+        .await?
+        .into_iter()
+        .map(|k| ApiKeyRow::from_key(k, now))
+        .collect();
+
+    Ok(render(&AccountTemplate {
+        show_nav: true,
+        csrf: current_csrf(state, jar).await,
+        is_admin: user.is_admin,
+        sessions,
+        other_count,
+        keys,
+        new_token,
+        key_error: key_error.map(str::to_string),
+    })?
+    .into_response())
 }
 
 async fn api_keys_create(
@@ -2612,7 +2822,7 @@ async fn api_keys_create(
 ) -> Result<Response, AppError> {
     let name = form.name.trim();
     if name.is_empty() {
-        return render_api_keys(&state, &jar, &user, None, Some("a name is required")).await;
+        return render_account(&state, &jar, &user, None, Some("a name is required")).await;
     }
     // Optional expiry: blank means never; otherwise a duration from now
     // (`30d`, `12h`, …) reusing the same parser as the check/duration fields.
@@ -2624,7 +2834,7 @@ async fn api_keys_create(
             match crate::duration::parse_duration(raw) {
                 Some(secs) if secs > 0 => Some(Utc::now() + Duration::seconds(secs)),
                 _ => {
-                    return render_api_keys(
+                    return render_account(
                         &state,
                         &jar,
                         &user,
@@ -2641,7 +2851,7 @@ async fn api_keys_create(
         .store
         .insert_api_key(user.id, name, &hash, &prefix, expires_at, Utc::now())
         .await?;
-    render_api_keys(&state, &jar, &user, Some(full), None).await
+    render_account(&state, &jar, &user, Some(full), None).await
 }
 
 async fn api_keys_delete(
@@ -2651,33 +2861,58 @@ async fn api_keys_delete(
 ) -> Result<Response, AppError> {
     // Owner-scoped delete; a key the caller doesn't own is silently a no-op.
     state.store.delete_api_key(id, user.id).await?;
-    Ok(Redirect::to("/api-keys").into_response())
+    Ok(Redirect::to("/account").into_response())
 }
 
-async fn render_api_keys(
-    state: &AppState,
-    jar: &CookieJar,
-    user: &User,
-    new_token: Option<String>,
-    error: Option<&str>,
+async fn sessions_revoke(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+    Path(handle): Path<String>,
 ) -> Result<Response, AppError> {
-    let now = Utc::now();
-    let keys = state
+    // Resolve the handle among the caller's own sessions; an unknown or
+    // foreign handle is a silent no-op (never a 500), mirroring the
+    // API-key/project/check owner-scoped delete pattern.
+    let sessions = state
         .store
-        .list_api_keys_for_user(user.id)
-        .await?
-        .into_iter()
-        .map(|k| ApiKeyRow::from_key(k, now))
-        .collect();
-    Ok(render(&ApiKeysTemplate {
-        show_nav: true,
-        csrf: current_csrf(state, jar).await,
-        is_admin: user.is_admin,
-        keys,
-        new_token,
-        error: error.map(str::to_string),
-    })?
-    .into_response())
+        .list_sessions_for_user(user.id, Utc::now())
+        .await?;
+    let Some(target) = sessions
+        .iter()
+        .find(|s| crate::apikey::hash_api_key(&s.id) == handle)
+    else {
+        return Ok((jar, Redirect::to("/account")).into_response());
+    };
+    let is_current = jar
+        .get(SESSION_COOKIE)
+        .is_some_and(|c| c.value() == target.id);
+    state
+        .store
+        .delete_session_owned(&target.id, user.id)
+        .await?;
+    if is_current {
+        // Must carry `path("/")` to match how the cookie was set — a
+        // pathless removal cookie gets this route's own path
+        // (`/account/sessions/{handle}/revoke`) and would not clear a
+        // `path=/` cookie.
+        let jar = jar.remove(Cookie::build((SESSION_COOKIE, "")).path("/").build());
+        return Ok((jar, Redirect::to("/login")).into_response());
+    }
+    Ok((jar, Redirect::to("/account")).into_response())
+}
+
+async fn sessions_revoke_others(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+) -> Result<Response, AppError> {
+    if let Some(cookie) = jar.get(SESSION_COOKIE) {
+        state
+            .store
+            .delete_other_sessions_for_user(user.id, cookie.value())
+            .await?;
+    }
+    Ok(Redirect::to("/account").into_response())
 }
 
 // --- admin route group (cross-user management, every access audited) ---
@@ -2686,26 +2921,209 @@ async fn render_api_keys(
 // unfiltered and write one `admin.access` audit row), then reuses the exact
 // same core logic/render helper/mutator as the owner handler, differing only in
 // pointing links and redirects at the `/admin`-prefixed route surface.
-#[derive(Template)]
-#[template(path = "admin_projects.html")]
-struct AdminProjectsTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    projects: Vec<(Project, String)>,
+/// One environment-configured setting, as displayed on `/admin`. The value is
+/// redacted or summarised in Rust *before* it lands here, so a secret never
+/// crosses into the template and no template change can print one.
+struct EnvSetting {
+    var: &'static str,
+    value: EnvValue,
+    default: &'static str,
+    description: &'static str,
 }
 
-/// `/admin` landing: a cross-user dashboard with site-wide health and scale
-/// figures (users/projects/checks/pings, check status rollup, notification
-/// health, and scheduler heartbeat).
+/// How a setting's current value is presented. `Secret` carries only whether
+/// something is configured — never the value itself.
+enum EnvValue {
+    Set(String),
+    Unset,
+    Secret(bool),
+}
+
+/// Group every env-configured setting (nothing in this DB) into the sections
+/// shown on the read-only `/admin` "Environment" card. Values are the
+/// process's *current effective* config, so this reflects what's actually
+/// running, not just what's documented as a default.
+fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSetting>)> {
+    let log_format = match config.log_format {
+        crate::config::LogFormat::Text => "text",
+        crate::config::LogFormat::Json => "json",
+    };
+    let server = vec![
+        EnvSetting {
+            var: "DATABASE_URL",
+            value: EnvValue::Set(redact_db_url(&config.database_url)),
+            default: "sqlite://pingward.sqlite3?mode=rwc",
+            description: "The database connection string (SQLite or Postgres).",
+        },
+        EnvSetting {
+            var: "PINGWARD_BIND",
+            value: EnvValue::Set(config.bind.clone()),
+            default: "127.0.0.1:8080",
+            description: "The socket address the server listens on.",
+        },
+        EnvSetting {
+            var: "PINGWARD_BASE_URL",
+            value: EnvValue::Set(config.base_url.clone()),
+            default: "http://localhost:8080",
+            description: "Used to render absolute ping URLs.",
+        },
+        EnvSetting {
+            var: "PINGWARD_LOG_FORMAT",
+            value: EnvValue::Set(log_format.to_string()),
+            default: "text",
+            description: "Log line format (text or json); applied at process startup — changing it requires a restart.",
+        },
+    ];
+    let scheduling = vec![
+        EnvSetting {
+            var: "PINGWARD_SCAN_INTERVAL",
+            value: EnvValue::Set(config.scan_interval_secs.to_string()),
+            default: "30",
+            description: "Fallback scan interval — only used when no check, project, or global setting overrides it (check → project → global setting → env cascade).",
+        },
+        EnvSetting {
+            var: "PINGWARD_PRUNE_INTERVAL_SECS",
+            value: EnvValue::Set(config.prune_interval_secs.to_string()),
+            default: "3600",
+            description: "How often old pings/notifications are deleted.",
+        },
+    ];
+    let auth = vec![
+        EnvSetting {
+            var: "PINGWARD_FORWARD_AUTH_HEADER",
+            value: match &config.forward_auth_header {
+                Some(h) => EnvValue::Set(h.clone()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "Header name for the trusted-proxy forward-auth mechanism.",
+        },
+        EnvSetting {
+            var: "PINGWARD_TRUSTED_PROXIES",
+            value: if config.trusted_proxies.is_empty() {
+                EnvValue::Unset
+            } else {
+                EnvValue::Set(config.trusted_proxies.join(", "))
+            },
+            default: "(unset)",
+            description: "Proxy addresses trusted to set the forward-auth header.",
+        },
+    ];
+    let smtp = &config.smtp;
+    let email = vec![
+        EnvSetting {
+            var: "PINGWARD_SMTP_HOST",
+            value: match smtp {
+                Some(s) => EnvValue::Set(s.host.clone()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "Instance SMTP server host.",
+        },
+        EnvSetting {
+            var: "PINGWARD_SMTP_PORT",
+            value: match smtp {
+                Some(s) => EnvValue::Set(s.port.to_string()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "Instance SMTP server port.",
+        },
+        EnvSetting {
+            var: "PINGWARD_SMTP_FROM",
+            value: match smtp {
+                Some(s) => EnvValue::Set(s.from.clone()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "The From address used for outgoing email notifications.",
+        },
+        EnvSetting {
+            var: "PINGWARD_SMTP_TLS",
+            value: match smtp {
+                Some(s) => EnvValue::Set(
+                    match s.tls {
+                        crate::config::SmtpTls::Starttls => "starttls",
+                        crate::config::SmtpTls::Tls => "tls",
+                        crate::config::SmtpTls::None => "none",
+                    }
+                    .to_string(),
+                ),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "SMTP transport security mode (starttls, tls, or none).",
+        },
+        EnvSetting {
+            var: "PINGWARD_SMTP_USERNAME",
+            value: match smtp.as_ref().and_then(|s| s.username.as_deref()) {
+                Some(u) => EnvValue::Set(u.to_string()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "SMTP AUTH username (an identity, not a credential — shown verbatim).",
+        },
+        EnvSetting {
+            var: "PINGWARD_SMTP_PASSWORD",
+            value: EnvValue::Secret(smtp.as_ref().is_some_and(|s| s.password.is_some())),
+            default: "(unset)",
+            description: "SMTP AUTH password — never displayed, only whether it's configured.",
+        },
+    ];
+    vec![
+        ("Server", server),
+        ("Scheduling", scheduling),
+        ("Auth", auth),
+        ("Email (SMTP)", email),
+    ]
+}
+
+/// Strip credentials from a database URL for display: `scheme://user:pw@host/db`
+/// becomes `scheme://***@host/db`. Anything without an `@` in its authority
+/// (e.g. a plain `SQLite` path) is returned unchanged. Never returns the password.
+fn redact_db_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let rest = &url[authority_start..];
+    // Only an `@` found before any of `/`, `?`, `#` counts as authority
+    // credentials — an `@` in a later path/query/fragment must not be treated
+    // as one (e.g. `...?callback=user@host`).
+    let mut at_pos = None;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '@' => {
+                at_pos = Some(i);
+                break;
+            }
+            '/' | '?' | '#' => break,
+            _ => {}
+        }
+    }
+    match at_pos {
+        Some(i) => format!("{}***@{}", &url[..authority_start], &rest[i + 1..]),
+        None => url.to_string(),
+    }
+}
+
+/// `/admin` landing: one merged page — site-wide overview (scale, check
+/// health, notification health, scheduler heartbeat), global settings, user
+/// management, and every project across all users — stacked as ordinary
+/// cards (no tabs/sub-nav), mirroring how `/account` merges its sections.
+/// Field names are shared with the four templates this replaced where they
+/// don't collide; collisions get a section prefix (`settings_*`, `user_*`,
+/// and the overview's scale counters `user_count`/`project_count` to leave
+/// `users`/`projects` for the user-management and all-projects lists below).
 #[derive(Template)]
-#[template(path = "admin_dashboard.html")]
-struct AdminDashboardTemplate {
+#[template(path = "admin.html")]
+struct AdminTemplate {
     show_nav: bool,
     csrf: String,
     is_admin: bool,
-    users: i64,
-    projects: i64,
+    // overview
+    user_count: i64,
+    project_count: i64,
     checks: i64,
     pings_24h: i64,
     status: crate::store::CheckStatusCounts,
@@ -2716,21 +3134,67 @@ struct AdminDashboardTemplate {
     recent_fail: Vec<Notification>,
     last_scan_at: Option<String>,
     last_prune_at: Option<String>,
+    // settings
+    scan_interval: String,
+    nag_interval: String,
+    pings_retention_days: String,
+    notifications_retention_days: String,
+    settings_error: Option<String>,
+    settings_flash: Option<String>,
+    // users
+    users: Vec<UserRow>,
+    user_flash: Option<String>,
+    user_error: Option<String>,
+    // all projects
+    projects: Vec<(Project, String)>,
+    // environment
+    env_rows: Vec<(&'static str, Vec<EnvSetting>)>,
 }
 
-async fn admin_dashboard(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    _admin: AdminUser,
+/// One row of the `/admin` "All users" table. Mirrors [`crate::models::User`]
+/// plus a precomputed `is_self` (`u.id == admin.id`), so the template can
+/// render the signed-in admin's own row with inert self-mutation controls
+/// (delete/toggle-admin/toggle-disabled) without comparing ids itself.
+struct UserRow {
+    id: i64,
+    username: String,
+    is_admin: bool,
+    disabled: bool,
+    is_self: bool,
+}
+
+impl UserRow {
+    fn from_user(u: User, admin_id: i64) -> Self {
+        Self {
+            id: u.id,
+            is_self: u.id == admin_id,
+            username: u.username,
+            is_admin: u.is_admin,
+            disabled: u.disabled,
+        }
+    }
+}
+
+/// Gather every dataset the merged `/admin` page needs and render it. `r`
+/// carries the settings-section fields/error/flash and the add-user error —
+/// the only parts that vary across the page's three entry points (the plain
+/// GET, a rejected settings save, and a rejected add-user submission); every
+/// other section (overview stats, users list, projects list) is always
+/// freshly loaded from the store.
+async fn render_admin(
+    state: &AppState,
+    jar: &CookieJar,
+    admin_id: i64,
+    r: AdminRender,
 ) -> Result<Response, AppError> {
     let day_ago = Utc::now() - Duration::days(1);
     let (notif_ok, notif_err) = state.store.notification_counts_since(day_ago).await?;
-    Ok(render(&AdminDashboardTemplate {
+    Ok(render(&AdminTemplate {
         show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
+        csrf: current_csrf(state, jar).await,
         is_admin: true,
-        users: state.store.count_users().await?,
-        projects: state.store.count_projects().await?,
+        user_count: state.store.count_users().await?,
+        project_count: state.store.count_projects().await?,
         checks: state.store.count_checks().await?,
         pings_24h: state.store.count_pings_since(day_ago).await?,
         status: state.store.count_checks_by_status().await?,
@@ -2741,21 +3205,23 @@ async fn admin_dashboard(
         recent_fail: state.store.recent_failed_notifications(10).await?,
         last_scan_at: state.store.get_setting("last_scan_at").await?,
         last_prune_at: state.store.get_setting("last_prune_at").await?,
-    })?
-    .into_response())
-}
-
-async fn admin_projects_page(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    _admin: AdminUser,
-) -> Result<Response, AppError> {
-    let projects = state.store.list_all_projects_with_owner().await?;
-    Ok(render(&AdminProjectsTemplate {
-        show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
-        is_admin: true,
-        projects,
+        scan_interval: r.settings.scan_interval,
+        nag_interval: r.settings.nag_interval,
+        pings_retention_days: r.settings.pings_retention_days,
+        notifications_retention_days: r.settings.notifications_retention_days,
+        settings_error: r.settings_error,
+        settings_flash: r.settings_flash,
+        users: state
+            .store
+            .list_users()
+            .await?
+            .into_iter()
+            .map(|u| UserRow::from_user(u, admin_id))
+            .collect(),
+        user_flash: r.user_flash,
+        user_error: r.user_error,
+        projects: state.store.list_all_projects_with_owner().await?,
+        env_rows: env_settings(&state.config),
     })?
     .into_response())
 }
@@ -3334,6 +3800,15 @@ mod tests {
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "channels"));
         let (_, msg) = take_flash(jar, "channels");
         assert_eq!(msg.as_deref(), Some("Notify channels saved."));
+
+        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "users_blocked"));
+        let (_, msg) = take_flash(jar, "users_blocked");
+        assert_eq!(
+            msg.as_deref(),
+            Some(
+                "That action was refused: you cannot remove your own access, and the last enabled admin cannot be removed."
+            )
+        );
     }
 
     #[test]
@@ -3361,5 +3836,45 @@ mod tests {
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "<script>"));
         let (_, msg) = take_flash(jar, "<script>");
         assert_eq!(msg, None);
+    }
+
+    #[test]
+    fn redact_db_url_leaves_a_plain_sqlite_url_unchanged() {
+        let url = "sqlite://pingward.sqlite3?mode=rwc";
+        assert_eq!(redact_db_url(url), url);
+    }
+
+    #[test]
+    fn redact_db_url_leaves_a_bare_path_unchanged() {
+        let url = "pingward.sqlite3";
+        assert_eq!(redact_db_url(url), url);
+    }
+
+    #[test]
+    fn redact_db_url_strips_user_and_password() {
+        let url = "postgres://user:pass@host/db";
+        let out = redact_db_url(url);
+        assert_eq!(out, "postgres://***@host/db");
+        assert!(!out.contains("pass"));
+        assert!(!out.contains("user"));
+    }
+
+    #[test]
+    fn redact_db_url_strips_bare_username_with_no_password() {
+        let url = "postgres://user@host/db";
+        let out = redact_db_url(url);
+        assert_eq!(out, "postgres://***@host/db");
+        assert!(!out.contains("user@"));
+    }
+
+    #[test]
+    fn redact_db_url_ignores_an_at_sign_only_in_the_query_string() {
+        let url = "postgres://host/db?target_session_attrs=x&opt=a@b";
+        assert_eq!(redact_db_url(url), url);
+    }
+
+    #[test]
+    fn redact_db_url_empty_string_is_unchanged() {
+        assert_eq!(redact_db_url(""), "");
     }
 }

@@ -4,16 +4,14 @@ Feature: Authorization and security boundaries
     Given an admin "admin" with password "correct horse" exists
     And I am signed in as "admin" with password "correct horse"
 
-  Scenario: An admin sees the Settings and Admin nav links
-    Then the "Settings" nav link is visible
-    And the "Admin" nav link is visible
+  Scenario: An admin sees the Admin nav link
+    Then the "Admin" nav link is visible
 
-  Scenario: A non-admin does not see the Settings or Admin nav links
+  Scenario: A non-admin does not see the Admin nav link
     Given a non-admin user "member" with password "hunter2 correct" exists
     And I sign out
     And I am signed in as "member" with password "hunter2 correct"
-    Then the "Settings" nav link is not visible
-    And the "Admin" nav link is not visible
+    Then the "Admin" nav link is not visible
 
   Scenario: A non-admin is forbidden from the admin area
     Given a non-admin user "member" with password "hunter2 correct" exists
