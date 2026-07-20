@@ -20,6 +20,11 @@ Feature: Mobile layout
       | /                |
       | /admin           |
 
+  Scenario: The admin Environment rows stay short at phone width
+    When I view the site at 375px wide
+    And I visit "/admin"
+    Then no Environment row is taller than 72px
+
   Scenario: The check detail page has no horizontal scrollbar on a narrow viewport
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60

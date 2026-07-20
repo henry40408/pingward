@@ -165,13 +165,13 @@
     {% for group in env_rows %}
     <h2 class="subhead">{{ group.0 }}</h2>
     <div class="tscroll">
-      <table>
+      <table class="envtable">
         <thead><tr><th>Variable</th><th>Current</th><th>Default</th><th>Description</th></tr></thead>
         <tbody>
           {% for row in group.1 %}
           <tr data-testid="env-row-{{ row.var }}">
             <td class="mono">{{ row.var }}</td>
-            <td class="envval"{% if row.var == "PINGWARD_SMTP_PASSWORD" %} data-testid="env-smtp-password"{% endif %}>
+            <td{% if row.var == "PINGWARD_SMTP_PASSWORD" %} data-testid="env-smtp-password"{% endif %}>
             {% match row.value %}
             {% when EnvValue::Set(v) %}<code>{{ v }}</code>
             {% when EnvValue::Unset %}<span class="note">not set</span>

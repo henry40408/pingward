@@ -18,6 +18,28 @@ Then("the page has no horizontal scrollbar", async ({ page }) => {
   ).toBeLessThanOrEqual(clientW);
 });
 
+// The Environment table is wider than a phone and scrolls inside .tscroll, so
+// its cells must not wrap: a wrapping database URL made one row 331px tall, and
+// a description column squeezed toward min-content made even "not set" rows
+// ~195px. With both fixed every row is one or two lines (58px measured), so a
+// row past 72px means one of the two has regressed.
+Then("no Environment row is taller than 72px", async ({ page }) => {
+  const tallest = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('tr[data-testid^="env-row-"]')];
+    return rows.reduce(
+      (worst, r) => {
+        const h = Math.round(r.getBoundingClientRect().height);
+        return h > worst.h ? { h, id: r.dataset.testid } : worst;
+      },
+      { h: 0, id: "none" }
+    );
+  });
+  expect(
+    tallest.h,
+    `${tallest.id} is ${tallest.h}px tall — its cells are wrapping`
+  ).toBeLessThanOrEqual(72);
+});
+
 // The check page's breadcrumb links back to its project (templates/check.html).
 When("I open the project from the breadcrumb", async ({ page }) => {
   await page.locator(".crumb a").nth(1).click();

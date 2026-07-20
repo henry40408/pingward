@@ -1142,12 +1142,20 @@ tbody td.fail-txt {
 .tscroll {
   overflow-x: auto;
 }
-/* The Environment card's "Current" column can hold a long database URL. Let it
-   break anywhere (not `break-word`, which leaves min-content width unchanged)
-   so the table stays within the card instead of scrolling the Description
-   column out of sight. */
-.envval code {
-  overflow-wrap: anywhere;
+/* Environment card tables. Values and identifiers stay on one line and the
+   enclosing .tscroll takes the overflow: letting a long database URL wrap
+   turned one row into a 331px, 13-line block at phone width. The description
+   is prose so it must still wrap, but it needs a floor — squeezed toward
+   min-content it produced ~195px rows even where the value was just
+   "not set", which is the larger half of the problem. */
+.envtable th,
+.envtable td {
+  white-space: nowrap;
+}
+.envtable th:last-child,
+.envtable td:last-child {
+  white-space: normal;
+  min-width: 56ch;
 }
 tr.exp {
   display: none;
