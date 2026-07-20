@@ -53,7 +53,7 @@ one `AppState`:
 **Background loops** (`src/main.rs` spawns two tokio tasks):
 - `scheduler::run_scan_loop` — periodically re-evaluates every check's
   `due_time`, transitions overdue checks to down, and fires notifications.
-- `prune::run_prune_loop` — deletes old pings/notifications.
+- `prune::run_prune_loop` — deletes old pings/notifications and expired sessions.
 
 **Persistence** (`src/db.rs`, `src/store.rs`): one sqlx `AnyPool` that dispatches
 to **SQLite or Postgres by URL scheme**. All queries go through `Store` and must

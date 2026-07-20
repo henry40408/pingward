@@ -1415,6 +1415,18 @@ impl Store {
         Ok(r.rows_affected())
     }
 
+    /// Delete sessions whose `expires_at` has passed. Expired sessions are already
+    /// unusable (`list_sessions_for_user` and session lookup both require
+    /// `expires_at > now`), so this is unconditional rather than retention-driven.
+    /// Returns the number of rows removed.
+    pub async fn delete_expired_sessions(&self, now: &str) -> Result<u64, sqlx::Error> {
+        let r = sqlx::query("DELETE FROM sessions WHERE expires_at <= $1")
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
     // --- settings ---
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>, sqlx::Error> {
         sqlx::query_scalar("SELECT value FROM settings WHERE key = $1")
@@ -1935,6 +1947,52 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn delete_expired_sessions_boundary() {
+        let store = seeded().await;
+        let uid = store
+            .create_user("carol", Some("phc"), false, Utc::now())
+            .await
+            .unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+        // expires_at == now must be deleted (`<=`, not `<`).
+        store
+            .create_session(
+                "sess-at-now",
+                uid,
+                "csrf-at-now",
+                now,
+                None,
+                None,
+                now - chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        // expires_at in the future must survive.
+        store
+            .create_session(
+                "sess-future",
+                uid,
+                "csrf-future",
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                now - chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+
+        let deleted = store
+            .delete_expired_sessions(&now.to_rfc3339())
+            .await
+            .unwrap();
+        assert_eq!(deleted, 1);
+        let rows = store.list_sessions_for_user(uid, now).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "sess-future");
     }
 
     #[tokio::test]
