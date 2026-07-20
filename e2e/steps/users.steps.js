@@ -45,6 +45,13 @@ async function submitRowAction(page, serverUrl, row, control, action) {
     await page.goto(`${serverUrl}/admin`);
     return;
   }
+  // Destructive controls (delete always; revoke-admin/disable when they'd
+  // actually change state) now raise a confirm() dialog (see admin.html).
+  // Playwright auto-dismisses dialogs by default, which would silently
+  // block the form submit, so register a one-shot acceptor right before the
+  // click. It's harmless on paths that raise no dialog ("make admin",
+  // "enable") — the handler simply never fires.
+  page.once("dialog", (d) => d.accept());
   await Promise.all([page.waitForNavigation({ waitUntil: "load" }), control.click()]);
 }
 
@@ -148,6 +155,26 @@ When("I delete the user {string}", async ({ page, serverUrl }, username) => {
   await submitRowAction(page, serverUrl, row, row.getByTestId("user-delete"), "delete");
   await expect(page).toHaveURL(`${serverUrl}/admin`);
 });
+
+// Unlike submitRowAction, this deliberately dismisses the confirm() dialog
+// instead of accepting it, so the form never submits. Captures the dialog's
+// message to prove the confirmation actually appeared (not just that the
+// row survived, which a missing dialog would also produce).
+When(
+  "I attempt to delete {string} but dismiss the confirmation",
+  async ({ page }, username) => {
+    const row = userRow(page, username);
+    let dialogMessage = null;
+    page.once("dialog", async (d) => {
+      dialogMessage = d.message();
+      await d.dismiss();
+    });
+    await row.getByTestId("user-delete").click();
+    await expect.poll(() => dialogMessage).toBe(
+      "Delete this user? This cannot be undone."
+    );
+  }
+);
 
 // Gherkin action name -> the testid of its per-row control.
 const SELF_ROW_TESTID = {

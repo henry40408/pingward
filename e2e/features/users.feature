@@ -59,6 +59,11 @@ Feature: User management
     When I delete the user "member"
     Then the user "member" is not listed
 
+  Scenario: Dismissing the delete confirmation leaves the user in place
+    Given a member "member" with password "hunter2 correct" exists
+    When I attempt to delete "member" but dismiss the confirmation
+    Then the user "member" is listed with role "member"
+
   Scenario: The signed-in admin cannot delete their own account
     When I delete the user "admin"
     Then the user "admin" is listed with role "admin"

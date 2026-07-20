@@ -180,15 +180,15 @@
             <span class="btn disabled" title="You cannot disable your own account" data-testid="user-toggle-disabled">{% if u.disabled %}enable{% else %}disable{% endif %}</span>
             <span class="btn danger disabled" title="You cannot delete your own account" data-testid="user-delete">delete</span>
             {% else %}
-            <form class="inline" method="post" action="/admin/users/{{ u.id }}/admin">
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/admin"{% if u.is_admin %} onsubmit="return confirm('Revoke admin rights from this user?')"{% endif %}>
               <input type="hidden" name="_csrf" value="{{ csrf }}">
               <button class="btn" type="submit" data-testid="user-toggle-admin">{% if u.is_admin %}revoke admin{% else %}make admin{% endif %}</button>
             </form>
-            <form class="inline" method="post" action="/admin/users/{{ u.id }}/disabled">
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/disabled"{% if !u.disabled %} onsubmit="return confirm('Disable this user? They will not be able to sign in.')"{% endif %}>
               <input type="hidden" name="_csrf" value="{{ csrf }}">
               <button class="btn" type="submit" data-testid="user-toggle-disabled">{% if u.disabled %}enable{% else %}disable{% endif %}</button>
             </form>
-            <form class="inline" method="post" action="/admin/users/{{ u.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" type="submit" data-testid="user-delete">delete</button></form>
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/delete" onsubmit="return confirm('Delete this user? This cannot be undone.')"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" type="submit" data-testid="user-delete">delete</button></form>
             {% endif %}
           </td>
         </tr>
@@ -214,10 +214,15 @@
           <input id="password" name="password" type="password" data-testid="user-password-input" required>
         </div>
       </div>
-      <label class="chk">
-        <input type="checkbox" name="is_admin" value="1" data-testid="user-admin-checkbox">
-        <span class="nm">Admin</span>
-      </label>
+      <div class="two">
+        <div class="field">
+          <label>Role</label>
+          <label class="chk">
+            <input type="checkbox" name="is_admin" value="1" data-testid="user-admin-checkbox">
+            <span class="nm">Admin</span>
+          </label>
+        </div>
+      </div>
       <div class="formactions">
         <button class="btn primary" type="submit" data-testid="user-submit">Create user</button>
       </div>
@@ -231,7 +236,7 @@
     <span class="count">{{ projects.len() }} total</span>
     <span class="line"></span>
   </div>
-  <p class="note">Every project across all users. Opening one is audited.</p>
+  <p class="note mb-12">Every project across all users. Opening one is audited.</p>
   <div class="list">
     {% if projects.is_empty() %}
     <p class="empty">No projects yet.</p>
