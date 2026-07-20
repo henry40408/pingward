@@ -58,14 +58,19 @@ async fn prune_table(
     }
 }
 
-/// Delete `pings` and `notifications` older than their configured retention.
-/// Each table's retention is an independent global setting; a table with
-/// retention off is skipped (its count is 0). Returns
-/// `(pings_deleted, notifications_deleted)`. `now` is injected for determinism.
-pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<(u64, u64), sqlx::Error> {
+/// Delete `pings` and `notifications` older than their configured retention,
+/// plus any `sessions` row that has already expired. The pings/notifications
+/// counts are each an independent global retention setting; a table with
+/// retention off is skipped (its count is 0). Expired-session cleanup is
+/// unconditional — it does not participate in retention settings, since an
+/// expired session is already unusable regardless of how long it's kept
+/// around. Returns `(pings_deleted, notifications_deleted, sessions_deleted)`.
+/// `now` is injected for determinism.
+pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<(u64, u64, u64), sqlx::Error> {
     let pings_deleted = prune_table(store, now, PruneTable::Pings).await?;
     let notifications_deleted = prune_table(store, now, PruneTable::Notifications).await?;
-    Ok((pings_deleted, notifications_deleted))
+    let sessions_deleted = store.delete_expired_sessions(&now.to_rfc3339()).await?;
+    Ok((pings_deleted, notifications_deleted, sessions_deleted))
 }
 
 /// Run the prune task forever: prune once immediately, then every
@@ -74,9 +79,9 @@ pub async fn run_prune_loop(store: Store, interval_secs: u64) {
     let interval = TokioDuration::from_secs(interval_secs.max(1));
     loop {
         match prune_once(&store, Utc::now()).await {
-            Ok((p, n)) => {
-                if p > 0 || n > 0 {
-                    tracing::info!("pruned {p} pings, {n} notifications");
+            Ok((p, n, s)) => {
+                if p > 0 || n > 0 || s > 0 {
+                    tracing::info!("pruned {p} pings, {n} notifications, {s} sessions");
                 }
             }
             Err(e) => tracing::error!("prune_once failed: {e}"),
@@ -193,8 +198,8 @@ mod tests {
             .await
             .unwrap();
 
-        let (p, n) = prune_once(&store, now).await.unwrap();
-        assert_eq!((p, n), (1, 1));
+        let (p, n, s) = prune_once(&store, now).await.unwrap();
+        assert_eq!((p, n, s), (1, 1, 0));
         assert_eq!(store.list_recent_pings(cid, 10).await.unwrap().len(), 1);
     }
 
@@ -226,13 +231,52 @@ mod tests {
             .unwrap();
 
         // unset → off
-        assert_eq!(prune_once(&store, now).await.unwrap(), (0, 0));
+        assert_eq!(prune_once(&store, now).await.unwrap(), (0, 0, 0));
         // explicit 0 → off
         store
             .set_setting("pings_retention_days", "0")
             .await
             .unwrap();
-        assert_eq!(prune_once(&store, now).await.unwrap(), (0, 0));
+        assert_eq!(prune_once(&store, now).await.unwrap(), (0, 0, 0));
         assert_eq!(store.list_recent_pings(cid, 10).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn prune_once_deletes_expired_sessions() {
+        let (store, _cid, _chan) = store_with_check_and_channel().await;
+        let now = Utc.with_ymd_and_hms(2026, 7, 13, 12, 0, 0).unwrap();
+        let user_id = store.find_user_by_username("u").await.unwrap().unwrap().id;
+
+        store
+            .create_session(
+                "sess-expired",
+                user_id,
+                "csrf-expired",
+                now - Duration::hours(1),
+                None,
+                None,
+                now - Duration::hours(2),
+            )
+            .await
+            .unwrap();
+        store
+            .create_session(
+                "sess-valid",
+                user_id,
+                "csrf-valid",
+                now + Duration::hours(1),
+                None,
+                None,
+                now,
+            )
+            .await
+            .unwrap();
+
+        let (p, n, s) = prune_once(&store, now).await.unwrap();
+        assert_eq!((p, n, s), (0, 0, 1));
+
+        let remaining = store.list_sessions_for_user(user_id, now).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "sess-valid");
     }
 }

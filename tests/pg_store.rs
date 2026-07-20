@@ -397,15 +397,46 @@ async fn postgres_full_round_trip() {
         .set_setting("notifications_retention_days", "7")
         .await
         .unwrap();
-    let (pd, nd) = pingward::prune::prune_once(&store, now).await.unwrap();
-    // Exactly the one 30-day-old ping and one 30-day-old notification are
-    // pruned; every other row in this test was inserted at `now`. The exact
-    // counts guard against an over-deleting regression that `>= 1` would miss.
+    // An expired session must also be pruned, unconditionally, alongside the
+    // retention-driven pings and notifications.
+    store
+        .create_session(
+            "sess-prune-expired",
+            uid,
+            "csrf-prune-expired",
+            now - chrono::Duration::hours(1),
+            None,
+            None,
+            now - chrono::Duration::hours(2),
+        )
+        .await
+        .unwrap();
+    store
+        .create_session(
+            "sess-prune-valid",
+            uid,
+            "csrf-prune-valid",
+            now + chrono::Duration::hours(1),
+            None,
+            None,
+            now,
+        )
+        .await
+        .unwrap();
+
+    let (pd, nd, sd) = pingward::prune::prune_once(&store, now).await.unwrap();
+    // Exactly the one 30-day-old ping, one 30-day-old notification, and one
+    // expired session are pruned; every other row in this test was inserted
+    // at `now`/future. The exact counts guard against an over-deleting
+    // regression that `>= 1` would miss.
     assert_eq!(
-        (pd, nd),
-        (1, 1),
-        "expected exactly the old ping+notification pruned, got ({pd},{nd})"
+        (pd, nd, sd),
+        (1, 1, 1),
+        "expected exactly the old ping+notification+expired session pruned, got ({pd},{nd},{sd})"
     );
+    let remaining_sessions = store.list_sessions_for_user(uid, now).await.unwrap();
+    assert_eq!(remaining_sessions.len(), 1);
+    assert_eq!(remaining_sessions[0].id, "sess-prune-valid");
     // direct delete methods also work with an explicit cutoff: a far-past
     // cutoff matches nothing in either table (every remaining row is recent).
     let far = (now - chrono::Duration::days(3650)).to_rfc3339();
