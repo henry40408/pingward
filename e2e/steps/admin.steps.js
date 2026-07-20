@@ -42,10 +42,12 @@ When("I open the admin dashboard", async ({ page, serverUrl }) => {
 
 // The merged /admin page carries no data-testid on its section headings, so we
 // assert against heading text instead. There's no dedicated dashboard/projects
-// page anymore — both live as sections of the same page.
+// page anymore — both live as sections of the same page. The site-wide counts
+// are the exception: they render as bare tiles with no heading of their own
+// (like the dashboard's), so they are matched by data-testid.
 Then("the admin dashboard is shown", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Admin", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Scale" })).toBeVisible();
+  await expect(page.getByTestId("admin-scale").locator(".tile")).toHaveCount(4);
 });
 
 // `/admin/projects` is now a legacy redirect to `/admin`, where the "All
