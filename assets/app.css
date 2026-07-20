@@ -299,6 +299,11 @@ nav.links a:hover {
 }
 .btn-primary:hover {
   filter: brightness(1.06);
+  /* Re-assert the label colour: the global `a:hover` rule (0-1-1) outranks
+     `.btn-primary` (0-1-0), so without this an anchor-styled button loses
+     `--brand-ink` on hover and its text all but vanishes into the brand
+     background. */
+  color: var(--brand-ink);
 }
 
 /* ---- Summary tiles ---- */
