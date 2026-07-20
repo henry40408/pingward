@@ -18,6 +18,28 @@ Then("the page has no horizontal scrollbar", async ({ page }) => {
   ).toBeLessThanOrEqual(clientW);
 });
 
+// A card body sets its own overflow-x, so a table placed directly in one makes
+// the whole body scroll — dragging the Add-user form below it off-screen too
+// (its left edge went 41px -> -20px). Wrapping the table in .tscroll confines
+// the overflow to the table, leaving the body itself unscrollable.
+Then("only the users table scrolls sideways, not the card around it", async ({ page }) => {
+  const m = await page.evaluate(() => {
+    const cb = document.querySelector('[data-testid="user-submit"]').closest(".cb");
+    const table = cb.querySelector("table");
+    return {
+      bodyOverflow: cb.scrollWidth - cb.clientWidth,
+      wrapper: table.parentElement.className,
+    };
+  });
+  // Assert the symptom first so a failure names it; the wrapper check that
+  // follows is a diagnostic pointing at the usual cause.
+  expect(
+    m.bodyOverflow,
+    `the card body itself scrolls by ${m.bodyOverflow}px, so the Add-user form moves with the table`
+  ).toBeLessThanOrEqual(0);
+  expect(m.wrapper, "the users table is not wrapped in .tscroll").toContain("tscroll");
+});
+
 // The Environment table is wider than a phone and scrolls inside .tscroll, so
 // its cells must not wrap: a wrapping database URL made one row 331px tall, and
 // a description column squeezed toward min-content made even "not set" rows

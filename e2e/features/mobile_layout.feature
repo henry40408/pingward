@@ -20,6 +20,11 @@ Feature: Mobile layout
       | /                |
       | /admin           |
 
+  Scenario: The admin Add user form does not scroll with the users table
+    When I view the site at 375px wide
+    And I visit "/admin"
+    Then only the users table scrolls sideways, not the card around it
+
   Scenario: The admin Environment rows stay short at phone width
     When I view the site at 375px wide
     And I visit "/admin"

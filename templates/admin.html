@@ -31,6 +31,7 @@
     {% if down.is_empty() %}
     <p class="note">No checks are currently down.</p>
     {% else %}
+    <div class="tscroll">
     <table>
       <thead><tr><th>Check</th><th>Project</th><th>Owner</th></tr></thead>
       <tbody>
@@ -43,6 +44,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% endif %}
   </div>
 </div>
@@ -57,6 +59,7 @@
     {% if channel_fail.is_empty() %}
     <p class="note">No notifications sent in the last 24h.</p>
     {% else %}
+    <div class="tscroll">
     <table>
       <thead><tr><th>Channel</th><th>Ok</th><th>Error</th></tr></thead>
       <tbody>
@@ -65,12 +68,14 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% endif %}
 
     <h2 class="subhead">Recent failures</h2>
     {% if recent_fail.is_empty() %}
     <p class="note">No recent notification failures.</p>
     {% else %}
+    <div class="tscroll">
     <table>
       <thead><tr><th>When</th><th>Event</th><th>Check</th><th>Error</th></tr></thead>
       <tbody>
@@ -84,6 +89,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% endif %}
   </div>
 </div>
@@ -194,6 +200,9 @@
   <div class="ch"><h2>All users</h2></div>
   <div class="cb">
     {% if let Some(f) = user_flash %}<p class="flash err" data-testid="users-flash">{{ f }}</p>{% endif %}
+    {# .tscroll confines the overflow to the table: without it the card body's
+       own overflow-x scrolls the Add-user form below off-screen with it. #}
+    <div class="tscroll">
     <table>
       <thead><tr><th>Username</th><th>Admin</th><th></th></tr></thead>
       <tbody>
@@ -227,6 +236,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
 
     <h2 class="subhead">Add user</h2>
     {% if let Some(error) = user_error %}<p class="flash err">{{ error }}</p>{% endif %}
