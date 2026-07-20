@@ -30,6 +30,34 @@ Feature: Mobile layout
     And I visit "/admin"
     Then Environment rows do not wrap
 
+  # The Check health and Notification health cards only render their tables
+  # when there is failing data (down checks / failed deliveries), so this
+  # seeds a check that goes down and a webhook channel bound to it whose
+  # delivery fails (unreachable http://127.0.0.1:1/hook is the default target
+  # for "I create a webhook channel"), populating all three conditional
+  # tables at once: the down-checks table, the per-channel failure table, and
+  # the recent-failures table. The project/check/channel names are long but
+  # deliberately unbroken by spaces or hyphens — browsers treat those as line-
+  # break opportunities, so a merely long name still wraps to fit a narrow
+  # cell instead of forcing the table wider than the viewport.
+  #
+  # A regression here would be silent: with .cb's own overflow-x:auto, an
+  # unwrapped wide table drags the rest of the card body sideways with it
+  # (e.g. it would strand the "Recent failures" table below the down-checks
+  # table off-screen), not just look like a scrollbar cosmetically appearing
+  # in the wrong place.
+  Scenario: The admin health tables scroll inside their cards at phone width
+    Given a project named "NightlyMaintenanceAndReportingPipeline"
+    And I remember the current project
+    And I create a webhook channel named "ops_pager_primary_oncall_notification_channel"
+    And a check named "backup_database_and_upload_to_remote_storage_snapshot_job" with period 60
+    And I bind the channel "ops_pager_primary_oncall_notification_channel" to the check
+    And I send a "fail" ping
+    When I view the site at 375px wide
+    And I visit "/admin"
+    Then the admin health tables are shown
+    And each admin health table scrolls inside its card, not the card around it
+
   Scenario: The check detail page has no horizontal scrollbar on a narrow viewport
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60

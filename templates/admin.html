@@ -32,7 +32,7 @@
     <p class="note">No checks are currently down.</p>
     {% else %}
     <div class="tscroll">
-    <table>
+    <table data-testid="health-down">
       <thead><tr><th>Check</th><th>Project</th><th>Owner</th></tr></thead>
       <tbody>
         {% for d in down %}
@@ -60,7 +60,7 @@
     <p class="note">No notifications sent in the last 24h.</p>
     {% else %}
     <div class="tscroll">
-    <table>
+    <table data-testid="health-channels">
       <thead><tr><th>Channel</th><th>Ok</th><th>Error</th></tr></thead>
       <tbody>
         {% for c in channel_fail %}
@@ -76,7 +76,7 @@
     <p class="note">No recent notification failures.</p>
     {% else %}
     <div class="tscroll">
-    <table>
+    <table data-testid="health-recent">
       <thead><tr><th>When</th><th>Event</th><th>Check</th><th>Error</th></tr></thead>
       <tbody>
         {% for n in recent_fail %}

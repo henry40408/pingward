@@ -76,6 +76,70 @@ Then("Environment rows do not wrap", async ({ page }) => {
   ).toBeLessThanOrEqual(120);
 });
 
+// The three admin health tables (down checks, per-channel failures, recent
+// failures) only render once there is failing data, and delivery runs on a
+// background tokio::spawn with a retry policy, so the failure notification
+// that populates channel_fail/recent_fail can land after this page load.
+// Poll by reloading until all three are visible, so a failure in the next
+// step's overflow assertion can never be misread as "the table wasn't there".
+const HEALTH_TABLE_IDS = ["health-down", "health-channels", "health-recent"];
+
+Then("the admin health tables are shown", async ({ page }) => {
+  await expect(async () => {
+    await page.reload();
+    for (const id of HEALTH_TABLE_IDS) {
+      await expect(page.getByTestId(id)).toBeVisible();
+    }
+  }).toPass({ timeout: 20000 });
+});
+
+// Same containment check as the users table above, generalized to all three
+// admin health tables: the table's wrapper must be .tscroll, the wrapper must
+// actually overflow (otherwise containment is vacuously satisfied by content
+// that fits), and the card body itself must not scroll.
+//
+// The users-table step asserts the symptom (a scrolling card body) first so a
+// failure names it. Here the order is inverted, because the two Notification
+// health tables SHARE one .cb: unwrapping either drags that one body sideways,
+// so the symptom cannot say which table caused it. Checking each table's own
+// wrapper first pins the blame on the right table; the shared-body assertion
+// then runs last, once every wrapper has been accounted for.
+Then(
+  "each admin health table scrolls inside its card, not the card around it",
+  async ({ page }) => {
+    const results = await page.evaluate((ids) => {
+      return ids.map((id) => {
+        const table = document.querySelector(`[data-testid="${id}"]`);
+        const wrapper = table.parentElement;
+        const cb = table.closest(".cb");
+        return {
+          id,
+          wrapperClass: wrapper.className,
+          bodyOverflow: cb.scrollWidth - cb.clientWidth,
+          wrapperOverflow: wrapper.scrollWidth - wrapper.clientWidth,
+        };
+      });
+    }, HEALTH_TABLE_IDS);
+
+    for (const r of results) {
+      expect(
+        r.wrapperClass,
+        `${r.id}: table is not wrapped in .tscroll (wrapper class: "${r.wrapperClass}")`
+      ).toContain("tscroll");
+      expect(
+        r.wrapperOverflow,
+        `${r.id}: the table's own wrapper does not overflow (${r.wrapperOverflow}px) — the seeded content is not wide enough to prove containment`
+      ).toBeGreaterThan(0);
+    }
+    for (const r of results) {
+      expect(
+        r.bodyOverflow,
+        `${r.id}: the card body itself scrolls by ${r.bodyOverflow}px, dragging sibling content with it`
+      ).toBeLessThanOrEqual(0);
+    }
+  }
+);
+
 // The check page's breadcrumb links back to its project (templates/check.html).
 When("I open the project from the breadcrumb", async ({ page }) => {
   await page.locator(".crumb a").nth(1).click();
