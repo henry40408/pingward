@@ -463,9 +463,9 @@ async fn login_logout_cycle() {
 #[tokio::test]
 async fn admin_sets_global_scan_interval() {
     let (server, store, _uid) = logged_in_server().await; // admin
-    server.get("/settings").await.assert_status_ok();
+    server.get("/admin").await.assert_status_ok();
     server
-        .post("/settings")
+        .post("/admin/settings")
         .form(&[
             ("scan_interval", "45"),
             ("nag_interval", ""),
@@ -483,9 +483,9 @@ async fn admin_sets_global_scan_interval() {
 #[tokio::test]
 async fn admin_sets_retention_days() {
     let (server, store, _uid) = logged_in_server().await; // admin
-    server.get("/settings").await.assert_status_ok();
+    server.get("/admin").await.assert_status_ok();
     server
-        .post("/settings")
+        .post("/admin/settings")
         .form(&[
             ("scan_interval", ""),
             ("nag_interval", ""),
@@ -524,8 +524,15 @@ async fn non_admin_forbidden_from_settings() {
         .post("/login")
         .form(&[("username", "plain"), ("password", "pw")])
         .await;
+    // The legacy `/settings` path is an open redirect (mirrors `/account`'s
+    // legacy `/sessions`/`/api-keys` paths) — it exposes no data itself, so it
+    // does not enforce the admin guard. The guard lives on the page it points
+    // at: following the redirect to the merged `/admin` page is forbidden.
+    let res = server.get("/settings").await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/admin");
     server
-        .get("/settings")
+        .get("/admin")
         .await
         .assert_status(axum::http::StatusCode::FORBIDDEN);
 }
@@ -534,14 +541,14 @@ async fn non_admin_forbidden_from_settings() {
 async fn admin_creates_and_deletes_user() {
     let (server, store, _uid) = logged_in_server().await;
     server
-        .post("/users")
+        .post("/admin/users")
         .form(&[("username", "carol"), ("password", "pw2"), ("is_admin", "")])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     let carol = store.find_user_by_username("carol").await.unwrap().unwrap();
     assert!(!carol.is_admin);
     server
-        .post(&format!("/users/{}/delete", carol.id))
+        .post(&format!("/admin/users/{}/delete", carol.id))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(
@@ -829,7 +836,7 @@ async fn cannot_create_channel_in_another_users_project() {
 async fn admin_cannot_delete_self() {
     let (server, store, uid) = logged_in_server().await; // uid is the sole admin
     server
-        .post(&format!("/users/{uid}/delete"))
+        .post(&format!("/admin/users/{uid}/delete"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     // Self-delete is a no-op guard: the admin must still exist.
@@ -901,16 +908,13 @@ async fn send_test_notification_reports_failure() {
 }
 
 #[tokio::test]
-async fn settings_and_users_pages_use_restyled_field_class() {
+async fn admin_page_uses_restyled_field_class() {
     let (server, _store, _uid) = logged_in_server().await; // admin
 
-    let settings_res = server.get("/settings").await;
-    settings_res.assert_status_ok();
-    assert!(settings_res.text().contains("class=\"field\""));
-
-    let users_res = server.get("/users").await;
-    users_res.assert_status_ok();
-    assert!(users_res.text().contains("class=\"field\""));
+    // Settings and add-user are now sections of the same merged /admin page.
+    let res = server.get("/admin").await;
+    res.assert_status_ok();
+    assert!(res.text().contains("class=\"field\""));
 }
 
 #[tokio::test]

@@ -55,7 +55,6 @@ pub fn routes() -> Router<AppState> {
         .route("/channels/{id}/delete", post(channel_delete))
         .route("/channels/{id}/test", post(channel_test))
         .route("/checks/{id}/channels", post(check_set_channels))
-        .route("/settings", get(settings_page).post(settings_save))
         .route("/account", get(account_page))
         .route("/account/api-keys", post(api_keys_create))
         .route("/account/api-keys/{id}/delete", post(api_keys_delete))
@@ -67,14 +66,19 @@ pub fn routes() -> Router<AppState> {
         // Legacy paths, kept so existing bookmarks/links still land somewhere.
         .route("/api-keys", get(redirect_to_account))
         .route("/sessions", get(redirect_to_account))
-        .route("/users", get(users_page).post(users_create))
-        .route("/users/{id}/delete", post(users_delete))
-        .route("/users/{id}/password", post(users_set_password))
-        .route("/users/{id}/admin", post(users_toggle_admin))
-        .route("/users/{id}/disabled", post(users_set_disabled))
-        // --- admin cross-user route group (each handler guarded by AdminUser) ---
-        .route("/admin", get(admin_dashboard))
-        .route("/admin/projects", get(admin_projects_page))
+        .route("/settings", get(redirect_to_admin))
+        .route("/users", get(redirect_to_admin))
+        // --- admin cross-user route group (each handler guarded by AdminUser,
+        // except the legacy-redirect handlers above/below, which expose no
+        // data and mirror `redirect_to_account`) ---
+        .route("/admin", get(admin_page))
+        .route("/admin/settings", post(settings_save))
+        .route("/admin/users", post(users_create))
+        .route("/admin/users/{id}/delete", post(users_delete))
+        .route("/admin/users/{id}/password", post(users_set_password))
+        .route("/admin/users/{id}/admin", post(users_toggle_admin))
+        .route("/admin/users/{id}/disabled", post(users_set_disabled))
+        .route("/admin/projects", get(redirect_to_admin))
         .route(
             "/admin/projects/{id}",
             get(admin_project_show).post(admin_project_update),
@@ -2214,30 +2218,6 @@ async fn check_set_channels(
 }
 
 // --- settings / user administration (admin only) ---
-#[derive(Template)]
-#[template(path = "settings.html")]
-struct SettingsTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    scan_interval: String,
-    nag_interval: String,
-    pings_retention_days: String,
-    notifications_retention_days: String,
-    error: Option<String>,
-    flash: Option<String>,
-}
-
-#[derive(Template)]
-#[template(path = "users.html")]
-struct UsersTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    users: Vec<User>,
-    error: Option<String>,
-}
-
 #[derive(Deserialize)]
 struct SettingsForm {
     scan_interval: String,
@@ -2259,11 +2239,23 @@ struct PasswordForm {
     password: String,
 }
 
-async fn settings_page(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    _admin: AdminUser,
-) -> Result<Response, AppError> {
+/// Settings persist durations as raw seconds; render them in the readable form
+/// the field now accepts. Anything unexpected passes through untouched so the
+/// user still sees what is stored.
+fn readable_setting_duration(raw: String) -> String {
+    match raw.trim().parse::<i64>() {
+        Ok(v) if v > 0 => crate::duration::fmt_duration(v),
+        _ => raw,
+    }
+}
+
+/// The four global settings fields as currently persisted, rendered in their
+/// readable (duration-string) form. Shared by `render_admin`'s default path
+/// and by `users_create`'s error re-render, which needs the same fields but
+/// isn't otherwise touching settings.
+async fn load_settings_fields(
+    state: &AppState,
+) -> Result<(String, String, String, String), AppError> {
     let scan_interval = state
         .store
         .get_setting("scan_interval")
@@ -2284,31 +2276,66 @@ async fn settings_page(
         .get_setting("notifications_retention_days")
         .await?
         .unwrap_or_default();
-    let csrf = current_csrf(&state, &jar).await;
-    let (jar, flash) = take_flash(jar, "settings");
-    let resp = render(&SettingsTemplate {
-        show_nav: true,
-        csrf,
-        is_admin: true,
-        scan_interval: readable_setting_duration(scan_interval),
-        nag_interval: readable_setting_duration(nag_interval),
+    Ok((
+        readable_setting_duration(scan_interval),
+        readable_setting_duration(nag_interval),
         pings_retention_days,
         notifications_retention_days,
-        error: None,
-        flash,
-    })?
-    .into_response();
+    ))
+}
+
+/// The settings-form fields to render on the merged `/admin` page: either the
+/// four persisted values (the default path) or the raw values just submitted
+/// to an invalid save, so the user can see and fix what they typed.
+struct SettingsFields {
+    scan_interval: String,
+    nag_interval: String,
+    pings_retention_days: String,
+    notifications_retention_days: String,
+}
+
+/// The re-render inputs `render_admin` needs beyond the data it always
+/// gathers itself (overview stats, users, projects): the settings section's
+/// fields/error/flash, and the add-user form's error.
+struct AdminRender {
+    settings: SettingsFields,
+    settings_error: Option<String>,
+    settings_flash: Option<String>,
+    user_error: Option<String>,
+}
+
+async fn admin_page(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    _admin: AdminUser,
+) -> Result<Response, AppError> {
+    let (scan_interval, nag_interval, pings_retention_days, notifications_retention_days) =
+        load_settings_fields(&state).await?;
+    let (jar, flash) = take_flash(jar, "settings");
+    let resp = render_admin(
+        &state,
+        &jar,
+        AdminRender {
+            settings: SettingsFields {
+                scan_interval,
+                nag_interval,
+                pings_retention_days,
+                notifications_retention_days,
+            },
+            settings_error: None,
+            settings_flash: flash,
+            user_error: None,
+        },
+    )
+    .await?;
     Ok((jar, resp).into_response())
 }
 
-/// Settings persist durations as raw seconds; render them in the readable form
-/// the field now accepts. Anything unexpected passes through untouched so the
-/// user still sees what is stored.
-fn readable_setting_duration(raw: String) -> String {
-    match raw.trim().parse::<i64>() {
-        Ok(v) if v > 0 => crate::duration::fmt_duration(v),
-        _ => raw,
-    }
+/// Redirects the legacy `/settings`, `/users` and `/admin/projects` paths to
+/// the merged `/admin` page, so existing bookmarks/links still land somewhere.
+/// Unguarded like `redirect_to_account` — it exposes no data, only a redirect.
+async fn redirect_to_admin() -> Redirect {
+    Redirect::to("/admin")
 }
 
 async fn settings_save(
@@ -2358,18 +2385,23 @@ async fn settings_save(
         match result {
             Ok(v) => parsed.push((key, v)),
             Err(msg) => {
-                return Ok(render(&SettingsTemplate {
-                    show_nav: true,
-                    csrf: current_csrf(&state, &jar).await,
-                    is_admin: true,
-                    scan_interval: form.scan_interval.clone(),
-                    nag_interval: form.nag_interval.clone(),
-                    pings_retention_days: form.pings_retention_days.clone(),
-                    notifications_retention_days: form.notifications_retention_days.clone(),
-                    error: Some(msg),
-                    flash: None,
-                })?
-                .into_response());
+                let resp = render_admin(
+                    &state,
+                    &jar,
+                    AdminRender {
+                        settings: SettingsFields {
+                            scan_interval: form.scan_interval.clone(),
+                            nag_interval: form.nag_interval.clone(),
+                            pings_retention_days: form.pings_retention_days.clone(),
+                            notifications_retention_days: form.notifications_retention_days.clone(),
+                        },
+                        settings_error: Some(msg),
+                        settings_flash: None,
+                        user_error: None,
+                    },
+                )
+                .await?;
+                return Ok(resp);
             }
         }
     }
@@ -2384,23 +2416,7 @@ async fn settings_save(
             .path("/")
             .build(),
     );
-    Ok((jar, Redirect::to("/settings")).into_response())
-}
-
-async fn users_page(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    _admin: AdminUser,
-) -> Result<Response, AppError> {
-    let users = state.store.list_users().await?;
-    Ok(render(&UsersTemplate {
-        show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
-        is_admin: true,
-        users,
-        error: None,
-    })?
-    .into_response())
+    Ok((jar, Redirect::to("/admin")).into_response())
 }
 
 async fn users_create(
@@ -2410,15 +2426,25 @@ async fn users_create(
     Form(form): Form<NewUserForm>,
 ) -> Result<Response, AppError> {
     if form.username.trim().is_empty() || form.password.is_empty() {
-        let users = state.store.list_users().await?;
-        return Ok(render(&UsersTemplate {
-            show_nav: true,
-            csrf: current_csrf(&state, &jar).await,
-            is_admin: true,
-            users,
-            error: Some("username and password are required".into()),
-        })?
-        .into_response());
+        let (scan_interval, nag_interval, pings_retention_days, notifications_retention_days) =
+            load_settings_fields(&state).await?;
+        let resp = render_admin(
+            &state,
+            &jar,
+            AdminRender {
+                settings: SettingsFields {
+                    scan_interval,
+                    nag_interval,
+                    pings_retention_days,
+                    notifications_retention_days,
+                },
+                settings_error: None,
+                settings_flash: None,
+                user_error: Some("username and password are required".into()),
+            },
+        )
+        .await?;
+        return Ok(resp);
     }
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
     // A checked checkbox submits `is_admin=1`; an unchecked one is either
@@ -2444,7 +2470,7 @@ async fn users_create(
             Utc::now(),
         )
         .await?;
-    Ok(Redirect::to("/users").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 async fn users_delete(
@@ -2454,14 +2480,14 @@ async fn users_delete(
 ) -> Result<Response, AppError> {
     // Never allow deleting yourself or the last admin (lockout guard).
     if id == admin.id {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     };
     // Refuse to delete the last enabled admin.
     if target.is_admin && !target.disabled && state.store.count_enabled_admins().await? <= 1 {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     }
     state.store.delete_user(id).await?;
     state
@@ -2478,7 +2504,7 @@ async fn users_delete(
             Utc::now(),
         )
         .await?;
-    Ok(Redirect::to("/users").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 async fn users_set_password(
@@ -2488,10 +2514,10 @@ async fn users_set_password(
     Form(form): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
     if form.password.is_empty() {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     }
     if state.store.find_user_by_id(id).await?.is_none() {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     }
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
     state.store.set_user_password(id, &phc).await?;
@@ -2509,7 +2535,7 @@ async fn users_set_password(
             Utc::now(),
         )
         .await?;
-    Ok(Redirect::to("/users").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 async fn users_toggle_admin(
@@ -2518,7 +2544,7 @@ async fn users_toggle_admin(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let Some(target) = state.store.find_user_by_id(id).await? else {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     };
     let new_admin = !target.is_admin;
     // Refuse to remove the last enabled admin.
@@ -2527,7 +2553,7 @@ async fn users_toggle_admin(
         && !target.disabled
         && state.store.count_enabled_admins().await? <= 1
     {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     }
     state.store.set_user_admin(id, new_admin).await?;
     state
@@ -2545,7 +2571,7 @@ async fn users_toggle_admin(
             Utc::now(),
         )
         .await?;
-    Ok(Redirect::to("/users").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 async fn users_set_disabled(
@@ -2555,10 +2581,10 @@ async fn users_set_disabled(
 ) -> Result<Response, AppError> {
     // Never disable yourself.
     if id == admin.id {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     };
     let new_disabled = !target.disabled;
     // Refuse to disable the last enabled admin.
@@ -2567,7 +2593,7 @@ async fn users_set_disabled(
         && !target.disabled
         && state.store.count_enabled_admins().await? <= 1
     {
-        return Ok(Redirect::to("/users").into_response());
+        return Ok(Redirect::to("/admin").into_response());
     }
     state.store.set_user_disabled(id, new_disabled).await?;
     state
@@ -2585,7 +2611,7 @@ async fn users_set_disabled(
             Utc::now(),
         )
         .await?;
-    Ok(Redirect::to("/users").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 // --- account (session-authenticated self-service page for every logged-in
@@ -2843,26 +2869,23 @@ async fn sessions_revoke_others(
 // unfiltered and write one `admin.access` audit row), then reuses the exact
 // same core logic/render helper/mutator as the owner handler, differing only in
 // pointing links and redirects at the `/admin`-prefixed route surface.
+/// `/admin` landing: one merged page — site-wide overview (scale, check
+/// health, notification health, scheduler heartbeat), global settings, user
+/// management, and every project across all users — stacked as ordinary
+/// cards (no tabs/sub-nav), mirroring how `/account` merges its sections.
+/// Field names are shared with the four templates this replaced where they
+/// don't collide; collisions get a section prefix (`settings_*`, `user_*`,
+/// and the overview's scale counters `user_count`/`project_count` to leave
+/// `users`/`projects` for the user-management and all-projects lists below).
 #[derive(Template)]
-#[template(path = "admin_projects.html")]
-struct AdminProjectsTemplate {
+#[template(path = "admin.html")]
+struct AdminTemplate {
     show_nav: bool,
     csrf: String,
     is_admin: bool,
-    projects: Vec<(Project, String)>,
-}
-
-/// `/admin` landing: a cross-user dashboard with site-wide health and scale
-/// figures (users/projects/checks/pings, check status rollup, notification
-/// health, and scheduler heartbeat).
-#[derive(Template)]
-#[template(path = "admin_dashboard.html")]
-struct AdminDashboardTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    users: i64,
-    projects: i64,
+    // overview
+    user_count: i64,
+    project_count: i64,
     checks: i64,
     pings_24h: i64,
     status: crate::store::CheckStatusCounts,
@@ -2873,21 +2896,39 @@ struct AdminDashboardTemplate {
     recent_fail: Vec<Notification>,
     last_scan_at: Option<String>,
     last_prune_at: Option<String>,
+    // settings
+    scan_interval: String,
+    nag_interval: String,
+    pings_retention_days: String,
+    notifications_retention_days: String,
+    settings_error: Option<String>,
+    settings_flash: Option<String>,
+    // users
+    users: Vec<User>,
+    user_error: Option<String>,
+    // all projects
+    projects: Vec<(Project, String)>,
 }
 
-async fn admin_dashboard(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    _admin: AdminUser,
+/// Gather every dataset the merged `/admin` page needs and render it. `r`
+/// carries the settings-section fields/error/flash and the add-user error —
+/// the only parts that vary across the page's three entry points (the plain
+/// GET, a rejected settings save, and a rejected add-user submission); every
+/// other section (overview stats, users list, projects list) is always
+/// freshly loaded from the store.
+async fn render_admin(
+    state: &AppState,
+    jar: &CookieJar,
+    r: AdminRender,
 ) -> Result<Response, AppError> {
     let day_ago = Utc::now() - Duration::days(1);
     let (notif_ok, notif_err) = state.store.notification_counts_since(day_ago).await?;
-    Ok(render(&AdminDashboardTemplate {
+    Ok(render(&AdminTemplate {
         show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
+        csrf: current_csrf(state, jar).await,
         is_admin: true,
-        users: state.store.count_users().await?,
-        projects: state.store.count_projects().await?,
+        user_count: state.store.count_users().await?,
+        project_count: state.store.count_projects().await?,
         checks: state.store.count_checks().await?,
         pings_24h: state.store.count_pings_since(day_ago).await?,
         status: state.store.count_checks_by_status().await?,
@@ -2898,21 +2939,15 @@ async fn admin_dashboard(
         recent_fail: state.store.recent_failed_notifications(10).await?,
         last_scan_at: state.store.get_setting("last_scan_at").await?,
         last_prune_at: state.store.get_setting("last_prune_at").await?,
-    })?
-    .into_response())
-}
-
-async fn admin_projects_page(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    _admin: AdminUser,
-) -> Result<Response, AppError> {
-    let projects = state.store.list_all_projects_with_owner().await?;
-    Ok(render(&AdminProjectsTemplate {
-        show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
-        is_admin: true,
-        projects,
+        scan_interval: r.settings.scan_interval,
+        nag_interval: r.settings.nag_interval,
+        pings_retention_days: r.settings.pings_retention_days,
+        notifications_retention_days: r.settings.notifications_retention_days,
+        settings_error: r.settings_error,
+        settings_flash: r.settings_flash,
+        users: state.store.list_users().await?,
+        user_error: r.user_error,
+        projects: state.store.list_all_projects_with_owner().await?,
     })?
     .into_response())
 }

@@ -77,10 +77,17 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   rows are identified in the UI/URLs by a SHA-256 handle
   (`apikey::hash_api_key`) rather than the id itself. The legacy `/sessions`
   and `/api-keys` paths redirect there.
-- Admin cross-user management lives under `/admin/*` (each handler guarded by
-  `AdminUser`). These handlers **reuse the owner templates** by passing an
-  `is_admin`/base-prefix flag, so `data-testid`s and most step definitions are
-  shared with the owner flow.
+- `/admin` is the single merged admin page (each handler guarded by
+  `AdminUser`): site-wide overview, global settings, user management, and
+  every project across all users, stacked as ordinary cards top to bottom —
+  no tabs, no sub-nav, mirroring how `/account` merges its sections. The
+  legacy `/settings`, `/users` and `/admin/projects` paths redirect there;
+  their former POST routes moved under `/admin/…` (`/admin/settings`,
+  `/admin/users`, `/admin/users/{id}/…`) so path grouping matches permission
+  grouping. Deeper per-project/per-check cross-user management still lives
+  under `/admin/projects/{id}`, `/admin/checks/{id}`, etc. — those handlers
+  **reuse the owner templates** by passing an `is_admin`/base-prefix flag, so
+  `data-testid`s and most step definitions are shared with the owner flow.
 
 **Scheduling** (`src/scheduler.rs`, `src/config.rs`): a check is `Period`
 (interval) or `Cron` (6-field `sec min hour dom mon dow`, evaluated in the

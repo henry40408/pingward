@@ -48,7 +48,7 @@ fn extract_csrf(html: &str) -> String {
 async fn form_includes_csrf_and_form_post_succeeds() {
     let (server, _store) = logged_in_server().await;
     // GET a page carrying a protected form and read the embedded token from the HTML.
-    let body = server.get("/users").await.text();
+    let body = server.get("/admin").await.text();
     let token = extract_csrf(&body);
     assert!(
         !token.is_empty(),
@@ -57,7 +57,7 @@ async fn form_includes_csrf_and_form_post_succeeds() {
 
     // The embedded token alone (no header) authorizes the form submission.
     server
-        .post("/users")
+        .post("/admin/users")
         .form(&[
             ("_csrf", token.as_str()),
             ("username", "bob"),
@@ -68,7 +68,7 @@ async fn form_includes_csrf_and_form_post_succeeds() {
 
     // The same submission with the `_csrf` field omitted is rejected.
     server
-        .post("/users")
+        .post("/admin/users")
         .form(&[("username", "carol"), ("password", "pw")])
         .await
         .assert_status(axum::http::StatusCode::FORBIDDEN);

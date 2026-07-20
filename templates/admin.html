@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="phead">
+  <div>
+    <h1>Admin</h1>
+    <p class="crumb tight">Site-wide overview, global settings, user management, and every project across all users.</p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Scale</h2></div>
+  <div class="cb">
+    <div class="tiles">
+      <div class="tile total"><span class="edge"></span><div class="n">{{ user_count }}</div><div class="l">Users</div></div>
+      <div class="tile total"><span class="edge"></span><div class="n">{{ project_count }}</div><div class="l">Projects</div></div>
+      <div class="tile total"><span class="edge"></span><div class="n">{{ checks }}</div><div class="l">Checks</div></div>
+      <div class="tile total"><span class="edge"></span><div class="n">{{ pings_24h }}</div><div class="l">Pings (24h)</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Check health</h2></div>
+  <div class="cb">
+    <p class="pillrow">
+      <span class="badge new">{{ status.new }} new</span>
+      <span class="badge up">{{ status.up }} up</span>
+      <span class="badge down">{{ status.down }} down</span>
+      <span class="badge paused">{{ status.paused }} paused</span>
+    </p>
+    {% if down.is_empty() %}
+    <p class="note">No checks are currently down.</p>
+    {% else %}
+    <table>
+      <thead><tr><th>Check</th><th>Project</th><th>Owner</th></tr></thead>
+      <tbody>
+        {% for d in down %}
+        <tr>
+          <td><a href="/admin/checks/{{ d.0.id }}">{{ d.0.name }}</a></td>
+          <td>{{ d.1 }}</td>
+          <td>{{ d.2 }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Notification health (24h)</h2></div>
+  <div class="cb">
+    <p class="pillrow">
+      <span class="pill ok">{{ notif_ok }} ok</span>
+      <span class="pill fail">{{ notif_err }} error</span>
+    </p>
+    {% if channel_fail.is_empty() %}
+    <p class="note">No notifications sent in the last 24h.</p>
+    {% else %}
+    <table>
+      <thead><tr><th>Channel</th><th>Ok</th><th>Error</th></tr></thead>
+      <tbody>
+        {% for c in channel_fail %}
+        <tr><td>{{ c.0 }}</td><td class="mono ok-txt">{{ c.1 }}</td><td class="mono fail-txt">{{ c.2 }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <h2 class="subhead">Recent failures</h2>
+    {% if recent_fail.is_empty() %}
+    <p class="note">No recent notification failures.</p>
+    {% else %}
+    <table>
+      <thead><tr><th>When</th><th>Event</th><th>Check</th><th>Error</th></tr></thead>
+      <tbody>
+        {% for n in recent_fail %}
+        <tr>
+          <td class="mono"><span class="localtime" data-ts="{{ n.created_at.to_rfc3339() }}">{{ n.created_at }}</span></td>
+          <td>{{ n.event.as_str() }}</td>
+          <td><a href="/admin/checks/{{ n.check_id }}">#{{ n.check_id }}</a></td>
+          <td class="fail-txt">{% if let Some(e) = n.error %}{{ e }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Scheduler</h2></div>
+  <div class="cb">
+    <div class="heartbeats">
+      <div class="hb" data-testid="sched-scan">
+        <span class="hb-dot{% if last_scan_at.is_none() %} idle{% endif %}"></span>
+        <div class="hb-body">
+          <div class="hb-label">Last scan</div>
+          {% if let Some(t) = last_scan_at %}
+          <div class="hb-time localtime" data-ts="{{ t }}">{{ t }}</div>
+          <div class="hb-ago" data-ago="{{ t }}"></div>
+          {% else %}
+          <div class="hb-time hb-never">never</div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="hb" data-testid="sched-prune">
+        <span class="hb-dot{% if last_prune_at.is_none() %} idle{% endif %}"></span>
+        <div class="hb-body">
+          <div class="hb-label">Last prune</div>
+          {% if let Some(t) = last_prune_at %}
+          <div class="hb-time localtime" data-ts="{{ t }}">{{ t }}</div>
+          <div class="hb-ago" data-ago="{{ t }}"></div>
+          {% else %}
+          <div class="hb-time hb-never">never</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Settings</h2></div>
+  <div class="cb">
+    {% if let Some(error) = settings_error %}<p class="flash err">{{ error }}</p>{% endif %}
+    {% if let Some(f) = settings_flash %}<p class="flash ok" data-testid="settings-flash">{{ f }}</p>{% endif %}
+    <form method="post" action="/admin/settings">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="two">
+        <div class="field">
+          <label for="scan_interval">Global scan interval</label>
+          <input id="scan_interval" name="scan_interval" value="{{ scan_interval }}">
+          <div class="help">Seconds, or a duration like 5m, 1h30m.</div>
+        </div>
+        <div class="field">
+          <label for="nag_interval">Global nag interval</label>
+          <input id="nag_interval" name="nag_interval" value="{{ nag_interval }}">
+          <div class="help">Leave blank to turn off nagging. Seconds, or a duration like 5m, 1h30m.</div>
+        </div>
+      </div>
+      <div class="two">
+        <div class="field">
+          <label for="pings_retention_days">Pings retention (days)</label>
+          <input id="pings_retention_days" name="pings_retention_days" value="{{ pings_retention_days }}">
+          <div class="help">Leave blank to keep forever.</div>
+        </div>
+        <div class="field">
+          <label for="notifications_retention_days">Notifications retention (days)</label>
+          <input id="notifications_retention_days" name="notifications_retention_days" value="{{ notifications_retention_days }}">
+          <div class="help">Leave blank to keep forever.</div>
+        </div>
+      </div>
+      <div class="btnrow">
+        <button class="btn primary" type="submit">Save changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>All users</h2></div>
+  <div class="cb">
+    <table>
+      <thead><tr><th>Username</th><th>Admin</th><th></th></tr></thead>
+      <tbody>
+        {% for u in users %}
+        <tr data-testid="user-row-{{ u.username }}">
+          <td>{{ u.username }}</td>
+          <td>{% if u.is_admin %}<span class="pill ok" data-testid="user-role">admin</span>{% else %}<span class="pill start" data-testid="user-role">member</span>{% endif %}{% if u.disabled %} <span class="pill fail" data-testid="user-disabled">disabled</span>{% endif %}</td>
+          <td>
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/password">
+              <input type="hidden" name="_csrf" value="{{ csrf }}">
+              <input type="password" name="password" placeholder="new password" data-testid="user-reset-input" required>
+              <button class="btn" type="submit" data-testid="user-reset-submit">reset</button>
+            </form>
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/admin">
+              <input type="hidden" name="_csrf" value="{{ csrf }}">
+              <button class="btn" type="submit" data-testid="user-toggle-admin">{% if u.is_admin %}revoke admin{% else %}make admin{% endif %}</button>
+            </form>
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/disabled">
+              <input type="hidden" name="_csrf" value="{{ csrf }}">
+              <button class="btn" type="submit" data-testid="user-toggle-disabled">{% if u.disabled %}enable{% else %}disable{% endif %}</button>
+            </form>
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/delete"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" type="submit" data-testid="user-delete">delete</button></form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Add user</h2></div>
+  <div class="cb">
+    {% if let Some(error) = user_error %}<p class="flash err">{{ error }}</p>{% endif %}
+    <form method="post" action="/admin/users">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="two">
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" data-testid="user-username-input" required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" data-testid="user-password-input" required>
+        </div>
+      </div>
+      <label class="chk">
+        <input type="checkbox" name="is_admin" value="1" data-testid="user-admin-checkbox">
+        <span class="nm">Admin</span>
+      </label>
+      <div class="formactions">
+        <button class="btn primary" type="submit" data-testid="user-submit">Create user</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="group">
+  <div class="gh">
+    <h2>All projects</h2>
+    <span class="count">{{ projects.len() }} total</span>
+    <span class="line"></span>
+  </div>
+  <p class="note">Every project across all users. Opening one is audited.</p>
+  <div class="list">
+    {% if projects.is_empty() %}
+    <p class="empty">No projects yet.</p>
+    {% endif %}
+    {% for p in projects %}
+    <div class="check" tabindex="0" role="link" onclick="location='/admin/projects/{{ p.0.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='/admin/projects/{{ p.0.id }}'">
+      <div class="cmeta"><div class="nm">{{ p.0.name }}</div><div class="sc">owner: {{ p.1 }}</div></div>
+      <a class="rowedit" href="/admin/projects/{{ p.0.id }}" onclick="event.stopPropagation()">manage →</a>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+  // Render each heartbeat's "… ago" relative to now and keep it ticking. The
+  // absolute time beside it is localized by the shared base.html handler.
+  (function () {
+    function rel(ts) {
+      var d = new Date(ts);
+      if (isNaN(d.getTime())) return "";
+      var s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+      if (s < 60) return s + "s ago";
+      var m = Math.floor(s / 60);
+      if (m < 60) return m + "m ago";
+      var h = Math.floor(m / 60);
+      if (h < 24) return h + "h " + (m % 60) + "m ago";
+      var days = Math.floor(h / 24);
+      return days + "d " + (h % 24) + "h ago";
+    }
+    function tick() {
+      document.querySelectorAll(".hb-ago[data-ago]").forEach(function (el) {
+        el.textContent = rel(el.getAttribute("data-ago"));
+      });
+    }
+    tick();
+    setInterval(tick, 1000);
+  })();
+</script>
+{% endblock %}

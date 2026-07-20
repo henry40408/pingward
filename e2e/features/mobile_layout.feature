@@ -18,10 +18,7 @@ Feature: Mobile layout
     Examples:
       | page             |
       | /                |
-      | /settings        |
-      | /users           |
       | /admin           |
-      | /admin/projects  |
 
   Scenario: The check detail page has no horizontal scrollbar on a narrow viewport
     Given a project named "Nightly jobs"

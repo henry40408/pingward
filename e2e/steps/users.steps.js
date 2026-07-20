@@ -9,8 +9,8 @@ const { Given, When, Then } = createBdd(test);
 // a username collides with another row's role-pill text ("member").
 const userRow = (page, username) => page.getByTestId(`user-row-${username}`);
 
-// Every mutating control on /users POSTs a form that redirects back to /users.
-// Because the URL is unchanged, `toHaveURL('/users')` would resolve instantly
+// Every mutating control on /admin POSTs a form that redirects back to /admin.
+// Because the URL is unchanged, `toHaveURL('/admin')` would resolve instantly
 // without waiting for the redirect to commit — leaving assertions to read the
 // stale pre-navigation DOM (a false pass for the "state unchanged" guard
 // scenarios) and risking the next step's navigation aborting an in-flight POST.
@@ -19,7 +19,7 @@ async function submitRowAction(page, locator) {
   await Promise.all([page.waitForNavigation({ waitUntil: "load" }), locator.click()]);
 }
 
-// Fill the "Add user" form and submit; the handler redirects back to /users.
+// Fill the "Add user" form and submit; the handler redirects back to /admin.
 // When `admin` is true the is_admin checkbox is checked, so the created user is
 // an admin. The new row's visibility is awaited so the step only returns once
 // the created user has actually rendered.
@@ -28,12 +28,12 @@ async function addUser(page, serverUrl, username, password, admin) {
   await page.getByTestId("user-password-input").fill(password);
   if (admin) await page.getByTestId("user-admin-checkbox").check();
   await submitRowAction(page, page.getByTestId("user-submit"));
-  await expect(page).toHaveURL(`${serverUrl}/users`);
+  await expect(page).toHaveURL(`${serverUrl}/admin`);
   await expect(userRow(page, username)).toBeVisible();
 }
 
 Given("I am on the users page", async ({ page, serverUrl }) => {
-  await page.goto(`${serverUrl}/users`);
+  await page.goto(`${serverUrl}/admin`);
 });
 
 When(
@@ -66,21 +66,21 @@ Given(
   }
 );
 
-// Each mutating control submits a POST form that redirects to /users, so after
+// Each mutating control submits a POST form that redirects to /admin, so after
 // the click we wait for the reloaded page before the assertion runs.
 When("I toggle admin on {string}", async ({ page, serverUrl }, username) => {
   await submitRowAction(page, userRow(page, username).getByTestId("user-toggle-admin"));
-  await expect(page).toHaveURL(`${serverUrl}/users`);
+  await expect(page).toHaveURL(`${serverUrl}/admin`);
 });
 
 When("I disable {string}", async ({ page, serverUrl }, username) => {
   await submitRowAction(page, userRow(page, username).getByTestId("user-toggle-disabled"));
-  await expect(page).toHaveURL(`${serverUrl}/users`);
+  await expect(page).toHaveURL(`${serverUrl}/admin`);
 });
 
 When("I enable {string}", async ({ page, serverUrl }, username) => {
   await submitRowAction(page, userRow(page, username).getByTestId("user-toggle-disabled"));
-  await expect(page).toHaveURL(`${serverUrl}/users`);
+  await expect(page).toHaveURL(`${serverUrl}/admin`);
 });
 
 When(
@@ -89,13 +89,13 @@ When(
     const row = userRow(page, username);
     await row.getByTestId("user-reset-input").fill(password);
     await submitRowAction(page, row.getByTestId("user-reset-submit"));
-    await expect(page).toHaveURL(`${serverUrl}/users`);
+    await expect(page).toHaveURL(`${serverUrl}/admin`);
   }
 );
 
 When("I delete the user {string}", async ({ page, serverUrl }, username) => {
   await submitRowAction(page, userRow(page, username).getByTestId("user-delete"));
-  await expect(page).toHaveURL(`${serverUrl}/users`);
+  await expect(page).toHaveURL(`${serverUrl}/admin`);
 });
 
 Then(
