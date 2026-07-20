@@ -120,9 +120,12 @@ async fn promote_and_demote_admin() {
 }
 
 #[tokio::test]
-async fn cannot_demote_last_admin() {
+async fn cannot_demote_self() {
     let (server, store, admin_id) = admin_server().await;
-    // The only admin demoting themselves is refused.
+    // Only one admin exists here, so this alone can't distinguish the
+    // self-guard from the (provably unreachable) last-admin guard; see
+    // `demoting_self_is_refused_with_flash_even_with_a_second_admin` below
+    // for a case that isolates the self-guard.
     server.post(&format!("/admin/users/{admin_id}/admin")).await;
     assert!(
         store
@@ -131,6 +134,48 @@ async fn cannot_demote_last_admin() {
             .unwrap()
             .unwrap()
             .is_admin
+    );
+}
+
+#[tokio::test]
+async fn demoting_self_is_refused_with_flash_even_with_a_second_admin() {
+    let (server, store, admin_id) = admin_server().await;
+    // A second enabled admin exists, so if the self-guard were absent,
+    // count_enabled_admins() would be >= 2 and the last-admin guard could
+    // not explain a refusal either — isolating the self-guard as the cause.
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("gale", Some(&phc), true, chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let res = server.post(&format!("/admin/users/{admin_id}/admin")).await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(
+        store
+            .find_user_by_id(admin_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_admin,
+        "self-demote must be refused even though a second enabled admin exists"
+    );
+    let flash = res.maybe_cookie("pingward_flash");
+    assert_eq!(
+        flash.map(|c| c.value().to_string()),
+        Some("users_blocked".to_string())
+    );
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        body.contains("data-testid=\"users-flash\""),
+        "flash should render once: {body}"
+    );
+
+    let body2 = server.get("/admin").await.text();
+    assert!(
+        !body2.contains("data-testid=\"users-flash\""),
+        "flash must be one-shot: {body2}"
     );
 }
 
@@ -188,8 +233,11 @@ async fn disable_and_enable_member() {
 }
 
 #[tokio::test]
-async fn cannot_disable_self_or_last_admin() {
+async fn cannot_disable_self() {
     let (server, store, admin_id) = admin_server().await;
+    // Only one admin exists here, so this alone can't distinguish the
+    // self-guard from the (provably unreachable) last-admin guard — see the
+    // comment on `cannot_demote_self` for the same caveat.
     server
         .post(&format!("/admin/users/{admin_id}/disabled"))
         .await;

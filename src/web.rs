@@ -1370,12 +1370,30 @@ fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
     let message = match surface {
         "channels" => "Notify channels saved.",
         "settings" => "Settings saved.",
+        "users_blocked" => {
+            "That action was refused: you cannot remove your own access, and the last enabled admin cannot be removed."
+        }
         _ => return (jar, None),
     };
     (
         jar.remove(Cookie::build((FLASH_COOKIE, "")).path("/").build()),
         Some(message.to_string()),
     )
+}
+
+/// Set the `users_blocked` flash cookie and redirect to `/admin`. Used by the
+/// self-guard and last-enabled-admin-guard branches in `users_delete`,
+/// `users_toggle_admin` and `users_set_disabled` — mirrors how
+/// `settings_save` sets `FLASH_COOKIE` for its own surface (~line 2413).
+fn users_blocked(jar: CookieJar) -> Response {
+    let jar = jar.add(
+        Cookie::build((FLASH_COOKIE, "users_blocked"))
+            .http_only(true)
+            .same_site(SameSite::Lax)
+            .path("/")
+            .build(),
+    );
+    (jar, Redirect::to("/admin")).into_response()
 }
 
 async fn check_show(
@@ -2296,25 +2314,32 @@ struct SettingsFields {
 
 /// The re-render inputs `render_admin` needs beyond the data it always
 /// gathers itself (overview stats, users, projects): the settings section's
-/// fields/error/flash, and the add-user form's error.
+/// fields/error/flash, the users section's flash, and the add-user form's
+/// error.
 struct AdminRender {
     settings: SettingsFields,
     settings_error: Option<String>,
     settings_flash: Option<String>,
+    user_flash: Option<String>,
     user_error: Option<String>,
 }
 
 async fn admin_page(
     State(state): State<AppState>,
     jar: CookieJar,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
 ) -> Result<Response, AppError> {
     let (scan_interval, nag_interval, pings_retention_days, notifications_retention_days) =
         load_settings_fields(&state).await?;
-    let (jar, flash) = take_flash(jar, "settings");
+    // Chain both surfaces through the same jar: the cookie is path-scoped to
+    // "/", so each `take_flash` call only consumes it if the value matches
+    // its own surface, leaving it for the other to check.
+    let (jar, settings_flash) = take_flash(jar, "settings");
+    let (jar, user_flash) = take_flash(jar, "users_blocked");
     let resp = render_admin(
         &state,
         &jar,
+        admin.id,
         AdminRender {
             settings: SettingsFields {
                 scan_interval,
@@ -2323,7 +2348,8 @@ async fn admin_page(
                 notifications_retention_days,
             },
             settings_error: None,
-            settings_flash: flash,
+            settings_flash,
+            user_flash,
             user_error: None,
         },
     )
@@ -2341,7 +2367,7 @@ async fn redirect_to_admin() -> Redirect {
 async fn settings_save(
     State(state): State<AppState>,
     jar: CookieJar,
-    _admin: AdminUser,
+    AdminUser(admin): AdminUser,
     Form(form): Form<SettingsForm>,
 ) -> Result<Response, AppError> {
     let fields = [
@@ -2388,6 +2414,7 @@ async fn settings_save(
                 let resp = render_admin(
                     &state,
                     &jar,
+                    admin.id,
                     AdminRender {
                         settings: SettingsFields {
                             scan_interval: form.scan_interval.clone(),
@@ -2397,6 +2424,7 @@ async fn settings_save(
                         },
                         settings_error: Some(msg),
                         settings_flash: None,
+                        user_flash: None,
                         user_error: None,
                     },
                 )
@@ -2431,6 +2459,7 @@ async fn users_create(
         let resp = render_admin(
             &state,
             &jar,
+            admin.id,
             AdminRender {
                 settings: SettingsFields {
                     scan_interval,
@@ -2440,6 +2469,7 @@ async fn users_create(
                 },
                 settings_error: None,
                 settings_flash: None,
+                user_flash: None,
                 user_error: Some("username and password are required".into()),
             },
         )
@@ -2475,19 +2505,25 @@ async fn users_create(
 
 async fn users_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    // Never allow deleting yourself or the last admin (lockout guard).
+    // Never allow deleting yourself — you'd lose your own account mid-session.
     if id == admin.id {
-        return Ok(Redirect::to("/admin").into_response());
+        return Ok(users_blocked(jar));
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
     };
-    // Refuse to delete the last enabled admin.
+    // Refuse to delete the last enabled admin. Provably unreachable today:
+    // the actor is always an enabled admin (AdminUser/resolve_user rejects
+    // disabled users), and the self-guard above already rules out
+    // target == actor, so a target that is a *different* enabled admin
+    // implies count_enabled_admins() is already >= 2. Kept as
+    // defence-in-depth behind the self-guard.
     if target.is_admin && !target.disabled && state.store.count_enabled_admins().await? <= 1 {
-        return Ok(Redirect::to("/admin").into_response());
+        return Ok(users_blocked(jar));
     }
     state.store.delete_user(id).await?;
     state
@@ -2540,20 +2576,31 @@ async fn users_set_password(
 
 async fn users_toggle_admin(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
+    // Never allow revoking your own admin rights — it would lock you out of
+    // `/admin` immediately (the very next request re-resolves AdminUser and
+    // 403s), mirroring the self-guards in `users_delete`/`users_set_disabled`.
+    if id == admin.id {
+        return Ok(users_blocked(jar));
+    }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
     };
     let new_admin = !target.is_admin;
-    // Refuse to remove the last enabled admin.
+    // Refuse to remove the last enabled admin. Provably unreachable today:
+    // see `users_delete`'s comment — the self-guard above already rules out
+    // target == actor, so a target that is a *different* enabled admin
+    // implies count_enabled_admins() is already >= 2. Kept as
+    // defence-in-depth behind the self-guard.
     if !new_admin
         && target.is_admin
         && !target.disabled
         && state.store.count_enabled_admins().await? <= 1
     {
-        return Ok(Redirect::to("/admin").into_response());
+        return Ok(users_blocked(jar));
     }
     state.store.set_user_admin(id, new_admin).await?;
     state
@@ -2576,24 +2623,29 @@ async fn users_toggle_admin(
 
 async fn users_set_disabled(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     // Never disable yourself.
     if id == admin.id {
-        return Ok(Redirect::to("/admin").into_response());
+        return Ok(users_blocked(jar));
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
     };
     let new_disabled = !target.disabled;
-    // Refuse to disable the last enabled admin.
+    // Refuse to disable the last enabled admin. Provably unreachable today:
+    // see `users_delete`'s comment — the self-guard above already rules out
+    // target == actor, so a target that is a *different* enabled admin
+    // implies count_enabled_admins() is already >= 2. Kept as
+    // defence-in-depth behind the self-guard.
     if new_disabled
         && target.is_admin
         && !target.disabled
         && state.store.count_enabled_admins().await? <= 1
     {
-        return Ok(Redirect::to("/admin").into_response());
+        return Ok(users_blocked(jar));
     }
     state.store.set_user_disabled(id, new_disabled).await?;
     state
@@ -2904,10 +2956,35 @@ struct AdminTemplate {
     settings_error: Option<String>,
     settings_flash: Option<String>,
     // users
-    users: Vec<User>,
+    users: Vec<UserRow>,
+    user_flash: Option<String>,
     user_error: Option<String>,
     // all projects
     projects: Vec<(Project, String)>,
+}
+
+/// One row of the `/admin` "All users" table. Mirrors [`crate::models::User`]
+/// plus a precomputed `is_self` (`u.id == admin.id`), so the template can
+/// render the signed-in admin's own row with inert self-mutation controls
+/// (delete/toggle-admin/toggle-disabled) without comparing ids itself.
+struct UserRow {
+    id: i64,
+    username: String,
+    is_admin: bool,
+    disabled: bool,
+    is_self: bool,
+}
+
+impl UserRow {
+    fn from_user(u: User, admin_id: i64) -> Self {
+        Self {
+            id: u.id,
+            is_self: u.id == admin_id,
+            username: u.username,
+            is_admin: u.is_admin,
+            disabled: u.disabled,
+        }
+    }
 }
 
 /// Gather every dataset the merged `/admin` page needs and render it. `r`
@@ -2919,6 +2996,7 @@ struct AdminTemplate {
 async fn render_admin(
     state: &AppState,
     jar: &CookieJar,
+    admin_id: i64,
     r: AdminRender,
 ) -> Result<Response, AppError> {
     let day_ago = Utc::now() - Duration::days(1);
@@ -2945,7 +3023,14 @@ async fn render_admin(
         notifications_retention_days: r.settings.notifications_retention_days,
         settings_error: r.settings_error,
         settings_flash: r.settings_flash,
-        users: state.store.list_users().await?,
+        users: state
+            .store
+            .list_users()
+            .await?
+            .into_iter()
+            .map(|u| UserRow::from_user(u, admin_id))
+            .collect(),
+        user_flash: r.user_flash,
         user_error: r.user_error,
         projects: state.store.list_all_projects_with_owner().await?,
     })?
@@ -3526,6 +3611,15 @@ mod tests {
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "channels"));
         let (_, msg) = take_flash(jar, "channels");
         assert_eq!(msg.as_deref(), Some("Notify channels saved."));
+
+        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "users_blocked"));
+        let (_, msg) = take_flash(jar, "users_blocked");
+        assert_eq!(
+            msg.as_deref(),
+            Some(
+                "That action was refused: you cannot remove your own access, and the last enabled admin cannot be removed."
+            )
+        );
     }
 
     #[test]

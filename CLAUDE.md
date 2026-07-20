@@ -88,6 +88,10 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   under `/admin/projects/{id}`, `/admin/checks/{id}`, etc. — those handlers
   **reuse the owner templates** by passing an `is_admin`/base-prefix flag, so
   `data-testid`s and most step definitions are shared with the owner flow.
+  An admin can never delete, disable, or demote their own account — the "All
+  users" row renders those controls inert (delete/toggle-admin/toggle-disabled
+  become a `<span class="btn disabled">`; reset password stays live) and the
+  handlers refuse the same self-targeted request with a one-shot flash.
 
 **Scheduling** (`src/scheduler.rs`, `src/config.rs`): a check is `Period`
 (interval) or `Cron` (6-field `sec min hour dom mon dow`, evaluated in the

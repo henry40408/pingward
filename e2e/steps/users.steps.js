@@ -15,8 +15,37 @@ const userRow = (page, username) => page.getByTestId(`user-row-${username}`);
 // stale pre-navigation DOM (a false pass for the "state unchanged" guard
 // scenarios) and risking the next step's navigation aborting an in-flight POST.
 // Awaiting the navigation ties the step to the re-rendered page.
-async function submitRowAction(page, locator) {
-  await Promise.all([page.waitForNavigation({ waitUntil: "load" }), locator.click()]);
+//
+// On the signed-in admin's own row, the demote/disable/delete controls
+// render as an inert `<span>` instead of a submitting `<form>` (see the
+// "inert on your own row" scenario), so there is nothing to click. In that
+// case `row` + `action` locate and drive the handler directly with a POST
+// carrying the page's CSRF token: this still proves the handler's own
+// self-guard refuses the action, independent of the UI hiding the control.
+// The base path is read off the row's always-present, always-live
+// password-reset form (`/admin/users/{id}/password`), which every other
+// per-row action path shares.
+async function submitRowAction(page, serverUrl, row, control, action) {
+  if ((await control.evaluate((el) => el.tagName)) === "SPAN") {
+    const resetAction = await row
+      .locator('form[action$="/password"]')
+      .getAttribute("action");
+    const base = resetAction.replace(/\/password$/, "");
+    const csrf = await page.locator('input[name="_csrf"]').first().inputValue();
+    // The handler refuses with a 303 back to /admin. Assert that explicitly:
+    // without it a 403 from `csrf_guard` (or an auth bounce) would leave the
+    // state unchanged too, and the scenario would pass without ever reaching
+    // the self-guard it exists to test. `page.request` follows redirects by
+    // default, so `maxRedirects: 0` is required to see the 303 at all.
+    const res = await page.request.post(`${serverUrl}${base}/${action}`, {
+      form: { _csrf: csrf },
+      maxRedirects: 0,
+    });
+    expect(res.status()).toBe(303);
+    await page.goto(`${serverUrl}/admin`);
+    return;
+  }
+  await Promise.all([page.waitForNavigation({ waitUntil: "load" }), control.click()]);
 }
 
 // Fill the "Add user" form and submit; the handler redirects back to /admin.
@@ -27,7 +56,10 @@ async function addUser(page, serverUrl, username, password, admin) {
   await page.getByTestId("user-username-input").fill(username);
   await page.getByTestId("user-password-input").fill(password);
   if (admin) await page.getByTestId("user-admin-checkbox").check();
-  await submitRowAction(page, page.getByTestId("user-submit"));
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: "load" }),
+    page.getByTestId("user-submit").click(),
+  ]);
   await expect(page).toHaveURL(`${serverUrl}/admin`);
   await expect(userRow(page, username)).toBeVisible();
 }
@@ -69,17 +101,32 @@ Given(
 // Each mutating control submits a POST form that redirects to /admin, so after
 // the click we wait for the reloaded page before the assertion runs.
 When("I toggle admin on {string}", async ({ page, serverUrl }, username) => {
-  await submitRowAction(page, userRow(page, username).getByTestId("user-toggle-admin"));
+  const row = userRow(page, username);
+  await submitRowAction(page, serverUrl, row, row.getByTestId("user-toggle-admin"), "admin");
   await expect(page).toHaveURL(`${serverUrl}/admin`);
 });
 
 When("I disable {string}", async ({ page, serverUrl }, username) => {
-  await submitRowAction(page, userRow(page, username).getByTestId("user-toggle-disabled"));
+  const row = userRow(page, username);
+  await submitRowAction(
+    page,
+    serverUrl,
+    row,
+    row.getByTestId("user-toggle-disabled"),
+    "disabled"
+  );
   await expect(page).toHaveURL(`${serverUrl}/admin`);
 });
 
 When("I enable {string}", async ({ page, serverUrl }, username) => {
-  await submitRowAction(page, userRow(page, username).getByTestId("user-toggle-disabled"));
+  const row = userRow(page, username);
+  await submitRowAction(
+    page,
+    serverUrl,
+    row,
+    row.getByTestId("user-toggle-disabled"),
+    "disabled"
+  );
   await expect(page).toHaveURL(`${serverUrl}/admin`);
 });
 
@@ -88,14 +135,38 @@ When(
   async ({ page, serverUrl }, username, password) => {
     const row = userRow(page, username);
     await row.getByTestId("user-reset-input").fill(password);
-    await submitRowAction(page, row.getByTestId("user-reset-submit"));
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "load" }),
+      row.getByTestId("user-reset-submit").click(),
+    ]);
     await expect(page).toHaveURL(`${serverUrl}/admin`);
   }
 );
 
 When("I delete the user {string}", async ({ page, serverUrl }, username) => {
-  await submitRowAction(page, userRow(page, username).getByTestId("user-delete"));
+  const row = userRow(page, username);
+  await submitRowAction(page, serverUrl, row, row.getByTestId("user-delete"), "delete");
   await expect(page).toHaveURL(`${serverUrl}/admin`);
+});
+
+// Gherkin action name -> the testid of its per-row control.
+const SELF_ROW_TESTID = {
+  demote: "user-toggle-admin",
+  disable: "user-toggle-disabled",
+  delete: "user-delete",
+};
+
+// The signed-in admin is always "admin" in this feature's Background.
+Then("the {word} control on my own row is inert", async ({ page }, action) => {
+  const control = userRow(page, "admin").getByTestId(SELF_ROW_TESTID[action]);
+  expect(await control.evaluate((el) => el.tagName)).toBe("SPAN");
+  await expect(control).toHaveClass(/\bdisabled\b/);
+});
+
+Then("the password reset control on my own row is usable", async ({ page }) => {
+  const control = userRow(page, "admin").getByTestId("user-reset-submit");
+  expect(await control.evaluate((el) => el.tagName)).toBe("BUTTON");
+  await expect(control).toBeEnabled();
 });
 
 Then(

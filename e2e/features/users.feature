@@ -63,10 +63,16 @@ Feature: User management
     When I delete the user "admin"
     Then the user "admin" is listed with role "admin"
 
-  Scenario: The last admin cannot be demoted
+  Scenario: The signed-in admin cannot demote themselves
     When I toggle admin on "admin"
     Then the user "admin" is listed with role "admin"
 
-  Scenario: The last admin cannot be disabled
+  Scenario: The signed-in admin cannot disable themselves
     When I disable "admin"
     Then the user "admin" is not marked disabled
+
+  Scenario: Self-management controls are inert on the signed-in admin's own row
+    Then the demote control on my own row is inert
+    And the disable control on my own row is inert
+    And the delete control on my own row is inert
+    And the password reset control on my own row is usable
