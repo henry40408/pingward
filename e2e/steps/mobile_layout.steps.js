@@ -41,25 +41,39 @@ Then("only the users table scrolls sideways, not the card around it", async ({ p
 });
 
 // The Environment table is wider than a phone and scrolls inside .tscroll, so
-// its cells must not wrap: a wrapping database URL made one row 331px tall, and
-// a description column squeezed toward min-content made even "not set" rows
-// ~195px. With both fixed every row is one or two lines (58px measured), so a
-// row past 72px means one of the two has regressed.
-Then("no Environment row is taller than 72px", async ({ page }) => {
-  const tallest = await page.evaluate(() => {
+// wrapping its cells buys nothing and costs a lot of height: a breakable
+// database URL made one row 331px tall, and a description column squeezed
+// toward min-content made even "not set" rows ~195px.
+//
+// Two assertions, because they fail for different reasons. The value being one
+// line box is exact and font-independent. The height bound is not — the same
+// text measured 58px on macOS and 78px in Linux CI — so it is set from the
+// defect side (195px+) rather than the fixed side, leaving room for whatever a
+// third platform's metrics do.
+Then("Environment rows do not wrap", async ({ page }) => {
+  const m = await page.evaluate(() => {
     const rows = [...document.querySelectorAll('tr[data-testid^="env-row-"]')];
-    return rows.reduce(
+    const tallest = rows.reduce(
       (worst, r) => {
         const h = Math.round(r.getBoundingClientRect().height);
         return h > worst.h ? { h, id: r.dataset.testid } : worst;
       },
       { h: 0, id: "none" }
     );
+    // The database URL is the longest value and has no spaces to break on.
+    const code = document
+      .querySelector('tr[data-testid="env-row-DATABASE_URL"]')
+      .querySelector("code");
+    return { tallest, valueLines: code.getClientRects().length };
   });
   expect(
-    tallest.h,
-    `${tallest.id} is ${tallest.h}px tall — its cells are wrapping`
-  ).toBeLessThanOrEqual(72);
+    m.valueLines,
+    `the DATABASE_URL value spans ${m.valueLines} lines — it is wrapping`
+  ).toBe(1);
+  expect(
+    m.tallest.h,
+    `${m.tallest.id} is ${m.tallest.h}px tall — the description column is being squeezed`
+  ).toBeLessThanOrEqual(120);
 });
 
 // The check page's breadcrumb links back to its project (templates/check.html).

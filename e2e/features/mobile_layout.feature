@@ -28,7 +28,7 @@ Feature: Mobile layout
   Scenario: The admin Environment rows stay short at phone width
     When I view the site at 375px wide
     And I visit "/admin"
-    Then no Environment row is taller than 72px
+    Then Environment rows do not wrap
 
   Scenario: The check detail page has no horizontal scrollbar on a narrow viewport
     Given a project named "Nightly jobs"
