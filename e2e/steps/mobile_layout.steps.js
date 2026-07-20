@@ -94,10 +94,16 @@ Then("the admin health tables are shown", async ({ page }) => {
 });
 
 // Same containment check as the users table above, generalized to all three
-// admin health tables: the card body itself must not scroll (symptom), the
-// table's wrapper must be .tscroll (cause), and — so this isn't a vacuous
-// pass — the wrapper itself must actually overflow, proving the seeded rows
-// really are wider than the 375px viewport.
+// admin health tables: the table's wrapper must be .tscroll, the wrapper must
+// actually overflow (otherwise containment is vacuously satisfied by content
+// that fits), and the card body itself must not scroll.
+//
+// The users-table step asserts the symptom (a scrolling card body) first so a
+// failure names it. Here the order is inverted, because the two Notification
+// health tables SHARE one .cb: unwrapping either drags that one body sideways,
+// so the symptom cannot say which table caused it. Checking each table's own
+// wrapper first pins the blame on the right table; the shared-body assertion
+// then runs last, once every wrapper has been accounted for.
 Then(
   "each admin health table scrolls inside its card, not the card around it",
   async ({ page }) => {
@@ -117,10 +123,6 @@ Then(
 
     for (const r of results) {
       expect(
-        r.bodyOverflow,
-        `${r.id}: the card body itself scrolls by ${r.bodyOverflow}px, dragging sibling content with it`
-      ).toBeLessThanOrEqual(0);
-      expect(
         r.wrapperClass,
         `${r.id}: table is not wrapped in .tscroll (wrapper class: "${r.wrapperClass}")`
       ).toContain("tscroll");
@@ -128,6 +130,12 @@ Then(
         r.wrapperOverflow,
         `${r.id}: the table's own wrapper does not overflow (${r.wrapperOverflow}px) — the seeded content is not wide enough to prove containment`
       ).toBeGreaterThan(0);
+    }
+    for (const r of results) {
+      expect(
+        r.bodyOverflow,
+        `${r.id}: the card body itself scrolls by ${r.bodyOverflow}px, dragging sibling content with it`
+      ).toBeLessThanOrEqual(0);
     }
   }
 );
