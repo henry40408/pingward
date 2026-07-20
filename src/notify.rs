@@ -693,8 +693,7 @@ mod tests {
         assert!(result.is_err(), "expected timeout to produce an error");
         assert!(
             elapsed < std::time::Duration::from_secs(20),
-            "send took {:?}, expected the 10s client timeout to fire well before the 30s mock delay",
-            elapsed
+            "send took {elapsed:?}, expected the 10s client timeout to fire well before the 30s mock delay"
         );
     }
 
@@ -818,7 +817,7 @@ mod tests {
             project_id: 1,
         };
         let title = event_title(&ev);
-        assert!(!title.chars().any(|c| c.is_control()));
+        assert!(!title.chars().any(char::is_control));
         assert!(title.contains("back up job"));
     }
 

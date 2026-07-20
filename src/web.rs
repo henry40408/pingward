@@ -283,9 +283,8 @@ async fn dashboard(
     if state.store.count_users().await? == 0 {
         return Ok(Redirect::to("/setup").into_response());
     }
-    let user = match user {
-        Some(u) => u,
-        None => return Ok(Redirect::to("/login").into_response()),
+    let Some(user) = user else {
+        return Ok(Redirect::to("/login").into_response());
     };
     let now = Utc::now();
     let (mut total, mut up, mut late, mut down) = (0usize, 0, 0, 0);
@@ -442,9 +441,8 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
     // Otherwise read the `_csrf` form field: buffer the body, extract the token,
     // then rebuild the request with the same bytes for the downstream handler.
     let (parts, body) = req.into_parts();
-    let bytes = match axum::body::to_bytes(body, CSRF_MAX_BODY_BYTES).await {
-        Ok(b) => b,
-        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    let Ok(bytes) = axum::body::to_bytes(body, CSRF_MAX_BODY_BYTES).await else {
+        return StatusCode::FORBIDDEN.into_response();
     };
     let submitted = form_urlencoded::parse(&bytes)
         .find(|(k, _)| k == "_csrf")
@@ -1047,9 +1045,8 @@ struct CheckPageQuery {
 /// Parse a single-select enum filter param (`""`/unset/garbage → empty vec, one
 /// valid token → a one-element vec), matching the `Vec` shape the store filters
 /// accept while the UI only ever offers a single choice.
-fn parse_filter_enum<T: FromStr>(v: &Option<String>) -> Vec<T> {
-    v.as_deref()
-        .map(str::trim)
+fn parse_filter_enum<T: FromStr>(v: Option<&str>) -> Vec<T> {
+    v.map(str::trim)
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse::<T>().ok())
         .into_iter()
@@ -1060,8 +1057,8 @@ fn parse_filter_enum<T: FromStr>(v: &Option<String>) -> Vec<T> {
 /// (what the JS sends after localizing the `datetime-local` control) and the
 /// bare `YYYY-MM-DDTHH:MM[:SS]` a JS-off submit would produce, treated as UTC.
 /// Anything unparsable is dropped to `None` rather than erroring the request.
-fn parse_date_bound(v: &Option<String>) -> Option<DateTime<Utc>> {
-    let s = v.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
+fn parse_date_bound(v: Option<&str>) -> Option<DateTime<Utc>> {
+    let s = v.map(str::trim).filter(|s| !s.is_empty())?;
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Some(dt.with_timezone(&Utc));
     }
@@ -1092,10 +1089,11 @@ fn history_href(
     cursor: (&str, i64),
     carry: &[(&str, &str)],
 ) -> String {
+    use std::fmt::Write as _;
     let mut href = format!("{base}/checks/{id}/{seg}?{}={}", cursor.0, cursor.1);
     for (k, v) in carry {
         if !v.is_empty() {
-            href.push_str(&format!("&{k}={v}"));
+            let _ = write!(href, "&{k}={v}");
         }
     }
     href
@@ -1450,9 +1448,9 @@ async fn build_pings_partial(
     recent: Option<&[crate::models::Ping]>,
 ) -> Result<CheckPingsTemplate, AppError> {
     let filter = PingFilter {
-        kinds: parse_filter_enum(&page.pk),
-        from: parse_date_bound(&page.pfrom),
-        to: parse_date_bound(&page.pto),
+        kinds: parse_filter_enum(page.pk.as_deref()),
+        from: parse_date_bound(page.pfrom.as_deref()),
+        to: parse_date_bound(page.pto.as_deref()),
     };
     let cursor = match (page.pb, page.pa) {
         (Some(b), _) => PageCursor::Before(b),
@@ -1545,10 +1543,10 @@ async fn build_notifs_partial(
     channel_names: &std::collections::HashMap<i64, String>,
 ) -> Result<CheckNotifsTemplate, AppError> {
     let filter = NotifFilter {
-        events: parse_filter_enum(&page.ne),
-        statuses: parse_filter_enum(&page.ns),
-        from: parse_date_bound(&page.nfrom),
-        to: parse_date_bound(&page.nto),
+        events: parse_filter_enum(page.ne.as_deref()),
+        statuses: parse_filter_enum(page.ns.as_deref()),
+        from: parse_date_bound(page.nfrom.as_deref()),
+        to: parse_date_bound(page.nto.as_deref()),
     };
     let cursor = match (page.nb, page.na) {
         (Some(b), _) => PageCursor::Before(b),

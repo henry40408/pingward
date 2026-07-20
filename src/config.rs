@@ -158,6 +158,7 @@ pub fn effective_scan_interval(
         .flatten()
     {
         if v > 0 {
+            #[allow(clippy::cast_sign_loss, reason = "guarded by `v > 0`")]
             return v as u64;
         }
     }
