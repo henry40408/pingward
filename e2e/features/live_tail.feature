@@ -8,6 +8,7 @@ Feature: Live tail
 
   Scenario: A ping appears without reloading while the live tail is on
     When I turn on the live tail
+    Then the ping filters are hidden
     And I send a "success" ping
     Then the recent pings table shows a "success" ping
 

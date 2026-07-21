@@ -24,5 +24,16 @@ When("I turn on the live tail", async ({ page }) => {
 });
 
 Then("the recent pings table still shows no pings", async ({ page }) => {
+  // A fixed wait is normally an anti-pattern, but proving the *absence* of an
+  // update over a window is exactly the case where it is the right tool: the
+  // live tail refreshes 500ms after its SSE signal, so asserting immediately
+  // would pass even if the live tail were wrongly always-on (verified — it
+  // did). Wait past the debounce plus a fragment fetch, then assert.
+  await page.waitForTimeout(1500);
   await expect(page.getByTestId("pings-empty")).toBeVisible();
+  await expect(page.getByTestId("ping-row")).toHaveCount(0);
+});
+
+Then("the ping filters are hidden", async ({ page }) => {
+  await expect(page.getByTestId("pings-filters")).toBeHidden();
 });
