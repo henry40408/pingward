@@ -75,22 +75,22 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   sessions (each row's `last_seen_at` is refreshed on use, throttled like
   `ApiKey.last_used_at`); since `sessions.id` is the cookie's bearer secret,
   rows are identified in the UI/URLs by a SHA-256 handle
-  (`apikey::hash_api_key`) rather than the id itself. The legacy `/sessions`
-  and `/api-keys` paths redirect there. A session's stored IP comes from
-  `auth::client_ip`: the socket peer, unless that peer is a configured trusted
-  proxy, in which case the first `X-Forwarded-For` entry wins — the same trust
-  gate `forward_auth_username` uses, so an untrusted caller cannot spoof it.
+  (`apikey::hash_api_key`) rather than the id itself. A session's stored IP
+  comes from `auth::client_ip`: the socket peer, unless that peer is a
+  configured trusted proxy, in which case the first `X-Forwarded-For` entry
+  wins — the same trust gate `forward_auth_username` uses, so an untrusted
+  caller cannot spoof it.
 - `/admin` is the single merged admin page (each handler guarded by
   `AdminUser`): site-wide overview, global settings, user management, and
   every project across all users, stacked as ordinary cards top to bottom —
-  no tabs, no sub-nav, mirroring how `/account` merges its sections. The
-  legacy `/settings`, `/users` and `/admin/projects` paths redirect there;
-  their former POST routes moved under `/admin/…` (`/admin/settings`,
-  `/admin/users`, `/admin/users/{id}/…`) so path grouping matches permission
-  grouping. Deeper per-project/per-check cross-user management still lives
-  under `/admin/projects/{id}`, `/admin/checks/{id}`, etc. — those handlers
-  **reuse the owner templates** by passing an `is_admin`/base-prefix flag, so
-  `data-testid`s and most step definitions are shared with the owner flow.
+  no tabs, no sub-nav, mirroring how `/account` merges its sections. Former
+  `/settings` and `/users` POST routes moved under `/admin/…`
+  (`/admin/settings`, `/admin/users`, `/admin/users/{id}/…`) so path grouping
+  matches permission grouping. Deeper per-project/per-check cross-user
+  management still lives under `/admin/projects/{id}`, `/admin/checks/{id}`,
+  etc. — those handlers **reuse the owner templates** by passing an
+  `is_admin`/base-prefix flag, so `data-testid`s and most step definitions
+  are shared with the owner flow.
   An admin can never delete, disable, or demote their own account — the "All
   users" row renders those controls inert (delete/toggle-admin/toggle-disabled
   become a `<span class="btn disabled">`; reset password stays live) and the

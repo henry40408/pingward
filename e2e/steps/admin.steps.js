@@ -75,10 +75,10 @@ Then("no card subheading renders larger than its card heading", async ({ page })
   }
 });
 
-// `/admin/projects` is now a legacy redirect to `/admin`, where the "All
-// projects" section lives.
+// `/admin/projects` no longer exists; the "All projects" section lives on
+// `/admin`.
 When("I open the admin projects list", async ({ page, serverUrl }) => {
-  await page.goto(`${serverUrl}/admin/projects`);
+  await page.goto(`${serverUrl}/admin`);
 });
 
 Then(
@@ -137,10 +137,9 @@ Then("the channel {string} is listed on the project", async ({ page }, name) => 
   await expect(page.locator(".chk .nm", { hasText: name })).toBeVisible();
 });
 
-// Admin project delete redirects to /admin/projects (the owner flow redirects
+// Admin project delete redirects straight to /admin (the owner flow redirects
 // to the dashboard "/"), so it needs its own step rather than reusing
-// monitoring's. /admin/projects is itself now a legacy redirect to /admin, so
-// the final landing page is /admin.
+// monitoring's.
 When("I delete the member's project", async ({ page, serverUrl }) => {
   page.on("dialog", (d) => d.accept());
   await page.getByTestId("delete-project-button").click();

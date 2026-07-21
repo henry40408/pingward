@@ -58,20 +58,6 @@ async fn nav_shows_account_link_for_member() {
     assert!(server.get("/").await.text().contains("nav-account"));
 }
 
-#[tokio::test]
-async fn legacy_paths_redirect_to_account() {
-    let (store, _uid) = member_store().await;
-    let server = login_server(&store, "member", "pw").await;
-
-    let res = server.get("/api-keys").await;
-    res.assert_status(StatusCode::SEE_OTHER);
-    assert_eq!(res.header("location"), "/account");
-
-    let res = server.get("/sessions").await;
-    res.assert_status(StatusCode::SEE_OTHER);
-    assert_eq!(res.header("location"), "/account");
-}
-
 // --- sessions section ---
 
 #[tokio::test]
