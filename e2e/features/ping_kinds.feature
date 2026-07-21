@@ -10,11 +10,19 @@ Feature: Ping kinds
     When I reload the check page
     Then the ping help documents the fail and start endpoints
 
-  Scenario: A start ping is recorded and leaves the status unchanged
+  Scenario: A start ping is recorded and the check shows as running
     When I send a "start" ping
     And I reload the check page
-    Then the check status is "new"
+    Then the check status is "running"
     And the recent pings table shows a "start" ping
+
+  Scenario: A start ping shows running, then a finish ping resolves it
+    When I send a "start" ping
+    And I reload the check page
+    Then the check status is "running"
+    When I send a "success" ping
+    And I reload the check page
+    Then the check status is "up"
 
   Scenario: A log ping is recorded and leaves the status unchanged
     When I send a "log" ping

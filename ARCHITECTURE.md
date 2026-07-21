@@ -76,7 +76,16 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
   duration env vars.
 - `src/view.rs` — presentation helpers shared by templates, including the
   lossy `fmt_secs` display formatter (distinct from `duration::fmt_duration`,
-  which round-trips).
+  which round-trips), and `display_status`/`DisplayStatus`, the display-only
+  status derived from a `Check` (`new`/`up`/`running`/`late`/`down`/`paused`)
+  — `late` and `running` have no `CheckStatus` counterpart, so the stored
+  status keeps its narrower up/down/new/paused meaning. Precedence is
+  `Paused > Down > Running > Late > Up`: `Running` (a stored `up` or `new`
+  check with `last_start_at` newer than `last_ping_at`, i.e. a `start` ping
+  not yet followed by a finish) beats `Late` because a long-running job
+  naturally drifts past its expected time while legitimately still
+  executing, and is itself beaten by `Down`/`Paused` so an in-flight run
+  never masks an alert.
 - `src/assets.rs` — serves `assets/app.css` and the embedded webfonts.
 - `src/error.rs` — `AppError`, the app-wide error type implementing
   `IntoResponse`.

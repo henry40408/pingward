@@ -143,6 +143,7 @@ struct DashboardTemplate {
     is_admin: bool,
     total: usize,
     up: usize,
+    running: usize,
     late: usize,
     down: usize,
     groups: Vec<ProjectGroup>,
@@ -309,7 +310,7 @@ async fn dashboard(
         return Ok(Redirect::to("/login").into_response());
     };
     let now = Utc::now();
-    let (mut total, mut up, mut late, mut down) = (0usize, 0, 0, 0);
+    let (mut total, mut up, mut running, mut late, mut down) = (0usize, 0, 0, 0, 0);
     let mut groups = Vec::new();
     // Gather every project's checks first, then fetch all their recent pings in
     // one batched query (avoids an N+1 of one `list_recent_pings` per check).
@@ -331,6 +332,7 @@ async fn dashboard(
             total += 1;
             match ds {
                 crate::view::DisplayStatus::Up => up += 1,
+                crate::view::DisplayStatus::Running => running += 1,
                 crate::view::DisplayStatus::Late => late += 1,
                 crate::view::DisplayStatus::Down => down += 1,
                 _ => {}
@@ -367,6 +369,7 @@ async fn dashboard(
         is_admin: user.is_admin,
         total,
         up,
+        running,
         late,
         down,
         groups,
@@ -523,9 +526,19 @@ struct ProjectTemplate {
     is_admin: bool,
     admin: bool,
     project: Project,
-    checks: Vec<Check>,
+    checks: Vec<ProjectCheckRow>,
     channels: Vec<Channel>,
     test_result: Option<TestResult>,
+}
+
+/// Project page's per-check row: same idea as the dashboard's `CheckRow`
+/// (precompute `display_status` in the handler, since it needs `now` and the
+/// template has no clock), trimmed to the fields `project.html` renders.
+struct ProjectCheckRow {
+    id: i64,
+    name: String,
+    status: &'static str, // view::DisplayStatus::as_str()
+    schedule: String,
 }
 
 struct TestResult {
@@ -794,7 +807,18 @@ async fn render_project_page(
     is_admin: bool,
     csrf: String,
 ) -> Result<Response, AppError> {
-    let checks = store.list_checks_for_project(project.id).await?;
+    let now = Utc::now();
+    let checks = store
+        .list_checks_for_project(project.id)
+        .await?
+        .iter()
+        .map(|c| ProjectCheckRow {
+            id: c.id,
+            name: c.name.clone(),
+            status: crate::view::display_status(c, now).as_str(),
+            schedule: schedule_label(c),
+        })
+        .collect();
     let channels = store.list_channels_for_project(project.id).await?;
     Ok(render(&ProjectTemplate {
         show_nav: true,

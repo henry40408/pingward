@@ -348,6 +348,9 @@ nav.links a:hover {
 .tile.down .n {
   color: var(--down);
 }
+.tile.running .n {
+  color: var(--brand);
+}
 .tile.late .n {
   color: var(--late);
 }
@@ -363,6 +366,9 @@ nav.links a:hover {
 }
 .tile.down .edge {
   background: var(--down);
+}
+.tile.running .edge {
+  background: var(--brand);
 }
 .tile.late .edge {
   background: var(--late);
@@ -525,6 +531,10 @@ nav.links a:hover {
   background: var(--down);
   box-shadow: 0 0 calc(11px * var(--glow)) var(--down);
 }
+.status-dot.running {
+  background: var(--brand);
+  box-shadow: 0 0 calc(10px * var(--glow)) var(--brand);
+}
 .status-dot.late {
   background: var(--late);
   box-shadow: 0 0 calc(10px * var(--glow)) var(--late);
@@ -653,6 +663,11 @@ nav.links a:hover {
   color: var(--down);
   background: var(--down-bg);
   border-color: var(--down-bd);
+}
+.badge.running {
+  color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  border-color: color-mix(in srgb, var(--brand) 34%, transparent);
 }
 .badge.late {
   color: var(--late);
