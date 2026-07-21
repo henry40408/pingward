@@ -80,11 +80,19 @@ async fn read_until_contains(body: axum::body::Body, needle: &str, timeout: Dura
 /// stream as a `changed` SSE event. This is PR1's end-to-end contract: the
 /// broadcast published by `ping::apply` reaches a subscriber that opened the
 /// stream first, exactly as the browser (PR2) will.
+///
+/// Deliberately drives the REAL `/ping/{uuid}` endpoint rather than calling
+/// `state.events.send(...)` directly — the latter only proves the broadcast
+/// channel itself works, not that `ping::apply` actually publishes to it.
+/// One `Router` (hence one `AppState`, hence one broadcast sender) serves
+/// both requests via `.clone()` — `axum::Router` is cheap to clone (an `Arc`
+/// underneath), and the two requests must share the same sender for the
+/// signal to cross between them.
 #[tokio::test]
 async fn owner_receives_changed_event_when_check_is_pinged() {
     let store = test_store().await;
     let state = AppState::new(store.clone(), Config::from_map(|_| None));
-    let events = state.events.clone();
+    let router = app(state);
 
     let cookie = login_cookie(&store, "alice").await;
     let owner_id = store
@@ -111,15 +119,16 @@ async fn owner_receives_changed_event_when_check_is_pinged() {
         .await
         .unwrap();
 
-    let req = Request::builder()
+    // 1. Open the SSE stream FIRST. `ping::apply`'s publish is gated on
+    // `events.receiver_count() > 0`, so the subscription must exist before
+    // the ping below or the signal is sent to nobody and this test would
+    // hang instead of failing loudly.
+    let sse_req = Request::builder()
         .uri(format!("/checks/{check_id}/events"))
         .header("cookie", &cookie)
         .body(Body::empty())
         .unwrap();
-
-    // `app(state)` moves `state`; `events` was cloned above so the sender
-    // survives for the `send` below.
-    let resp = app(state).oneshot(req).await.unwrap();
+    let resp = router.clone().oneshot(sse_req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let content_type = resp
         .headers()
@@ -132,11 +141,17 @@ async fn owner_receives_changed_event_when_check_is_pinged() {
         "expected an SSE content-type, got {content_type:?}"
     );
 
-    // The handler has already subscribed by the time `oneshot` returns a
-    // response (subscription happens while the response/stream is built), so
-    // a `send` issued here is guaranteed to reach it.
-    events.send(check_id).unwrap();
+    // 2. Now hit the real ping endpoint for this check's `ping_uuid` — the
+    // same path a monitored job would call.
+    let ping_req = Request::builder()
+        .method("POST")
+        .uri("/ping/check-uuid")
+        .body(Body::from("done"))
+        .unwrap();
+    let ping_resp = router.oneshot(ping_req).await.unwrap();
+    assert_eq!(ping_resp.status(), StatusCode::OK);
 
+    // 3. The SSE stream opened in step 1 should now carry a "changed" event.
     read_until_contains(resp.into_body(), "changed", Duration::from_secs(5)).await;
 }
 

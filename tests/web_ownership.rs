@@ -20,7 +20,14 @@ use std::time::Duration;
 /// pass/fail meanings (see the two call sites below). This keeps the test's
 /// hard "no exception lists" convention (PRs #77-#79): one rule, applied
 /// uniformly, instead of a per-route carve-out.
-const ROUTE_TIMEOUT: Duration = Duration::from_millis(500);
+///
+/// Deliberately generous (seconds, not milliseconds): this value's only job
+/// is to distinguish "streams forever" (the SSE route) from "completes" —
+/// there is nothing to gain from cutting it close, and a tight bound just
+/// risks a false failure on a loaded CI runner. Only one request per test
+/// run — the owner's SSE positive control — actually waits the full
+/// duration; every other request still returns almost immediately.
+const ROUTE_TIMEOUT: Duration = Duration::from_secs(5);
 
 mod common;
 

@@ -24,6 +24,7 @@ use cron::Schedule;
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::str::FromStr;
+use tokio::sync::broadcast;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
@@ -1701,10 +1702,10 @@ async fn channel_name_map(
 /// broadcast that matches `check_id`, plus a "changed" event whenever this
 /// subscriber lags (see the `Err` arm below).
 fn sse_for_check(
-    state: &AppState,
+    events: &broadcast::Sender<i64>,
     check_id: i64,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>> + use<>> {
-    let stream = BroadcastStream::new(state.events.subscribe()).filter_map(move |res| match res {
+    let stream = BroadcastStream::new(events.subscribe()).filter_map(move |res| match res {
         Ok(id) if id == check_id => Some(Ok(Event::default().data("changed"))),
         Ok(_) => None,
         // Lagged: this subscriber fell behind the buffer. Unlike a log tail,
@@ -1737,7 +1738,7 @@ async fn check_events(
     Path(id): Path<i64>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
-    Ok(sse_for_check(&state, check.id))
+    Ok(sse_for_check(&state.events, check.id))
 }
 
 /// `GET /checks/{id}/notifications` — the notifications fragment.
@@ -1778,7 +1779,7 @@ async fn admin_check_events(
     Path(id): Path<i64>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    Ok(sse_for_check(&state, check.id))
+    Ok(sse_for_check(&state.events, check.id))
 }
 
 /// `GET /admin/checks/{id}/notifications` — admin notifications fragment.
