@@ -176,6 +176,26 @@ invariant the same source-parsing way, reusing
 (`CurrentUser`) rather than bearer-gated and so sit outside this invariant —
 the `/api/v1` prefix filter excludes them automatically.
 
+Once past that auth check, owner scoping for `/api/v1` goes through
+`resolve_project`/`resolve_check`/`resolve_channel` in `src/api/v1.rs`: owner
+first, else an audited admin cross-user access, else `404` (not `403`) — the
+same existence-hiding behaviour as the web UI's `owned_project`/`owned_check`.
+`tests/api_v1.rs::member_cannot_reach_another_users_resource_on_any_api_route`
+enforces this across every parameterised `/api/v1` route, derived the same
+source-parsing way, by substituting another user's resource id and asserting
+a non-admin caller gets `404`. Each route is checked both ways: the non-owner
+gets `404`, and the owner, hitting the same route against the same id, gets
+something other than `404` — a nonexistent id also 404s, so without that
+owner half the test could pass vacuously even if ownership scoping were
+broken.
+
+The web UI's `owned_project`/`owned_check` (see above) are covered the same
+exhaustive, two-sided way by
+`tests/web_ownership.rs::member_cannot_reach_another_users_resource_on_any_web_route`,
+derived from `web::routes()` instead of `api::routes()` and excluding
+`/admin*` (its own exhaustive test, and admins are allowed cross-user access)
+and `/account/*` (owner-scoped by a different mechanism entirely).
+
 ## Background loops
 
 `main.rs` spawns two `tokio` tasks against the shared `Store`:
