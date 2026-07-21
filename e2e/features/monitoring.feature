@@ -70,6 +70,24 @@ Feature: Monitoring core
     When I delete the project
     Then the dashboard shows no projects
 
+  Scenario: The dashboard filter narrows the list and can be cleared
+    Given a project named "Nightly jobs"
+    And a check named "backup" with period 60
+    And a project named "Weekly jobs"
+    And a check named "report" with period 60
+    When I filter the dashboard by "report"
+    Then the dashboard shows the check "report"
+    And the dashboard does not show the check "backup"
+    When I clear the dashboard filter
+    Then the dashboard shows the check "backup"
+    And the dashboard shows the check "report"
+
+  Scenario: A dashboard filter that matches nothing says so
+    Given a project named "Nightly jobs"
+    And a check named "backup" with period 60
+    When I filter the dashboard by "nonesuch"
+    Then the dashboard says nothing matched
+
   Scenario: A fresh check shows empty ping and notification tables
     Given a project named "Fresh"
     And a check named "newbie" with period 3600

@@ -929,6 +929,11 @@ nav.links a:hover {
 .filters .btn {
   align-self: flex-end;
 }
+/* The dashboard filter is one free-text box, so it wants more room than the
+   narrow date/select fields the check-history filters are sized for. */
+.filters .fld input[type="search"] {
+  min-width: 260px;
+}
 @media (max-width: 560px) {
   .filters .fld {
     flex: 1 1 100%;

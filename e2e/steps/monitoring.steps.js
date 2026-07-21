@@ -142,6 +142,38 @@ Then("the dashboard shows no projects", async ({ page }) => {
   await expect(page.getByTestId("dashboard-empty")).toBeVisible();
 });
 
+// The filter is a plain GET form, so submitting it is a full navigation —
+// asserting the URL carries `q` proves the term round-tripped through the
+// server rather than being hidden client-side.
+When("I filter the dashboard by {string}", async ({ page, serverUrl }, term) => {
+  await page.goto(`${serverUrl}/`);
+  await page.getByTestId("dashboard-filter-input").fill(term);
+  await page.getByTestId("dashboard-filter-submit").click();
+  await expect(page).toHaveURL(new RegExp(`\\?q=${term}$`));
+});
+
+When("I clear the dashboard filter", async ({ page }) => {
+  await page.getByTestId("dashboard-filter-clear").click();
+  await expect(page).toHaveURL(/\/$/);
+});
+
+Then("the dashboard shows the check {string}", async ({ page }, name) => {
+  await expect(
+    page.getByTestId("dashboard-check-row").filter({ hasText: name })
+  ).toBeVisible();
+});
+
+Then("the dashboard does not show the check {string}", async ({ page }, name) => {
+  await expect(
+    page.getByTestId("dashboard-check-row").filter({ hasText: name })
+  ).toHaveCount(0);
+});
+
+Then("the dashboard says nothing matched", async ({ page }) => {
+  await expect(page.getByTestId("dashboard-no-results")).toBeVisible();
+  await expect(page.getByTestId("dashboard-empty")).toHaveCount(0);
+});
+
 Then("the recent pings table shows an empty state", async ({ page }) => {
   await expect(page.getByTestId("pings-empty")).toBeVisible();
 });
