@@ -232,6 +232,241 @@ async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
     );
 }
 
+/// A description whose distinctive term sits past the 120-character summary
+/// cut-off, so a test can tell "matched the raw description" apart from
+/// "matched what the row happens to display".
+const LONG_DESC: &str = "Copies the primary database to cold storage every night and verifies \
+    checksums end to end so silent corruption is caught before it spreads, then uploads the \
+    result to the offsite glacier vault.";
+
+/// Two projects with four checks between them, shaped so every dashboard filter
+/// dimension (project name, project description, check name, check description)
+/// can be exercised by a term unique to it.
+async fn server_with_two_projects() -> TestServer {
+    let (server, store, uid) = logged_in_server().await;
+    let now = chrono::Utc::now();
+    let web = store
+        .create_project(uid, "web", "Public **frontend** services", None, None, now)
+        .await
+        .unwrap();
+    let infra = store
+        .create_project(uid, "infra", "Datacenter plumbing", None, None, now)
+        .await
+        .unwrap();
+    for (project_id, name, description, uuid) in [
+        (web, "backup", LONG_DESC, "cu-backup"),
+        (web, "deploy", "", "cu-deploy"),
+        (
+            infra,
+            "rotate-certs",
+            "Renews TLS certificates",
+            "cu-rotate",
+        ),
+        (infra, "vacuum", "", "cu-vacuum"),
+    ] {
+        store
+            .create_check(&pingward::store::NewCheck {
+                project_id,
+                name,
+                description,
+                ping_uuid: uuid,
+                kind: pingward::models::ScheduleKind::Period,
+                period_secs: Some(3600),
+                grace_secs: 300,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    server
+}
+
+/// Assert a summary tile shows exactly `n`. Matches the tile's own markup, so a
+/// counter that stops following the filter fails here rather than passing on a
+/// bare `body.contains("1")`.
+fn assert_tile(body: &str, label: &str, n: usize) {
+    let want = format!("<div class=\"n\">{n}</div><div class=\"l\">{label}</div>");
+    assert!(
+        body.contains(&want),
+        "expected {label} tile to show {n}: {body}"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_unfiltered_shows_every_project_and_no_clear_link() {
+    let server = server_with_two_projects().await;
+    let res = server.get("/").await;
+    res.assert_status_ok();
+    let body = res.text();
+
+    assert!(body.contains(">web</h2>"), "web group missing: {body}");
+    assert!(body.contains(">infra</h2>"), "infra group missing: {body}");
+    assert_tile(&body, "Total", 4);
+    assert!(
+        !body.contains("dashboard-filter-clear"),
+        "clear affordance must only appear while a filter is active: {body}"
+    );
+}
+
+/// A blank or whitespace-only `q` is the unfiltered view, not a filter that
+/// matches everything by accident — the "clear" link must stay hidden.
+#[tokio::test]
+async fn dashboard_blank_query_is_treated_as_unfiltered() {
+    let server = server_with_two_projects().await;
+    let body = server.get("/?q=%20%20").await.text();
+
+    assert!(body.contains(">web</h2>"), "web group missing: {body}");
+    assert!(body.contains(">infra</h2>"), "infra group missing: {body}");
+    assert_tile(&body, "Total", 4);
+    assert!(
+        !body.contains("dashboard-filter-clear"),
+        "whitespace-only q must not count as an active filter: {body}"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_filter_by_check_name_drops_other_projects_and_narrows_counters() {
+    let server = server_with_two_projects().await;
+    let body = server.get("/?q=rotate").await.text();
+
+    assert!(body.contains(">infra</h2>"), "infra group missing: {body}");
+    assert!(
+        body.contains(">rotate-certs</div>"),
+        "match missing: {body}"
+    );
+    assert!(
+        !body.contains(">web</h2>"),
+        "a project with no matching check must not render: {body}"
+    );
+    assert!(
+        !body.contains(">vacuum</div>"),
+        "a sibling check that does not match must not render: {body}"
+    );
+    // The counters follow the filter: one visible check, and it is "new".
+    assert_tile(&body, "Total", 1);
+    assert_tile(&body, "Up", 0);
+    assert!(
+        body.contains("dashboard-filter-clear"),
+        "an active filter must offer a way out: {body}"
+    );
+    assert!(
+        body.contains("value=\"rotate\""),
+        "the search box must echo the active term: {body}"
+    );
+}
+
+/// A project-level hit shows the project whole. Filtering by a term that exists
+/// only in the project's own description must still list checks that do not
+/// match it themselves, rather than rendering a header above an empty list.
+#[tokio::test]
+async fn dashboard_filter_by_project_description_keeps_all_of_its_checks() {
+    let server = server_with_two_projects().await;
+    let body = server.get("/?q=plumbing").await.text();
+
+    assert!(body.contains(">infra</h2>"), "infra group missing: {body}");
+    assert!(
+        body.contains(">rotate-certs</div>") && body.contains(">vacuum</div>"),
+        "a project-level match must keep every check in that project: {body}"
+    );
+    assert!(
+        !body.contains(">web</h2>"),
+        "the non-matching project must not render: {body}"
+    );
+    assert_tile(&body, "Total", 2);
+}
+
+#[tokio::test]
+async fn dashboard_filter_by_project_name_keeps_all_of_its_checks() {
+    let server = server_with_two_projects().await;
+    let body = server.get("/?q=infra").await.text();
+
+    assert!(
+        body.contains(">rotate-certs</div>") && body.contains(">vacuum</div>"),
+        "a project-name match must keep every check in that project: {body}"
+    );
+    assert!(!body.contains(">web</h2>"), "web must not render: {body}");
+    assert_tile(&body, "Total", 2);
+}
+
+/// Matching runs over the **raw** description, not the 120-character summary the
+/// row displays. The term below appears only in the truncated-away tail, so this
+/// fails if the filter is ever pointed at `CheckRow::description`.
+#[tokio::test]
+async fn dashboard_filter_matches_description_text_beyond_the_visible_summary() {
+    let server = server_with_two_projects().await;
+    let plain = pingward::markdown::to_plain(LONG_DESC);
+    assert!(
+        !pingward::markdown::truncate_plain(LONG_DESC, 120).contains("glacier"),
+        "fixture must place the search term past the summary cut-off: {plain}"
+    );
+
+    let body = server.get("/?q=glacier").await.text();
+    assert!(body.contains(">backup</div>"), "match missing: {body}");
+    // "glacier" does appear once, echoed into the search box — but the tail it
+    // came from must not be rendered, proving the match came from the stored
+    // description rather than anything on screen.
+    assert!(
+        !body.contains("offsite glacier vault"),
+        "the matched tail is past the summary cut-off, so it must not render: {body}"
+    );
+    assert_eq!(
+        body.matches("glacier").count(),
+        1,
+        "the term should appear only in the echoed search box: {body}"
+    );
+    assert!(
+        !body.contains(">deploy</div>"),
+        "a sibling check that does not match must not render: {body}"
+    );
+    assert_tile(&body, "Total", 1);
+}
+
+#[tokio::test]
+async fn dashboard_filter_is_case_insensitive() {
+    let server = server_with_two_projects().await;
+    // An uppercase query against lowercase stored data.
+    let body = server.get("/?q=ROTATE-Certs").await.text();
+    assert!(
+        body.contains(">rotate-certs</div>"),
+        "an uppercase term must match lowercase stored text: {body}"
+    );
+    assert_tile(&body, "Total", 1);
+
+    // ...and the other direction, which is what folding the *haystack* buys:
+    // "TLS" is stored uppercase, so a lowercase query must still find it.
+    // Without this, dropping `to_lowercase()` on the haystack passes the suite.
+    let body = server.get("/?q=tls").await.text();
+    assert!(
+        body.contains(">rotate-certs</div>"),
+        "a lowercase term must match uppercase stored text: {body}"
+    );
+    assert_tile(&body, "Total", 1);
+}
+
+/// "Nothing matched" is a different state from "you have no projects" — they
+/// must not collapse into the same message, or a user with a typo is told to
+/// create a project they already have.
+#[tokio::test]
+async fn dashboard_no_results_state_is_distinct_from_the_empty_state() {
+    let server = server_with_two_projects().await;
+    let body = server.get("/?q=nonesuch").await.text();
+
+    assert!(
+        body.contains("dashboard-no-results"),
+        "no-results state missing: {body}"
+    );
+    assert!(
+        !body.contains("dashboard-empty"),
+        "a user who owns projects must not be told they have none: {body}"
+    );
+    assert!(
+        body.contains("Clear the filter"),
+        "no-results state must offer a way back: {body}"
+    );
+    assert_tile(&body, "Total", 0);
+}
+
 #[tokio::test]
 async fn dashboard_empty_state_when_no_projects() {
     let (server, _store, _uid) = logged_in_server().await;

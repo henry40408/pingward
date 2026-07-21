@@ -147,6 +147,32 @@ struct DashboardTemplate {
     late: usize,
     down: usize,
     groups: Vec<ProjectGroup>,
+    /// The active filter term, trimmed, echoed back into the search box. Empty
+    /// means unfiltered — the template keys both the empty state and the
+    /// "clear" affordance off this rather than a separate flag.
+    q: String,
+}
+
+/// Query params for the dashboard filter. Absent, blank, or whitespace-only
+/// means "no filter", so `/?q=` behaves exactly like `/`.
+#[derive(Deserialize, Default)]
+struct DashboardQuery {
+    #[serde(default)]
+    q: Option<String>,
+}
+
+/// Case-insensitive substring test backing the dashboard filter.
+///
+/// `needle` must already be lowercased by the caller — it is the same for every
+/// row, so lowercasing it once per request rather than once per field keeps the
+/// scan linear in the data actually being searched.
+///
+/// Matching runs in Rust over the rows the dashboard already loads, not in SQL:
+/// `LIKE` is ASCII-case-insensitive on `SQLite` but case-sensitive on Postgres,
+/// and `ILIKE` is Postgres-only and untranslated by the `Any` driver, so a
+/// portable SQL version would need two dialects for no gain.
+fn matches_term(haystack: &str, needle: &str) -> bool {
+    haystack.to_lowercase().contains(needle)
 }
 
 struct CheckRow {
@@ -304,6 +330,7 @@ async fn dashboard(
     State(state): State<AppState>,
     jar: CookieJar,
     OptionalUser(user): OptionalUser,
+    Query(query): Query<DashboardQuery>,
 ) -> Result<Response, AppError> {
     if state.store.count_users().await? == 0 {
         return Ok(Redirect::to("/setup").into_response());
@@ -312,14 +339,36 @@ async fn dashboard(
         return Ok(Redirect::to("/login").into_response());
     };
     let now = Utc::now();
+    let q = query.q.unwrap_or_default().trim().to_string();
+    let needle = q.to_lowercase();
     let (mut total, mut up, mut running, mut late, mut down) = (0usize, 0, 0, 0, 0);
     let mut groups = Vec::new();
     // Gather every project's checks first, then fetch all their recent pings in
     // one batched query (avoids an N+1 of one `list_recent_pings` per check).
+    // Filtering happens here, before the ping fetch, so a narrow filter also
+    // narrows the batched query instead of loading pings for hidden rows.
     let mut project_checks = Vec::new();
     let mut check_ids = Vec::new();
     for project in state.store.list_projects_for_user(user.id).await? {
         let checks = state.store.list_checks_for_project(project.id).await?;
+        let checks = if needle.is_empty()
+            || matches_term(&project.name, &needle)
+            || matches_term(&project.description, &needle)
+        {
+            // A project-level hit shows the project whole, including checks that
+            // do not match themselves — otherwise searching a project's own name
+            // would render a header above an empty list.
+            checks
+        } else {
+            let kept: Vec<Check> = checks
+                .into_iter()
+                .filter(|c| matches_term(&c.name, &needle) || matches_term(&c.description, &needle))
+                .collect();
+            if kept.is_empty() {
+                continue;
+            }
+            kept
+        };
         check_ids.extend(checks.iter().map(|c| c.id));
         project_checks.push((project, checks));
     }
@@ -377,6 +426,7 @@ async fn dashboard(
         late,
         down,
         groups,
+        q,
     })?
     .into_response())
 }

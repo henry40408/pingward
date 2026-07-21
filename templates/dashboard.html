@@ -5,6 +5,14 @@
   <a class="btn-primary" href="/projects/new">New project</a>
 </div>
 
+<form class="filters" method="get" action="/" role="search">
+  <label class="fld">Filter
+    <input type="search" name="q" value="{{ q }}" placeholder="project or check name / description" data-testid="dashboard-filter-input">
+  </label>
+  <button class="btn" type="submit" data-testid="dashboard-filter-submit">Filter</button>
+  {% if !q.is_empty() %}<a class="btn" href="/" data-testid="dashboard-filter-clear">Clear</a>{% endif %}
+</form>
+
 <div class="tiles">
   <div class="tile total"><span class="edge"></span><div class="n">{{ total }}</div><div class="l">Total</div></div>
   <div class="tile up"><span class="edge"></span><div class="n">{{ up }}</div><div class="l">Up</div></div>
@@ -14,7 +22,13 @@
 </div>
 
 {% if groups.is_empty() %}
-<div class="list"><p class="empty" data-testid="dashboard-empty">No projects yet. Create one to start watching a job.</p></div>
+<div class="list">
+  {% if q.is_empty() %}
+  <p class="empty" data-testid="dashboard-empty">No projects yet. Create one to start watching a job.</p>
+  {% else %}
+  <p class="empty" data-testid="dashboard-no-results">Nothing matches “{{ q }}”. <a href="/">Clear the filter</a> to see every check.</p>
+  {% endif %}
+</div>
 {% else %}
 {% for g in groups %}
 <div class="group">
@@ -27,7 +41,7 @@
   </div>
   <div class="list">
     {% for c in g.checks %}
-    <div class="check" tabindex="0" role="link" onclick="location='/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='/checks/{{ c.id }}'">
+    <div class="check" data-testid="dashboard-check-row" tabindex="0" role="link" onclick="location='/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='/checks/{{ c.id }}'">
       <span class="status-dot {{ c.status }}"></span>
       <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule }}</div>{% if !c.description.is_empty() %}<div class="cdesc" data-testid="check-description-summary">{{ c.description }}</div>{% endif %}</div>
       <div class="spark">{% for b in c.bars %}<i class="{{ b.class }}" style="height:{{ b.height }}px" title="{{ b.title }}"></i>{% endfor %}</div>
