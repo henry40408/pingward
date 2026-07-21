@@ -40,6 +40,10 @@ fn opt_form(v: Option<DurationInput>) -> String {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ProjectInput {
     pub name: String,
+    /// Raw markdown (the minimal subset in `src/markdown.rs`), rendered to
+    /// HTML only by the web UI — API responses always carry it unrendered.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Per-project scan-interval override: seconds (int) or a duration string
     /// (`"5m"`). Omit or send `null` to inherit the global default.
     #[serde(default)]
@@ -55,6 +59,7 @@ impl From<ProjectInput> for ProjectForm {
     fn from(i: ProjectInput) -> Self {
         ProjectForm {
             name: i.name,
+            description: i.description.unwrap_or_default(),
             scan_interval_secs: opt_form(i.scan_interval_secs),
             nag_interval_secs: opt_form(i.nag_interval_secs),
         }
@@ -75,6 +80,10 @@ fn default_timezone() -> String {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CheckInput {
     pub name: String,
+    /// Raw markdown (the minimal subset in `src/markdown.rs`), rendered to
+    /// HTML only by the web UI — API responses always carry it unrendered.
+    #[serde(default)]
+    pub description: Option<String>,
     /// Schedule type: `period` (default) or `cron`.
     #[serde(default = "default_schedule_kind")]
     pub schedule_kind: String,
@@ -114,6 +123,7 @@ impl From<CheckInput> for CheckForm {
     fn from(i: CheckInput) -> Self {
         CheckForm {
             name: i.name,
+            description: i.description.unwrap_or_default(),
             schedule_kind: i.schedule_kind,
             period_secs: opt_form(i.period_secs),
             cron_expr: i.cron_expr.unwrap_or_default(),

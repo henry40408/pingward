@@ -56,3 +56,50 @@ Then("the check timezone field shows {string}", async ({ page }, tz) => {
 Then("the check period field shows {string}", async ({ page }, period) => {
   await expect(page.getByTestId("check-period-input")).toHaveValue(period);
 });
+
+When(
+  "I set the project description to {string}",
+  async ({ page }, description) => {
+    await page.getByTestId("project-description-input").fill(description);
+    await page.getByTestId("project-submit").click();
+  }
+);
+
+When(
+  "I set the check description to {string}",
+  async ({ page }, description) => {
+    await page.getByTestId("check-description-input").fill(description);
+    await page.getByTestId("check-submit").click();
+  }
+);
+
+// The description card renders through markdown.rs (escape-first, then a
+// small tag whitelist) — `**bold**` becomes a real <strong> element.
+Then(
+  "the project description shows {string} in bold",
+  async ({ page }, text) => {
+    await expect(
+      page.getByTestId("project-description").locator("strong")
+    ).toHaveText(text);
+  }
+);
+
+Then(
+  "the check description shows {string} in bold",
+  async ({ page }, text) => {
+    await expect(
+      page.getByTestId("check-description").locator("strong")
+    ).toHaveText(text);
+  }
+);
+
+// The project page's check row shows `markdown::truncate_plain` (markers
+// stripped, no HTML tags, capped at 120 chars with a trailing "…") — assert
+// the ellipsis to prove truncation actually happened rather than the whole
+// description fitting untruncated.
+Then("the check row shows a truncated description", async ({ page }) => {
+  const cdesc = page.getByTestId("check-description-summary");
+  await expect(cdesc).toBeVisible();
+  await expect(cdesc).toContainText("…");
+  await expect(cdesc).not.toContainText("**");
+});

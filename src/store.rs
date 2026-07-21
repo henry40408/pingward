@@ -156,6 +156,7 @@ pub struct NewAudit<'a> {
 pub struct NewCheck<'a> {
     pub project_id: i64,
     pub name: &'a str,
+    pub description: &'a str,
     pub ping_uuid: &'a str,
     pub kind: ScheduleKind,
     pub period_secs: Option<i64>,
@@ -174,6 +175,7 @@ impl Default for NewCheck<'_> {
         Self {
             project_id: 0,
             name: "",
+            description: "",
             ping_uuid: "",
             kind: ScheduleKind::Period,
             period_secs: None,
@@ -194,6 +196,7 @@ impl Default for NewCheck<'_> {
 #[derive(Debug, Clone)]
 pub struct UpdateCheck<'a> {
     pub name: &'a str,
+    pub description: &'a str,
     pub kind: ScheduleKind,
     pub period_secs: Option<i64>,
     pub grace_secs: i64,
@@ -236,6 +239,7 @@ fn row_to_check(row: &sqlx::any::AnyRow) -> Result<Check, sqlx::Error> {
         id: row.get("id"),
         project_id: row.get("project_id"),
         name: row.get("name"),
+        description: row.get("description"),
         ping_uuid: row.get("ping_uuid"),
         schedule_kind,
         period_secs: row.get("period_secs"),
@@ -298,6 +302,7 @@ fn row_to_project(row: &sqlx::any::AnyRow) -> Result<Project, sqlx::Error> {
         id: row.get("id"),
         user_id: row.get("user_id"),
         name: row.get("name"),
+        description: row.get("description"),
         scan_interval_secs: row.get("scan_interval_secs"),
         nag_interval_secs: row.get("nag_interval_secs"),
         created_at: parse_ts(row.get("created_at"))
@@ -670,13 +675,14 @@ impl Store {
 
     pub async fn create_check(&self, c: &NewCheck<'_>) -> Result<i64, sqlx::Error> {
         let row = sqlx::query(
-            "INSERT INTO checks (project_id, name, ping_uuid, schedule_kind, period_secs, \
+            "INSERT INTO checks (project_id, name, description, ping_uuid, schedule_kind, period_secs, \
              grace_secs, cron_expr, timezone, scan_interval_secs, max_runtime_secs, \
              nag_interval_secs, status, created_at) VALUES \
-             ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'new',$12) RETURNING id",
+             ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'new',$13) RETURNING id",
         )
         .bind(c.project_id)
         .bind(c.name)
+        .bind(c.description)
         .bind(c.ping_uuid)
         .bind(c.kind.as_str())
         .bind(c.period_secs)
@@ -997,16 +1003,18 @@ impl Store {
         &self,
         user_id: i64,
         name: &str,
+        description: &str,
         scan_interval_secs: Option<i64>,
         nag_interval_secs: Option<i64>,
         now: DateTime<Utc>,
     ) -> Result<i64, sqlx::Error> {
         let row = sqlx::query(
-            "INSERT INTO projects (user_id, name, scan_interval_secs, nag_interval_secs, created_at) \
-             VALUES ($1,$2,$3,$4,$5) RETURNING id",
+            "INSERT INTO projects (user_id, name, description, scan_interval_secs, nag_interval_secs, created_at) \
+             VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
         )
         .bind(user_id)
         .bind(name)
+        .bind(description)
         .bind(scan_interval_secs)
         .bind(nag_interval_secs)
         .bind(now.to_rfc3339())
@@ -1051,13 +1059,15 @@ impl Store {
         &self,
         id: i64,
         name: &str,
+        description: &str,
         scan_interval_secs: Option<i64>,
         nag_interval_secs: Option<i64>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE projects SET name = $1, scan_interval_secs = $2, nag_interval_secs = $3 WHERE id = $4",
+            "UPDATE projects SET name = $1, description = $2, scan_interval_secs = $3, nag_interval_secs = $4 WHERE id = $5",
         )
         .bind(name)
+        .bind(description)
         .bind(scan_interval_secs)
         .bind(nag_interval_secs)
         .bind(id)
@@ -1226,11 +1236,12 @@ impl Store {
         c: &UpdateCheck<'_>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "UPDATE checks SET name=$1, schedule_kind=$2, period_secs=$3, grace_secs=$4, \
-             cron_expr=$5, timezone=$6, scan_interval_secs=$7, max_runtime_secs=$8, \
-             nag_interval_secs=$9 WHERE id=$10",
+            "UPDATE checks SET name=$1, description=$2, schedule_kind=$3, period_secs=$4, grace_secs=$5, \
+             cron_expr=$6, timezone=$7, scan_interval_secs=$8, max_runtime_secs=$9, \
+             nag_interval_secs=$10 WHERE id=$11",
         )
         .bind(c.name)
+        .bind(c.description)
         .bind(c.kind.as_str())
         .bind(c.period_secs)
         .bind(c.grace_secs)
@@ -1677,6 +1688,65 @@ mod tests {
         assert!(store.find_check_by_uuid("nope").await.unwrap().is_none());
     }
 
+    /// A project's and a check's `description` persist on insert and change on
+    /// update, on both the freshly-created row and the reloaded one.
+    #[tokio::test]
+    async fn project_and_check_description_persist_and_update() {
+        let store = seeded().await;
+
+        let pid = store
+            .create_project(1, "described", "hello **world**", None, None, Utc::now())
+            .await
+            .unwrap();
+        let p = store.find_project(pid).await.unwrap().unwrap();
+        assert_eq!(p.description, "hello **world**");
+
+        store
+            .update_project(pid, "described", "updated *desc*", None, None)
+            .await
+            .unwrap();
+        let p = store.find_project(pid).await.unwrap().unwrap();
+        assert_eq!(p.description, "updated *desc*");
+
+        let cid = store
+            .create_check(&NewCheck {
+                project_id: pid,
+                name: "job",
+                description: "runs `nightly`",
+                ping_uuid: "uuid-desc",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let c = store.find_check(cid).await.unwrap().unwrap();
+        assert_eq!(c.description, "runs `nightly`");
+
+        store
+            .update_check_schedule(
+                cid,
+                &UpdateCheck {
+                    name: "job",
+                    description: "updated check desc",
+                    kind: ScheduleKind::Period,
+                    period_secs: Some(60),
+                    grace_secs: 30,
+                    cron_expr: None,
+                    timezone: "UTC",
+                    scan_interval_secs: None,
+                    max_runtime_secs: None,
+                    nag_interval_secs: None,
+                },
+            )
+            .await
+            .unwrap();
+        let c = store.find_check(cid).await.unwrap().unwrap();
+        assert_eq!(c.description, "updated check desc");
+    }
+
     #[tokio::test]
     async fn insert_ping_and_list_active() {
         let store = seeded().await;
@@ -2072,7 +2142,7 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 
         let pid = store
-            .create_project(1, "web", Some(15), None, now)
+            .create_project(1, "web", "", Some(15), None, now)
             .await
             .unwrap();
         assert_eq!(store.list_projects_for_user(1).await.unwrap().len(), 2); // 'p' from seed + 'web'
@@ -2329,7 +2399,7 @@ mod tests {
             .await
             .unwrap();
         let pid = store
-            .create_project(uid, "p2", None, None, Utc::now())
+            .create_project(uid, "p2", "", None, None, Utc::now())
             .await
             .unwrap();
         store

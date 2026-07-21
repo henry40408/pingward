@@ -11,6 +11,11 @@
         <input id="name" name="name" value="{{ name }}" data-testid="project-name-input" required>
       </div>
       <div class="field">
+        <label for="description">Description</label>
+        <textarea id="description" name="description" rows="4" data-testid="project-description-input">{{ description }}</textarea>
+        <div class="help">Optional. Supports **bold**, *italic*, `code`, [links](url) and - lists.</div>
+      </div>
+      <div class="field">
         <label for="scan_interval_secs">Scan interval</label>
         <input id="scan_interval_secs" name="scan_interval_secs" value="{{ scan_interval_secs }}">
         <div class="help">Leave blank to inherit the default scan interval. Seconds, or a duration like 5m, 1h30m.</div>

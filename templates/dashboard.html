@@ -20,6 +20,7 @@
 <div class="group">
   <div class="gh">
     <h2>{{ g.name }}</h2>
+    {% if !g.description.is_empty() %}<span class="gdesc">{{ g.description }}</span>{% endif %}
     <span class="count">{{ g.count }} checks</span>
     <span class="line"></span>
     <a href="/projects/{{ g.id }}">Manage →</a>
@@ -28,7 +29,7 @@
     {% for c in g.checks %}
     <div class="check" tabindex="0" role="link" onclick="location='/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='/checks/{{ c.id }}'">
       <span class="status-dot {{ c.status }}"></span>
-      <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule }}</div></div>
+      <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule }}</div>{% if !c.description.is_empty() %}<div class="cdesc" data-testid="check-description-summary">{{ c.description }}</div>{% endif %}</div>
       <div class="spark">{% for b in c.bars %}<i class="{{ b.class }}" style="height:{{ b.height }}px" title="{{ b.title }}"></i>{% endfor %}</div>
       <div class="cwhen">{{ c.last }}</div>
       <span class="badge {{ c.status }}">{{ c.status }}</span>

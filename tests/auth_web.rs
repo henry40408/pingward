@@ -104,6 +104,7 @@ async fn create_and_delete_project() {
         .post("/projects")
         .form(&[
             ("name", "web"),
+            ("description", ""),
             ("scan_interval_secs", ""),
             ("nag_interval_secs", ""),
         ])
@@ -134,7 +135,7 @@ async fn cannot_view_another_users_project() {
         .await
         .unwrap();
     let pid = store
-        .create_project(other, "secret", None, None, chrono::Utc::now())
+        .create_project(other, "secret", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     server
@@ -146,7 +147,7 @@ async fn cannot_view_another_users_project() {
 async fn server_with_project() -> (TestServer, Store, i64) {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", None, None, chrono::Utc::now())
+        .create_project(uid, "web", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     (server, store, pid)
@@ -178,7 +179,7 @@ async fn server_with_project_and_smtp() -> (TestServer, Store, i64) {
         .await;
     set_csrf(&mut server, &store).await;
     let pid = store
-        .create_project(uid, "p", None, None, chrono::Utc::now())
+        .create_project(uid, "p", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     (server, store, pid)
@@ -231,6 +232,7 @@ async fn create_check_and_pause_resume() {
         .post(&format!("/projects/{pid}/checks"))
         .form(&[
             ("name", "backup"),
+            ("description", ""),
             ("schedule_kind", "period"),
             ("period_secs", "3600"),
             ("grace_secs", "300"),
@@ -273,6 +275,7 @@ async fn acknowledge_persists() {
         .post(&format!("/projects/{pid}/checks"))
         .form(&[
             ("name", "backup"),
+            ("description", ""),
             ("schedule_kind", "period"),
             ("period_secs", "3600"),
             ("grace_secs", "300"),
@@ -306,6 +309,7 @@ async fn create_check_persists_max_runtime() {
         .post(&format!("/projects/{pid}/checks"))
         .form(&[
             ("name", "job"),
+            ("description", ""),
             ("schedule_kind", "period"),
             ("period_secs", "3600"),
             ("grace_secs", "300"),
@@ -328,6 +332,7 @@ async fn create_check_persists_nag_interval() {
         .post(&format!("/projects/{pid}/checks"))
         .form(&[
             ("name", "job"),
+            ("description", ""),
             ("schedule_kind", "period"),
             ("period_secs", "3600"),
             ("grace_secs", "300"),
@@ -350,6 +355,7 @@ async fn invalid_cron_is_rejected() {
         .post(&format!("/projects/{pid}/checks"))
         .form(&[
             ("name", "bad"),
+            ("description", ""),
             ("schedule_kind", "cron"),
             ("period_secs", ""),
             ("grace_secs", "60"),
@@ -708,7 +714,7 @@ async fn other_users_project(store: &Store) -> (i64, i64, i64) {
         .await
         .unwrap();
     let opid = store
-        .create_project(other, "secret", None, None, now)
+        .create_project(other, "secret", "", None, None, now)
         .await
         .unwrap();
     let ocid = store

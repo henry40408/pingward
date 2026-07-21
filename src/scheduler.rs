@@ -249,6 +249,7 @@ mod tests {
             id: 1,
             project_id: 1,
             name: "j".into(),
+            description: String::new(),
             ping_uuid: "u".into(),
             schedule_kind: ScheduleKind::Period,
             period_secs: Some(3600),
@@ -445,7 +446,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_project(1, "p", None, None, Utc::now())
+            .create_project(1, "p", "", None, None, Utc::now())
             .await
             .unwrap();
         let start = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
@@ -468,6 +469,7 @@ mod tests {
                 cid,
                 &UpdateCheck {
                     name: "job",
+                    description: "",
                     kind: ScheduleKind::Period,
                     period_secs: Some(3_600_000),
                     grace_secs: 300,
@@ -506,7 +508,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_project(1, "p", None, None, Utc::now())
+            .create_project(1, "p", "", None, None, Utc::now())
             .await
             .unwrap();
         let id = store
@@ -536,6 +538,7 @@ mod tests {
                 id,
                 &UpdateCheck {
                     name: "job",
+                    description: "",
                     kind: ScheduleKind::Period,
                     period_secs: Some(3600),
                     grace_secs: 300,
@@ -590,6 +593,7 @@ mod tests {
                 id,
                 &UpdateCheck {
                     name: "job",
+                    description: "",
                     kind: ScheduleKind::Period,
                     period_secs: Some(3600),
                     grace_secs: 300,

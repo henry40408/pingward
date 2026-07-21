@@ -397,10 +397,10 @@ pub async fn create_project(
     ApiJson(input): ApiJson<ProjectInput>,
 ) -> Result<(StatusCode, Json<ProjectDto>), ApiError> {
     let form: ProjectForm = input.into();
-    let (name, scan, nag) = validate_project(&form).map_err(ApiError::bad_request)?;
+    let (name, description, scan, nag) = validate_project(&form).map_err(ApiError::bad_request)?;
     let id = state
         .store
-        .create_project(user.id, &name, scan, nag, Utc::now())
+        .create_project(user.id, &name, &description, scan, nag, Utc::now())
         .await?;
     let p = state
         .store
@@ -432,8 +432,11 @@ pub async fn update_project(
 ) -> Result<Json<ProjectDto>, ApiError> {
     resolve_project(&state, id, &user, "PATCH", uri.path()).await?;
     let form: ProjectForm = input.into();
-    let (name, scan, nag) = validate_project(&form).map_err(ApiError::bad_request)?;
-    state.store.update_project(id, &name, scan, nag).await?;
+    let (name, description, scan, nag) = validate_project(&form).map_err(ApiError::bad_request)?;
+    state
+        .store
+        .update_project(id, &name, &description, scan, nag)
+        .await?;
     let p = state
         .store
         .find_project(id)
@@ -491,6 +494,7 @@ pub async fn create_check(
         .create_check(&NewCheck {
             project_id: pid,
             name: &v.name,
+            description: &v.description,
             ping_uuid: &uuid,
             kind: v.kind,
             period_secs: v.period_secs,
@@ -539,6 +543,7 @@ pub async fn update_check(
             id,
             &UpdateCheck {
                 name: &v.name,
+                description: &v.description,
                 kind: v.kind,
                 period_secs: v.period_secs,
                 grace_secs: v.grace,

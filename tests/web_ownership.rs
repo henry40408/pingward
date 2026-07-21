@@ -188,11 +188,13 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
     // not it takes a body — see the exhaustiveness assertion below.
     let project_form: Vec<(&str, &str)> = vec![
         ("name", "x"),
+        ("description", ""),
         ("scan_interval_secs", ""),
         ("nag_interval_secs", ""),
     ];
     let check_form: Vec<(&str, &str)> = vec![
         ("name", "x"),
+        ("description", ""),
         ("schedule_kind", "period"),
         ("period_secs", "60"),
         ("cron_expr", ""),
@@ -263,7 +265,14 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
         // suffixed with the loop index — `ping_uuid` has a UNIQUE constraint,
         // so it in particular must not repeat.
         let pid = store
-            .create_project(owner, &format!("alice-project-{i}"), None, None, Utc::now())
+            .create_project(
+                owner,
+                &format!("alice-project-{i}"),
+                "",
+                None,
+                None,
+                Utc::now(),
+            )
             .await
             .unwrap();
         let cid = store

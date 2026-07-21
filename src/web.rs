@@ -156,6 +156,7 @@ struct CheckRow {
     schedule: String,     // e.g. "every 1h · 10m grace" or the cron expr
     last: String,         // fmt_relative or "—"
     bars: Vec<crate::view::Bar>,
+    description: String, // markdown::truncate_plain, single-line summary
 }
 
 struct ProjectGroup {
@@ -163,6 +164,7 @@ struct ProjectGroup {
     name: String,
     count: usize,
     checks: Vec<CheckRow>,
+    description: String, // markdown::truncate_plain, single-line summary
 }
 
 /// Human-readable schedule summary shown under a check's name (dashboard rows,
@@ -354,10 +356,12 @@ async fn dashboard(
                     .last_ping_at
                     .map_or_else(|| "—".into(), |t| crate::view::fmt_relative(t, now)),
                 bars,
+                description: crate::markdown::truncate_plain(&c.description, 120),
             });
         }
         groups.push(ProjectGroup {
             id: project.id,
+            description: crate::markdown::truncate_plain(&project.description, 120),
             name: project.name,
             count: checks.len(),
             checks: rows,
@@ -513,6 +517,7 @@ struct ProjectFormTemplate {
     heading: String,
     action: String,
     name: String,
+    description: String,
     scan_interval_secs: String,
     nag_interval_secs: String,
     error: Option<String>,
@@ -526,6 +531,7 @@ struct ProjectTemplate {
     is_admin: bool,
     admin: bool,
     project: Project,
+    description_html: String,
     checks: Vec<ProjectCheckRow>,
     channels: Vec<Channel>,
     test_result: Option<TestResult>,
@@ -539,6 +545,7 @@ struct ProjectCheckRow {
     name: String,
     status: &'static str, // view::DisplayStatus::as_str()
     schedule: String,
+    description: String, // markdown::truncate_plain, single-line summary
 }
 
 struct TestResult {
@@ -549,8 +556,28 @@ struct TestResult {
 #[derive(Deserialize)]
 pub(crate) struct ProjectForm {
     pub(crate) name: String,
+    pub(crate) description: String,
     pub(crate) scan_interval_secs: String,
     pub(crate) nag_interval_secs: String,
+}
+
+/// Maximum length, in **characters** (not bytes), of a project/check
+/// description. Rendered through `markdown::render`, so this bounds the work
+/// that does on every page view, not just storage size. `markdown::render` is
+/// worst-case O(n²) (see its module doc); do not raise this without reading
+/// that note.
+const MAX_DESCRIPTION_CHARS: usize = 2000;
+
+/// Trim a description form field and enforce [`MAX_DESCRIPTION_CHARS`],
+/// counting characters rather than bytes so multi-byte input isn't penalized.
+fn validate_description(s: &str) -> Result<String, String> {
+    let trimmed = s.trim();
+    if trimmed.chars().count() > MAX_DESCRIPTION_CHARS {
+        return Err(format!(
+            "description must be at most {MAX_DESCRIPTION_CHARS} characters"
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
 /// Parse an optional positive-integer form field. Blank/whitespace-only input
@@ -705,19 +732,22 @@ async fn admin_channel(
     Ok(ch)
 }
 
-/// Validate a project form's name and optional duration override fields,
-/// returning the parsed `(name, scan_interval_secs, nag_interval_secs)` or an
-/// error message. The name is returned trimmed — it is what must be stored.
+/// Validate a project form's name, description, and optional duration
+/// override fields, returning the parsed
+/// `(name, description, scan_interval_secs, nag_interval_secs)` or an error
+/// message. The name and description are returned trimmed — they are what
+/// must be stored.
 pub(crate) fn validate_project(
     form: &ProjectForm,
-) -> Result<(String, Option<i64>, Option<i64>), String> {
+) -> Result<(String, String, Option<i64>, Option<i64>), String> {
     let name = form.name.trim();
     if name.is_empty() {
         return Err("name is required".into());
     }
+    let description = validate_description(&form.description)?;
     let scan = parse_opt_positive_duration(&form.scan_interval_secs, "scan interval")?;
     let nag = parse_opt_positive_duration(&form.nag_interval_secs, "nag interval")?;
-    Ok((name.to_string(), scan, nag))
+    Ok((name.to_string(), description, scan, nag))
 }
 
 /// Rebuild a project form after a validation error, preserving the submitted
@@ -737,6 +767,7 @@ fn project_form_with_error(
         heading: heading.into(),
         action,
         name: form.name.clone(),
+        description: form.description.clone(),
         scan_interval_secs: form.scan_interval_secs.clone(),
         nag_interval_secs: form.nag_interval_secs.clone(),
         error: Some(error),
@@ -755,6 +786,7 @@ async fn project_new(
         heading: "New project".into(),
         action: "/projects".into(),
         name: String::new(),
+        description: String::new(),
         scan_interval_secs: String::new(),
         nag_interval_secs: String::new(),
         error: None,
@@ -768,7 +800,7 @@ async fn project_create(
     CurrentUser(user): CurrentUser,
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
-    let (name, scan, nag) = match validate_project(&form) {
+    let (name, description, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
             let csrf = current_csrf(&state, &jar).await;
@@ -785,7 +817,7 @@ async fn project_create(
     };
     let id = state
         .store
-        .create_project(user.id, &name, scan, nag, Utc::now())
+        .create_project(user.id, &name, &description, scan, nag, Utc::now())
         .await?;
     Ok(Redirect::to(&format!("/projects/{id}")).into_response())
 }
@@ -816,16 +848,19 @@ async fn render_project_page(
             id: c.id,
             status: crate::view::display_status(&c, now).as_str(),
             schedule: schedule_label(&c),
+            description: crate::markdown::truncate_plain(&c.description, 120),
             name: c.name,
         })
         .collect();
     let channels = store.list_channels_for_project(project.id).await?;
+    let description_html = crate::markdown::render(&project.description);
     Ok(render(&ProjectTemplate {
         show_nav: true,
         csrf,
         is_admin,
         admin,
         project,
+        description_html,
         checks,
         channels,
         test_result,
@@ -850,6 +885,7 @@ fn project_edit_form(
         heading: "Edit project".into(),
         action: format!("{base}/projects/{}", project.id),
         name: project.name,
+        description: project.description,
         scan_interval_secs: project
             .scan_interval_secs
             .map(crate::duration::fmt_duration)
@@ -892,7 +928,7 @@ async fn project_update(
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, id, user.id).await?;
-    let (name, scan, nag) = match validate_project(&form) {
+    let (name, description, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
             let csrf = current_csrf(&state, &jar).await;
@@ -907,7 +943,10 @@ async fn project_update(
             return Ok(render(&t)?.into_response());
         }
     };
-    state.store.update_project(id, &name, scan, nag).await?;
+    state
+        .store
+        .update_project(id, &name, &description, scan, nag)
+        .await?;
     Ok(Redirect::to(&format!("/projects/{id}")).into_response())
 }
 
@@ -925,6 +964,7 @@ async fn project_delete(
 #[derive(Deserialize)]
 pub(crate) struct CheckForm {
     pub(crate) name: String,
+    pub(crate) description: String,
     pub(crate) schedule_kind: String,
     pub(crate) period_secs: String,
     pub(crate) cron_expr: String,
@@ -1002,6 +1042,7 @@ struct CheckFormTemplate {
     action: String,
     error: Option<String>,
     name: String,
+    description: String,
     schedule_kind: String,
     period_secs: String,
     cron_expr: String,
@@ -1020,6 +1061,7 @@ struct CheckTemplate {
     is_admin: bool,
     admin: bool,
     check: Check,
+    description_html: String,
     project_name: String,
     status: &'static str,
     since: String,
@@ -1214,6 +1256,7 @@ fn empty_check_form(
         action,
         error: None,
         name: String::new(),
+        description: String::new(),
         schedule_kind: "period".into(),
         period_secs: String::new(),
         cron_expr: String::new(),
@@ -1228,6 +1271,7 @@ fn empty_check_form(
 #[derive(Debug)]
 pub(crate) struct ValidatedCheck {
     pub(crate) name: String,
+    pub(crate) description: String,
     pub(crate) kind: ScheduleKind,
     pub(crate) period_secs: Option<i64>,
     pub(crate) grace: i64,
@@ -1246,6 +1290,7 @@ pub(crate) fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String>
     if name.is_empty() {
         return Err("name is required".into());
     }
+    let description = validate_description(&form.description)?;
     let grace = crate::duration::parse_duration(&form.grace_secs)
         .ok_or("grace_secs must be a duration (e.g. 30, 5m, 1h30m)")?;
     if grace < 0 {
@@ -1280,6 +1325,7 @@ pub(crate) fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String>
     let nag_interval_secs = parse_opt_positive_duration(&form.nag_interval_secs, "nag interval")?;
     Ok(ValidatedCheck {
         name: name.to_string(),
+        description,
         kind,
         period_secs,
         grace,
@@ -1331,6 +1377,7 @@ async fn check_create_core(
             );
             t.error = Some(msg);
             t.name = form.name;
+            t.description = form.description;
             t.schedule_kind = form.schedule_kind;
             t.period_secs = form.period_secs;
             t.cron_expr = form.cron_expr;
@@ -1348,6 +1395,7 @@ async fn check_create_core(
         .create_check(&crate::store::NewCheck {
             project_id: pid,
             name: &v.name,
+            description: &v.description,
             ping_uuid: &uuid,
             kind: v.kind,
             period_secs: v.period_secs,
@@ -1492,6 +1540,7 @@ async fn render_check_page(
     let status = crate::view::display_status(&check, now).as_str();
     let since = status_since_label(&check, now);
     let schedule = schedule_label(&check);
+    let description_html = crate::markdown::render(&check.description);
 
     // Both history tables render from the same fragment templates the JS
     // partial endpoints serve, then get injected here — one source of truth for
@@ -1509,6 +1558,7 @@ async fn render_check_page(
         is_admin,
         admin,
         check,
+        description_html,
         project_name: project.name,
         status,
         since,
@@ -1836,6 +1886,7 @@ fn check_edit_form(check: Check, admin: bool, is_admin: bool, csrf: String) -> C
         action: format!("{base}/checks/{}", check.id),
         error: None,
         name: check.name,
+        description: check.description,
         schedule_kind: check.schedule_kind.as_str().into(),
         period_secs: check
             .period_secs
@@ -1894,6 +1945,7 @@ async fn check_update_core(
                 action: format!("{base}/checks/{id}"),
                 error: Some(msg),
                 name: form.name,
+                description: form.description,
                 schedule_kind: form.schedule_kind,
                 period_secs: form.period_secs,
                 cron_expr: form.cron_expr,
@@ -1912,6 +1964,7 @@ async fn check_update_core(
             id,
             &crate::store::UpdateCheck {
                 name: &v.name,
+                description: &v.description,
                 kind: v.kind,
                 period_secs: v.period_secs,
                 grace_secs: v.grace,
@@ -3320,7 +3373,7 @@ async fn admin_project_update(
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
     admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
-    let (name, scan, nag) = match validate_project(&form) {
+    let (name, description, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
             let csrf = current_csrf(&state, &jar).await;
@@ -3335,7 +3388,10 @@ async fn admin_project_update(
             return Ok(render(&t)?.into_response());
         }
     };
-    state.store.update_project(id, &name, scan, nag).await?;
+    state
+        .store
+        .update_project(id, &name, &description, scan, nag)
+        .await?;
     Ok(Redirect::to(&format!("/admin/projects/{id}")).into_response())
 }
 
@@ -3580,6 +3636,7 @@ mod tests {
             id: 1,
             project_id: 1,
             name: "c".into(),
+            description: String::new(),
             ping_uuid: "u".into(),
             schedule_kind: ScheduleKind::Period,
             period_secs: Some(3600),
@@ -3643,6 +3700,7 @@ mod tests {
     fn base_check_form() -> CheckForm {
         CheckForm {
             name: "backup".into(),
+            description: String::new(),
             schedule_kind: "period".into(),
             period_secs: "3600".into(),
             cron_expr: String::new(),
@@ -3684,6 +3742,7 @@ mod tests {
     fn base_project_form() -> ProjectForm {
         ProjectForm {
             name: "proj".into(),
+            description: String::new(),
             scan_interval_secs: String::new(),
             nag_interval_secs: String::new(),
         }
@@ -3783,14 +3842,14 @@ mod tests {
     fn validate_project_accepts_blank_and_positive() {
         assert_eq!(
             validate_project(&base_project_form()).unwrap(),
-            ("proj".to_string(), None, None)
+            ("proj".to_string(), String::new(), None, None)
         );
         let mut form = base_project_form();
         form.scan_interval_secs = "15".into();
         form.nag_interval_secs = "25".into();
         assert_eq!(
             validate_project(&form).unwrap(),
-            ("proj".to_string(), Some(15), Some(25))
+            ("proj".to_string(), String::new(), Some(15), Some(25))
         );
     }
 
@@ -3811,7 +3870,7 @@ mod tests {
         form.nag_interval_secs = "1h".into();
         assert_eq!(
             validate_project(&form).unwrap(),
-            ("proj".to_string(), Some(300), Some(3600))
+            ("proj".to_string(), String::new(), Some(300), Some(3600))
         );
     }
 
@@ -3833,7 +3892,7 @@ mod tests {
     fn validate_project_trims_the_name() {
         let mut form = base_project_form();
         form.name = "  Nightly jobs  ".into();
-        let (name, _, _) = validate_project(&form).unwrap();
+        let (name, _, _, _) = validate_project(&form).unwrap();
         assert_eq!(name, "Nightly jobs");
     }
 

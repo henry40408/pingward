@@ -143,7 +143,7 @@ async fn admin_views_other_users_project_and_audits() {
         .await
         .unwrap();
     let pid = store
-        .create_project(owner, "victim", None, None, chrono::Utc::now())
+        .create_project(owner, "victim", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     // Admin can see it via /admin, owner-scoped route would 404.
@@ -171,7 +171,7 @@ async fn admin_deletes_other_users_project_and_lands_on_admin() {
         .await
         .unwrap();
     let pid = store
-        .create_project(owner, "victim", None, None, chrono::Utc::now())
+        .create_project(owner, "victim", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     // Admin deletes the project and should land on /admin, not /admin/projects.
@@ -191,7 +191,7 @@ async fn admin_mutation_on_other_project_is_audited() {
         .await
         .unwrap();
     let pid = store
-        .create_project(owner, "p", None, None, chrono::Utc::now())
+        .create_project(owner, "p", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     let cid = store
@@ -230,7 +230,7 @@ async fn admin_mutation_on_other_project_is_audited() {
 async fn admin_keeps_nav_link_on_owner_form_validation_error() {
     let (server, store, admin_id) = admin_server().await;
     let pid = store
-        .create_project(admin_id, "p", None, None, chrono::Utc::now())
+        .create_project(admin_id, "p", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     // Invalid: blank name is allowed, but blank period_secs with schedule_kind
@@ -239,6 +239,7 @@ async fn admin_keeps_nav_link_on_owner_form_validation_error() {
         .post(&format!("/projects/{pid}/checks"))
         .form(&[
             ("name", "c"),
+            ("description", ""),
             ("schedule_kind", "period"),
             ("period_secs", ""),
             ("cron_expr", ""),

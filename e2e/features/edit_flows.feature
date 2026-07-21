@@ -47,3 +47,20 @@ Feature: Edit flows
     And a check named "backup" with period 300
     When I open the check edit form
     Then the check period field shows "5m"
+
+  Scenario: Add a description to a project
+    Given a project named "Nightly jobs"
+    When I open the project edit form
+    And I set the project description to "Backs up **critical** data nightly."
+    Then I am on the project page for "Nightly jobs"
+    And the project description shows "critical" in bold
+
+  Scenario: Add a description to a check
+    Given a project named "Nightly jobs"
+    And a check named "backup" with period 60
+    When I open the check edit form
+    And I set the check description to "Runs **nightly** backups of the primary database, verifying checksum integrity end to end so a silent failure never goes unnoticed for long."
+    Then I am on the check page
+    And the check description shows "nightly" in bold
+    When I visit the project page for "Nightly jobs"
+    Then the check row shows a truncated description

@@ -24,7 +24,7 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
 async fn server_with_project_and_check() -> (TestServer, Store, i64, i64) {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", None, None, chrono::Utc::now())
+        .create_project(uid, "web", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     let cid = store
@@ -122,6 +122,113 @@ async fn dashboard_shows_running_badge_and_count() {
         body.matches("class=\"badge running\"").count(),
         1,
         "exactly one check row should render the running badge"
+    );
+}
+
+/// Dashboard descriptions: a project's and a check's `markdown::truncate_plain`
+/// output must actually reach the rendered page, inside the `gdesc`/`cdesc`
+/// elements respectively, with markdown markers stripped (not raw) and the
+/// check's long description genuinely truncated (not the full string).
+#[tokio::test]
+async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
+    let (server, store, uid) = logged_in_server().await;
+    let pid = store
+        .create_project(
+            uid,
+            "web",
+            "**Web** services project",
+            None,
+            None,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    let long_desc = "**Nightly** backups of the primary database run every day and verify \
+        checksum integrity end to end, catching silent corruption early before it can spread \
+        further into downstream systems and backups.";
+    assert!(
+        pingward::markdown::to_plain(long_desc).chars().count() > 120,
+        "test fixture must actually be long enough to exercise truncation"
+    );
+    store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            description: long_desc,
+            ping_uuid: "cu-long-desc",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // Negative control: a second check with an EMPTY description must not
+    // render a `cdesc` element at all — proves the
+    // `{% if !c.description.is_empty() %}` guard works, and that the
+    // assertions below aren't matching something incidental.
+    store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "idle",
+            ping_uuid: "cu-empty-desc",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let res = server.get("/").await;
+    res.assert_status_ok();
+    let body = res.text();
+
+    // Project description: markers stripped, rendered inside `gdesc`.
+    assert!(
+        body.contains("class=\"gdesc\">Web services project</span>"),
+        "project description missing/not stripped in gdesc: {body}"
+    );
+    assert!(
+        !body.contains("**Web**"),
+        "raw markdown markers leaked into gdesc, truncate_plain did not run: {body}"
+    );
+
+    // Check description: truncated (ellipsis present, tail of the original
+    // string absent) and markers stripped, rendered inside `cdesc`.
+    // 120 characters of content plus the ellipsis. Asserted against a literal
+    // rather than a `truncate_plain` call, so a broken truncation cannot make
+    // this test agree with itself.
+    let expected = "Nightly backups of the primary database run every day and verify checksum integrity end to end, catching silent corrupti…";
+    assert!(
+        body.contains(&format!(
+            "class=\"cdesc\" data-testid=\"check-description-summary\">{expected}</div>"
+        )),
+        "check description missing/not truncated-and-stripped in cdesc: {body}"
+    );
+    assert_eq!(expected.chars().count(), 121);
+    assert!(
+        body.contains('…'),
+        "truncated check description must contain an ellipsis: {body}"
+    );
+    assert!(
+        !body.contains("downstream systems and backups"),
+        "the tail of the untruncated description leaked into the page: {body}"
+    );
+    assert!(
+        !body.contains("**Nightly**"),
+        "raw markdown markers leaked into cdesc, truncate_plain did not run: {body}"
+    );
+
+    // Negative control: exactly one check row (the one with a non-empty
+    // description) should render a `cdesc` element.
+    assert_eq!(
+        body.matches("data-testid=\"check-description-summary\"")
+            .count(),
+        1,
+        "the empty-description check must not render a cdesc element"
     );
 }
 

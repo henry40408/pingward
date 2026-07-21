@@ -9,6 +9,7 @@ pub mod config;
 pub mod db;
 pub mod duration;
 pub mod error;
+pub mod markdown;
 pub mod models;
 pub mod notify;
 pub mod ping;

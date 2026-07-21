@@ -99,6 +99,7 @@ async fn protected_post_with_header_token_succeeds() {
         .post("/projects")
         .form(&[
             ("name", "web"),
+            ("description", ""),
             ("scan_interval_secs", ""),
             ("nag_interval_secs", ""),
         ])
@@ -115,6 +116,7 @@ async fn protected_post_with_form_field_token_succeeds() {
         .post("/projects")
         .form(&[
             ("name", "web"),
+            ("description", ""),
             ("scan_interval_secs", ""),
             ("nag_interval_secs", ""),
             ("_csrf", tok.as_str()),
@@ -131,7 +133,7 @@ async fn multi_value_channels_form_authorizes_via_csrf_field() {
     let (server, store) = logged_in_server().await;
     let admin = store.find_user_by_username("admin").await.unwrap().unwrap();
     let pid = store
-        .create_project(admin.id, "p", None, None, chrono::Utc::now())
+        .create_project(admin.id, "p", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     let cid = store

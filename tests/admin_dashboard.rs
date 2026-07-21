@@ -28,7 +28,7 @@ async fn admin_dashboard_renders_with_figures() {
         .await
         .unwrap();
     let pid = store
-        .create_project(uid, "proj", None, None, chrono::Utc::now())
+        .create_project(uid, "proj", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     store
@@ -60,7 +60,7 @@ async fn admin_dashboard_shows_running_badge_with_count() {
         .await
         .unwrap();
     let pid = store
-        .create_project(uid, "proj", None, None, chrono::Utc::now())
+        .create_project(uid, "proj", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
     let cid = store
@@ -116,7 +116,7 @@ async fn admin_dashboard_absolute_times_wrapped_for_local_tz() {
         .await
         .unwrap();
     let pid = store
-        .create_project(uid, "p2", None, None, now)
+        .create_project(uid, "p2", "", None, None, now)
         .await
         .unwrap();
     let cid = store

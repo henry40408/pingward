@@ -11,6 +11,11 @@
         <input id="name" name="name" value="{{ name }}" data-testid="check-name-input" required>
       </div>
       <div class="field">
+        <label for="description">Description</label>
+        <textarea id="description" name="description" rows="4" data-testid="check-description-input">{{ description }}</textarea>
+        <div class="help">Optional. Supports **bold**, *italic*, `code`, [links](url) and - lists.</div>
+      </div>
+      <div class="field">
         <label for="schedule_kind">Schedule kind</label>
         <select id="schedule_kind" name="schedule_kind">
           <option value="period"{% if schedule_kind == "period" %} selected{% endif %}>period</option>

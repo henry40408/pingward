@@ -4,6 +4,7 @@
 <div class="phead">
   <div><h1>{{ project.name }}</h1></div>
 </div>
+{% if !description_html.is_empty() %}<div class="desc" data-testid="project-description">{{ description_html|safe }}</div>{% endif %}
 
 <div class="actions">
   <a class="btn" href="{{ base }}/projects/{{ project.id }}/edit">Edit</a>
@@ -26,7 +27,7 @@
     {% for c in checks %}
     <div class="check" tabindex="0" role="link" onclick="location='{{ base }}/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='{{ base }}/checks/{{ c.id }}'">
       <span class="status-dot {{ c.status }}"></span>
-      <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule }}</div></div>
+      <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule }}</div>{% if !c.description.is_empty() %}<div class="cdesc" data-testid="check-description-summary">{{ c.description }}</div>{% endif %}</div>
       <a class="rowedit" href="{{ base }}/checks/{{ c.id }}/edit" onclick="event.stopPropagation()">edit</a>
       <span class="badge {{ c.status }}">{{ c.status }}</span>
     </div>

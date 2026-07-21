@@ -14,6 +14,7 @@
   <span class="since {{ status }}">{{ since }}</span>
 </div>
 <div class="crumb tight">{{ schedule }}</div>
+{% if !description_html.is_empty() %}<div class="desc" data-testid="check-description">{{ description_html|safe }}</div>{% endif %}
 
 <div class="actions">
   <a class="btn" href="{{ base }}/checks/{{ check.id }}/edit">Edit</a>
