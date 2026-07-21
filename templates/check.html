@@ -225,7 +225,16 @@ mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
             loadPings(pingsSection.getAttribute('data-endpoint'));
           }, 500);
         };
-        // EventSource auto-reconnects on transport errors on its own; no manual retry logic needed.
+        // EventSource retries transport errors on its own, so there is no manual
+        // retry logic here — but the button must stop claiming "open" while that
+        // retry is in flight. A CLOSED stream is never coming back (the endpoint
+        // now 404s, say, because the check was deleted), so drop the toggle to
+        // off rather than showing a live tail that isn't running.
+        liveSource.onerror = function(){
+          if (liveSource !== this) return; // stale handler from a replaced stream
+          if (this.readyState === EventSource.CLOSED) stopLive();
+          else liveBtn.setAttribute('data-live', 'connecting');
+        };
       }
       liveBtn.addEventListener('click', function(){
         if (liveBtn.getAttribute('aria-pressed') === 'true') stopLive(); else startLive();
