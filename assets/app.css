@@ -897,6 +897,23 @@ nav.links a:hover {
   overflow-x: auto;
 }
 
+.card .ch .live-toggle {
+  margin-left: auto;
+}
+.live-toggle[aria-pressed="true"] {
+  background: var(--up);
+  border-color: var(--up);
+  color: var(--brand-ink);
+}
+/* Live mode is defined as "newest page, unfiltered": the pager and filter
+   form would otherwise offer interactions that silently reset on the next
+   live refresh, so hide both while live. Toggled on the card (not the
+   section) so the class survives the section's innerHTML swap. */
+.card.live-on .pager,
+.card.live-on .filters {
+  display: none;
+}
+
 /* Empty-state message inside a .list box (or standalone) — matches a card
    body's padding so the text isn't flush against the border. */
 .empty {

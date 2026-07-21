@@ -237,13 +237,21 @@ no subscribers is not treated as an error.
 `GET /checks/{id}/events` (owner-scoped) and `GET /admin/checks/{id}/events`
 (admin twin) subscribe and turn the broadcast into an SSE stream
 (`web::sse_for_check`). The payload is deliberately just the string
-`"changed"`, never ping data: the browser is expected to re-fetch the
-existing `/checks/{id}/pings` HTML fragment on receipt, so rendering,
-filtering, and authorization stay in that one already-tested code path
-instead of being duplicated over the wire. Ownership is checked (via
-`owned_check`/`admin_check`) *before* the stream is constructed, so a
-non-owner gets the usual 404 immediately rather than a stream that never
-resolves to anything.
+`"changed"`, never ping data: on receipt, the browser re-fetches the
+existing `/checks/{id}/pings` HTML fragment, so rendering, filtering, and
+authorization stay in that one already-tested code path instead of being
+duplicated over the wire. Ownership is checked (via `owned_check`/
+`admin_check`) *before* the stream is constructed, so a non-owner gets the
+usual 404 immediately rather than a stream that never resolves to anything.
+
+On the check page, this is wired up behind an opt-in LIVE toggle on the
+"Recent pings" card (`templates/check.html`) rather than an always-open
+connection: a browser caps HTTP/1.1 connections per origin at roughly six, so
+one EventSource per open check tab would starve the rest of the app. Clicking
+LIVE opens the EventSource; each `"changed"` event debounces ~500ms (coalescing
+bursts) before re-fetching the pings fragment with no query string — live mode
+is defined as "newest page, unfiltered," so the pager and filter form are
+hidden for the duration (`assets/app.css`, `.card.live-on`).
 
 A lagged subscriber (its receiver fell behind the channel's 256-slot buffer)
 is coalesced into one more `"changed"` event rather than dropped. This is a
