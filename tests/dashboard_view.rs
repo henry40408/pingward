@@ -78,8 +78,10 @@ async fn dashboard_shows_project_group_and_check_row() {
     );
 }
 
+/// A running check has no tile of its own — it counts under Up — but keeps its
+/// per-row running badge. This pins both halves of the up/running tile merge.
 #[tokio::test]
-async fn dashboard_shows_running_badge_and_count() {
+async fn dashboard_counts_running_check_under_up_and_keeps_the_row_badge() {
     let (server, store, pid, cid) = server_with_project_and_check().await;
     // Give `cid` an in-flight start (no finish) so `display_status` resolves
     // it to Running.
@@ -93,8 +95,8 @@ async fn dashboard_shows_running_badge_and_count() {
         )
         .await
         .unwrap();
-    // A second, untouched check must NOT render as running — proves the
-    // running tile/badge aren't rendered unconditionally.
+    // A second, untouched check is "new" — not up, not running — so it proves
+    // the Up tile counts the running check specifically, not every check.
     store
         .create_check(&pingward::store::NewCheck {
             project_id: pid,
@@ -112,12 +114,14 @@ async fn dashboard_shows_running_badge_and_count() {
     let res = server.get("/").await;
     res.assert_status_ok();
     let body = res.text();
+    // The running check is folded into Up (count 1), and there is no Running
+    // tile at all any more.
+    assert_tile(&body, "Up", 1);
     assert!(
-        body.contains(
-            "<div class=\"tile running\"><span class=\"edge\"></span><div class=\"n\">1</div><div class=\"l\">Running</div></div>"
-        ),
-        "running tile must show a count of 1 (not 0 or 2)"
+        !body.contains(">Running</div>"),
+        "the Running tile must be gone (running now counts under Up): {body}"
     );
+    // The per-row running indicator survives the tile merge.
     assert_eq!(
         body.matches("class=\"badge running\"").count(),
         1,
@@ -465,6 +469,237 @@ async fn dashboard_no_results_state_is_distinct_from_the_empty_state() {
         "no-results state must offer a way back: {body}"
     );
     assert_tile(&body, "Total", 0);
+}
+
+/// One project whose four checks each resolve to a different display status:
+/// `web` → Up, `job` → Running, `cron` → Late, `db` → Down. Lets a test point
+/// the status filter at any bucket and assert both what shows and what the
+/// tiles count.
+async fn server_with_mixed_statuses() -> TestServer {
+    use pingward::models::CheckStatus;
+    let (server, store, uid) = logged_in_server().await;
+    let now = chrono::Utc::now();
+    let pid = store
+        .create_project(uid, "services", "", None, None, now)
+        .await
+        .unwrap();
+    async fn mk(store: &Store, pid: i64, name: &str, uuid: &str) -> i64 {
+        store
+            .create_check(&pingward::store::NewCheck {
+                project_id: pid,
+                name,
+                ping_uuid: uuid,
+                kind: pingward::models::ScheduleKind::Period,
+                period_secs: Some(3600),
+                grace_secs: 300,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+    }
+    // Up: pinged, next run comfortably in the future (not late), not in flight.
+    let web = mk(&store, pid, "web", "cu-web").await;
+    store
+        .mark_ping(
+            web,
+            CheckStatus::Up,
+            Some(now),
+            None,
+            Some(now + chrono::Duration::seconds(3600)),
+        )
+        .await
+        .unwrap();
+    // Running: an in-flight start with no finish (last_start > last_ping).
+    let job = mk(&store, pid, "job", "cu-job").await;
+    store
+        .mark_ping(job, CheckStatus::New, None, Some(now), None)
+        .await
+        .unwrap();
+    // Late: stored Up, but `now` sits inside (expected, due] — due 100s out,
+    // 300s grace, so expected was 200s ago.
+    let cron = mk(&store, pid, "cron", "cu-cron").await;
+    store
+        .mark_ping(
+            cron,
+            CheckStatus::Up,
+            Some(now - chrono::Duration::seconds(3500)),
+            None,
+            Some(now + chrono::Duration::seconds(100)),
+        )
+        .await
+        .unwrap();
+    // Down.
+    let db = mk(&store, pid, "db", "cu-db").await;
+    store
+        .mark_ping(db, CheckStatus::Down, Some(now), None, None)
+        .await
+        .unwrap();
+    server
+}
+
+/// Whether a check row for `name` is rendered (matches the row's `nm` cell, so
+/// it can't be fooled by the name appearing in the search box or a project
+/// header).
+fn shows_check(body: &str, name: &str) -> bool {
+    body.contains(&format!("class=\"nm\">{name}</div>"))
+}
+
+#[tokio::test]
+async fn dashboard_mixed_statuses_populate_the_merged_tiles() {
+    let server = server_with_mixed_statuses().await;
+    let body = server.get("/").await.text();
+    // Up folds in the running check; late and down stand alone; no Running tile.
+    assert_tile(&body, "Total", 4);
+    assert_tile(&body, "Up", 2);
+    assert_tile(&body, "Late", 1);
+    assert_tile(&body, "Down", 1);
+    assert!(
+        !body.contains(">Running</div>"),
+        "there must be no Running tile: {body}"
+    );
+    for name in ["web", "job", "cron", "db"] {
+        assert!(
+            shows_check(&body, name),
+            "{name} row missing unfiltered: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn dashboard_status_filter_narrows_the_list_but_not_the_tiles() {
+    let server = server_with_mixed_statuses().await;
+    let body = server.get("/?status=down").await.text();
+
+    // Only the down check is listed...
+    assert!(shows_check(&body, "db"), "down check missing: {body}");
+    for name in ["web", "job", "cron"] {
+        assert!(
+            !shows_check(&body, name),
+            "{name} must be hidden by status=down: {body}"
+        );
+    }
+    // ...but the tiles still show the full breakdown, so the other buckets
+    // remain visible to switch to. This is the deliberate exception to
+    // "counters follow the filter": they follow `q`, not the status select.
+    assert_tile(&body, "Total", 4);
+    assert_tile(&body, "Up", 2);
+    assert_tile(&body, "Late", 1);
+    assert_tile(&body, "Down", 1);
+    // The select re-selects the active option, and the clear affordance shows.
+    assert!(
+        body.contains("value=\"down\" selected"),
+        "the status select must re-select the active option: {body}"
+    );
+    assert!(
+        body.contains("dashboard-filter-clear"),
+        "an active status filter must offer a way out: {body}"
+    );
+}
+
+/// The merge again, this time in the filter: `status=up` must include the
+/// in-flight running check, not just the plain-up one.
+#[tokio::test]
+async fn dashboard_status_up_filter_includes_running_checks() {
+    let server = server_with_mixed_statuses().await;
+    let body = server.get("/?status=up").await.text();
+
+    assert!(shows_check(&body, "web"), "plain-up check missing: {body}");
+    assert!(
+        shows_check(&body, "job"),
+        "running check must match status=up (up and running share a bucket): {body}"
+    );
+    for name in ["cron", "db"] {
+        assert!(
+            !shows_check(&body, name),
+            "{name} must not match status=up: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn dashboard_status_and_text_filters_combine_with_and() {
+    let server = server_with_mixed_statuses().await;
+    // `job` is up-bucket but its name doesn't contain "web"; `web` matches both.
+    let body = server.get("/?q=web&status=up").await.text();
+
+    assert!(
+        shows_check(&body, "web"),
+        "web should match q and status: {body}"
+    );
+    assert!(
+        !shows_check(&body, "job"),
+        "job is up but fails the text filter, so AND must exclude it: {body}"
+    );
+    assert!(!shows_check(&body, "db"), "db matches neither: {body}");
+}
+
+/// An unrecognised `?status=` value degrades to "no filter" — the full list,
+/// no selected option, no clear link — rather than a 400 or an empty page.
+#[tokio::test]
+async fn dashboard_unknown_status_value_is_ignored() {
+    let server = server_with_mixed_statuses().await;
+    let body = server.get("/?status=bogus").await.text();
+
+    for name in ["web", "job", "cron", "db"] {
+        assert!(shows_check(&body, name), "{name} missing: {body}");
+    }
+    assert!(
+        !body.contains("dashboard-filter-clear"),
+        "a bogus status is not an active filter: {body}"
+    );
+    // A bogus value collapses to "All": the All option is selected, and none of
+    // the real status options are.
+    assert!(
+        body.contains("value=\"\" selected"),
+        "the All option should be selected for a bogus status: {body}"
+    );
+    for v in ["up", "late", "down"] {
+        assert!(
+            !body.contains(&format!("value=\"{v}\" selected")),
+            "no real status option should be selected for a bogus status: {body}"
+        );
+    }
+}
+
+/// A status filter that matches nothing is the no-results state, not the
+/// "no projects yet" state — even though `q` is empty.
+#[tokio::test]
+async fn dashboard_status_filter_with_no_matches_shows_no_results_not_empty() {
+    let (server, store, uid) = logged_in_server().await;
+    // A single project with one never-pinged ("new") check: nothing is down.
+    let pid = store
+        .create_project(uid, "svc", "", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "fresh",
+            ping_uuid: "cu-fresh",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let body = server.get("/?status=down").await.text();
+    assert!(
+        body.contains("dashboard-no-results"),
+        "no-results state missing: {body}"
+    );
+    assert!(
+        !body.contains("dashboard-empty"),
+        "a user who owns projects must not be told they have none: {body}"
+    );
+    // The clear link must show even though only the status filter is active.
+    assert!(
+        body.contains("dashboard-filter-clear"),
+        "a status-only filter must still offer clear: {body}"
+    );
 }
 
 #[tokio::test]

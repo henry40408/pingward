@@ -149,7 +149,18 @@ When("I filter the dashboard by {string}", async ({ page, serverUrl }, term) => 
   await page.goto(`${serverUrl}/`);
   await page.getByTestId("dashboard-filter-input").fill(term);
   await page.getByTestId("dashboard-filter-submit").click();
-  await expect(page).toHaveURL(new RegExp(`\\?q=${term}$`));
+  // The form now also carries an (empty) `status`, so `q` may be followed by
+  // `&status=` rather than ending the query string.
+  await expect(page).toHaveURL(new RegExp(`\\?q=${term}(&|$)`));
+});
+
+// Pick a status from the dropdown and submit. Asserting the URL carries the
+// canonical `status=` value proves the select round-tripped through the server.
+When("I filter the dashboard by status {string}", async ({ page, serverUrl }, label) => {
+  await page.goto(`${serverUrl}/`);
+  await page.getByTestId("dashboard-status-filter").selectOption({ label });
+  await page.getByTestId("dashboard-filter-submit").click();
+  await expect(page).toHaveURL(new RegExp(`status=${label.toLowerCase()}(&|$)`));
 });
 
 When("I clear the dashboard filter", async ({ page }) => {

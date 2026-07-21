@@ -142,8 +142,9 @@ struct DashboardTemplate {
     csrf: String,
     is_admin: bool,
     total: usize,
+    /// Checks whose display status is `Up` **or** `Running` — an in-flight run
+    /// is still up, so the two share one tile rather than splitting the count.
     up: usize,
-    running: usize,
     late: usize,
     down: usize,
     groups: Vec<ProjectGroup>,
@@ -151,6 +152,10 @@ struct DashboardTemplate {
     /// means unfiltered — the template keys both the empty state and the
     /// "clear" affordance off this rather than a separate flag.
     q: String,
+    /// The active status filter as its `?status=` value (`up`/`late`/`down`),
+    /// or empty for "all". Drives the `<select>`'s selected option and, with
+    /// `q`, whether the "clear" affordance and no-results state show.
+    status: String,
 }
 
 /// Query params for the dashboard filter. Absent, blank, or whitespace-only
@@ -159,6 +164,54 @@ struct DashboardTemplate {
 struct DashboardQuery {
     #[serde(default)]
     q: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+/// The dashboard's status filter. Deliberately narrower than [`DisplayStatus`]:
+/// it mirrors the summary tiles (`up`/`late`/`down`), and `Up` folds in
+/// `Running` the same way the Up tile does. `Paused`/`New` checks have no tile
+/// and no filter entry — they show only in the unfiltered list.
+#[derive(Clone, Copy)]
+enum StatusFilter {
+    Up,
+    Late,
+    Down,
+}
+
+impl StatusFilter {
+    /// Parse the `?status=` value. Anything outside `up`/`late`/`down` —
+    /// including `all`, empty, or garbage — is "no filter" (`None`), so a bad
+    /// value degrades to the full list rather than a 400 or an empty page.
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "up" => Some(Self::Up),
+            "late" => Some(Self::Late),
+            "down" => Some(Self::Down),
+            _ => None,
+        }
+    }
+
+    /// The canonical `?status=` value, echoed back so the `<select>` re-selects
+    /// the active option.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Late => "late",
+            Self::Down => "down",
+        }
+    }
+
+    /// Does a check's display status fall in this bucket? `Up` matches an
+    /// in-flight `Running` check too, matching the merged Up tile.
+    fn matches(self, ds: crate::view::DisplayStatus) -> bool {
+        use crate::view::DisplayStatus;
+        match self {
+            Self::Up => matches!(ds, DisplayStatus::Up | DisplayStatus::Running),
+            Self::Late => matches!(ds, DisplayStatus::Late),
+            Self::Down => matches!(ds, DisplayStatus::Down),
+        }
+    }
 }
 
 /// Case-insensitive substring test backing the dashboard filter.
@@ -341,7 +394,12 @@ async fn dashboard(
     let now = Utc::now();
     let q = query.q.unwrap_or_default().trim().to_string();
     let needle = q.to_lowercase();
-    let (mut total, mut up, mut running, mut late, mut down) = (0usize, 0, 0, 0, 0);
+    let status_raw = query.status.unwrap_or_default();
+    let status_filter = StatusFilter::parse(&status_raw);
+    // Echo back only a recognised value, so a garbage `?status=` neither
+    // pre-selects a bogus option nor lights up the "clear" affordance.
+    let status = status_filter.map_or("", StatusFilter::as_str).to_string();
+    let (mut total, mut up, mut late, mut down) = (0usize, 0, 0, 0);
     let mut groups = Vec::new();
     // Gather every project's checks first, then fetch all their recent pings in
     // one batched query (avoids an N+1 of one `list_recent_pings` per check).
@@ -380,13 +438,22 @@ async fn dashboard(
         let mut rows = Vec::with_capacity(checks.len());
         for c in &checks {
             let ds = crate::view::display_status(c, now);
+            // Tiles count the whole `q`-filtered set, independent of the status
+            // selection — otherwise picking "Down" would zero the other tiles
+            // and there would be nothing left to switch back to. An in-flight
+            // `Running` check counts as up (one merged tile).
             total += 1;
             match ds {
-                crate::view::DisplayStatus::Up => up += 1,
-                crate::view::DisplayStatus::Running => running += 1,
+                crate::view::DisplayStatus::Up | crate::view::DisplayStatus::Running => up += 1,
                 crate::view::DisplayStatus::Late => late += 1,
                 crate::view::DisplayStatus::Down => down += 1,
                 _ => {}
+            }
+            // The status filter narrows the rendered list only, after counting.
+            if let Some(sf) = status_filter
+                && !sf.matches(ds)
+            {
+                continue;
             }
             let empty = Vec::new();
             let pings = pings_by_check.get(&c.id).unwrap_or(&empty);
@@ -408,11 +475,17 @@ async fn dashboard(
                 description: crate::markdown::truncate_plain(&c.description, 120),
             });
         }
+        // Under a status filter, a project whose checks are all filtered out is
+        // dropped entirely rather than rendering a header above an empty list.
+        // Its checks still counted toward the tiles above.
+        if status_filter.is_some() && rows.is_empty() {
+            continue;
+        }
         groups.push(ProjectGroup {
             id: project.id,
             description: crate::markdown::truncate_plain(&project.description, 120),
             name: project.name,
-            count: checks.len(),
+            count: rows.len(),
             checks: rows,
         });
     }
@@ -422,11 +495,11 @@ async fn dashboard(
         is_admin: user.is_admin,
         total,
         up,
-        running,
         late,
         down,
         groups,
         q,
+        status,
     })?
     .into_response())
 }
