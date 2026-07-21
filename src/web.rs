@@ -811,12 +811,12 @@ async fn render_project_page(
     let checks = store
         .list_checks_for_project(project.id)
         .await?
-        .iter()
+        .into_iter()
         .map(|c| ProjectCheckRow {
             id: c.id,
-            name: c.name.clone(),
-            status: crate::view::display_status(c, now).as_str(),
-            schedule: schedule_label(c),
+            status: crate::view::display_status(&c, now).as_str(),
+            schedule: schedule_label(&c),
+            name: c.name,
         })
         .collect();
     let channels = store.list_channels_for_project(project.id).await?;
