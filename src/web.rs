@@ -68,9 +68,8 @@ pub fn routes() -> Router<AppState> {
         .route("/sessions", get(redirect_to_account))
         .route("/settings", get(redirect_to_admin))
         .route("/users", get(redirect_to_admin))
-        // --- admin cross-user route group (each handler guarded by AdminUser,
-        // except the legacy-redirect handlers above/below, which expose no
-        // data and mirror `redirect_to_account`) ---
+        // --- admin cross-user route group (every handler guarded by
+        // AdminUser, no exceptions) ---
         .route("/admin", get(admin_page))
         .route("/admin/settings", post(settings_save))
         .route("/admin/users", post(users_create))
@@ -78,7 +77,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/users/{id}/password", post(users_set_password))
         .route("/admin/users/{id}/admin", post(users_toggle_admin))
         .route("/admin/users/{id}/disabled", post(users_set_disabled))
-        .route("/admin/projects", get(redirect_to_admin))
+        .route("/admin/projects", get(admin_projects_redirect))
         .route(
             "/admin/projects/{id}",
             get(admin_project_show).post(admin_project_update),
@@ -2357,10 +2356,18 @@ async fn admin_page(
     Ok((jar, resp).into_response())
 }
 
-/// Redirects the legacy `/settings`, `/users` and `/admin/projects` paths to
-/// the merged `/admin` page, so existing bookmarks/links still land somewhere.
-/// Unguarded like `redirect_to_account` — it exposes no data, only a redirect.
+/// Redirects the legacy `/settings` and `/users` paths to the merged `/admin`
+/// page, so existing bookmarks/links still land somewhere. Unguarded like
+/// `redirect_to_account` — it exposes no data, only a redirect.
 async fn redirect_to_admin() -> Redirect {
+    Redirect::to("/admin")
+}
+
+/// Legacy path, kept so existing bookmarks/links still land somewhere.
+/// Guarded like every other `/admin*` route so the "no `/admin` route is
+/// reachable by a non-admin" invariant holds without exceptions —
+/// `tests/admin.rs` asserts exactly that.
+async fn admin_projects_redirect(AdminUser(_): AdminUser) -> Redirect {
     Redirect::to("/admin")
 }
 
