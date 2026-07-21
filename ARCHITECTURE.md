@@ -1,0 +1,239 @@
+# Architecture
+
+This is the code map for contributors. It assumes you've read
+[README.md](README.md) for install/config/API usage — this document does not
+repeat that, it explains how the pieces fit together.
+
+## Overview
+
+pingward is a single `axum` process. It serves a server-rendered browser UI
+(Askama templates, compiled into the binary), a set of machine `/ping/*`
+endpoints that jobs call to report in, and a bearer-authenticated REST API
+under `/api/v1` with an OpenAPI document and a Scalar reference UI. All three
+surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
+`sqlx::AnyPool` that talks to either SQLite or Postgres.
+
+## Repository layout
+
+| Path                  | Contents                                                          |
+| ---------------------- | ------------------------------------------------------------------ |
+| `src/`                 | The application: router composition, handlers, domain logic       |
+| `src/api/`             | The `/api/v1` REST surface (DTOs, input parsing, extractors, v1 handlers) |
+| `templates/`           | Askama HTML templates, compiled into the binary at build time     |
+| `assets/`              | Static CSS and embedded fonts, served by `src/assets.rs`          |
+| `migrations/sqlite/`   | SQLite schema migrations                                          |
+| `migrations/postgres/` | The same migrations, hand-duplicated for Postgres syntax          |
+| `tests/`                | Rust integration tests (one file per feature area), run with `cargo nextest run` |
+| `e2e/`                 | Playwright + playwright-bdd browser tests (`.feature` + `.steps.js`) |
+
+## Module map
+
+- `src/lib.rs` — declares the crate's modules and `app()`, which composes the
+  final `Router`.
+- `src/main.rs` — the binary entry point: reads `Config`, sets up tracing,
+  connects/migrates the database, spawns the two background loops, and
+  starts `axum::serve`.
+- `src/web.rs` — the browser-facing UI: `routes()`, every page/form handler,
+  the `csrf_guard` middleware, and owner/admin scoping helpers
+  (`owned_project`, `owned_check`, `admin_project`, `admin_check`).
+- `src/ping.rs` — the machine `/ping/{uuid}[...]` endpoints (success, fail,
+  start, log, exit-code) that jobs call to report in.
+- `src/api/` — the REST API surface:
+  - `mod.rs` — router (`routes()`) and the `OpenApi`/Scalar docs handlers.
+  - `v1.rs` — the actual `/api/v1` handlers.
+  - `dto.rs` — response shapes (`utoipa::ToSchema`).
+  - `input.rs` — request bodies for create/update endpoints.
+  - `extract.rs` — the `ApiUser` bearer-auth extractor.
+  - `error.rs` — the API's JSON error type.
+- `src/auth.rs` — session cookie constants, argon2 password hashing,
+  forward-auth header resolution, client-IP resolution, and the
+  `CurrentUser`/`OptionalUser`/`AdminUser` request extractors.
+- `src/apikey.rs` — API key generation (`pw_...`) and SHA-256 hashing for the
+  REST API's bearer tokens.
+- `src/state.rs` — `AppState { store, config }`, `Clone` + `FromRef` so
+  handlers can extract either piece independently.
+- `src/store.rs` — `Store`, the single data-access layer; every query in the
+  app goes through it.
+- `src/db.rs` — `connect()` (builds the `AnyPool`, applies SQLite pragmas per
+  connection) and `migrate()` (picks the migration directory by URL scheme).
+- `src/models.rs` — domain structs (`Check`, `User`, `Project`, `Channel`,
+  ...) and the `str_enum!`-generated string-backed enums
+  (`CheckStatus`, `PingKind`, `ScheduleKind`, `ChannelKind`, `NotifyStatus`).
+- `src/scheduler.rs` — `due_time`/`overrun_time` computation, `scan_once`
+  (marks overdue/overrun checks down and emits events), `nag_once` (repeat
+  reminders), and `run_scan_loop`, the background task `main.rs` spawns.
+- `src/prune.rs` — `prune_once` (deletes old pings/notifications per
+  retention setting, plus expired sessions) and `run_prune_loop`.
+- `src/notify.rs` — the `Notifier` trait, its six implementations (webhook,
+  Telegram, Slack, ntfy, Pushover, email/SMTP), `notifier_for` (builds one
+  from a stored `Channel`), and `deliver_event` (fans an event out to a
+  check's bound channels under a `RetryPolicy`).
+- `src/config.rs` — `Config` (parsed once from env via `Config::from_env`,
+  testable through `Config::from_map`), `SmtpConfig`, and the
+  `effective_scan_interval`/`effective_nag_interval` cascade resolvers.
+- `src/duration.rs` — `parse_duration`/`fmt_duration`, the human-readable
+  (`5m`, `1h30m`, `2d`) duration parser/formatter used by form fields and
+  duration env vars.
+- `src/view.rs` — presentation helpers shared by templates, including the
+  lossy `fmt_secs` display formatter (distinct from `duration::fmt_duration`,
+  which round-trips).
+- `src/assets.rs` — serves `assets/app.css` and the embedded webfonts.
+- `src/error.rs` — `AppError`, the app-wide error type implementing
+  `IntoResponse`.
+
+## Request lifecycle / router composition
+
+`lib.rs::app()` builds one `Router` by merging four sibling routers, then
+attaches `AppState`:
+
+```rust
+Router::new()
+    .route("/healthz", get(|| async { "ok" }))
+    .merge(web::routes().layer(csrf_guard middleware))
+    .merge(ping::routes())
+    .merge(api::routes())
+    .merge(assets::routes())
+    .with_state(state)
+```
+
+Only `web::routes()` is wrapped in `web::csrf_guard`. Because the other
+routers are merged as *siblings* rather than nested under it, `/ping/*`
+(machine endpoints, no session), `/api/v1/*` (bearer-authenticated, never
+reads the session cookie), and the static asset/`/healthz` routes are
+**structurally** exempt from CSRF — there's no way for a change inside
+`web::routes()` to accidentally start covering them. `csrf_guard` itself
+lets safe methods (GET/HEAD/OPTIONS) and the pre-session `/login`/`/setup`
+paths through, and otherwise requires a per-session synchronizer token sent
+as `X-CSRF-Token` (or hidden form field) matching the one stored on the
+session.
+
+`/api/v1` data endpoints authenticate independently via the `ApiUser` bearer
+extractor; `/api/docs` and `/api/openapi.json` additionally accept a logged-in
+web session (`CurrentUser`) but are read-only `GET`s, so they add no
+CSRF-relevant ambient authority.
+
+## Persistence
+
+One `sqlx::AnyPool` (`src/db.rs::connect`) dispatches to SQLite or Postgres
+based on the `DATABASE_URL` scheme. Every query in the app goes through
+`Store` (`src/store.rs`) — there's no direct `sqlx` access from handlers.
+
+Because the `Any` driver does **not** translate `?` placeholders, every query
+must use `$N` placeholders and `RETURNING id` (not `?` + `last_insert_id`).
+This applies uniformly across both backends when going through `Any`.
+
+Migrations live in `migrations/sqlite/` and `migrations/postgres/` and are
+**hand-duplicated** — `db::migrate` just picks the directory matching the
+URL scheme and runs it with `sqlx::migrate::Migrator`. A schema change means
+writing the SQL twice, once per dialect.
+
+`db::connect` applies SQLite-only pragmas per new connection: `foreign_keys`
+(so `ON DELETE CASCADE` is enforced — Postgres does this natively), a
+`busy_timeout` of 5s, and, for on-disk (non-`:memory:`) databases, WAL
+journaling with `synchronous = NORMAL`. In-memory SQLite is capped to a
+single pool connection since `:memory:` is scoped to one physical connection.
+
+## Auth & authorization
+
+Sessions are a `pingward_session` cookie plus an argon2 password hash
+(`src/auth.rs`). An optional trusted forward-auth header
+(`PINGWARD_FORWARD_AUTH_HEADER` + `PINGWARD_TRUSTED_PROXIES`) can
+auto-provision a passwordless, non-admin user on first sight, but only when
+the request's peer IP is a configured trusted proxy.
+
+Three request extractors resolve the caller:
+
+- `CurrentUser` — 401/redirects to `/login` if no session/forward-auth user.
+- `OptionalUser` — same resolution, but yields `None` instead of redirecting
+  (used where a handler needs to branch on "no user" itself).
+- `AdminUser` — wraps `CurrentUser`, additionally requiring `is_admin`;
+  otherwise 403s.
+
+Owner scoping for the per-user browser routes goes through `owned_project`
+and `owned_check` in `web.rs`, which return `AppError::NotFound` (**404, not
+403**) when the resource belongs to a different user — this hides whether
+the resource exists at all from a caller who doesn't own it.
+
+`/admin*` routes have **no router-level guard layer** — every entry
+registered in `web::routes()` is individually guarded by extracting
+`AdminUser` as one of its parameters (before `Form`/`HtmlForm`, so the guard
+rejects before the request body is even parsed), with **no exceptions**.
+That makes it possible, in principle, for a newly added `/admin` route to
+forget the guard. `tests/admin.rs::non_admin_forbidden_on_every_admin_route`
+closes that gap by parsing `web::routes()`'s own source at test time to
+derive the exact list of `/admin*` (method, path) pairs it registers, then
+asserting every one of them returns 403 for a signed-in non-admin — so a
+`/admin` route that forgets its `AdminUser` guard fails the suite, with no
+table to silence it.
+
+## Background loops
+
+`main.rs` spawns two `tokio` tasks against the shared `Store`:
+
+- `scheduler::run_scan_loop` — every `PINGWARD_SCAN_INTERVAL` (default 30s),
+  scans active checks, transitions any overdue-or-overrun check to `down`,
+  and fans out `NotificationEvent`s via `notify::deliver_event`.
+- `prune::run_prune_loop` — every `PINGWARD_PRUNE_INTERVAL_SECS` (default
+  1h), deletes pings/notifications past their retention window and any
+  already-expired session rows.
+
+Scan and nag (repeat-reminder) intervals resolve through a
+check → project → global-setting → env-default cascade
+(`config::effective_scan_interval` / `effective_nag_interval`): the most
+specific non-positive-or-unset level falls through to the next. Nag has no
+env default — it's off unless a level opts in.
+
+## Notifications
+
+`notify::Notifier` is a trait with six implementations: webhook, Telegram,
+Slack, ntfy, Pushover, and email (SMTP). `notifier_for` builds the right one
+from a stored `Channel`'s `kind` and `config_json`, logging and returning
+`None` on invalid/missing config rather than failing the caller.
+`deliver_event` resolves a check's bound channels and retries each delivery
+under a `RetryPolicy` (3 attempts, exponential backoff from 500ms by
+default). Delivery is fire-and-forget: `run_scan_loop` calls it inside
+`tokio::spawn`, so a slow or failing notification never blocks the scan loop
+or a ping response.
+
+## Templates & assets
+
+Askama compiles `templates/*.html` into the binary at build time — **`cargo
+build` is required after any template or route change** for the change to
+take effect, including in the E2E harness (its `global-setup.js` only
+rebuilds if `target/debug/pingward` doesn't already exist). Interactive
+elements carry `data-testid` attributes, which both the Rust integration
+tests and the Playwright E2E steps select on.
+
+## Testing
+
+Rust integration tests live in `tests/`, one file per feature area (e.g.
+`admin.rs`, `csrf.rs`, `ping_api.rs`, `scheduler.rs`). Run them with `cargo
+nextest run` — **not** `cargo test`, which the CI pipeline doesn't use either.
+SQLite-backed tests run unconditionally against an in-memory database.
+`tests/pg_store.rs` silently skips unless `TEST_DATABASE_URL=postgres://...`
+is set, and `tests/smtp_e2e.rs` skips unless `PINGWARD_TEST_SMTP_HOST` is
+set (with `PINGWARD_TEST_SMTP_PORT` and `PINGWARD_TEST_MAILPIT_API` for a
+local mailpit relay). `docker compose up -d` starts both backends.
+
+`e2e/` is a Playwright + playwright-bdd harness: `.feature` files paired
+with `.steps.js` step definitions, run via `cd e2e && npm test` (which runs
+`bddgen` to generate specs, then `playwright test`). A `global-setup`
+ensures the binary is built; each scenario then spawns its own fresh
+`pingward` binary against a temporary SQLite database on a random port, so
+scenarios don't share state.
+
+## How to make common changes
+
+- **Add a DB column/table**: write the migration SQL in **both**
+  `migrations/sqlite/` and `migrations/postgres/`, then add the field to the
+  relevant struct in `models.rs` and thread it through the matching
+  `Store` methods (using `$N` placeholders, not `?`).
+- **Add an enum variant**: extend the corresponding `str_enum!` invocation
+  in `models.rs` — it generates `as_str()` and `FromStr` for you.
+- **Add a notifier**: implement `Notifier` in `notify.rs`, add a
+  `ChannelKind` variant in `models.rs`, and wire it into `notifier_for`.
+- **Add a route**: register it in the appropriate `routes()`
+  (`web::routes()`, `ping::routes()`, or `api::routes()`). If it's under
+  `/admin*`, extract `AdminUser` in the handler (before any `Form`/`HtmlForm`
+  extractor) — `tests/admin.rs::non_admin_forbidden_on_every_admin_route`
+  picks the route up automatically and will fail if the guard is missing.

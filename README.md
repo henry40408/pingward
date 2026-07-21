@@ -130,6 +130,9 @@ require a logged-in session).
 
 ## Development
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the code map and how the pieces
+fit together.
+
 ```sh
 cargo build                       # required after any template or route change
 cargo run                         # start the server
