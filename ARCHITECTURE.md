@@ -166,6 +166,16 @@ asserting every one of them returns 403 for a signed-in non-admin — so a
 `/admin` route that forgets its `AdminUser` guard fails the suite, with no
 table to silence it.
 
+`/api/v1` has the identical shape: `api::routes()` has **no router-level
+auth layer** either — every handler individually extracts `ApiUser`, the
+bearer-token extractor (`src/api/extract.rs`).
+`tests/api_v1.rs::every_api_v1_route_requires_a_bearer_key` enforces the
+invariant the same source-parsing way, reusing
+`tests/common::routes_in_router_source` against `src/api/mod.rs` instead of
+`src/web.rs`. `/api/openapi.json` and `/api/docs` are session-gated
+(`CurrentUser`) rather than bearer-gated and so sit outside this invariant —
+the `/api/v1` prefix filter excludes them automatically.
+
 ## Background loops
 
 `main.rs` spawns two `tokio` tasks against the shared `Store`:
@@ -236,4 +246,8 @@ scenarios don't share state.
   (`web::routes()`, `ping::routes()`, or `api::routes()`). If it's under
   `/admin*`, extract `AdminUser` in the handler (before any `Form`/`HtmlForm`
   extractor) — `tests/admin.rs::non_admin_forbidden_on_every_admin_route`
-  picks the route up automatically and will fail if the guard is missing.
+  picks the route up automatically and will fail if the guard is missing. If
+  it's under `/api/v1`, extract `ApiUser` in the handler (before any body
+  extractor, e.g. `ApiJson`) —
+  `tests/api_v1.rs::every_api_v1_route_requires_a_bearer_key` picks it up
+  the same way.

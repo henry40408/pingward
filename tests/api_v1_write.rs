@@ -420,13 +420,3 @@ async fn malformed_json_body_is_a_400_envelope() {
     res.assert_status(StatusCode::BAD_REQUEST);
     assert_eq!(res.json::<Value>()["error"]["code"], "bad_request");
 }
-
-#[tokio::test]
-async fn writes_require_a_bearer_key() {
-    let (server, _store) = test_app().await;
-    server
-        .post("/api/v1/projects")
-        .json(&json!({ "name": "x" }))
-        .await
-        .assert_status(StatusCode::UNAUTHORIZED);
-}
