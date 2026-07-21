@@ -1,3 +1,12 @@
+/// mimalloc as the global allocator. pingward is a long-lived, multi-threaded
+/// tokio server (HTTP handlers plus two background loops), the allocation
+/// pattern the system allocator handles worst; mimalloc typically lowers RSS
+/// and tail latency for that shape. Installed on the binary only (not
+/// `src/lib.rs`), so the test/bench harness keeps the system allocator unless a
+/// target opts in.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use pingward::{
     config::{Config, LogFormat},
     db, scheduler,
