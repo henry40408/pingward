@@ -86,13 +86,14 @@ async fn non_admin_forbidden_on_every_admin_route() {
         routes.len()
     );
 
-    for (method, path) in &routes {
+    for (method, raw_path) in &routes {
+        let path = common::normalise_route_path(raw_path);
         let status = match *method {
-            "GET" => server.get(path).await.status_code(),
+            "GET" => server.get(&path).await.status_code(),
             // `AdminUser` is extracted before `Form`/`HtmlForm` in every
             // handler, so the guard rejects before the body is parsed — an
             // empty form is fine here.
-            "POST" => server.post(path).form(&[("_", "")]).await.status_code(),
+            "POST" => server.post(&path).form(&[("_", "")]).await.status_code(),
             other => panic!("unsupported method {other} for route {path}"),
         };
         assert_eq!(

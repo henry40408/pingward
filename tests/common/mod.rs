@@ -11,6 +11,11 @@
 /// the only way to recover the list without hand-maintaining a copy of it.
 /// Plain `str` methods only — no regex crate.
 ///
+/// Paths are returned **raw** (`{param}` segments intact, not normalised) —
+/// callers that just want to request the path as-is should run it through
+/// [`normalise_route_path`] themselves; callers that need to know which
+/// segment carries an id (e.g. to substitute a real one) need the raw form.
+///
 /// `source` is the file text; callers pass `include_str!(...)` at the call
 /// site so the path resolves relative to the calling file. `prefix` selects
 /// which registered paths to keep (e.g. `"/admin"`, `"/api/v1"`).
@@ -46,7 +51,7 @@ pub fn routes_in_router_source(source: &str, prefix: &str) -> Vec<(&'static str,
         if !raw_path.starts_with(prefix) {
             continue;
         }
-        let path = normalise_route_path(raw_path);
+        let path = raw_path.to_string();
         let mut methods = 0;
         if entry.contains("get(") {
             out.push(("GET", path.clone()));
@@ -78,9 +83,54 @@ pub fn routes_in_router_source(source: &str, prefix: &str) -> Vec<(&'static str,
     out
 }
 
+/// Substitutes a raw route's first `{param}` segment with the id of the
+/// resource type named by the path segment immediately before it —
+/// `.../projects/{id}...` gets `project_id`, `.../checks/{id}...` gets
+/// `check_id`, `.../channels/{id}...` gets `channel_id`. Panics on an
+/// unrecognised resource segment so a future route with a new resource type
+/// fails loudly instead of being silently mis-targeted. Shared by the
+/// `/api/v1` and web-surface ownership-scoping tests, which both route ids
+/// through the same three resource types.
+///
+/// `#[allow(dead_code)]`: each `tests/*.rs` binary compiles its own copy of
+/// this module, so rustc only sees the calls made from *that* binary — not
+/// every function in `tests/common/` is used by every consumer (e.g.
+/// `tests/admin.rs` has no cross-user id substitution to do), which would
+/// otherwise be flagged as dead code in the binaries that don't call it.
+#[allow(dead_code)]
+pub fn substitute_owner_id(
+    raw_path: &str,
+    project_id: i64,
+    check_id: i64,
+    channel_id: i64,
+) -> String {
+    let start = raw_path
+        .find('{')
+        .unwrap_or_else(|| panic!("route `{raw_path}` has no `{{param}}` segment to substitute"));
+    let end = raw_path[start..].find('}').map_or_else(
+        || panic!("route `{raw_path}` has an unterminated `{{param}}` segment"),
+        |rel| start + rel + 1,
+    );
+    let segment = raw_path[..start].trim_end_matches('/').rsplit('/').next();
+    let id = match segment {
+        Some("projects") => project_id,
+        Some("checks") => check_id,
+        Some("channels") => channel_id,
+        other => panic!(
+            "route `{raw_path}`: unrecognised resource segment {other:?} before its path \
+             parameter — add a case to `substitute_owner_id` for this resource type"
+        ),
+    };
+    format!("{}{}{}", &raw_path[..start], id, &raw_path[end..])
+}
+
 /// Replaces every `{param}` path segment with `1` so the parsed path can be
 /// requested as-is.
-fn normalise_route_path(raw: &str) -> String {
+///
+/// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — not every
+/// `tests/*.rs` binary that pulls in this module calls every function in it.
+#[allow(dead_code)]
+pub fn normalise_route_path(raw: &str) -> String {
     let mut out = String::new();
     let mut in_param = false;
     for c in raw.chars() {
