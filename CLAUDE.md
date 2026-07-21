@@ -50,10 +50,21 @@ one `AppState`:
   are **structurally exempt from CSRF** (public, unauthenticated).
 - `assets::routes()` + `/healthz`.
 
-**Background loops** (`src/main.rs` spawns two tokio tasks):
+**Background loops** (`src/main.rs` spawns two tokio tasks, after building
+`AppState` so both loops and the HTTP server share `state.events`):
 - `scheduler::run_scan_loop` — periodically re-evaluates every check's
   `due_time`, transitions overdue checks to down, and fires notifications.
 - `prune::run_prune_loop` — deletes old pings/notifications and expired sessions.
+
+**Live-tail signal bus**: `AppState::events` (`broadcast::Sender<i64>`) carries
+a `check_id` whenever that check changes — published by `ping::apply` (every
+ping kind, even `Log`/paused checks) and `scheduler::run_scan_loop` (each
+`Down` transition), both gated on `receiver_count() > 0` so it's free when
+unwatched. `GET /checks/{id}/events` / `/admin/checks/{id}/events`
+(`web::sse_for_check`) turn it into an SSE stream carrying no data — the
+browser is expected to re-fetch the existing `/checks/{id}/pings` fragment on
+each `"changed"` event, keeping rendering/auth in one place. In-process only:
+not shared across replicas (see ARCHITECTURE.md).
 
 **Persistence** (`src/db.rs`, `src/store.rs`): one sqlx `AnyPool` that dispatches
 to **SQLite or Postgres by URL scheme**. All queries go through `Store` and must

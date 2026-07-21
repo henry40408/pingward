@@ -16,6 +16,7 @@ use chrono::Utc;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::broadcast;
 
 const MAX_BODY: usize = 10 * 1024;
 
@@ -76,6 +77,7 @@ async fn resolve(store: &Store, uuid: &str) -> Result<crate::models::Check, AppE
 async fn success(
     State(store): State<Store>,
     State(config): State<Arc<Config>>,
+    State(events): State<broadcast::Sender<i64>>,
     Path(uuid): Path<String>,
     conn: ClientIp,
     body: Bytes,
@@ -88,12 +90,14 @@ async fn success(
         &body,
         conn,
         config.smtp.clone(),
+        &events,
     )
     .await
 }
 async fn fail(
     State(store): State<Store>,
     State(config): State<Arc<Config>>,
+    State(events): State<broadcast::Sender<i64>>,
     Path(uuid): Path<String>,
     conn: ClientIp,
     body: Bytes,
@@ -106,12 +110,14 @@ async fn fail(
         &body,
         conn,
         config.smtp.clone(),
+        &events,
     )
     .await
 }
 async fn start(
     State(store): State<Store>,
     State(config): State<Arc<Config>>,
+    State(events): State<broadcast::Sender<i64>>,
     Path(uuid): Path<String>,
     conn: ClientIp,
     body: Bytes,
@@ -124,12 +130,14 @@ async fn start(
         &body,
         conn,
         config.smtp.clone(),
+        &events,
     )
     .await
 }
 async fn log(
     State(store): State<Store>,
     State(config): State<Arc<Config>>,
+    State(events): State<broadcast::Sender<i64>>,
     Path(uuid): Path<String>,
     conn: ClientIp,
     body: Bytes,
@@ -142,12 +150,14 @@ async fn log(
         &body,
         conn,
         config.smtp.clone(),
+        &events,
     )
     .await
 }
 async fn exitcode(
     State(store): State<Store>,
     State(config): State<Arc<Config>>,
+    State(events): State<broadcast::Sender<i64>>,
     Path((uuid, code)): Path<(String, i64)>,
     conn: ClientIp,
     body: Bytes,
@@ -165,10 +175,15 @@ async fn exitcode(
         &body,
         conn,
         config.smtp.clone(),
+        &events,
     )
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each param is a distinct piece of per-request context; a struct would just move the noise"
+)]
 async fn apply(
     store: &Store,
     uuid: &str,
@@ -177,6 +192,7 @@ async fn apply(
     body: &Bytes,
     conn: ClientIp,
     smtp: Option<SmtpConfig>,
+    events: &broadcast::Sender<i64>,
 ) -> Result<StatusCode, AppError> {
     let check = resolve(store, uuid).await?;
     let now = Utc::now();
@@ -191,6 +207,13 @@ async fn apply(
             now,
         )
         .await?;
+
+    // Signal the check page's live tail. Gated on receiver_count so a ping
+    // costs nothing when nobody is watching. A send error just means no
+    // subscribers, which is not an error condition here.
+    if events.receiver_count() > 0 {
+        let _ = events.send(check.id);
+    }
 
     // Spec §6: a paused check is excluded from monitoring. Its ping is
     // still recorded above, but it must not be resurrected into up/down by

@@ -6,6 +6,7 @@ use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 use cron::Schedule;
 use std::str::FromStr;
+use tokio::sync::broadcast;
 use tokio::time::{Duration as TokioDuration, sleep};
 
 /// Anchor for the next expected check-in: last successful ping, else creation.
@@ -161,11 +162,26 @@ fn loop_interval_secs(
 /// resolves the cascade sleep interval, scans for overdue checks, and delivers
 /// each resulting `Down` event to that check's bound channels. `Utc::now()` is
 /// called only here so `scan_once` stays deterministic.
-pub async fn run_scan_loop(store: Store, env_default_secs: u64, smtp: Option<SmtpConfig>) {
+///
+/// `live_tx` is the live-tail signal bus (see `state::AppState::events`): each
+/// transition produced by `scan_once` also publishes its `check_id` there, so
+/// a check-detail page open on an overdue check refreshes without a manual
+/// reload.
+pub async fn run_scan_loop(
+    store: Store,
+    env_default_secs: u64,
+    smtp: Option<SmtpConfig>,
+    live_tx: broadcast::Sender<i64>,
+) {
     loop {
         let now = Utc::now();
         match scan_once(&store, now).await {
             Ok(events) => {
+                for ev in &events {
+                    if live_tx.receiver_count() > 0 {
+                        let _ = live_tx.send(ev.check_id);
+                    }
+                }
                 for ev in events {
                     let store = store.clone();
                     let smtp = smtp.clone();
