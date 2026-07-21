@@ -9,24 +9,31 @@
   <label class="fld">Filter
     <input type="search" name="q" value="{{ q }}" placeholder="project or check name / description" data-testid="dashboard-filter-input">
   </label>
+  <label class="fld">Status
+    <select name="status" data-testid="dashboard-status-filter">
+      <option value=""{% if status.is_empty() %} selected{% endif %}>All</option>
+      <option value="up"{% if status == "up" %} selected{% endif %}>Up</option>
+      <option value="late"{% if status == "late" %} selected{% endif %}>Late</option>
+      <option value="down"{% if status == "down" %} selected{% endif %}>Down</option>
+    </select>
+  </label>
   <button class="btn" type="submit" data-testid="dashboard-filter-submit">Filter</button>
-  {% if !q.is_empty() %}<a class="btn" href="/" data-testid="dashboard-filter-clear">Clear</a>{% endif %}
+  {% if !q.is_empty() || !status.is_empty() %}<a class="btn" href="/" data-testid="dashboard-filter-clear">Clear</a>{% endif %}
 </form>
 
 <div class="tiles">
   <div class="tile total"><span class="edge"></span><div class="n">{{ total }}</div><div class="l">Total</div></div>
   <div class="tile up"><span class="edge"></span><div class="n">{{ up }}</div><div class="l">Up</div></div>
-  <div class="tile running"><span class="edge"></span><div class="n">{{ running }}</div><div class="l">Running</div></div>
   <div class="tile late"><span class="edge"></span><div class="n">{{ late }}</div><div class="l">Late</div></div>
   <div class="tile down"><span class="edge"></span><div class="n">{{ down }}</div><div class="l">Down</div></div>
 </div>
 
 {% if groups.is_empty() %}
 <div class="list">
-  {% if q.is_empty() %}
+  {% if q.is_empty() && status.is_empty() %}
   <p class="empty" data-testid="dashboard-empty">No projects yet. Create one to start watching a job.</p>
   {% else %}
-  <p class="empty" data-testid="dashboard-no-results">Nothing matches “{{ q }}”. <a href="/">Clear the filter</a> to see every check.</p>
+  <p class="empty" data-testid="dashboard-no-results">No checks match the current filter. <a href="/">Clear the filter</a> to see every check.</p>
   {% endif %}
 </div>
 {% else %}

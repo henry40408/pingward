@@ -82,6 +82,15 @@ Feature: Monitoring core
     Then the dashboard shows the check "backup"
     And the dashboard shows the check "report"
 
+  Scenario: The dashboard status filter shows only checks in that state
+    Given a project named "Ops"
+    And a check named "broken" with period 60
+    When I send a "fail" ping
+    And I filter the dashboard by status "Down"
+    Then the dashboard shows the check "broken"
+    When I filter the dashboard by status "Up"
+    Then the dashboard says nothing matched
+
   Scenario: A dashboard filter that matches nothing says so
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60
