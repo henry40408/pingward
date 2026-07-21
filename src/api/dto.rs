@@ -19,6 +19,11 @@ pub struct ProjectDto {
     pub owner_id: i64,
     #[schema(example = "Backups")]
     pub name: String,
+    /// Raw markdown (the minimal subset in `src/markdown.rs`) — never
+    /// rendered to HTML server-side; the API consumer decides how (or
+    /// whether) to render it.
+    #[schema(example = "Nightly **offsite** backup jobs.")]
+    pub description: String,
     /// Per-project scan-interval override in seconds, if set.
     pub scan_interval_secs: Option<i64>,
     /// Per-project nag-interval override in seconds, if set.
@@ -32,6 +37,7 @@ impl From<Project> for ProjectDto {
             id: p.id,
             owner_id: p.user_id,
             name: p.name,
+            description: p.description,
             scan_interval_secs: p.scan_interval_secs,
             nag_interval_secs: p.nag_interval_secs,
             created_at: p.created_at,
@@ -44,6 +50,11 @@ pub struct CheckDto {
     pub id: i64,
     pub project_id: i64,
     pub name: String,
+    /// Raw markdown (the minimal subset in `src/markdown.rs`) — never
+    /// rendered to HTML server-side; the API consumer decides how (or
+    /// whether) to render it.
+    #[schema(example = "Runs nightly at 02:00 **UTC**.")]
+    pub description: String,
     /// The per-check UUID embedded in this check's ping URL.
     #[schema(example = "b1946ac9-2f8a-4e6d-9c3b-6f0e2d1a7c55")]
     pub ping_uuid: String,
@@ -75,6 +86,7 @@ impl From<Check> for CheckDto {
             id: c.id,
             project_id: c.project_id,
             name: c.name,
+            description: c.description,
             ping_uuid: c.ping_uuid,
             status: c.status.as_str().to_string(),
             schedule_kind: c.schedule_kind.as_str().to_string(),

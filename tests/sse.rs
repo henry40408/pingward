@@ -102,7 +102,7 @@ async fn owner_receives_changed_event_when_check_is_pinged() {
         .unwrap()
         .id;
     let pid = store
-        .create_project(owner_id, "proj", None, None, Utc::now())
+        .create_project(owner_id, "proj", "", None, None, Utc::now())
         .await
         .unwrap();
     let check_id = store
@@ -170,7 +170,7 @@ async fn non_owner_gets_404_from_check_events() {
             .unwrap()
     };
     let pid = store
-        .create_project(owner_id, "proj", None, None, Utc::now())
+        .create_project(owner_id, "proj", "", None, None, Utc::now())
         .await
         .unwrap();
     let check_id = store

@@ -76,12 +76,12 @@ async fn lists_only_callers_own_projects() {
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let now = Utc::now();
     store
-        .create_project(uid, "mine", None, None, now)
+        .create_project(uid, "mine", "", None, None, now)
         .await
         .unwrap();
     let (other, _) = user_with_key(&store, "bob", false).await;
     store
-        .create_project(other, "theirs", None, None, now)
+        .create_project(other, "theirs", "", None, None, now)
         .await
         .unwrap();
 
@@ -102,7 +102,7 @@ async fn member_cannot_read_another_users_project() {
     let (_uid, token) = user_with_key(&store, "alice", false).await;
     let (other, _) = user_with_key(&store, "bob", false).await;
     let pid = store
-        .create_project(other, "theirs", None, None, Utc::now())
+        .create_project(other, "theirs", "", None, None, Utc::now())
         .await
         .unwrap();
 
@@ -120,7 +120,7 @@ async fn admin_key_reads_cross_user_and_writes_audit() {
     let (_admin, token) = user_with_key(&store, "root", true).await;
     let (other, _) = user_with_key(&store, "bob", false).await;
     let pid = store
-        .create_project(other, "theirs", None, None, Utc::now())
+        .create_project(other, "theirs", "", None, None, Utc::now())
         .await
         .unwrap();
 
@@ -145,7 +145,7 @@ async fn admin_reading_own_project_does_not_audit() {
     let (server, store) = test_app().await;
     let (admin, token) = user_with_key(&store, "root", true).await;
     let pid = store
-        .create_project(admin, "mine", None, None, Utc::now())
+        .create_project(admin, "mine", "", None, None, Utc::now())
         .await
         .unwrap();
 
@@ -162,7 +162,7 @@ async fn check_pings_are_paginated_newest_first() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
     let cid = make_check(&store, pid, "job", "uuid-pg").await;
@@ -222,7 +222,7 @@ async fn limit_is_clamped() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
     let cid = make_check(&store, pid, "job", "uuid-lim").await;
@@ -252,7 +252,7 @@ async fn channel_dto_never_leaks_config_secrets() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
     let secret = "https://hooks.example.com/SECRET-TOKEN";
@@ -286,7 +286,7 @@ async fn notifications_endpoint_returns_events() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
     let cid = make_check(&store, pid, "job", "uuid-nt").await;
@@ -602,7 +602,14 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
         // suffixed with the loop index — `ping_uuid` has a UNIQUE constraint,
         // so `make_check`'s uuid argument in particular must not repeat.
         let pid = store
-            .create_project(owner, &format!("alice-project-{i}"), None, None, Utc::now())
+            .create_project(
+                owner,
+                &format!("alice-project-{i}"),
+                "",
+                None,
+                None,
+                Utc::now(),
+            )
             .await
             .unwrap();
         let cid = make_check(

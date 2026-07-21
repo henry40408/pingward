@@ -111,7 +111,7 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_project(1, "p", None, None, Utc::now())
+            .create_project(1, "p", "", None, None, Utc::now())
             .await
             .unwrap();
         let cid = store

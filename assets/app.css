@@ -283,6 +283,37 @@ nav.links a:hover {
   font-size: 13.5px;
   margin-top: 3px;
 }
+/* Rendered project/check description (markdown.rs output, injected `|safe`).
+   Sits below the page header, above the actions row. */
+.desc {
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.55;
+  margin: -6px 0 18px;
+  max-width: 640px;
+}
+.desc p {
+  margin: 0 0 8px;
+}
+.desc ul {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+.desc p:last-child,
+.desc ul:last-child {
+  margin-bottom: 0;
+}
+.desc code {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+  font-size: 12px;
+  background: var(--surface);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.desc a {
+  color: var(--brand);
+}
 .btn-primary {
   background: var(--brand);
   color: var(--brand-ink);
@@ -477,6 +508,19 @@ nav.links a:hover {
   height: 1px;
   background: var(--border);
 }
+/* Plain-text truncated project description (markdown::truncate_plain) shown
+   next to the group heading. Single-line + shrinkable so it never pushes the
+   "Manage →" link out of the row. */
+.group .gh .gdesc {
+  font-size: 12.5px;
+  color: var(--muted);
+  min-width: 0;
+  flex-shrink: 1;
+  max-width: 280px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
 .group .gh a {
   font-size: 12.5px;
   color: var(--muted);
@@ -582,6 +626,17 @@ nav.links a:hover {
   font-size: 11.5px;
   color: var(--muted);
   margin-top: 3px;
+}
+/* Plain-text truncated description (markdown::truncate_plain) shown under a
+   check row's schedule line. Single-line so a long description can never
+   break the row's fixed height. */
+.cdesc {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
 }
 .cwhen {
   text-align: right;
@@ -1422,7 +1477,8 @@ tr.exp > td {
   margin-top: 5px;
 }
 .field input:not([type="checkbox"]),
-.field select {
+.field select,
+.field textarea {
   width: 100%;
   font-family: "Inter", system-ui, sans-serif;
   font-size: 13.5px;
@@ -1433,8 +1489,12 @@ tr.exp > td {
   padding: 9px 11px;
   outline: none;
 }
+.field textarea {
+  resize: vertical;
+}
 .field input:not([type="checkbox"]):focus,
-.field select:focus {
+.field select:focus,
+.field textarea:focus {
   border-color: var(--brand);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent);
 }

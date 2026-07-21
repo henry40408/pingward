@@ -234,6 +234,7 @@ mod tests {
             id: 1,
             project_id: 1,
             name: "c".into(),
+            description: String::new(),
             ping_uuid: "u".into(),
             schedule_kind: ScheduleKind::Period,
             period_secs: Some(3600),

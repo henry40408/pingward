@@ -61,6 +61,53 @@ async fn create_project_appears_in_list() {
     assert_eq!(arr[0]["id"], pid);
 }
 
+/// POST/PATCH accept `description`, GET returns it **unrendered** (the raw
+/// markdown, not HTML — asserting the literal `**bold**` proves the server
+/// never runs it through `markdown::render` for API responses), and omitting
+/// the field on create yields `""`.
+#[tokio::test]
+async fn project_description_is_raw_markdown_and_defaults_to_empty() {
+    let (server, store) = test_app().await;
+    let (_uid, token) = user_with_key(&store, "alice", false).await;
+
+    // Omitted on create → "".
+    let created = server
+        .post("/api/v1/projects")
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "name": "Backups" }))
+        .await;
+    created.assert_status(StatusCode::CREATED);
+    let body = created.json::<Value>();
+    assert_eq!(body["description"], "");
+    let pid = body["id"].as_i64().unwrap();
+
+    // PATCH sets it; GET must return the raw markdown, not rendered HTML.
+    let patched = server
+        .patch(&format!("/api/v1/projects/{pid}"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "name": "Backups", "description": "Nightly **bold** backups." }))
+        .await;
+    patched.assert_status_ok();
+    assert_eq!(
+        patched.json::<Value>()["description"],
+        "Nightly **bold** backups."
+    );
+
+    let fetched = server
+        .get(&format!("/api/v1/projects/{pid}"))
+        .add_header("authorization", bearer(&token))
+        .await;
+    let text = fetched.text();
+    assert!(
+        text.contains("**bold**"),
+        "GET must return the raw markdown: {text}"
+    );
+    assert!(
+        !text.contains("<strong>"),
+        "GET must NOT render markdown to HTML: {text}"
+    );
+}
+
 #[tokio::test]
 async fn create_project_rejects_blank_name() {
     let (server, store) = test_app().await;
@@ -103,7 +150,7 @@ async fn patch_project_replaces_fields() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "old", Some(60), None, Utc::now())
+        .create_project(uid, "old", "", Some(60), None, Utc::now())
         .await
         .unwrap();
 
@@ -125,7 +172,7 @@ async fn delete_project_then_gone() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
 
@@ -147,7 +194,7 @@ async fn member_cannot_create_check_in_another_users_project() {
     let (_alice, token) = user_with_key(&store, "alice", false).await;
     let (bob, _) = user_with_key(&store, "bob", false).await;
     let pid = store
-        .create_project(bob, "bobs", None, None, Utc::now())
+        .create_project(bob, "bobs", "", None, None, Utc::now())
         .await
         .unwrap();
 
@@ -167,7 +214,7 @@ async fn admin_cross_user_write_is_audited_with_the_verb() {
     let (_admin, token) = user_with_key(&store, "root", true).await;
     let (bob, _) = user_with_key(&store, "bob", false).await;
     let pid = store
-        .create_project(bob, "bobs", None, None, Utc::now())
+        .create_project(bob, "bobs", "", None, None, Utc::now())
         .await
         .unwrap();
 
@@ -191,7 +238,7 @@ async fn create_check_period_and_reject_bad_schedule() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
 
@@ -217,12 +264,64 @@ async fn create_check_period_and_reject_bad_schedule() {
     assert_eq!(bad.json::<Value>()["error"]["code"], "bad_request");
 }
 
+/// Same coverage as `project_description_is_raw_markdown_and_defaults_to_empty`,
+/// for checks: POST/PATCH accept `description`, GET returns the raw markdown
+/// (not rendered), and omitting it on create yields `""`.
+#[tokio::test]
+async fn check_description_is_raw_markdown_and_defaults_to_empty() {
+    let (server, store) = test_app().await;
+    let (uid, token) = user_with_key(&store, "alice", false).await;
+    let pid = store
+        .create_project(uid, "p", "", None, None, Utc::now())
+        .await
+        .unwrap();
+
+    // Omitted on create → "".
+    let created = server
+        .post(&format!("/api/v1/projects/{pid}/checks"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "name": "job", "period_secs": "1h", "grace_secs": "5m" }))
+        .await;
+    created.assert_status(StatusCode::CREATED);
+    let body = created.json::<Value>();
+    assert_eq!(body["description"], "");
+    let cid = body["id"].as_i64().unwrap();
+
+    // PATCH sets it; GET must return the raw markdown, not rendered HTML.
+    let patched = server
+        .patch(&format!("/api/v1/checks/{cid}"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({
+            "name": "job",
+            "description": "Runs **nightly**.",
+            "period_secs": "1h",
+            "grace_secs": "5m"
+        }))
+        .await;
+    patched.assert_status_ok();
+    assert_eq!(patched.json::<Value>()["description"], "Runs **nightly**.");
+
+    let fetched = server
+        .get(&format!("/api/v1/checks/{cid}"))
+        .add_header("authorization", bearer(&token))
+        .await;
+    let text = fetched.text();
+    assert!(
+        text.contains("**nightly**"),
+        "GET must return the raw markdown: {text}"
+    );
+    assert!(
+        !text.contains("<strong>"),
+        "GET must NOT render markdown to HTML: {text}"
+    );
+}
+
 #[tokio::test]
 async fn check_actions_change_state() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
     let cid = store
@@ -274,7 +373,7 @@ async fn patch_check_replaces_schedule() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
     let cid = store
@@ -310,7 +409,7 @@ async fn set_check_channels_honors_only_same_project_channels() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
     let cid = store
@@ -360,7 +459,7 @@ async fn create_channel_hides_secrets_then_delete() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
 
@@ -395,7 +494,7 @@ async fn create_channel_rejects_missing_required_field() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", None, None, Utc::now())
+        .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
     // webhook kind without a URL.
