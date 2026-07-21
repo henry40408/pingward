@@ -31,8 +31,9 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
 - `src/lib.rs` — declares the crate's modules and `app()`, which composes the
   final `Router`.
 - `src/main.rs` — the binary entry point: reads `Config`, sets up tracing,
-  connects/migrates the database, spawns the two background loops, and
-  starts `axum::serve`.
+  connects/migrates the database, spawns the two background loops, starts
+  `axum::serve`, and installs **mimalloc** as the process-wide `#[global_allocator]`
+  (binary only, not the library).
 - `src/web.rs` — the browser-facing UI: `routes()`, every page/form handler,
   the `csrf_guard` middleware, and owner/admin scoping helpers
   (`owned_project`, `owned_check`, `admin_project`, `admin_check`).
