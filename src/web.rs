@@ -63,14 +63,8 @@ pub fn routes() -> Router<AppState> {
             "/account/sessions/revoke-others",
             post(sessions_revoke_others),
         )
-        // Legacy paths, kept so existing bookmarks/links still land somewhere.
-        .route("/api-keys", get(redirect_to_account))
-        .route("/sessions", get(redirect_to_account))
-        .route("/settings", get(redirect_to_admin))
-        .route("/users", get(redirect_to_admin))
-        // --- admin cross-user route group (each handler guarded by AdminUser,
-        // except the legacy-redirect handlers above/below, which expose no
-        // data and mirror `redirect_to_account`) ---
+        // --- admin cross-user route group (every handler guarded by
+        // AdminUser, no exceptions) ---
         .route("/admin", get(admin_page))
         .route("/admin/settings", post(settings_save))
         .route("/admin/users", post(users_create))
@@ -78,7 +72,6 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/users/{id}/password", post(users_set_password))
         .route("/admin/users/{id}/admin", post(users_toggle_admin))
         .route("/admin/users/{id}/disabled", post(users_set_disabled))
-        .route("/admin/projects", get(redirect_to_admin))
         .route(
             "/admin/projects/{id}",
             get(admin_project_show).post(admin_project_update),
@@ -2357,13 +2350,6 @@ async fn admin_page(
     Ok((jar, resp).into_response())
 }
 
-/// Redirects the legacy `/settings`, `/users` and `/admin/projects` paths to
-/// the merged `/admin` page, so existing bookmarks/links still land somewhere.
-/// Unguarded like `redirect_to_account` — it exposes no data, only a redirect.
-async fn redirect_to_admin() -> Redirect {
-    Redirect::to("/admin")
-}
-
 async fn settings_save(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -2746,12 +2732,6 @@ async fn account_page(
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
     render_account(&state, &jar, &user, None, None).await
-}
-
-/// Redirects the legacy `/api-keys` and `/sessions` paths to the merged
-/// `/account` page, so existing bookmarks/links still land somewhere.
-async fn redirect_to_account() -> Redirect {
-    Redirect::to("/account")
 }
 
 /// Gather both the sessions and API-keys datasets and render the merged
@@ -3291,7 +3271,7 @@ async fn admin_project_delete(
 ) -> Result<Response, AppError> {
     admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
     state.store.delete_project(id).await?;
-    Ok(Redirect::to("/admin/projects").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 // -- checks --

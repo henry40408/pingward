@@ -1,3 +1,4 @@
+use axum::http::StatusCode;
 use axum_test::TestServer;
 use pingward::{app, config::Config, db, state::AppState, store::Store};
 
@@ -34,8 +35,26 @@ async fn admin_server() -> (TestServer, Store, i64) {
     (server, store, admin_id)
 }
 
+// --- admin route guard exhaustiveness --------------------------------------
+//
+// `web::routes()` guards every `/admin*` handler individually via the
+// `AdminUser` extractor — there is no router-level layer enforcing it.
+// `non_admin_forbidden_on_every_admin_route` below parses `src/web.rs` to
+// recover the exact list of `/admin*` (method, path) pairs the router
+// registers — `axum::Router` does not expose its route table at runtime, so
+// source-parsing is the only way to derive it — and asserts every single one
+// returns 403 for a signed-in non-admin. There is no per-route exception
+// list: a new `/admin` route that forgets its `AdminUser` guard fails this
+// test, and the only way to make it pass again is to add the guard.
+
+/// Every `/admin*` route registered by `web::routes()` must 403 for a
+/// signed-in non-admin, with no exceptions. The route list is derived from
+/// the router's own source (`admin_routes_in_router_source`) rather than
+/// hand-maintained, so a newly added `/admin` route that forgets its
+/// `AdminUser` guard fails this test and there is no way to silence it
+/// short of actually adding the guard.
 #[tokio::test]
-async fn non_admin_forbidden_on_admin_routes() {
+async fn non_admin_forbidden_on_every_admin_route() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
@@ -51,10 +70,113 @@ async fn non_admin_forbidden_on_admin_routes() {
         .post("/login")
         .form(&[("username", "member"), ("password", "pw")])
         .await;
-    server
-        .get("/admin")
-        .await
-        .assert_status(axum::http::StatusCode::FORBIDDEN);
+    // A valid session + CSRF token proves every 403 below comes from the
+    // `AdminUser` guard, not a missing/invalid CSRF token.
+    set_csrf(&mut server, &store).await;
+
+    let routes = admin_routes_in_router_source();
+    // A parser that (due to a bug) returns nothing would make the loop below
+    // pass vacuously. Guard against that explicitly.
+    assert!(
+        routes.len() >= 25,
+        "parsed only {} /admin routes from web.rs — the source parser is \
+         probably broken; this test would otherwise pass vacuously",
+        routes.len()
+    );
+
+    for (method, path) in &routes {
+        let status = match *method {
+            "GET" => server.get(path).await.status_code(),
+            // `AdminUser` is extracted before `Form`/`HtmlForm` in every
+            // handler, so the guard rejects before the body is parsed — an
+            // empty form is fine here.
+            "POST" => server.post(path).form(&[("_", "")]).await.status_code(),
+            other => panic!("unsupported method {other} for route {path}"),
+        };
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{method} {path}: expected 403 Forbidden, got {status}"
+        );
+    }
+}
+
+/// Parses the body of `web::routes()` out of `src/web.rs` to recover every
+/// `(method, path)` pair it registers. This is a deliberate source-level
+/// check: `axum::Router` does not expose its route table for introspection
+/// at runtime, so reading the router's own source is the only way to recover
+/// the list without hand-maintaining a copy of it. Plain `str` methods only
+/// — no regex crate.
+fn admin_routes_in_router_source() -> Vec<(&'static str, String)> {
+    const WEB_RS: &str = include_str!("../src/web.rs");
+    let start_marker = "pub fn routes() -> Router<AppState> {";
+    let start = WEB_RS
+        .find(start_marker)
+        .expect("web.rs: `pub fn routes()` not found")
+        + start_marker.len();
+    let rest = &WEB_RS[start..];
+    let body_end = rest
+        .find("\n}\n")
+        .expect("web.rs: end of routes() body not found");
+    let body = &rest[..body_end];
+
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while let Some(rel) = body[pos..].find(".route(") {
+        let entry_start = pos + rel + ".route(".len();
+        let entry_end = body[entry_start..]
+            .find(".route(")
+            .map_or(body.len(), |r| entry_start + r);
+        let entry = &body[entry_start..entry_end];
+        pos = entry_end;
+
+        let q1 = entry.find('"').expect("route entry missing path literal");
+        let q2 = entry[q1 + 1..]
+            .find('"')
+            .expect("route entry: unterminated path literal")
+            + q1
+            + 1;
+        let raw_path = &entry[q1 + 1..q2];
+        if !raw_path.starts_with("/admin") {
+            continue;
+        }
+        let path = normalise_route_path(raw_path);
+        let mut methods = 0;
+        if entry.contains("get(") {
+            out.push(("GET", path.clone()));
+            methods += 1;
+        }
+        if entry.contains("post(") {
+            out.push(("POST", path));
+            methods += 1;
+        }
+        assert!(
+            methods > 0,
+            "route `{raw_path}` uses a method router this parser doesn't recognise \
+             (only `get(`/`post(` are handled) — extend \
+             `admin_routes_in_router_source` so the route stays covered"
+        );
+    }
+    out
+}
+
+/// Replaces every `{param}` path segment with `1` so the parsed path can be
+/// requested as-is.
+fn normalise_route_path(raw: &str) -> String {
+    let mut out = String::new();
+    let mut in_param = false;
+    for c in raw.chars() {
+        match c {
+            '{' => {
+                in_param = true;
+                out.push('1');
+            }
+            '}' => in_param = false,
+            _ if in_param => {}
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 #[tokio::test]
@@ -87,53 +209,6 @@ async fn admin_sees_admin_nav_link_on_dashboard() {
     );
 }
 
-// Settings and user management moved from their own pages under the merged
-// `/admin` page, so the guard now lives on `/admin` and on the `/admin/…`
-// POST routes those forms submit to. This closes a real gap: previously only
-// `GET /admin` was covered for the 403 case, and moving routes is exactly
-// when a guard gets dropped by accident.
-#[tokio::test]
-async fn non_admin_forbidden_on_moved_settings_and_users_post_routes() {
-    let pool = db::connect("sqlite::memory:").await.unwrap();
-    db::migrate(&pool, "sqlite::memory:").await.unwrap();
-    let store = Store::new(pool);
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
-    let mut server = TestServer::new(app(state));
-    server.save_cookies();
-    let phc = pingward::auth::hash_password("pw").unwrap();
-    store
-        .create_user("member", Some(&phc), false, chrono::Utc::now())
-        .await
-        .unwrap();
-    server
-        .post("/login")
-        .form(&[("username", "member"), ("password", "pw")])
-        .await;
-    // A valid session + CSRF token proves the 403 below comes from the
-    // `AdminUser` guard, not a missing/invalid CSRF token.
-    set_csrf(&mut server, &store).await;
-
-    server
-        .get("/admin")
-        .await
-        .assert_status(axum::http::StatusCode::FORBIDDEN);
-    server
-        .post("/admin/settings")
-        .form(&[
-            ("scan_interval", ""),
-            ("nag_interval", ""),
-            ("pings_retention_days", ""),
-            ("notifications_retention_days", ""),
-        ])
-        .await
-        .assert_status(axum::http::StatusCode::FORBIDDEN);
-    server
-        .post("/admin/users")
-        .form(&[("username", "x"), ("password", "y")])
-        .await
-        .assert_status(axum::http::StatusCode::FORBIDDEN);
-}
-
 #[tokio::test]
 async fn admin_views_other_users_project_and_audits() {
     let (server, store, _admin_id) = admin_server().await;
@@ -157,6 +232,30 @@ async fn admin_views_other_users_project_and_audits() {
         && a.target_type.as_deref() == Some("project")
         && a.target_id == Some(pid)
         && a.target_owner_id == Some(owner)));
+}
+
+/// Deleting another user's project sends the admin back to `/admin`. The
+/// `location` assertion is the regression guard: it used to point at
+/// `/admin/projects`, a route that no longer exists and would now 404.
+#[tokio::test]
+async fn admin_deletes_other_users_project_and_lands_on_admin() {
+    let (server, store, _admin_id) = admin_server().await;
+    // A separate user owns a project.
+    let owner = store
+        .create_user("owner", Some("phc"), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let pid = store
+        .create_project(owner, "victim", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    // Admin deletes the project and should land on /admin, not /admin/projects.
+    let res = server.post(&format!("/admin/projects/{pid}/delete")).await;
+    assert_eq!(res.status_code(), StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/admin");
+    // Verify the project is actually deleted.
+    let projects = store.list_projects_for_user(owner).await.unwrap();
+    assert!(!projects.iter().any(|p| p.id == pid));
 }
 
 #[tokio::test]

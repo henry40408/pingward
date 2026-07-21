@@ -513,31 +513,6 @@ async fn admin_sets_retention_days() {
 }
 
 #[tokio::test]
-async fn non_admin_forbidden_from_settings() {
-    let (server, store) = server().await;
-    let phc = pingward::auth::hash_password("pw").unwrap();
-    store
-        .create_user("plain", Some(&phc), false, chrono::Utc::now())
-        .await
-        .unwrap();
-    server
-        .post("/login")
-        .form(&[("username", "plain"), ("password", "pw")])
-        .await;
-    // The legacy `/settings` path is an open redirect (mirrors `/account`'s
-    // legacy `/sessions`/`/api-keys` paths) — it exposes no data itself, so it
-    // does not enforce the admin guard. The guard lives on the page it points
-    // at: following the redirect to the merged `/admin` page is forbidden.
-    let res = server.get("/settings").await;
-    res.assert_status(axum::http::StatusCode::SEE_OTHER);
-    assert_eq!(res.header("location"), "/admin");
-    server
-        .get("/admin")
-        .await
-        .assert_status(axum::http::StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
 async fn admin_creates_and_deletes_user() {
     let (server, store, _uid) = logged_in_server().await;
     server
