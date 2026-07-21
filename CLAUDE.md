@@ -62,9 +62,14 @@ ping kind, even `Log`/paused checks) and `scheduler::run_scan_loop` (each
 `Down` transition), both gated on `receiver_count() > 0` so it's free when
 unwatched. `GET /checks/{id}/events` / `/admin/checks/{id}/events`
 (`web::sse_for_check`) turn it into an SSE stream carrying no data — the
-browser is expected to re-fetch the existing `/checks/{id}/pings` fragment on
-each `"changed"` event, keeping rendering/auth in one place. In-process only:
-not shared across replicas (see ARCHITECTURE.md).
+browser re-fetches the existing `/checks/{id}/pings` fragment on each
+`"changed"` event, keeping rendering/auth in one place. In-process only: not
+shared across replicas (see ARCHITECTURE.md). On the check page this is
+opt-in: an id="pings-live" LIVE toggle (`templates/check.html`) opens the
+EventSource, since an always-open connection per tab would eat into the
+browser's per-origin HTTP/1.1 connection budget; each event debounces ~500ms
+before re-fetching the fragment unfiltered/newest-page, with the pager and
+filter form hidden while live (`assets/app.css` `.live-on`).
 
 **Persistence** (`src/db.rs`, `src/store.rs`): one sqlx `AnyPool` that dispatches
 to **SQLite or Postgres by URL scheme**. All queries go through `Store` and must

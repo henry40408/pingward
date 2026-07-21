@@ -85,8 +85,13 @@ mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
   </div>
 </div>
 
-<div class="card">
-  <div class="ch"><h2>Recent pings</h2></div>
+<div class="card" id="pings-card">
+  <div class="ch">
+    <h2>Recent pings</h2>
+    <button class="btn live-toggle" type="button" id="pings-live" data-testid="pings-live"
+            aria-pressed="false"
+            data-endpoint="{{ base }}/checks/{{ check.id }}/events">LIVE</button>
+  </div>
   <div class="cb" id="pings-section" data-endpoint="{{ base }}/checks/{{ check.id }}/pings">
     {{ pings_partial|safe }}
   </div>
@@ -150,7 +155,7 @@ mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
     // fetch the fragment endpoint and replace the section's contents in place.
     function wireSection(id, buildQuery){
       var section = document.getElementById(id);
-      if (!section) return;
+      if (!section) return null;
       var endpoint = section.getAttribute('data-endpoint');
       function load(url){
         fetch(url, {headers:{'X-Requested-With':'fetch'}})
@@ -164,10 +169,11 @@ mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
         if (b && section.contains(b)) { e.preventDefault(); load(endpoint + buildQuery(section)); }
       });
       initSection(section);
+      return load;
     }
 
     function param(qs, key, val){ if (val) qs.push(key+'='+encodeURIComponent(val)); }
-    wireSection('pings-section', function(s){
+    var loadPings = wireSection('pings-section', function(s){
       var qs = [];
       var kind = s.querySelector('[data-testid=pings-kind]');
       var from = s.querySelector('[data-testid=pings-from]');
@@ -189,6 +195,43 @@ mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
       param(qs, 'nto', toUtc(to && to.value));
       return qs.length ? ('?'+qs.join('&')) : '';
     });
+
+    // Live tail is opt-in, not always-on: an EventSource held open by every check
+    // page would spend one of the browser's ~6 HTTP/1.1 connections per origin,
+    // so a handful of open check tabs would stall the rest of the app.
+    var liveBtn = document.getElementById('pings-live');
+    var pingsSection = document.getElementById('pings-section');
+    var pingsCard = document.getElementById('pings-card');
+    if (liveBtn && pingsSection && loadPings && window.EventSource) {
+      var liveSource = null;
+      var liveTimer = null;
+      function stopLive(){
+        if (liveSource) { liveSource.close(); liveSource = null; }
+        if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+        if (pingsCard) pingsCard.classList.remove('live-on');
+        liveBtn.setAttribute('aria-pressed', 'false');
+        liveBtn.removeAttribute('data-live');
+      }
+      function startLive(){
+        stopLive();
+        liveBtn.setAttribute('aria-pressed', 'true');
+        if (pingsCard) pingsCard.classList.add('live-on');
+        liveBtn.setAttribute('data-live', 'connecting');
+        liveSource = new EventSource(liveBtn.getAttribute('data-endpoint'));
+        liveSource.onopen = function(){ liveBtn.setAttribute('data-live', 'open'); };
+        liveSource.onmessage = function(){
+          if (liveTimer) clearTimeout(liveTimer);
+          liveTimer = setTimeout(function(){
+            loadPings(pingsSection.getAttribute('data-endpoint'));
+          }, 500);
+        };
+        // EventSource auto-reconnects on transport errors on its own; no manual retry logic needed.
+      }
+      liveBtn.addEventListener('click', function(){
+        if (liveBtn.getAttribute('aria-pressed') === 'true') stopLive(); else startLive();
+      });
+      window.addEventListener('pagehide', stopLive);
+    }
   })();
 </script>
 {% endblock %}
