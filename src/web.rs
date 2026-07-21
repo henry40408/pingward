@@ -13,6 +13,7 @@ use askama::Template;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
@@ -21,7 +22,12 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Duration, Utc};
 use cron::Schedule;
 use serde::Deserialize;
+use std::convert::Infallible;
 use std::str::FromStr;
+use tokio::sync::broadcast;
+use tokio_stream::Stream;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 
 pub fn render<T: Template>(t: &T) -> Result<Html<String>, AppError> {
     let body = t.render().map_err(|e| AppError::Other(Box::new(e)))?;
@@ -43,6 +49,7 @@ pub fn routes() -> Router<AppState> {
         .route("/projects/{pid}/checks", post(check_create))
         .route("/checks/{id}", get(check_show).post(check_update))
         .route("/checks/{id}/pings", get(check_pings))
+        .route("/checks/{id}/events", get(check_events))
         .route("/checks/{id}/notifications", get(check_notifications))
         .route("/checks/{id}/edit", get(check_edit))
         .route("/checks/{id}/pause", post(check_pause))
@@ -85,6 +92,7 @@ pub fn routes() -> Router<AppState> {
             get(admin_check_show).post(admin_check_update),
         )
         .route("/admin/checks/{id}/pings", get(admin_check_pings))
+        .route("/admin/checks/{id}/events", get(admin_check_events))
         .route(
             "/admin/checks/{id}/notifications",
             get(admin_check_notifications),
@@ -1690,6 +1698,25 @@ async fn channel_name_map(
         .collect())
 }
 
+/// Build the SSE response for `check_id`'s live tail: one "changed" event per
+/// broadcast that matches `check_id`, plus a "changed" event whenever this
+/// subscriber lags (see the `Err` arm below).
+fn sse_for_check(
+    events: &broadcast::Sender<i64>,
+    check_id: i64,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>> + use<>> {
+    let stream = BroadcastStream::new(events.subscribe()).filter_map(move |res| match res {
+        Ok(id) if id == check_id => Some(Ok(Event::default().data("changed"))),
+        Ok(_) => None,
+        // Lagged: this subscriber fell behind the buffer. Unlike a log tail,
+        // where a dropped entry is just a missing row, a dropped *signal*
+        // would leave the page stale forever — so coalesce the gap into one
+        // refresh signal rather than discarding it.
+        Err(_) => Some(Ok(Event::default().data("changed"))),
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 /// `GET /checks/{id}/pings` — the pings fragment for a JS partial refresh.
 async fn check_pings(
     State(state): State<AppState>,
@@ -1699,6 +1726,19 @@ async fn check_pings(
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     Ok(render(&build_pings_partial(&state, check.id, "", &page, None).await?)?.into_response())
+}
+
+/// `GET /checks/{id}/events` — Server-Sent Events signalling that this check
+/// changed (a ping arrived, or the scan loop transitioned it). The event
+/// carries no data: the page re-fetches the pings fragment, which keeps
+/// rendering, filtering and authorization in one place.
+async fn check_events(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
+    let check = owned_check(&state.store, id, user.id).await?;
+    Ok(sse_for_check(&state.events, check.id))
 }
 
 /// `GET /checks/{id}/notifications` — the notifications fragment.
@@ -1727,6 +1767,19 @@ async fn admin_check_pings(
         render(&build_pings_partial(&state, check.id, "/admin", &page, None).await?)?
             .into_response(),
     )
+}
+
+/// `GET /admin/checks/{id}/events` — admin twin of `check_events` (audited
+/// access, same signal stream).
+async fn admin_check_events(
+    State(state): State<AppState>,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
+    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    Ok(sse_for_check(&state.events, check.id))
 }
 
 /// `GET /admin/checks/{id}/notifications` — admin notifications fragment.

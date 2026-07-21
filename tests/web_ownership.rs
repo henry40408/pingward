@@ -10,6 +10,24 @@ use chrono::Utc;
 use pingward::models::ChannelKind;
 use pingward::{app, config::Config, db, state::AppState, store::Store};
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+/// Uniform per-request timeout for the ownership loop below. `/checks/{id}/events`
+/// is a Server-Sent Events route whose body never ends, so `axum_test`'s
+/// request helpers (which await the *entire* body) would hang forever on it.
+/// Rather than special-casing that one route, EVERY request in this test —
+/// non-owner and owner alike — goes through this same timeout, with opposite
+/// pass/fail meanings (see the two call sites below). This keeps the test's
+/// hard "no exception lists" convention (PRs #77-#79): one rule, applied
+/// uniformly, instead of a per-route carve-out.
+///
+/// Deliberately generous (seconds, not milliseconds): this value's only job
+/// is to distinguish "streams forever" (the SSE route) from "completes" —
+/// there is nothing to gain from cutting it close, and a tight bound just
+/// risks a false failure on a loaded CI runner. Only one request per test
+/// run — the owner's SSE positive control — actually waits the full
+/// duration; every other request still returns almost immediately.
+const ROUTE_TIMEOUT: Duration = Duration::from_secs(5);
 
 mod common;
 
@@ -201,6 +219,7 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
         (("GET", "/checks/{id}"), None),
         (("POST", "/checks/{id}"), Some(check_form.clone())),
         (("GET", "/checks/{id}/pings"), None),
+        (("GET", "/checks/{id}/events"), None),
         (("GET", "/checks/{id}/notifications"), None),
         (("GET", "/checks/{id}/edit"), None),
         (("POST", "/checks/{id}/pause"), None),
@@ -282,10 +301,31 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
         // a destructive owner request remove the row before B ever asks,
         // which would make B's 404 pass vacuously again — exactly what this
         // whole ordering exists to rule out.
-        let member_res = build_request(&member_server, method, &path, body.as_deref()).await;
+        //
+        // Both requests below go through the same `ROUTE_TIMEOUT`, but a
+        // timeout means opposite things for each: for the non-owner, a
+        // request that never resolves is itself a failure (every non-owner
+        // request must resolve quickly, to 404 — a route whose body streams
+        // forever before ownership is even checked is a bug, not a pass);
+        // for the owner, a timeout counts as "not 404" and satisfies the
+        // positive control — a response that streams instead of completing
+        // (e.g. `/checks/{id}/events`'s SSE body, which never ends) proves
+        // the id resolved and the handler was entered.
+        let member_res = tokio::time::timeout(
+            ROUTE_TIMEOUT,
+            build_request(&member_server, method, &path, body.as_deref()),
+        )
+        .await;
         // 404, not 403: `owned_project`/`owned_check` hide existence from a
         // caller who isn't the owner and isn't an admin, rather than
         // revealing "it exists but you can't touch it".
+        let Ok(member_res) = member_res else {
+            panic!(
+                "{method} {raw_path} (requested as {path}): non-owner request did not \
+                 resolve within {ROUTE_TIMEOUT:?} — every non-owner request must resolve \
+                 promptly to 404, not hang"
+            );
+        };
         assert_eq!(
             member_res.status_code(),
             StatusCode::NOT_FOUND,
@@ -304,13 +344,23 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
         // re-render the form with a validation error (200). Either still
         // proves the id resolved to a real, owned resource, which is the
         // only thing this control needs to establish.
-        let owner_res = build_request(&owner_server, method, &path, body.as_deref()).await;
-        assert_ne!(
-            owner_res.status_code(),
-            StatusCode::NOT_FOUND,
-            "{method} {raw_path} (requested as {path}): the owner got 404 too, so the \
-             non-owner's 404 proves nothing about ownership scoping — the seeded \
-             resource is not reachable and this test would pass vacuously"
-        );
+        let owner_res = tokio::time::timeout(
+            ROUTE_TIMEOUT,
+            build_request(&owner_server, method, &path, body.as_deref()),
+        )
+        .await;
+        // A timeout here means the response is still streaming (e.g. the
+        // `/checks/{id}/events` SSE body, which never ends) rather than a
+        // completed 404 — that alone satisfies the positive control, so only
+        // the `Ok` case needs an assertion.
+        if let Ok(owner_res) = owner_res {
+            assert_ne!(
+                owner_res.status_code(),
+                StatusCode::NOT_FOUND,
+                "{method} {raw_path} (requested as {path}): the owner got 404 too, so the \
+                 non-owner's 404 proves nothing about ownership scoping — the seeded \
+                 resource is not reachable and this test would pass vacuously"
+            );
+        }
     }
 }

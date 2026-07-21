@@ -36,19 +36,23 @@ async fn main() {
         .expect("failed to run migrations");
     let store = Store::new(pool);
 
+    // Built before the background loops so both the scan loop and the HTTP
+    // server share the same live-tail event bus (state.events).
+    let state = AppState::new(store.clone(), config);
+
     // Per-check channel binding replaces Plan 1's single global webhook: the scan
     // loop now resolves each check's bound channels via notify::deliver_event.
     tokio::spawn(scheduler::run_scan_loop(
         store.clone(),
         scan_interval_secs,
         smtp,
+        state.events.clone(),
     ));
     tokio::spawn(pingward::prune::run_prune_loop(
         store.clone(),
         prune_interval_secs,
     ));
 
-    let state = AppState::new(store, config);
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
     tracing::info!("listening on {}", listener.local_addr().unwrap());
     axum::serve(

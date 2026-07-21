@@ -213,6 +213,51 @@ check → project → global-setting → env-default cascade
 specific non-positive-or-unset level falls through to the next. Nag has no
 env default — it's off unless a level opts in.
 
+## Live-tail signal bus (SSE)
+
+`AppState::events` is a `tokio::sync::broadcast::Sender<i64>` (capacity 256,
+built in `AppState::new` and shared via `FromRef`, alongside `Store` and
+`Arc<Config>`) that carries a `check_id` whenever that check changes. Two
+producers publish to it:
+
+- `ping::apply` — after every successful `store.insert_ping(...)` (all five
+  ping kinds, including `Log`, and regardless of the check's status —
+  paused checks still record pings and still publish), before the
+  paused-check early return.
+- `scheduler::run_scan_loop` — for every `NotificationEvent` a scan pass
+  produces (i.e. `Down` transitions), publishing `ev.check_id` alongside
+  delivering the notification. `main.rs` builds `AppState` before spawning the
+  background loops specifically so the scan loop and the HTTP server can share
+  one sender (`state.events.clone()`).
+
+Both producers gate on `events.receiver_count() > 0` first, so publishing
+costs nothing when no browser tab has the check page open, and a `send` with
+no subscribers is not treated as an error.
+
+`GET /checks/{id}/events` (owner-scoped) and `GET /admin/checks/{id}/events`
+(admin twin) subscribe and turn the broadcast into an SSE stream
+(`web::sse_for_check`). The payload is deliberately just the string
+`"changed"`, never ping data: the browser is expected to re-fetch the
+existing `/checks/{id}/pings` HTML fragment on receipt, so rendering,
+filtering, and authorization stay in that one already-tested code path
+instead of being duplicated over the wire. Ownership is checked (via
+`owned_check`/`admin_check`) *before* the stream is constructed, so a
+non-owner gets the usual 404 immediately rather than a stream that never
+resolves to anything.
+
+A lagged subscriber (its receiver fell behind the channel's 256-slot buffer)
+is coalesced into one more `"changed"` event rather than dropped. This is a
+deliberate divergence from the usual "skip what you missed" idiom for a log
+tail: a dropped *signal* here would leave the page stale forever (there's no
+later signal that says "you're behind, catch up"), whereas a spurious extra
+refresh is harmless and self-corrects on the next fragment fetch.
+
+**Known limitation:** the channel is in-process only. Run multiple pingward
+replicas against a shared Postgres and a browser tab connected to replica A
+never sees a ping delivered to replica B — SQLite has no `LISTEN/NOTIFY`
+equivalent, so there's no backend-portable fix, and none is attempted; a
+stale tab still catches up on its next manual reload or fragment poll.
+
 ## Notifications
 
 `notify::Notifier` is a trait with six implementations: webhook, Telegram,

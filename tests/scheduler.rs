@@ -3,7 +3,7 @@ use pingward::{
     db,
     models::{ChannelKind, CheckStatus, NotifyStatus, ScheduleKind},
     notify::{RetryPolicy, deliver_event},
-    scheduler::scan_once,
+    scheduler::{run_scan_loop, scan_once},
     store::{NewCheck, Store},
 };
 use wiremock::matchers::method;
@@ -218,4 +218,31 @@ async fn overdue_downs_and_delivers_to_bound_channel() {
         store.list_recent_notifications(id, 10).await.unwrap()[0].status,
         NotifyStatus::Ok
     );
+}
+
+/// `run_scan_loop` publishes each `Down` transition's `check_id` to the
+/// live-tail bus, not just `scan_once`'s returned `NotificationEvent`s — this
+/// covers the loop's own publish site, which `tests/sse.rs` (the ping-side
+/// publish) doesn't exercise.
+#[tokio::test]
+async fn run_scan_loop_publishes_down_transition_to_live_tail() {
+    // period 60 + grace 30 = 90s; last ping 200s ago → already overdue when
+    // the loop's first scan pass runs.
+    let (store, id) = store_with_up_check(60, 30, 200).await;
+
+    // Subscribe BEFORE spawning the loop. `run_scan_loop` gates its publish
+    // on `live_tx.receiver_count() > 0` (the same "free when nobody's
+    // watching" gate `ping::apply` uses) — subscribing first is what makes
+    // this deterministic instead of a race against the loop's first pass.
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let handle = tokio::spawn(run_scan_loop(store.clone(), 1, None, tx));
+
+    let received = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out waiting for the live-tail signal from run_scan_loop")
+        .expect("live-tail channel closed unexpectedly");
+    assert_eq!(received, id);
+
+    // The loop runs forever; don't let it outlive the test.
+    handle.abort();
 }
