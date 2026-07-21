@@ -2,6 +2,8 @@ use axum::http::StatusCode;
 use axum_test::TestServer;
 use pingward::{app, config::Config, db, state::AppState, store::Store};
 
+mod common;
+
 /// After a session exists, configure the `TestServer` to send that session's
 /// CSRF synchronizer token as a default `X-CSRF-Token` header so protected POSTs
 /// are not rejected by `csrf_guard`. Call after every (re)login.
@@ -49,7 +51,7 @@ async fn admin_server() -> (TestServer, Store, i64) {
 
 /// Every `/admin*` route registered by `web::routes()` must 403 for a
 /// signed-in non-admin, with no exceptions. The route list is derived from
-/// the router's own source (`admin_routes_in_router_source`) rather than
+/// the router's own source (`common::routes_in_router_source`) rather than
 /// hand-maintained, so a newly added `/admin` route that forgets its
 /// `AdminUser` guard fails this test and there is no way to silence it
 /// short of actually adding the guard.
@@ -74,7 +76,7 @@ async fn non_admin_forbidden_on_every_admin_route() {
     // `AdminUser` guard, not a missing/invalid CSRF token.
     set_csrf(&mut server, &store).await;
 
-    let routes = admin_routes_in_router_source();
+    let routes = common::routes_in_router_source(include_str!("../src/web.rs"), "/admin");
     // A parser that (due to a bug) returns nothing would make the loop below
     // pass vacuously. Guard against that explicitly.
     assert!(
@@ -99,84 +101,6 @@ async fn non_admin_forbidden_on_every_admin_route() {
             "{method} {path}: expected 403 Forbidden, got {status}"
         );
     }
-}
-
-/// Parses the body of `web::routes()` out of `src/web.rs` to recover every
-/// `(method, path)` pair it registers. This is a deliberate source-level
-/// check: `axum::Router` does not expose its route table for introspection
-/// at runtime, so reading the router's own source is the only way to recover
-/// the list without hand-maintaining a copy of it. Plain `str` methods only
-/// — no regex crate.
-fn admin_routes_in_router_source() -> Vec<(&'static str, String)> {
-    const WEB_RS: &str = include_str!("../src/web.rs");
-    let start_marker = "pub fn routes() -> Router<AppState> {";
-    let start = WEB_RS
-        .find(start_marker)
-        .expect("web.rs: `pub fn routes()` not found")
-        + start_marker.len();
-    let rest = &WEB_RS[start..];
-    let body_end = rest
-        .find("\n}\n")
-        .expect("web.rs: end of routes() body not found");
-    let body = &rest[..body_end];
-
-    let mut out = Vec::new();
-    let mut pos = 0;
-    while let Some(rel) = body[pos..].find(".route(") {
-        let entry_start = pos + rel + ".route(".len();
-        let entry_end = body[entry_start..]
-            .find(".route(")
-            .map_or(body.len(), |r| entry_start + r);
-        let entry = &body[entry_start..entry_end];
-        pos = entry_end;
-
-        let q1 = entry.find('"').expect("route entry missing path literal");
-        let q2 = entry[q1 + 1..]
-            .find('"')
-            .expect("route entry: unterminated path literal")
-            + q1
-            + 1;
-        let raw_path = &entry[q1 + 1..q2];
-        if !raw_path.starts_with("/admin") {
-            continue;
-        }
-        let path = normalise_route_path(raw_path);
-        let mut methods = 0;
-        if entry.contains("get(") {
-            out.push(("GET", path.clone()));
-            methods += 1;
-        }
-        if entry.contains("post(") {
-            out.push(("POST", path));
-            methods += 1;
-        }
-        assert!(
-            methods > 0,
-            "route `{raw_path}` uses a method router this parser doesn't recognise \
-             (only `get(`/`post(` are handled) — extend \
-             `admin_routes_in_router_source` so the route stays covered"
-        );
-    }
-    out
-}
-
-/// Replaces every `{param}` path segment with `1` so the parsed path can be
-/// requested as-is.
-fn normalise_route_path(raw: &str) -> String {
-    let mut out = String::new();
-    let mut in_param = false;
-    for c in raw.chars() {
-        match c {
-            '{' => {
-                in_param = true;
-                out.push('1');
-            }
-            '}' => in_param = false,
-            _ if in_param => {}
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 #[tokio::test]

@@ -9,6 +9,8 @@ use pingward::store::NewCheck;
 use pingward::{apikey, app, config::Config, db, state::AppState, store::Store};
 use serde_json::Value;
 
+mod common;
+
 async fn test_app() -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -413,4 +415,64 @@ async fn docs_are_served_to_a_logged_in_user() {
     let docs = server.get("/api/docs").await;
     docs.assert_status_ok();
     assert!(docs.text().to_lowercase().contains("scalar"));
+}
+
+// --- /api/v1 route guard exhaustiveness ------------------------------------
+//
+// `api::routes()` guards every `/api/v1` handler individually via the
+// `ApiUser` bearer extractor — there is no router-level layer enforcing it.
+// The test below parses `src/api/mod.rs` to recover the exact list of
+// `/api/v1` (method, path) pairs the router registers — `axum::Router` does
+// not expose its route table at runtime, so source-parsing is the only way
+// to derive it — and asserts every single one rejects an unauthenticated
+// caller with 401. There is no per-route exception list: a new `/api/v1`
+// route that forgets its `ApiUser` extractor fails this test.
+//
+// `/api/openapi.json` and `/api/docs` are deliberately excluded: they are
+// gated behind a logged-in web session (`CurrentUser`), not a bearer key
+// (see `docs_require_a_logged_in_session`/`docs_are_served_to_a_logged_in_user`
+// above), so they sit outside this invariant's scope. The `/api/v1` prefix
+// filter in `common::routes_in_router_source` excludes them automatically.
+
+/// Every `/api/v1` route registered by `api::routes()` must reject an
+/// unauthenticated caller with 401, with no exceptions. The route list is
+/// derived from the router's own source (`common::routes_in_router_source`)
+/// rather than hand-maintained, so a newly added `/api/v1` route that forgets
+/// its `ApiUser` extractor fails this test and there is no way to silence it
+/// short of actually adding the extractor.
+#[tokio::test]
+async fn every_api_v1_route_requires_a_bearer_key() {
+    let (server, _store) = test_app().await;
+
+    let routes = common::routes_in_router_source(include_str!("../src/api/mod.rs"), "/api/v1");
+    // A parser that (due to a bug) returns nothing would make the loop below
+    // pass vacuously. Guard against that explicitly.
+    assert!(
+        routes.len() >= 20,
+        "parsed only {} /api/v1 routes from src/api/mod.rs — the source parser \
+         is probably broken; this test would otherwise pass vacuously",
+        routes.len()
+    );
+
+    for (method, path) in &routes {
+        // No request body is sent, even for POST/PUT/PATCH — deliberately.
+        // `ApiUser` is a `FromRequestParts` extractor, so it runs *before*
+        // the `ApiJson` body extractor: auth must be rejected before the
+        // body is even looked at. If a handler ever extracted the body
+        // first, an unauthenticated request would surface `400 bad_request`
+        // instead of `401`, and this test would catch that regression.
+        let status = match *method {
+            "GET" => server.get(path).await.status_code(),
+            "POST" => server.post(path).await.status_code(),
+            "PUT" => server.put(path).await.status_code(),
+            "PATCH" => server.patch(path).await.status_code(),
+            "DELETE" => server.delete(path).await.status_code(),
+            other => panic!("unsupported method {other} for route {path}"),
+        };
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "{method} {path}: expected 401 Unauthorized, got {status}"
+        );
+    }
 }
