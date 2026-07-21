@@ -234,6 +234,30 @@ async fn admin_views_other_users_project_and_audits() {
         && a.target_owner_id == Some(owner)));
 }
 
+/// Deleting another user's project sends the admin back to `/admin`. The
+/// `location` assertion is the regression guard: it used to point at
+/// `/admin/projects`, a route that no longer exists and would now 404.
+#[tokio::test]
+async fn admin_deletes_other_users_project_and_lands_on_admin() {
+    let (server, store, _admin_id) = admin_server().await;
+    // A separate user owns a project.
+    let owner = store
+        .create_user("owner", Some("phc"), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let pid = store
+        .create_project(owner, "victim", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    // Admin deletes the project and should land on /admin, not /admin/projects.
+    let res = server.post(&format!("/admin/projects/{pid}/delete")).await;
+    assert_eq!(res.status_code(), StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/admin");
+    // Verify the project is actually deleted.
+    let projects = store.list_projects_for_user(owner).await.unwrap();
+    assert!(!projects.iter().any(|p| p.id == pid));
+}
+
 #[tokio::test]
 async fn admin_mutation_on_other_project_is_audited() {
     let (server, store, _admin_id) = admin_server().await;
