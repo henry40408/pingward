@@ -6,6 +6,7 @@ use std::collections::HashMap;
 pub enum DisplayStatus {
     New,
     Up,
+    Running,
     Late,
     Down,
     Paused,
@@ -16,6 +17,7 @@ impl DisplayStatus {
         match self {
             DisplayStatus::New => "new",
             DisplayStatus::Up => "up",
+            DisplayStatus::Running => "running",
             DisplayStatus::Late => "late",
             DisplayStatus::Down => "down",
             DisplayStatus::Paused => "paused",
@@ -23,14 +25,42 @@ impl DisplayStatus {
     }
 }
 
+/// A `Start` ping has been recorded more recently than the last finish
+/// (success/fail). `store::mark_ping` stamps `last_ping_at`/`last_start_at`
+/// with `COALESCE`, and `ping::apply` only ever passes `last_start_at` for a
+/// `Start` ping and `last_ping_at` for a success/fail — a `Log` ping calls
+/// neither, so it cannot clear this. Rust's `Option` ordering makes
+/// `Some(_) > None` true and `None > None` false, so this one comparison
+/// covers both "started and never finished" and "started again after the
+/// last finish", with no separate `is_some()` check needed.
+fn is_running(check: &Check) -> bool {
+    check.last_start_at > check.last_ping_at
+}
+
 /// `next_due_at` already includes grace, so `next_due_at - grace` is the expected
 /// run time. A stored-Up check inside `(expected, due]` is "running late".
+///
+/// Precedence is `Paused > Down > Running > Late > Up`: `Running` only
+/// applies to a stored `Up` or `New` check, and beats `Late` because a
+/// long-running job naturally drifts past its expected time while it is
+/// legitimately still executing — showing `late` there would be a false
+/// alarm. `Down`/`Paused` are unaffected by `is_running`, so a job that
+/// starts again after a failed run still shows `down`, and an in-flight run
+/// never masks an alert.
 pub fn display_status(check: &Check, now: DateTime<Utc>) -> DisplayStatus {
     match check.status {
-        CheckStatus::New => DisplayStatus::New,
         CheckStatus::Down => DisplayStatus::Down,
         CheckStatus::Paused => DisplayStatus::Paused,
+        CheckStatus::New => {
+            if is_running(check) {
+                return DisplayStatus::Running;
+            }
+            DisplayStatus::New
+        }
         CheckStatus::Up => {
+            if is_running(check) {
+                return DisplayStatus::Running;
+            }
             if let Some(due) = check.next_due_at {
                 let expected = due - Duration::seconds(check.grace_secs);
                 if now > expected && now <= due {
@@ -249,6 +279,65 @@ mod tests {
         let mut c = base_check();
         c.next_due_at = Some(now + Duration::seconds(3000)); // expected well in the future
         assert_eq!(display_status(&c, now), DisplayStatus::Up);
+    }
+
+    #[test]
+    fn running_beats_late() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 14, 12, 0, 0).unwrap();
+        let mut c = base_check();
+        c.status = CheckStatus::Up;
+        c.next_due_at = Some(now + Duration::seconds(120)); // due in 2m, grace 300 → would be "late"
+        c.last_ping_at = Some(now - Duration::seconds(4000));
+        c.last_start_at = Some(now - Duration::seconds(10)); // started after the last finish
+        assert_eq!(display_status(&c, now), DisplayStatus::Running);
+    }
+
+    #[test]
+    fn running_from_new() {
+        let now = Utc::now();
+        let mut c = base_check();
+        c.status = CheckStatus::New;
+        c.last_start_at = Some(now); // started, never finished
+        assert_eq!(display_status(&c, now), DisplayStatus::Running);
+    }
+
+    #[test]
+    fn down_and_paused_unaffected_by_running() {
+        let now = Utc::now();
+        let mut c = base_check();
+        c.last_ping_at = Some(now - Duration::seconds(100));
+        c.last_start_at = Some(now); // started again after a failed/paused run
+        for s in [CheckStatus::Down, CheckStatus::Paused] {
+            c.status = s;
+            assert_eq!(
+                display_status(&c, now),
+                if s == CheckStatus::Down {
+                    DisplayStatus::Down
+                } else {
+                    DisplayStatus::Paused
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn running_cleared_by_a_later_success() {
+        let now = Utc::now();
+        let mut c = base_check();
+        c.status = CheckStatus::Up;
+        c.last_start_at = Some(now - Duration::seconds(50));
+        c.last_ping_at = Some(now); // success landed after the start
+        assert_eq!(display_status(&c, now), DisplayStatus::Up);
+    }
+
+    #[test]
+    fn both_timestamps_none_is_not_running() {
+        let now = Utc::now();
+        let mut c = base_check();
+        c.status = CheckStatus::New;
+        c.last_start_at = None;
+        c.last_ping_at = None;
+        assert_eq!(display_status(&c, now), DisplayStatus::New);
     }
 
     #[test]

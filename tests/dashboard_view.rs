@@ -79,6 +79,53 @@ async fn dashboard_shows_project_group_and_check_row() {
 }
 
 #[tokio::test]
+async fn dashboard_shows_running_badge_and_count() {
+    let (server, store, pid, cid) = server_with_project_and_check().await;
+    // Give `cid` an in-flight start (no finish) so `display_status` resolves
+    // it to Running.
+    store
+        .mark_ping(
+            cid,
+            pingward::models::CheckStatus::New,
+            None,
+            Some(chrono::Utc::now()),
+            None,
+        )
+        .await
+        .unwrap();
+    // A second, untouched check must NOT render as running — proves the
+    // running tile/badge aren't rendered unconditionally.
+    store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "idle",
+            ping_uuid: "idle-uuid",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let res = server.get("/").await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(
+        body.contains(
+            "<div class=\"tile running\"><span class=\"edge\"></span><div class=\"n\">1</div><div class=\"l\">Running</div></div>"
+        ),
+        "running tile must show a count of 1 (not 0 or 2)"
+    );
+    assert_eq!(
+        body.matches("class=\"badge running\"").count(),
+        1,
+        "exactly one check row should render the running badge"
+    );
+}
+
+#[tokio::test]
 async fn dashboard_empty_state_when_no_projects() {
     let (server, _store, _uid) = logged_in_server().await;
     let res = server.get("/").await;

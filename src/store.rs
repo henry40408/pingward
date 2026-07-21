@@ -21,6 +21,13 @@ pub struct CheckStatusCounts {
     pub up: i64,
     pub down: i64,
     pub paused: i64,
+    /// Stored `up`/`new` checks with an in-flight `start` (mirrors
+    /// `view::DisplayStatus::Running`). Not part of the `GROUP BY status`
+    /// aggregate below — it's a display-status derivation, not a stored
+    /// status — so it comes from a second, portable query instead of a
+    /// `SUM(CASE ...)` folded into the first (whose result type differs
+    /// across `SQLite`/`PostgreSQL` on the `Any` driver).
+    pub running: i64,
 }
 
 /// A keyset cursor for paging the check-detail "recent pings"/"recent
@@ -1500,6 +1507,16 @@ impl Store {
                 _ => {}
             }
         }
+        // `status IN ('up','new')` is what keeps this consistent with
+        // `view::display_status`'s precedence: Running only ever applies on
+        // top of a stored up/new check.
+        c.running = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM checks \
+             WHERE status IN ('up','new') AND last_start_at IS NOT NULL \
+             AND (last_ping_at IS NULL OR last_start_at > last_ping_at)",
+        )
+        .fetch_one(&self.pool)
+        .await?;
         Ok(c)
     }
 
@@ -1620,7 +1637,7 @@ mod tests {
         db,
         models::{CheckStatus, PingKind, ScheduleKind},
     };
-    use chrono::{TimeZone, Utc};
+    use chrono::{Duration, TimeZone, Utc};
 
     async fn seeded() -> Store {
         let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -2328,7 +2345,7 @@ mod tests {
             })
             .await
             .unwrap();
-        store
+        let bid = store
             .create_check(&NewCheck {
                 project_id: pid,
                 name: "b",
@@ -2353,8 +2370,77 @@ mod tests {
         assert_eq!(counts.up, 0);
         assert_eq!(counts.down, 0);
         assert_eq!(counts.paused, 0);
+        assert_eq!(counts.running, 0);
         assert_eq!(store.count_projects().await.unwrap(), 2); // seeded 'p' + this 'p2'
-        assert_eq!(store.count_checks().await.unwrap(), 2);
+
+        // `b` gets a start ping and never finishes: stays stored `new`, but
+        // becomes running.
+        let t1 = Utc::now();
+        let t2 = t1 + Duration::seconds(1);
+        store
+            .mark_ping(bid, CheckStatus::New, None, Some(t1), None)
+            .await
+            .unwrap();
+
+        // `c` finishes successfully (stored `up`), then starts again without
+        // finishing: running on top of `up`.
+        let cid = store
+            .create_check(&NewCheck {
+                project_id: pid,
+                name: "c",
+                ping_uuid: "uuid-c",
+                kind: ScheduleKind::Period,
+                period_secs: Some(3600),
+                grace_secs: 300,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        store
+            .mark_ping(cid, CheckStatus::Up, Some(t1), None, None)
+            .await
+            .unwrap();
+        store
+            .mark_ping(cid, CheckStatus::Up, None, Some(t2), None)
+            .await
+            .unwrap();
+
+        // `d` fails (stored `down`), then starts again: a `down` check with
+        // an in-flight start must NOT be counted as running — `Down` beats
+        // `Running` in the display-status precedence.
+        let did = store
+            .create_check(&NewCheck {
+                project_id: pid,
+                name: "d",
+                ping_uuid: "uuid-d",
+                kind: ScheduleKind::Period,
+                period_secs: Some(3600),
+                grace_secs: 300,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        store
+            .mark_ping(did, CheckStatus::Down, Some(t1), None, None)
+            .await
+            .unwrap();
+        store
+            .mark_ping(did, CheckStatus::Down, None, Some(t2), None)
+            .await
+            .unwrap();
+
+        let counts = store.count_checks_by_status().await.unwrap();
+        assert_eq!(
+            counts.new + counts.up + counts.down + counts.paused,
+            store.count_checks().await.unwrap()
+        );
+        assert_eq!(counts.new, 2); // `a` and `b` (a start ping doesn't change stored status)
+        assert_eq!(counts.up, 1); // `c`
+        assert_eq!(counts.down, 1); // `d`
+        assert_eq!(counts.running, 2); // `b` (new+running) and `c` (up+running), not `d`
+        assert_eq!(store.count_checks().await.unwrap(), 4); // `a`, `b`, `c`, `d`
     }
 
     #[tokio::test]

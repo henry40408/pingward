@@ -126,6 +126,19 @@ retention-days settings fields are plain integers, not durations.
 `view::fmt_secs` remains the lossy *display* format used elsewhere (e.g. the
 heartbeat strip tooltips, `fmt_secs(d) / fmt_secs(c)`).
 
+**Display status** (`src/view.rs::display_status`/`DisplayStatus`): a
+display-only status layered on top of the stored `CheckStatus`
+(`new`/`up`/`down`/`paused`) — `late` and `running` exist only here, so the
+stored status keeps its narrower meaning. Precedence is `Paused > Down >
+Running > Late > Up`. `Running` applies only when the stored status is `Up`
+or `New`, via `check.last_start_at > check.last_ping_at` — `store::mark_ping`
+`COALESCE`s both timestamps and `ping::apply` only stamps `last_start_at` for
+a `Start` ping and `last_ping_at` for a success/fail, so a `Log` ping cannot
+clear it, and `Option`'s ordering (`Some(_) > None`, not `None > None`) covers
+"started and never finished" with no extra `is_some()` check. `Running` beats
+`Late` (a long-running job legitimately drifts past its expected time) but is
+itself beaten by `Down`/`Paused`, so an in-flight run never masks an alert.
+
 **Notifications** (`src/notify.rs`): a `Notifier` trait with six implementations
 (`webhook`, `telegram`, `slack`, `ntfy`, `pushover`, `email`/SMTP). `notifier_for`
 builds one from a stored `Channel`; `deliver_event` applies a `RetryPolicy`.

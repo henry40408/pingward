@@ -53,6 +53,51 @@ async fn admin_dashboard_renders_with_figures() {
 }
 
 #[tokio::test]
+async fn admin_dashboard_shows_running_badge_with_count() {
+    let (server, store, _admin) = admin_server().await;
+    let uid = store
+        .create_user("owner", Some("p"), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let pid = store
+        .create_project(uid, "proj", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    let cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "c",
+            ping_uuid: "uuid-c",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // In-flight start, no finish: stored `new`, display-status `running`.
+    store
+        .mark_ping(
+            cid,
+            pingward::models::CheckStatus::New,
+            None,
+            Some(chrono::Utc::now()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let res = server.get("/admin").await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(
+        body.contains("<span class=\"badge running\">1 running</span>"),
+        "expected the running badge to render with a count of 1"
+    );
+}
+
+#[tokio::test]
 async fn admin_dashboard_absolute_times_wrapped_for_local_tz() {
     let (server, store, _admin) = admin_server().await;
     let now = chrono::Utc::now();
