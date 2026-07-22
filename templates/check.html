@@ -65,7 +65,7 @@ mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
     <div class="beat" title="last 30 runs">
       {% for b in bars %}<i class="{{ b.class }}" style="height:{{ b.height }}px" title="{{ b.title }}"></i>{% endfor %}
     </div>
-    <div class="beatcap"><span>30 runs ago</span><span>taller = longer run &middot; amber &ge;80% budget &middot; red = failed</span><span>now</span></div>
+    <div class="beatcap"><span>30 runs ago</span><span class="key">taller = longer run &middot; amber &ge;80% budget &middot; red = failed</span><span>now</span></div>
   </div>
 </div>
 

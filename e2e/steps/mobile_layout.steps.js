@@ -140,6 +140,43 @@ Then(
   }
 );
 
+// Same Range-based line-box count as the group-header step below, for the same
+// reason: these captions are flex items, so measuring the element itself would
+// report one rect no matter how its text wraps.
+//
+// Two assertions with different jobs. The edge captions being one line each is
+// the reported symptom ("30 runs ago" split into "30 runs" / "ago"). The
+// legend starting below them is what actually distinguishes fixed from broken:
+// without the full-width row it shares the edge captions' row, so its top sits
+// level with theirs instead of under them.
+Then(
+  "the heartbeat legend sits on its own row below the edge captions",
+  async ({ page }) => {
+    const m = await page.evaluate(() => {
+      const cap = document.querySelector(".beatcap");
+      const lineBoxes = (el) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return range.getClientRects().length;
+      };
+      const key = cap.querySelector(".key");
+      const edges = [...cap.children].filter((el) => el !== key);
+      return {
+        edges: edges.map((el) => ({ text: el.textContent, lines: lineBoxes(el) })),
+        edgeBottom: Math.round(Math.max(...edges.map((el) => el.getBoundingClientRect().bottom))),
+        keyTop: Math.round(key.getBoundingClientRect().top),
+      };
+    });
+    for (const edge of m.edges) {
+      expect(edge.lines, `"${edge.text}" spans ${edge.lines} lines — it wrapped`).toBe(1);
+    }
+    expect(
+      m.keyTop,
+      `the legend starts at y=${m.keyTop}, above the edge captions' bottom edge (${m.edgeBottom}) — it is still sharing their row`
+    ).toBeGreaterThanOrEqual(m.edgeBottom);
+  }
+);
+
 // The check page's breadcrumb links back to its project (templates/check.html).
 When("I open the project from the breadcrumb", async ({ page }) => {
   await page.locator(".crumb a").nth(1).click();
