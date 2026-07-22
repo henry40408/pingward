@@ -65,6 +65,12 @@ admin account on first run.
 
 To use Postgres instead, pass `-e DATABASE_URL=postgres://user:pass@host/db`.
 
+`docker stop` / `docker compose down` shuts down gracefully: pingward handles
+SIGTERM, stops accepting new connections, lets in-flight requests and the
+current scan/prune pass finish, and closes the database pool — which
+checkpoints SQLite's WAL and removes the `-wal`/`-shm` files — typically well
+under a second, rather than waiting out Docker's 10s grace period.
+
 ### From source
 
 ```sh

@@ -15,6 +15,7 @@ pub mod notify;
 pub mod ping;
 pub mod prune;
 pub mod scheduler;
+pub mod shutdown;
 pub mod state;
 pub mod store;
 pub mod view;

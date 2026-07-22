@@ -56,6 +56,22 @@ one `AppState`:
   `due_time`, transitions overdue checks to down, and fires notifications.
 - `prune::run_prune_loop` — deletes old pings/notifications and expired sessions.
 
+**Graceful shutdown** (`src/shutdown.rs`): one `watch<bool>` flag behind a
+`(ShutdownTx, Shutdown)` pair, raised by `os_signal()` on the first
+SIGTERM/SIGINT and shared by the HTTP server and both loops (dropping the
+`ShutdownTx` also counts as a request). The signal handler is **mandatory, not
+polite**: the image's exec-form `ENTRYPOINT` makes pingward PID 1, and Linux
+discards any signal still at its default disposition for PID 1 — with no
+handler, `docker compose down` sits out its whole 10s grace period before
+SIGKILL. `main` drains in order: `with_graceful_shutdown` → each loop returns
+from the `select!` at its sleep (an in-flight pass finishes) → **join** both
+handles, so no loop query is outstanding → `store.pool.close()` bounded by
+`POOL_CLOSE_TIMEOUT` (5s; fire-and-forget `deliver_event` tasks can still hold
+a connection). That last step is the SQLite payoff — a clean close of the last
+connection checkpoints the WAL and removes the `-wal`/`-shm` sidecars, which
+SIGKILL never did. Adding a param to either loop means updating `main.rs` and
+`tests/scheduler.rs` together.
+
 **Live-tail signal bus**: `AppState::events` (`broadcast::Sender<i64>`) carries
 a `check_id` whenever that check changes — published by `ping::apply` (every
 ping kind, even `Log`/paused checks) and `scheduler::run_scan_loop` (each

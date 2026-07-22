@@ -203,6 +203,48 @@ mod tests {
         }
     }
 
+    /// Closing the pool — what `main` does on SIGTERM after joining the
+    /// background loops — must leave the database checkpointed and the WAL
+    /// sidecars gone. Under SIGKILL that never happens, so `-wal`/`-shm`
+    /// survive and every start has to replay the WAL instead.
+    ///
+    /// Asserting the files exist *before* the close is what makes this a test
+    /// of the close rather than of a database that never opened a WAL.
+    #[tokio::test]
+    async fn closing_the_pool_checkpoints_and_removes_wal_sidecars() {
+        let path = std::env::temp_dir().join("pingward_dbtest_close.sqlite3");
+        let sidecars = ["-wal", "-shm"].map(|s| format!("{}{s}", path.display()));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+
+        let url = format!("sqlite://{}", path.display());
+        let pool = connect(&url).await.unwrap();
+        migrate(&pool, &url).await.unwrap();
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('probe', 'v')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        for f in &sidecars {
+            assert!(
+                std::path::Path::new(f).exists(),
+                "a written WAL database must have {f} while the pool is open"
+            );
+        }
+
+        pool.close().await;
+
+        for f in &sidecars {
+            assert!(
+                !std::path::Path::new(f).exists(),
+                "{f} must be gone after a clean pool close (WAL checkpointed)"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// In-memory `SQLite` still gets a busy timeout but WAL does not apply (a
     /// `:memory:` database reports its journal mode as `memory`).
     #[tokio::test]

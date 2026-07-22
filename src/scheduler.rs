@@ -1,6 +1,7 @@
 use crate::config::{SmtpConfig, effective_nag_interval, effective_scan_interval};
 use crate::models::{Check, CheckStatus, ScheduleKind};
 use crate::notify::{EventKind, NotificationEvent, RetryPolicy, deliver_event};
+use crate::shutdown::Shutdown;
 use crate::store::Store;
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
@@ -167,11 +168,17 @@ fn loop_interval_secs(
 /// transition produced by `scan_once` also publishes its `check_id` there, so
 /// a check-detail page open on an overdue check refreshes without a manual
 /// reload.
+///
+/// `shutdown` ends the loop: the check is at the sleep, so a pass already in
+/// flight finishes rather than being abandoned mid-scan. Returning (instead of
+/// being aborted at an arbitrary await point) is what lets `main` close the
+/// pool with no query outstanding — see `shutdown::os_signal`.
 pub async fn run_scan_loop(
     store: Store,
     env_default_secs: u64,
     smtp: Option<SmtpConfig>,
     live_tx: broadcast::Sender<i64>,
+    shutdown: Shutdown,
 ) {
     loop {
         let now = Utc::now();
@@ -233,7 +240,13 @@ pub async fn run_scan_loop(
             .flatten()
             .and_then(|v| v.parse::<i64>().ok());
         let secs = loop_interval_secs(&active, &projects, global, env_default_secs);
-        sleep(TokioDuration::from_secs(secs)).await;
+        tokio::select! {
+            () = sleep(TokioDuration::from_secs(secs)) => {}
+            () = shutdown.wait() => {
+                tracing::info!("scan loop stopping");
+                return;
+            }
+        }
     }
 }
 
