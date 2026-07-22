@@ -133,9 +133,16 @@ must use `$N` placeholders and `RETURNING id` (not `?` + `last_insert_id`).
 This applies uniformly across both backends when going through `Any`.
 
 Migrations live in `migrations/sqlite/` and `migrations/postgres/` and are
-**hand-duplicated** — `db::migrate` just picks the directory matching the
-URL scheme and runs it with `sqlx::migrate::Migrator`. A schema change means
-writing the SQL twice, once per dialect.
+**hand-duplicated** — `db::migrate` just picks the migrator matching the
+URL scheme and runs it. A schema change means writing the SQL twice, once
+per dialect.
+
+Both directories are embedded into the binary at compile time via
+`sqlx::migrate!` (one `static Migrator` each), so nothing is read from disk at
+startup. That is what makes the release image work: it ships the binary alone,
+with no source tree, and runs from the mounted `/data` volume — a migrator
+that resolved `migrations/` relative to the working directory would panic
+there.
 
 `db::connect` applies SQLite-only pragmas per new connection: `foreign_keys`
 (so `ON DELETE CASCADE` is enforced — Postgres does this natively), a

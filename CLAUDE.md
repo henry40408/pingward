@@ -75,8 +75,11 @@ filter form hidden while live (`assets/app.css` `.live-on`).
 to **SQLite or Postgres by URL scheme**. All queries go through `Store` and must
 work on both backends — use `$N` placeholders + `RETURNING id` (the `Any` driver
 does **not** translate `?`). Migrations are duplicated in `migrations/sqlite/`
-and `migrations/postgres/`; `db::migrate` picks the directory from the URL, so a
-schema change means writing the SQL **in both**. SQLite pragmas (foreign keys,
+and `migrations/postgres/`; `db::migrate` picks the migrator from the URL, so a
+schema change means writing the SQL **in both**. Both directories are embedded
+at compile time with `sqlx::migrate!` (hence sqlx's `macros` feature) — the
+release image ships only the binary and runs from `/data`, so migrations must
+never be read from the filesystem at startup. SQLite pragmas (foreign keys,
 busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
 
 **Auth & authorization** (`src/auth.rs`):
