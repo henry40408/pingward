@@ -118,12 +118,39 @@ All configuration is via environment variables:
 | `PINGWARD_SCAN_INTERVAL` | `30s` | How often the scan loop re-evaluates checks. Accepts raw seconds or a duration (`5m`, `1h30m`). |
 | `PINGWARD_PRUNE_INTERVAL_SECS` | — | How often the prune loop runs. |
 | `PINGWARD_LOG_FORMAT` | `text` | Log renderer: `text` (human-readable) or `json` (one JSON object per line for a log aggregator). Verbosity is set with `RUST_LOG`. |
-| `PINGWARD_FORWARD_AUTH_HEADER` + `PINGWARD_TRUSTED_PROXIES` | — | Trusted forward-auth header and the proxy CIDRs allowed to set it. |
+| `PINGWARD_TRUSTED_PROXIES` | — | Comma-separated addresses or CIDR blocks whose `X-Forwarded-For` (and forward-auth header) is believed. See below. |
+| `PINGWARD_FORWARD_AUTH_HEADER` | — | Header carrying a pre-authenticated username; honoured only from a trusted proxy. |
 | `PINGWARD_SMTP_*` | — | Instance SMTP for the email channel (`HOST`/`FROM` required to enable; port/TLS defaulted). |
 
 Duration-valued settings (scan/nag/prune intervals and per-check period, grace,
 max-runtime) accept either raw seconds or a human-readable string (`5m`,
 `1h30m`, `2d`).
+
+### Running behind a reverse proxy
+
+The address recorded for a login session (**Account** page) and for each ping
+(the **Source** column on a check) is the socket peer — which behind a reverse
+proxy is the proxy itself, the same value on every row. To record the real
+client instead, list the proxy in `PINGWARD_TRUSTED_PROXIES`; its
+`X-Forwarded-For` is then believed, and its first entry is stored. A request
+from any other address has its `X-Forwarded-For` ignored, so a public `/ping/*`
+endpoint cannot be used to forge a source address.
+
+Entries are bare addresses (`10.0.0.1`, `::1`) or CIDR blocks
+(`172.16.0.0/12`, `fd00::/8`), comma-separated. Prefer a block when the proxy
+runs in a container: its address comes from the bridge network's pool and
+changes whenever the network is recreated. Hostnames are **not** resolved and
+match nothing. For pingward and Caddy in the same Compose project:
+
+```yaml
+environment:
+  PINGWARD_TRUSTED_PROXIES: "172.16.0.0/12"
+```
+
+Confirm the peer's actual address with `docker inspect -f
+'{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' <caddy-container>`,
+and note that `/admin` shows the value pingward parsed on its **Environment**
+card.
 
 ## REST API
 

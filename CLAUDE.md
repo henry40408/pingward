@@ -136,6 +136,21 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   configured trusted proxy, in which case the first `X-Forwarded-For` entry
   wins — the same trust gate `forward_auth_username` uses, so an untrusted
   caller cannot spoof it.
+- That gate is `auth::is_trusted_proxy`, and a `PINGWARD_TRUSTED_PROXIES`
+  entry is a bare address **or a CIDR block** (`172.16.0.0/12`, `fd00::/8`) —
+  a containerised reverse proxy draws its address from the bridge network's
+  pool, so a pinned literal stops matching when the network is recreated.
+  Comparison and storage are canonical (`IpAddr::to_canonical`), so an
+  IPv4-mapped IPv6 peer matches an IPv4 entry; unparseable entries match
+  nothing and DNS is never consulted.
+- `ping::ClientIp` is the extractor that resolves it, and it yields the
+  finished `Option<String>` — so `/ping/*` (`pings.source_ip`, the "Source"
+  column) and the login/setup handlers share one rule instead of each handler
+  deciding. It requires `Arc<Config>: FromRef<S>`, and `ConnectInfo` is only
+  populated by `into_make_service_with_connect_info`, so under `axum-test`
+  there is no peer at all — the trusted-proxy path is covered in
+  `tests/ping_source_ip.rs`, which drives the router with `oneshot` and
+  injects `ConnectInfo` itself.
 - `/admin` is the single merged admin page (each handler guarded by
   `AdminUser`): site-wide overview, global settings, user management, and
   every project across all users, stacked as ordinary cards top to bottom —
