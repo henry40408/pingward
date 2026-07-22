@@ -161,6 +161,29 @@ async fn postgres_full_round_trip() {
     let batched: Vec<i64> = batch.get(&cid2).unwrap().iter().map(|p| p.id).collect();
     assert_eq!(batched, per_check, "batch order matches per-check query");
 
+    // batched checks-per-project query (the other half of the dashboard's N+1
+    // avoidance): the generated `IN ($1,…,$N)` list must bind and group on
+    // PostgreSQL exactly as on SQLite. `pid2` is deliberately empty, so the
+    // "absent, not empty vector" contract is exercised here too.
+    let pid2 = store
+        .create_project(uid, "proj2", "", None, None, now)
+        .await
+        .unwrap();
+    let by_project = store.list_checks_for_projects(&[pid, pid2]).await.unwrap();
+    let batched: Vec<i64> = by_project.get(&pid).unwrap().iter().map(|c| c.id).collect();
+    let per_project: Vec<i64> = store
+        .list_checks_for_project(pid)
+        .await
+        .unwrap()
+        .iter()
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(batched, per_project, "batch matches per-project query");
+    assert!(
+        !by_project.contains_key(&pid2),
+        "a project with no checks must be absent from the map"
+    );
+
     // notifications
     store
         .record_notification(
