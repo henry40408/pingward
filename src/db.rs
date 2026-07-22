@@ -1,7 +1,14 @@
 use sqlx::any::{AnyConnectOptions, AnyPoolOptions, install_default_drivers};
 use sqlx::migrate::Migrator;
-use std::path::Path;
 use std::str::FromStr;
+
+// The migration SQL is embedded at compile time rather than read from
+// `migrations/` at startup: the release image ships the binary alone (no
+// source tree, and its working directory is the mounted data volume), so a
+// filesystem lookup would panic there. `sqlx::migrate!` also re-runs the build
+// when a migration file changes, so the two stay in sync.
+static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("migrations/sqlite");
+static POSTGRES_MIGRATOR: Migrator = sqlx::migrate!("migrations/postgres");
 
 pub type Pool = sqlx::AnyPool;
 
@@ -96,12 +103,11 @@ pub async fn connect(url: &str) -> Result<Pool, sqlx::Error> {
 }
 
 pub async fn migrate(pool: &Pool, url: &str) -> Result<(), sqlx::Error> {
-    let dir = if is_sqlite_url(url) {
-        "migrations/sqlite"
+    let m = if is_sqlite_url(url) {
+        &SQLITE_MIGRATOR
     } else {
-        "migrations/postgres"
+        &POSTGRES_MIGRATOR
     };
-    let m = Migrator::new(Path::new(dir)).await?;
     m.run(pool).await?;
     Ok(())
 }
@@ -221,6 +227,36 @@ mod tests {
             "wal",
             "WAL must not be applied to in-memory SQLite"
         );
+    }
+
+    /// Regression test for the release image: it ships the binary without the
+    /// source tree and runs from `/data`, so a `migrate()` that resolved
+    /// `migrations/` relative to the working directory panicked at startup.
+    /// The migrations are embedded, so migrating from a directory that has no
+    /// `migrations/` must still work.
+    ///
+    /// `cargo nextest` runs each test in its own process (see CLAUDE.md), so
+    /// changing the working directory here cannot affect another test.
+    #[tokio::test]
+    async fn migrate_works_without_migrations_dir_on_disk() {
+        let cwd = std::env::temp_dir();
+        assert!(
+            !cwd.join("migrations").exists(),
+            "test precondition: {} must not contain a migrations/ directory",
+            cwd.display()
+        );
+        std::env::set_current_dir(&cwd).unwrap();
+
+        let pool = connect("sqlite::memory:").await.unwrap();
+        migrate(&pool, "sqlite::memory:").await.unwrap();
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='checks'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
     }
 
     /// Regression test for a `SQLite` file URL with no `?mode=` query param:
