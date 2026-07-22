@@ -6,7 +6,7 @@ use crate::models::{
 use crate::notify::EventKind;
 use chrono::{DateTime, Utc};
 use sqlx::Row;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 #[derive(Clone)]
@@ -1180,6 +1180,63 @@ impl Store {
         Ok(())
     }
 
+    /// Binds `check_id` to every channel already configured on `project_id` —
+    /// the equivalent of healthchecks' `Check.assign_all_channels()`, called
+    /// right after a check is created so a fresh check is never silently
+    /// unnotified. `ON CONFLICT DO NOTHING` (not `SQLite`'s `INSERT OR IGNORE`,
+    /// which is a parse error on `Postgres`) for the same reason [`Store::bind_channel`]
+    /// documents above. The `WHERE project_id = $2` on the SELECT is
+    /// load-bearing for `SQLite`, not just a filter: when an UPSERT clause is
+    /// attached to an `INSERT … SELECT`, `SQLite`'s parser cannot tell whether
+    /// `ON` opens the upsert clause or a join's `ON`, and requires the SELECT
+    /// to carry a WHERE clause to disambiguate — removing it turns this into a
+    /// syntax error on `SQLite` only.
+    pub async fn bind_all_project_channels(
+        &self,
+        check_id: i64,
+        project_id: i64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO check_channels (check_id, channel_id) \
+             SELECT $1, id FROM channels WHERE project_id = $2 \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(check_id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Batched membership check: which of `check_ids` have at least one bound
+    /// channel. Mirrors [`Store::list_checks_for_projects`]'s `$N` placeholder
+    /// generation so the dashboard can answer "does this check have a
+    /// channel?" for every row in one round-trip instead of one query per
+    /// check.
+    pub async fn checks_with_channels(
+        &self,
+        check_ids: &[i64],
+    ) -> Result<HashSet<i64>, sqlx::Error> {
+        if check_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let placeholders = (1..=check_ids.len())
+            .map(|i| format!("${i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT DISTINCT check_id FROM check_channels WHERE check_id IN ({placeholders})"
+        );
+        // Safe: `sql` interpolates only self-generated `$N` placeholders — every
+        // value is bound below, so there is no injection surface.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for id in check_ids {
+            q = q.bind(*id);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        Ok(rows.iter().map(|r| r.get::<i64, _>("check_id")).collect())
+    }
+
     pub async fn unbind_channel(&self, check_id: i64, channel_id: i64) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM check_channels WHERE check_id = $1 AND channel_id = $2")
             .bind(check_id)
@@ -2248,6 +2305,132 @@ mod tests {
 
         let map = store.all_project_scan_intervals().await.unwrap();
         assert_eq!(map.get(&pid), Some(&Some(15)));
+    }
+
+    #[tokio::test]
+    async fn bind_all_project_channels_binds_every_project_channel() {
+        let store = seeded().await;
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+        let pid = store
+            .create_project(1, "web", "", None, None, now)
+            .await
+            .unwrap();
+        let other_pid = store
+            .create_project(1, "other", "", None, None, now)
+            .await
+            .unwrap();
+
+        let c1 = store
+            .create_channel(pid, ChannelKind::Webhook, "hook1", "{}", now)
+            .await
+            .unwrap();
+        let c2 = store
+            .create_channel(pid, ChannelKind::Webhook, "hook2", "{}", now)
+            .await
+            .unwrap();
+        let other_c = store
+            .create_channel(other_pid, ChannelKind::Webhook, "hook-other", "{}", now)
+            .await
+            .unwrap();
+
+        let chk = store
+            .create_check(&NewCheck {
+                project_id: pid,
+                name: "job",
+                ping_uuid: "uuid-bind-all",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        store.bind_all_project_channels(chk, pid).await.unwrap();
+        let mut bound = store.bound_channel_ids(chk).await.unwrap();
+        bound.sort_unstable();
+        let mut expected = vec![c1, c2];
+        expected.sort_unstable();
+        assert_eq!(bound, expected, "should bind every channel of the project");
+        assert!(
+            !bound.contains(&other_c),
+            "must not bind a channel belonging to a different project"
+        );
+
+        // Idempotent: calling again must not error or duplicate bindings.
+        store.bind_all_project_channels(chk, pid).await.unwrap();
+        let mut bound_again = store.bound_channel_ids(chk).await.unwrap();
+        bound_again.sort_unstable();
+        assert_eq!(bound_again, expected, "second call must be a no-op");
+    }
+
+    #[tokio::test]
+    async fn checks_with_channels_reports_only_bound_checks() {
+        let store = seeded().await;
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+        let pid = store
+            .create_project(1, "web", "", None, None, now)
+            .await
+            .unwrap();
+        let cid = store
+            .create_channel(pid, ChannelKind::Webhook, "hook", "{}", now)
+            .await
+            .unwrap();
+
+        let with_channel = store
+            .create_check(&NewCheck {
+                project_id: pid,
+                name: "with-channel",
+                ping_uuid: "uuid-with-channel",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let without_channel = store
+            .create_check(&NewCheck {
+                project_id: pid,
+                name: "without-channel",
+                ping_uuid: "uuid-without-channel",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 30,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        store.bind_channel(with_channel, cid).await.unwrap();
+
+        assert_eq!(
+            store.checks_with_channels(&[]).await.unwrap(),
+            HashSet::new(),
+            "empty input must return an empty set without querying"
+        );
+
+        let result = store
+            .checks_with_channels(&[with_channel, without_channel])
+            .await
+            .unwrap();
+        assert!(
+            result.contains(&with_channel),
+            "the bound check must be reported"
+        );
+        assert!(
+            !result.contains(&without_channel),
+            "the unbound check must not be reported"
+        );
+        assert_eq!(
+            result.len(),
+            1,
+            "must not invent ids that were not asked for"
+        );
     }
 
     #[tokio::test]

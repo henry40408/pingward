@@ -466,7 +466,12 @@ pub async fn delete_project(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Create a check under a project. A fresh ping UUID is generated server-side.
+/// Create a check under a project. A fresh ping UUID is generated server-side,
+/// and the new check is bound to every notification channel the project already
+/// has, so a check created through the API is wired up exactly like one created
+/// in the web UI instead of starting with no channel and silently alerting
+/// nobody. Replace the binding set explicitly with
+/// `PUT /api/v1/checks/{id}/channels`.
 #[utoipa::path(
     post, path = "/api/v1/projects/{id}/checks", tag = "checks",
     security(("api_key" = [])),
@@ -506,6 +511,7 @@ pub async fn create_check(
             nag_interval_secs: v.nag_interval_secs,
         })
         .await?;
+    state.store.bind_all_project_channels(id, pid).await?;
     let c = state
         .store
         .find_check(id)

@@ -103,7 +103,9 @@ When("I delete the channel named {string}", async ({ page }, name) => {
 });
 
 Then("the project shows no channels", async ({ page }) => {
-  await expect(page.getByText("No channels yet.")).toBeVisible();
+  const banner = page.getByTestId("project-channels-empty");
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("nobody is notified");
 });
 
 // On the check page, the notify-channels form lists each project channel as a
@@ -175,6 +177,83 @@ Then(
 Then("the check's notify channels show an empty state", async ({ page }) => {
   await expect(page.getByTestId("check-channels-empty")).toBeVisible();
 });
+
+// From the project page, click into a check's row (a `role="link"` div, not a
+// real anchor) to reach its check page.
+When("I visit the check page for {string}", async ({ page }, name) => {
+  await page.locator(".check", { hasText: name }).click();
+  await expect(page).toHaveURL(/\/checks\/\d+$/);
+});
+
+When("I visit the dashboard", async ({ page, serverUrl }) => {
+  await page.goto(`${serverUrl}/`);
+});
+
+// Each notify-channel row carries `data-testid="channel-state-N"` wrapping
+// both the ".on" and ".off" spans (always both in the DOM, CSS shows exactly
+// one keyed off the checkbox's live state). Assert visibility of each span
+// directly rather than `toHaveText`, which reads `textContent` and would see
+// "ONOFF" regardless of which one is actually displayed.
+Then(
+  "the channel {string} shows as ON on the check page",
+  async ({ page }, name) => {
+    const onoff = page
+      .locator("label.chk", { hasText: name })
+      .locator('[data-testid^="channel-state-"]');
+    await expect(onoff.locator(".on")).toBeVisible();
+    await expect(onoff.locator(".off")).toBeHidden();
+  }
+);
+
+Then(
+  "the channel {string} shows as OFF on the check page",
+  async ({ page }, name) => {
+    const onoff = page
+      .locator("label.chk", { hasText: name })
+      .locator('[data-testid^="channel-state-"]');
+    await expect(onoff.locator(".off")).toBeVisible();
+    await expect(onoff.locator(".on")).toBeHidden();
+  }
+);
+
+// The "no channel" chip (data-testid="check-no-channel") only renders on a
+// dashboard row for a check with zero bound channels — asserted both
+// directions (present / absent) across the two scenario checks.
+Then(
+  "the dashboard shows a {string} chip for the check {string}",
+  async ({ page }, chip, name) => {
+    const row = page.getByTestId("dashboard-check-row").filter({ hasText: name });
+    await expect(
+      row.getByTestId("check-no-channel"),
+      `the check "${name}" has no bound channel, so its row must carry the "${chip}" chip`
+    ).toHaveText(chip);
+  }
+);
+
+Then(
+  "the dashboard shows no {string} chip for the check {string}",
+  async ({ page }, chip, name) => {
+    const row = page.getByTestId("dashboard-check-row").filter({ hasText: name });
+    // Non-vacuity guard: both assertions below are trivially satisfied when
+    // `row` matches nothing (a chip inside a missing row has count 0, and
+    // Playwright treats `not.toContainText` against zero elements as met), so
+    // a scenario that never created the check would pass without this.
+    await expect(
+      row,
+      `no dashboard row for the check "${name}" — the absence assertions below would pass vacuously`
+    ).toHaveCount(1);
+    await expect(
+      row.getByTestId("check-no-channel"),
+      `the check "${name}" is bound to a channel, so its row must not carry the chip`
+    ).toHaveCount(0);
+    // Also assert the wording itself is absent, so re-rendering the same
+    // warning under a different testid would still fail this scenario.
+    await expect(
+      row,
+      `the check "${name}" is bound to a channel, yet its row still reads "${chip}"`
+    ).not.toContainText(chip);
+  }
+);
 
 // Delivery records the notification row AFTER the webhook POST returns, so poll
 // by reloading until a "sent" row for the channel appears.

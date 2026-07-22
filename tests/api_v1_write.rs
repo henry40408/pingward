@@ -264,6 +264,56 @@ async fn create_check_period_and_reject_bad_schedule() {
     assert_eq!(bad.json::<Value>()["error"]["code"], "bad_request");
 }
 
+/// A check created through the API in a project that already has channels
+/// comes out bound to all of them (`Store::bind_all_project_channels`, called
+/// from `api::v1::create_check`) — same guarantee as the web form.
+#[tokio::test]
+async fn create_check_is_bound_to_existing_project_channels() {
+    let (server, store) = test_app().await;
+    let (uid, token) = user_with_key(&store, "alice", false).await;
+    let pid = store
+        .create_project(uid, "p", "", None, None, Utc::now())
+        .await
+        .unwrap();
+    let c1 = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "hook1",
+            r#"{"url":"http://x"}"#,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    let c2 = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "hook2",
+            r#"{"url":"http://y"}"#,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let res = server
+        .post(&format!("/api/v1/projects/{pid}/checks"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "name": "job", "period_secs": "1h", "grace_secs": "5m" }))
+        .await;
+    res.assert_status(StatusCode::CREATED);
+    let cid = res.json::<Value>()["id"].as_i64().unwrap();
+
+    let mut bound = store.bound_channel_ids(cid).await.unwrap();
+    bound.sort_unstable();
+    let mut expected = vec![c1, c2];
+    expected.sort_unstable();
+    assert_eq!(
+        bound, expected,
+        "a check created via the API in a project with existing channels must come out bound to all of them"
+    );
+}
+
 /// Same coverage as `project_description_is_raw_markdown_and_defaults_to_empty`,
 /// for checks: POST/PATCH accept `description`, GET returns the raw markdown
 /// (not rendered), and omitting it on create yields `""`.

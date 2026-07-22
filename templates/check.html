@@ -78,7 +78,7 @@ mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
     <form method="post" action="{{ base }}/checks/{{ check.id }}/channels">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       {% for cb in channel_boxes %}
-      <label class="chk"><input type="checkbox" name="channel_ids" value="{{ cb.id }}"{% if cb.bound %} checked{% endif %}><span class="nm">{{ cb.name }}</span><span class="kind">{{ cb.kind }}</span></label>
+      <label class="chk"><input type="checkbox" name="channel_ids" value="{{ cb.id }}"{% if cb.bound %} checked{% endif %}><span class="nm">{{ cb.name }}</span><span class="kind">{{ cb.kind }}</span><span class="onoff" data-testid="channel-state-{{ cb.id }}"><span class="on">ON</span><span class="off">OFF</span></span></label>
       {% endfor %}
       <div class="formactions"><button class="btn primary" type="submit">Save channels</button></div>
     </form>

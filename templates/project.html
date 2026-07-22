@@ -28,6 +28,7 @@
     <div class="check" tabindex="0" role="link" onclick="location='{{ base }}/checks/{{ c.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='{{ base }}/checks/{{ c.id }}'">
       <span class="status-dot {{ c.status }}"></span>
       <div class="cmeta"><div class="nm">{{ c.name }}</div><div class="sc">{{ c.schedule }}</div>{% if !c.description.is_empty() %}<div class="cdesc" data-testid="check-description-summary">{{ c.description }}</div>{% endif %}</div>
+      {% if c.no_channel %}<span class="nochan" data-testid="check-no-channel" title="No notification channel is bound — nobody is alerted when this check goes down">no channel</span>{% endif %}
       <a class="rowedit" href="{{ base }}/checks/{{ c.id }}/edit" onclick="event.stopPropagation()">edit</a>
       <span class="badge {{ c.status }}">{{ c.status }}</span>
     </div>
@@ -39,7 +40,7 @@
   <div class="ch"><h2>Channels</h2></div>
   <div class="cb">
     {% if channels.is_empty() %}
-    <p class="note">No channels yet.</p>
+    <p class="flash warn" data-testid="project-channels-empty">No channels yet — when a check in this project goes down, nobody is notified. <a href="{{ base }}/projects/{{ project.id }}/channels/new">Add a channel</a>.</p>
     {% endif %}
     {% for ch in channels %}
     <div class="chk readonly">

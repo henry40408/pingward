@@ -241,6 +241,49 @@ Then(
   }
 );
 
+// Same Range-based line-box count as the group-header step above: `.cmeta` is
+// a flex item, so measuring it directly would report one rect however its text
+// wraps. The chip assertion is the non-vacuity guard — a row rendering no chip
+// at all would trivially leave the name on one line and prove nothing about
+// whether showing the chip at phone width is affordable.
+Then(
+  "the check row's name stays on one line beside the {string} chip",
+  async ({ page }, chip) => {
+    const m = await page.evaluate(() => {
+      const row = document.querySelector(".check");
+      const nm = row.querySelector(".cmeta .nm");
+      const range = document.createRange();
+      range.selectNodeContents(nm);
+      const badge = row.querySelector('[data-testid="check-no-channel"]');
+      const box = badge && badge.getBoundingClientRect();
+      return {
+        lines: range.getClientRects().length,
+        name: nm.textContent,
+        chip: badge && badge.textContent,
+        chipWidth: box ? Math.round(box.width) : 0,
+        chipTop: box ? Math.round(box.top) : 0,
+        metaBottom: Math.round(row.querySelector(".cmeta").getBoundingClientRect().bottom),
+      };
+    });
+    expect(m.chip, "the row renders no chip, so the line count below is vacuous").toBe(chip);
+    expect(
+      m.chipWidth,
+      `the "${chip}" chip is in the DOM but has no box — it is still display:none at this width`
+    ).toBeGreaterThan(0);
+    expect(
+      m.lines,
+      `the check name "${m.name}" spans ${m.lines} lines — the chip squeezed .cmeta until it wrapped`
+    ).toBe(1);
+    // The name staying on one line is only affordable because the chip wrapped
+    // onto a row of its own; without that it shares the row and the assertion
+    // above holds only for names short enough to leave it space.
+    expect(
+      m.chipTop,
+      `the chip starts at y=${m.chipTop}, above the name block's bottom edge (${m.metaBottom}) — it is still sharing the row`
+    ).toBeGreaterThanOrEqual(m.metaBottom);
+  }
+);
+
 // The mechanism: when the badge wraps to another line its centre drops far
 // below the dot's. On one line the two centres coincide.
 Then("the check row is a single line", async ({ page }) => {

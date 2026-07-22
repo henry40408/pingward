@@ -156,9 +156,13 @@ per-parent query for each such case — `list_checks_for_projects` beside
 `list_checks_for_project`, `list_recent_pings_for_checks` beside
 `list_recent_pings` — each building an `IN ($1,…,$N)` list and returning a
 `HashMap` keyed by the parent id (parents with no children are simply absent).
-The dashboard uses both, so its query count is fixed no matter how many
-projects or checks a user owns; without them it would issue one query per
-project group and one per check row.
+The dashboard uses both, plus `checks_with_channels` (same `IN ($1,…,$N)`
+shape, but returning a flat `HashSet<i64>` of the check ids that have at least
+one bound channel rather than a per-parent map, since the caller only needs
+membership) to decide which rows get the "no channel" chip — so its query
+count is fixed no matter how many projects or checks a user owns; without
+these batched queries it would issue one query per project group and one (or
+more) per check row.
 
 `db::connect` applies SQLite-only pragmas per new connection: `foreign_keys`
 (so `ON DELETE CASCADE` is enforced — Postgres does this natively), a
@@ -347,6 +351,19 @@ under a `RetryPolicy` (3 attempts, exponential backoff from 500ms by
 default). Delivery is fire-and-forget: `run_scan_loop` calls it inside
 `tokio::spawn`, so a slow or failing notification never blocks the scan loop
 or a ping response.
+
+A check that ends up with no bound channel at all silently drops its alerts
+(`deliver_event` returns early with only a `tracing::debug!`), so check
+creation auto-binds every channel already configured on the project —
+`Store::bind_all_project_channels` (one `INSERT … SELECT ... ON CONFLICT DO
+NOTHING`, not a loop over `bind_channel`), called from both
+`web::check_create_core` and `api::v1::create_check` right after
+`store.create_check`. Existing checks are untouched. For the checks that still
+end up unbound, `Store::checks_with_channels` (batched, same `$N`-placeholder
+generation as `list_checks_for_projects`) tells the dashboard and project page
+which rows to mark with a "no channel" chip, and the project page's
+empty-channels state is a warning naming the consequence instead of a neutral
+note.
 
 ## Templates & assets
 
