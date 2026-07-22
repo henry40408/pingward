@@ -228,6 +228,39 @@ fn matches_term(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(needle)
 }
 
+/// A check's most recent activity: the later of its last finished ping and its
+/// last start. `Option`'s ordering does the work — `Some(_) > None`, and
+/// `max` between two `Some`s picks the later instant — which is the same trick
+/// `view::display_status` uses to spot an in-flight run. A check that has never
+/// been pinged yields `None`.
+fn last_activity_at(c: &Check) -> Option<DateTime<Utc>> {
+    c.last_ping_at.max(c.last_start_at)
+}
+
+/// Order a project's checks for display: most recent activity first, so a job
+/// that just ran (or just started) surfaces at the top. Never-pinged checks
+/// sort last (`None` is the smallest key, reversed here), and checks sharing a
+/// timestamp fall back to creation order so the list is deterministic.
+fn sort_checks_by_activity(checks: &mut [Check]) {
+    checks.sort_by(|a, b| {
+        last_activity_at(b)
+            .cmp(&last_activity_at(a))
+            .then(a.id.cmp(&b.id))
+    });
+}
+
+/// Order the dashboard's project groups by name, case-insensitively so `Web`
+/// and `api` interleave the way a reader expects rather than splitting on byte
+/// value. Equal names fall back to creation order for a deterministic list.
+fn sort_projects_by_name(projects: &mut [Project]) {
+    projects.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then(a.id.cmp(&b.id))
+    });
+}
+
 struct CheckRow {
     id: i64,
     name: String,
@@ -407,8 +440,18 @@ async fn dashboard(
     // narrows the batched query instead of loading pings for hidden rows.
     let mut project_checks = Vec::new();
     let mut check_ids = Vec::new();
-    for project in state.store.list_projects_for_user(user.id).await? {
-        let checks = state.store.list_checks_for_project(project.id).await?;
+    // Display order is decided here rather than in the `Store` queries: those
+    // are shared with the project page, the admin views and the API, which all
+    // want the stable id order.
+    let mut projects = state.store.list_projects_for_user(user.id).await?;
+    sort_projects_by_name(&mut projects);
+    // Batched like the ping fetch below: one query for every project's checks
+    // instead of one per rendered group.
+    let project_ids: Vec<i64> = projects.iter().map(|p| p.id).collect();
+    let mut checks_by_project = state.store.list_checks_for_projects(&project_ids).await?;
+    for project in projects {
+        let mut checks = checks_by_project.remove(&project.id).unwrap_or_default();
+        sort_checks_by_activity(&mut checks);
         let checks = if needle.is_empty()
             || matches_term(&project.name, &needle)
             || matches_term(&project.description, &needle)

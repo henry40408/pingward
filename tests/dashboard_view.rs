@@ -713,3 +713,179 @@ async fn dashboard_empty_state_when_no_projects() {
         "empty-state message missing"
     );
 }
+
+/// Names in the order the dashboard renders them. Tests assert the whole
+/// sequence rather than one pairwise comparison, so a sort that happens to move
+/// the pair being checked but scrambles the rest still fails.
+fn rendered_order(body: &str, open: &str, close: &str) -> Vec<String> {
+    body.split(open)
+        .skip(1)
+        .filter_map(|s| s.split_once(close))
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
+/// Project group headers, top to bottom. `<h2>` is used nowhere else in the
+/// dashboard or its base template.
+fn project_order(body: &str) -> Vec<String> {
+    rendered_order(body, "<h2>", "</h2>")
+}
+
+/// Check rows, top to bottom, flattened across groups. Matches the row's `nm`
+/// cell, so the search box and project headers cannot contribute.
+fn check_order(body: &str) -> Vec<String> {
+    rendered_order(body, "class=\"nm\">", "</div>")
+}
+
+#[tokio::test]
+async fn dashboard_orders_projects_by_name_not_creation() {
+    // The fixture creates "web" before "infra", so id order and name order
+    // disagree — a dashboard still on id order fails here.
+    let server = server_with_two_projects().await;
+    let body = server.get("/").await.text();
+    assert_eq!(
+        project_order(&body),
+        ["infra", "web"],
+        "projects must be ordered by name: {body}"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_project_order_by_name_is_case_insensitive() {
+    let (server, store, uid) = logged_in_server().await;
+    let now = chrono::Utc::now();
+    // Byte order would put every uppercase name ahead of every lowercase one,
+    // splitting the list on case instead of reading alphabetically.
+    for name in ["Zulu", "alpha", "Mike"] {
+        store
+            .create_project(uid, name, "", None, None, now)
+            .await
+            .unwrap();
+    }
+    let body = server.get("/").await.text();
+    assert_eq!(
+        project_order(&body),
+        ["alpha", "Mike", "Zulu"],
+        "project name order must ignore case: {body}"
+    );
+}
+
+/// Four checks in one project whose creation order is deliberately the reverse
+/// of their activity order, plus one that has never been pinged.
+async fn server_with_staggered_activity() -> TestServer {
+    use pingward::models::CheckStatus;
+    let (server, store, uid) = logged_in_server().await;
+    let now = chrono::Utc::now();
+    let pid = store
+        .create_project(uid, "services", "", None, None, now)
+        .await
+        .unwrap();
+    async fn mk(store: &Store, pid: i64, name: &str, uuid: &str) -> i64 {
+        store
+            .create_check(&pingward::store::NewCheck {
+                project_id: pid,
+                name,
+                ping_uuid: uuid,
+                kind: pingward::models::ScheduleKind::Period,
+                period_secs: Some(3600),
+                grace_secs: 300,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+    }
+    let ago = |s: i64| now - chrono::Duration::seconds(s);
+
+    // Created first, pinged longest ago — must render last of the pinged rows.
+    let stale = mk(&store, pid, "stale", "cu-stale").await;
+    store
+        .mark_ping(stale, CheckStatus::Up, Some(ago(900)), None, None)
+        .await
+        .unwrap();
+    // Never pinged: no ping and no start, so it sorts below everything.
+    mk(&store, pid, "untouched", "cu-untouched").await;
+    let middle = mk(&store, pid, "middle", "cu-middle").await;
+    store
+        .mark_ping(middle, CheckStatus::Up, Some(ago(600)), None, None)
+        .await
+        .unwrap();
+    // In flight: only a start, no finish. The start is what dates it, and it is
+    // the most recent activity of the four.
+    let running = mk(&store, pid, "running", "cu-running").await;
+    store
+        .mark_ping(running, CheckStatus::New, None, Some(ago(60)), None)
+        .await
+        .unwrap();
+    // Started long ago but finished recently — the finish wins, putting it
+    // second. Guards against a sort that reads only `last_start_at`.
+    let finished = mk(&store, pid, "finished", "cu-finished").await;
+    store
+        .mark_ping(
+            finished,
+            CheckStatus::Up,
+            Some(ago(120)),
+            Some(ago(1200)),
+            None,
+        )
+        .await
+        .unwrap();
+    server
+}
+
+#[tokio::test]
+async fn dashboard_orders_checks_by_most_recent_activity() {
+    let server = server_with_staggered_activity().await;
+    let body = server.get("/").await.text();
+    assert_eq!(
+        check_order(&body),
+        ["running", "finished", "middle", "stale", "untouched"],
+        "checks must be ordered by their last ping or start, newest first: {body}"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_never_pinged_checks_keep_creation_order_at_the_bottom() {
+    let (server, store, uid) = logged_in_server().await;
+    let now = chrono::Utc::now();
+    let pid = store
+        .create_project(uid, "services", "", None, None, now)
+        .await
+        .unwrap();
+    // No check has any activity, so every sort key ties and the order must fall
+    // back to creation — not to whatever the sort happens to do with equal keys.
+    for (name, uuid) in [("zeta", "cu-z"), ("alpha", "cu-a"), ("mu", "cu-m")] {
+        store
+            .create_check(&pingward::store::NewCheck {
+                project_id: pid,
+                name,
+                ping_uuid: uuid,
+                kind: pingward::models::ScheduleKind::Period,
+                period_secs: Some(3600),
+                grace_secs: 300,
+                timezone: "UTC",
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+    let body = server.get("/").await.text();
+    assert_eq!(
+        check_order(&body),
+        ["zeta", "alpha", "mu"],
+        "never-pinged checks must stay in creation order: {body}"
+    );
+}
+
+#[tokio::test]
+async fn dashboard_check_order_survives_the_status_filter() {
+    // Filtering preserves relative order, so the newest-first sequence must
+    // still hold once rows are removed.
+    let server = server_with_staggered_activity().await;
+    let body = server.get("/?status=up").await.text();
+    assert_eq!(
+        check_order(&body),
+        ["running", "finished", "middle", "stale"],
+        "the status filter must not scramble the activity order: {body}"
+    );
+}

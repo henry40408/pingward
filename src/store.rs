@@ -1230,6 +1230,40 @@ impl Store {
         rows.iter().map(row_to_check).collect()
     }
 
+    /// Batched form of [`Store::list_checks_for_project`]: every check belonging
+    /// to any of `project_ids`, in one round-trip, keyed by `project_id`. The
+    /// dashboard renders one group per project and would otherwise issue a
+    /// query per group. Projects with no checks are simply absent from the map;
+    /// each vector keeps the same id order the per-project query returns.
+    pub async fn list_checks_for_projects(
+        &self,
+        project_ids: &[i64],
+    ) -> Result<HashMap<i64, Vec<Check>>, sqlx::Error> {
+        if project_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = (1..=project_ids.len())
+            .map(|i| format!("${i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT * FROM checks WHERE project_id IN ({placeholders}) ORDER BY project_id, id"
+        );
+        // Safe: `sql` interpolates only self-generated `$N` placeholders — every
+        // value is bound below, so there is no injection surface.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for id in project_ids {
+            q = q.bind(*id);
+        }
+        let rows = q.fetch_all(&self.pool).await?;
+        let mut map: HashMap<i64, Vec<Check>> = HashMap::new();
+        for row in &rows {
+            let check = row_to_check(row)?;
+            map.entry(check.project_id).or_default().push(check);
+        }
+        Ok(map)
+    }
+
     pub async fn update_check_schedule(
         &self,
         id: i64,
@@ -2693,6 +2727,71 @@ mod tests {
         assert!(
             ia < ib,
             "expected pinged check before never-pinged: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_checks_for_projects_matches_per_project() {
+        let store = seeded().await;
+        // `seeded` makes project 1; add two more so the IN list has to group.
+        for name in ["p2", "p3"] {
+            store
+                .create_project(1, name, "", None, None, Utc::now())
+                .await
+                .unwrap();
+        }
+        // Interleave the projects so a query that leaked rows across groups, or
+        // relied on insertion order, shows up.
+        for (project_id, name, uuid) in [
+            (1, "a1", "u-a1"),
+            (2, "b1", "u-b1"),
+            (1, "a2", "u-a2"),
+            (2, "b2", "u-b2"),
+            (1, "a3", "u-a3"),
+        ] {
+            store
+                .create_check(&NewCheck {
+                    project_id,
+                    name,
+                    ping_uuid: uuid,
+                    kind: ScheduleKind::Period,
+                    period_secs: Some(60),
+                    grace_secs: 30,
+                    timezone: "UTC",
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+        }
+
+        let batch = store.list_checks_for_projects(&[1, 2, 3]).await.unwrap();
+        assert_eq!(batch.get(&1).unwrap().len(), 3);
+        assert_eq!(batch.get(&2).unwrap().len(), 2);
+        // Project 3 has no checks, so it is absent rather than mapped to [].
+        assert!(!batch.contains_key(&3));
+        // The batch must be indistinguishable from the per-project query it
+        // replaces — same ids, same order.
+        for pid in [1, 2, 3] {
+            let single: Vec<i64> = store
+                .list_checks_for_project(pid)
+                .await
+                .unwrap()
+                .iter()
+                .map(|c| c.id)
+                .collect();
+            let batched: Vec<i64> = batch
+                .get(&pid)
+                .map(|v| v.iter().map(|c| c.id).collect())
+                .unwrap_or_default();
+            assert_eq!(batched, single, "project {pid}");
+        }
+        // Empty input short-circuits to an empty map (no `IN ()` to build).
+        assert!(
+            store
+                .list_checks_for_projects(&[])
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

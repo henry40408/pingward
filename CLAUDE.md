@@ -129,6 +129,19 @@ retention-days settings fields are plain integers, not durations.
 `view::fmt_secs` remains the lossy *display* format used elsewhere (e.g. the
 heartbeat strip tooltips, `fmt_secs(d) / fmt_secs(c)`).
 
+**Dashboard** (`src/web.rs::dashboard`): renders one group per project.
+Display **order is decided in the handler, not in SQL** — the `Store` list
+queries stay in id order because the project page, the admin views and the API
+share them. Projects sort by name (case-insensitively, `sort_projects_by_name`);
+within a group, checks sort by `last_activity_at` — `max(last_ping_at,
+last_start_at)`, so an in-flight `Start` counts — newest first, never-pinged
+last, ties broken by id. Both the text (`q`) and status filters run in Rust over
+the loaded rows (see `matches_term`), and filtering preserves the sort order.
+Loads are **batched, not per-group**: one `list_checks_for_projects` for every
+project's checks and one `list_recent_pings_for_checks` for the heartbeat
+strips, so a request is a fixed number of queries regardless of how many
+projects or checks a user owns.
+
 **Display status** (`src/view.rs::display_status`/`DisplayStatus`): a
 display-only status layered on top of the stored `CheckStatus`
 (`new`/`up`/`down`/`paused`) — `late` and `running` exist only here, so the

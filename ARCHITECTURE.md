@@ -56,7 +56,7 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
 - `src/store.rs` — `Store`, the single data-access layer; every query in the
   app goes through it.
 - `src/db.rs` — `connect()` (builds the `AnyPool`, applies SQLite pragmas per
-  connection) and `migrate()` (picks the migration directory by URL scheme).
+  connection) and `migrate()` (picks the embedded migration set by URL scheme).
 - `src/models.rs` — domain structs (`Check`, `User`, `Project`, `Channel`,
   ...) and the `str_enum!`-generated string-backed enums
   (`CheckStatus`, `PingKind`, `ScheduleKind`, `ChannelKind`, `NotifyStatus`).
@@ -143,6 +143,16 @@ startup. That is what makes the release image work: it ships the binary alone,
 with no source tree, and runs from the mounted `/data` volume — a migrator
 that resolved `migrations/` relative to the working directory would panic
 there.
+
+A page that renders a list of lists must **batch its child loads** rather than
+querying once per parent. `Store` exposes a batched sibling next to the
+per-parent query for each such case — `list_checks_for_projects` beside
+`list_checks_for_project`, `list_recent_pings_for_checks` beside
+`list_recent_pings` — each building an `IN ($1,…,$N)` list and returning a
+`HashMap` keyed by the parent id (parents with no children are simply absent).
+The dashboard uses both, so its query count is fixed no matter how many
+projects or checks a user owns; without them it would issue one query per
+project group and one per check row.
 
 `db::connect` applies SQLite-only pragmas per new connection: `foreign_keys`
 (so `ON DELETE CASCADE` is enforced — Postgres does this natively), a
