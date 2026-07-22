@@ -26,6 +26,9 @@
   </div></header>
   {% endif %}
   <main class="wrap">{% block body %}{% endblock %}</main>
+  {# Outside the `show_nav` guard on purpose: login and setup are exactly the
+     pages a bug report gets filed from, so the version has to be there too. #}
+  <footer class="foot"><span data-testid="app-version">pingward {{ crate::view::version() }}</span></footer>
   <script>
     (function(){
       var b=document.getElementById('pw-theme-toggle');if(!b)return;

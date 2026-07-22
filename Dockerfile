@@ -33,7 +33,13 @@ COPY . .
 # Map Docker's TARGETARCH onto the Rust musl triple and build. `rustup target
 # add` runs after the source (and rust-toolchain.toml) is in place, so it
 # resolves against the pinned toolchain rather than the base image's default.
+#
+# build.rs stamps the binary with GIT_VERSION. `.dockerignore` excludes `.git`,
+# so its own `git describe` fallback cannot work here — the workflow passes the
+# describe output in as a build arg. The literal "dev" default means an
+# arg-less `docker build` still produces a working image, just labelled `dev`.
 ARG TARGETARCH
+ARG GIT_VERSION=dev
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target,sharing=locked \
     set -eux; \
@@ -43,7 +49,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       *) echo "unsupported target arch $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     rustup target add "$target"; \
-    cargo zigbuild --release --target "$target"; \
+    GIT_VERSION="${GIT_VERSION}" cargo zigbuild --release --target "$target"; \
     install -Dm755 "target/${target}/release/pingward" /out/pingward
 
 # ---- runtime: minimal static image (CA certs + tzdata, no shell) ------------

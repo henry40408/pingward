@@ -3,6 +3,17 @@ import { test, expect } from "../support/fixtures.js";
 
 const { Then } = createBdd(test);
 
+// The version string is `git describe` output, which has no single shape: a
+// release tag, a tag plus distance, or a bare short SHA before the first tag
+// exists (and from CI's shallow, tag-less checkout). So this asserts the
+// footer rendered *something* rather than matching a semver pattern that
+// would fail on a perfectly good build.
+Then("the footer shows the build version", async ({ page }) => {
+  const version = page.getByTestId("app-version");
+  await expect(version).toBeVisible();
+  await expect(version).toHaveText(/^pingward \S+$/);
+});
+
 // `DOMParser` with the image/svg+xml type is a real, spec-compliant XML parser
 // — it is what the browser itself uses for the asset — and it reports a
 // failure by returning a document whose root is a <parsererror> rather than by
