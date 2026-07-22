@@ -8,7 +8,7 @@ use crate::store::Store;
 use axum::{
     Router,
     body::Bytes,
-    extract::{ConnectInfo, FromRequestParts, Path, State},
+    extract::{ConnectInfo, FromRef, FromRequestParts, Path, State},
     http::{StatusCode, request::Parts},
     routing::get,
 };
@@ -25,36 +25,44 @@ fn truncate(bytes: &Bytes) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-/// Client IP, read directly from the `ConnectInfo<SocketAddr>` extension if
-/// present.
+/// The address to record for a request: the `ConnectInfo<SocketAddr>` peer,
+/// or the client behind it when that peer is a trusted proxy
+/// (`auth::client_ip`). `None` when the peer is unknown — `ConnectInfo` is
+/// only populated by `into_make_service_with_connect_info`, so under
+/// `axum-test` there is no peer at all.
 ///
-/// The brief specifies `Option<ConnectInfo<SocketAddr>>` as the extractor so
-/// the handler still works under `axum-test` (which never populates
-/// `ConnectInfo`). As of axum 0.8.9, `Option<T>` only implements
-/// `FromRequestParts` for extractors that explicitly opt in via the
-/// `OptionalFromRequestParts` trait, and `ConnectInfo` does not — so
-/// `Option<ConnectInfo<SocketAddr>>` does not implement `FromRequestParts` and
-/// the handlers fail to compile (confirmed with a minimal repro against the
-/// pinned axum 0.8.9). This local wrapper reads the extension manually and
-/// is infallible, preserving the brief's "optional connect info" behavior.
+/// The brief specifies `Option<ConnectInfo<SocketAddr>>` as the extractor. As
+/// of axum 0.8.9, `Option<T>` only implements `FromRequestParts` for
+/// extractors that explicitly opt in via the `OptionalFromRequestParts` trait,
+/// and `ConnectInfo` does not — so `Option<ConnectInfo<SocketAddr>>` does not
+/// implement `FromRequestParts` and the handlers fail to compile (confirmed
+/// with a minimal repro against the pinned axum 0.8.9). This local wrapper
+/// reads the extension manually and is infallible, preserving the brief's
+/// "optional connect info" behavior.
+///
+/// Resolving `X-Forwarded-For` *here* rather than in each handler is what keeps
+/// pings and sessions on the same rule: behind a reverse proxy the raw peer is
+/// the proxy's own address, which is the same value for every row and tells
+/// nobody anything.
 ///
 /// `pub(crate)` so `web.rs` can reuse it for the same purpose (stamping a
 /// session's IP at login), rather than duplicating this extractor.
-pub(crate) struct ClientIp(pub(crate) Option<SocketAddr>);
+pub(crate) struct ClientIp(pub(crate) Option<String>);
 
 impl<S> FromRequestParts<S> for ClientIp
 where
     S: Send + Sync,
+    Arc<Config>: FromRef<S>,
 {
     type Rejection = Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        Ok(Self(
-            parts
-                .extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ci| ci.0),
-        ))
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let config = Arc::<Config>::from_ref(state);
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0.ip());
+        Ok(Self(crate::auth::client_ip(&parts.headers, peer, &config)))
     }
 }
 
@@ -196,7 +204,7 @@ async fn apply(
 ) -> Result<StatusCode, AppError> {
     let check = resolve(store, uuid).await?;
     let now = Utc::now();
-    let ip = conn.0.map(|addr| addr.ip().to_string());
+    let ip = conn.0;
     store
         .insert_ping(
             check.id,

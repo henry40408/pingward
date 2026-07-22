@@ -178,6 +178,17 @@ Sessions are a `pingward_session` cookie plus an argon2 password hash
 auto-provision a passwordless, non-admin user on first sight, but only when
 the request's peer IP is a configured trusted proxy.
 
+`auth::is_trusted_proxy` is the single gate for that decision, shared by
+forward-auth and by `auth::client_ip` (the address stamped on a session row
+and on `pings.source_ip`). A `PINGWARD_TRUSTED_PROXIES` entry is a bare
+address or a **CIDR block** — the container case needs the block, since a
+reverse proxy on a bridge network draws its address from a pool and a pinned
+literal silently stops matching after the network is recreated. Addresses are
+compared (and stored) canonically, so an IPv4-mapped IPv6 peer matches an
+IPv4 entry; an unparseable entry matches nothing and DNS is never consulted.
+Resolution happens in the `ping::ClientIp` extractor rather than per handler,
+which is what keeps `/ping/*` and the login handlers on the same rule.
+
 Three request extractors resolve the caller:
 
 - `CurrentUser` — 401/redirects to `/login` if no session/forward-auth user.
