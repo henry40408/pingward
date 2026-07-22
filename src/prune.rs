@@ -1,3 +1,4 @@
+use crate::shutdown::Shutdown;
 use crate::store::Store;
 use chrono::{DateTime, Duration, Utc};
 use tokio::time::{Duration as TokioDuration, sleep};
@@ -73,9 +74,13 @@ pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<(u64, u64, 
     Ok((pings_deleted, notifications_deleted, sessions_deleted))
 }
 
-/// Run the prune task forever: prune once immediately, then every
+/// Run the prune task until shutdown: prune once immediately, then every
 /// `interval_secs` (bounded to >= 1s). Errors are logged, never fatal.
-pub async fn run_prune_loop(store: Store, interval_secs: u64) {
+///
+/// `shutdown` is checked at the sleep, so a delete pass already in flight
+/// finishes instead of being abandoned. Returning lets `main` close the pool
+/// with no query outstanding (see `shutdown::os_signal`).
+pub async fn run_prune_loop(store: Store, interval_secs: u64, shutdown: Shutdown) {
     let interval = TokioDuration::from_secs(interval_secs.max(1));
     loop {
         match prune_once(&store, Utc::now()).await {
@@ -89,7 +94,13 @@ pub async fn run_prune_loop(store: Store, interval_secs: u64) {
         let _ = store
             .set_setting("last_prune_at", &Utc::now().to_rfc3339())
             .await;
-        sleep(interval).await;
+        tokio::select! {
+            () = sleep(interval) => {}
+            () = shutdown.wait() => {
+                tracing::info!("prune loop stopping");
+                return;
+            }
+        }
     }
 }
 
@@ -239,6 +250,42 @@ mod tests {
             .unwrap();
         assert_eq!(prune_once(&store, now).await.unwrap(), (0, 0, 0));
         assert_eq!(store.list_recent_pings(cid, 10).await.unwrap().len(), 1);
+    }
+
+    /// The shutdown flag ends the prune loop, and it ends by *returning* — a
+    /// completed `JoinHandle` (not an aborted one) is what lets `main` close
+    /// the pool knowing no delete pass is still in flight.
+    #[tokio::test]
+    async fn run_prune_loop_returns_on_shutdown() {
+        let (store, _cid, _chan) = store_with_check_and_channel().await;
+        let (shutdown_tx, shutdown) = crate::shutdown::channel();
+        // A one-hour interval: without the select on `shutdown`, the loop would
+        // sit in `sleep` far past this test's timeout.
+        let handle = tokio::spawn(run_prune_loop(store, 3600, shutdown));
+
+        shutdown_tx.trigger();
+
+        tokio::time::timeout(TokioDuration::from_secs(5), handle)
+            .await
+            .expect("run_prune_loop must return promptly after shutdown is triggered")
+            .expect("run_prune_loop must return normally, not panic");
+    }
+
+    /// The other side: with the flag untouched the loop keeps running, so the
+    /// test above is proving the trigger works rather than that the loop always
+    /// exits.
+    #[tokio::test]
+    async fn run_prune_loop_keeps_running_without_shutdown() {
+        let (store, _cid, _chan) = store_with_check_and_channel().await;
+        let (_shutdown_tx, shutdown) = crate::shutdown::channel();
+        let handle = tokio::spawn(run_prune_loop(store, 3600, shutdown));
+
+        assert!(
+            tokio::time::timeout(TokioDuration::from_millis(300), handle)
+                .await
+                .is_err(),
+            "run_prune_loop must not exit while the shutdown flag is unset"
+        );
     }
 
     #[tokio::test]

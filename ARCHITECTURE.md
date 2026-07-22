@@ -32,7 +32,8 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
   final `Router`.
 - `src/main.rs` — the binary entry point: reads `Config`, sets up tracing,
   connects/migrates the database, spawns the two background loops, starts
-  `axum::serve`, and installs **mimalloc** as the process-wide `#[global_allocator]`
+  `axum::serve`, drains everything on SIGTERM/SIGINT (see *Graceful shutdown*),
+  and installs **mimalloc** as the process-wide `#[global_allocator]`
   (binary only, not the library).
 - `src/web.rs` — the browser-facing UI: `routes()`, every page/form handler,
   the `csrf_guard` middleware, and owner/admin scoping helpers
@@ -65,6 +66,9 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
   reminders), and `run_scan_loop`, the background task `main.rs` spawns.
 - `src/prune.rs` — `prune_once` (deletes old pings/notifications per
   retention setting, plus expired sessions) and `run_prune_loop`.
+- `src/shutdown.rs` — the cooperative shutdown flag (`channel()` →
+  `ShutdownTx`/`Shutdown`) and `os_signal()`, the SIGTERM/SIGINT listener that
+  raises it.
 - `src/notify.rs` — the `Notifier` trait, its six implementations (webhook,
   Telegram, Slack, ntfy, Pushover, email/SMTP), `notifier_for` (builds one
   from a stored `Channel`), and `deliver_event` (fans an event out to a
@@ -239,6 +243,43 @@ check → project → global-setting → env-default cascade
 (`config::effective_scan_interval` / `effective_nag_interval`): the most
 specific non-positive-or-unset level falls through to the next. Nag has no
 env default — it's off unless a level opts in.
+
+## Graceful shutdown
+
+`src/shutdown.rs` holds one `tokio::sync::watch<bool>` flag behind a
+`(ShutdownTx, Shutdown)` pair. `main` hands a `Shutdown` clone to all three
+long-lived tasks; a spawned listener raises the flag on the first
+SIGTERM/SIGINT (`shutdown::os_signal`). Dropping the `ShutdownTx` also counts
+as a request — a lost controller must not leave the loops running.
+
+**Why a handler is mandatory, not polite.** The container image's
+`ENTRYPOINT ["/pingward"]` is exec-form with no init shim, so pingward is
+**PID 1**, and Linux discards any signal whose disposition is still the default
+for PID 1. With no handler installed, SIGTERM is silently ignored: `docker
+stop` / `docker compose down` waits out its full 10s grace period and then
+SIGKILLs.
+
+The drain runs in a fixed order, because each step depends on the previous one:
+
+1. `axum::serve(...).with_graceful_shutdown(...)` stops accepting connections
+   and lets in-flight requests finish. An open SSE stream
+   (`web::sse_for_check`) only ends when the client disconnects, so step 4's
+   timeout — not this step — bounds the wait.
+2. Both loops return from their `tokio::select!` at the sleep, so a scan or
+   prune pass already in flight completes instead of being abandoned.
+3. `main` **joins** those two `JoinHandle`s. Returning rather than being
+   aborted is the point: it guarantees no loop query is outstanding when the
+   pool closes, which would otherwise fail with `PoolClosed`.
+4. `store.pool.close()`, bounded by `POOL_CLOSE_TIMEOUT` (5s, well inside
+   Docker's 10s grace). `close()` waits for every connection to be returned,
+   including ones held by fire-and-forget `deliver_event` tasks; the timeout
+   keeps a stuck notification retry from turning a graceful stop into a hang.
+
+Step 4 is what matters for SQLite: a clean close of the **last** connection
+checkpoints the WAL into the main database file and removes the `-wal`/`-shm`
+sidecars (asserted by `db::tests::closing_the_pool_checkpoints_and_removes_wal_sidecars`).
+Under SIGKILL that never happened, so the sidecars survived and every start
+had to replay the WAL.
 
 ## Live-tail signal bus (SSE)
 

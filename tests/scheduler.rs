@@ -4,6 +4,7 @@ use pingward::{
     models::{ChannelKind, CheckStatus, NotifyStatus, ScheduleKind},
     notify::{RetryPolicy, deliver_event},
     scheduler::{run_scan_loop, scan_once},
+    shutdown,
     store::{NewCheck, Store},
 };
 use wiremock::matchers::method;
@@ -235,7 +236,10 @@ async fn run_scan_loop_publishes_down_transition_to_live_tail() {
     // watching" gate `ping::apply` uses) — subscribing first is what makes
     // this deterministic instead of a race against the loop's first pass.
     let (tx, mut rx) = tokio::sync::broadcast::channel(16);
-    let handle = tokio::spawn(run_scan_loop(store.clone(), 1, None, tx));
+    // Hold `shutdown_tx` for the duration: dropping it is itself a shutdown
+    // request (see `shutdown::channel`), which would end the loop early.
+    let (_shutdown_tx, shutdown) = shutdown::channel();
+    let handle = tokio::spawn(run_scan_loop(store.clone(), 1, None, tx, shutdown));
 
     let received = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
         .await
@@ -243,6 +247,27 @@ async fn run_scan_loop_publishes_down_transition_to_live_tail() {
         .expect("live-tail channel closed unexpectedly");
     assert_eq!(received, id);
 
-    // The loop runs forever; don't let it outlive the test.
+    // The loop runs forever until shutdown; don't let it outlive the test.
     handle.abort();
+}
+
+/// The shutdown flag actually ends the scan loop, and it ends by *returning* —
+/// `handle.await` yielding `Ok(())` is what proves the task ran to completion
+/// rather than being aborted, which is the property `main` relies on to close
+/// the pool with no query in flight.
+#[tokio::test]
+async fn run_scan_loop_returns_on_shutdown() {
+    // A long env-default interval: without the select on `shutdown`, the loop
+    // would sit in `sleep` far past this test's timeout.
+    let (store, _id) = store_with_up_check(60, 30, 200).await;
+    let (tx, _rx) = tokio::sync::broadcast::channel(16);
+    let (shutdown_tx, shutdown) = shutdown::channel();
+    let handle = tokio::spawn(run_scan_loop(store.clone(), 3600, None, tx, shutdown));
+
+    shutdown_tx.trigger();
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        .await
+        .expect("run_scan_loop must return promptly after shutdown is triggered")
+        .expect("run_scan_loop must return normally, not panic");
 }
