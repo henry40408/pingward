@@ -1080,12 +1080,26 @@ nav.links a:hover {
 }
 .beatcap {
   display: flex;
+  flex-wrap: wrap;
+  row-gap: 5px;
   justify-content: space-between;
   margin-top: 8px;
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
     monospace;
   font-size: 11px;
   color: var(--faint);
+}
+/* Below ~640px the three captions no longer fit on one line, and because each
+   is its own flex item they wrapped *independently* and side by side — the
+   legend's second line landed beside "ago", interleaving into
+   "30 runs | taller = longer run · amber ≥80% | now" / "ago | budget · red =
+   failed". Give the legend its own full-width row underneath instead, the
+   same order + flex-basis move `nav.links` uses in the header. */
+@media (max-width: 640px) {
+  .beatcap .key {
+    order: 1;
+    flex-basis: 100%;
+  }
 }
 
 /* ---- Channel checkboxes ---- */

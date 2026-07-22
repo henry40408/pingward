@@ -65,6 +65,18 @@ Feature: Mobile layout
     And I reload the check page
     Then the page has no horizontal scrollbar
 
+  # The heartbeat caption is three flex items on one row: "30 runs ago", a
+  # legend, and "now". Below ~640px they stop fitting, and because each is its
+  # own flex item they wrapped independently and side by side — the legend's
+  # second line landed beside "ago" rather than under its own first line. The
+  # legend now takes a full-width row underneath instead.
+  Scenario: The check page's heartbeat captions stack instead of interleaving at phone width
+    Given a project named "Nightly jobs"
+    And a check named "backup" with period 60
+    When I view the site at 375px wide
+    And I reload the check page
+    Then the heartbeat legend sits on its own row below the edge captions
+
   Scenario: The project page's check rows stay on one line at phone width
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60
