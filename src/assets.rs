@@ -1,7 +1,7 @@
 use crate::state::AppState;
 use axum::Router;
 use axum::extract::Path;
-use axum::http::{StatusCode, header};
+use axum::http::{StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -46,9 +46,26 @@ const FONTS: &[(&str, &[u8])] = &[
     ),
 ];
 
-/// Both assets are content-addressed — `app.css` via `?v=<css hash>`, and the
-/// font URLs via `?v=<font hash>` baked into that stylesheet — so neither ever
-/// needs revalidation.
+/// The app icons. `favicon.svg` is the browser-tab icon (every current browser
+/// takes an SVG one); `apple-touch-icon.png` is the 180×180 raster iOS uses for
+/// a home-screen bookmark, rendered from that same SVG — regenerate it with
+/// `npm run icons` in `e2e/` after editing the SVG.
+const ICONS: &[(&str, &str, &[u8])] = &[
+    (
+        "favicon.svg",
+        "image/svg+xml",
+        include_bytes!("../assets/favicon.svg"),
+    ),
+    (
+        "apple-touch-icon.png",
+        "image/png",
+        include_bytes!("../assets/apple-touch-icon.png"),
+    ),
+];
+
+/// Every asset is content-addressed — `app.css` via `?v=<css hash>`, the font
+/// URLs via `?v=<font hash>` baked into that stylesheet, and the icons via
+/// `?v=<icon hash>` — so none of them ever needs revalidation.
 const IMMUTABLE_CACHE: &str = "public, max-age=31536000, immutable";
 
 /// Content hash of every embedded font, baked into the stylesheet's font URLs
@@ -80,14 +97,35 @@ static CSS_VERSION: LazyLock<String> = LazyLock::new(|| {
     format!("{:x}", hasher.finish())
 });
 
+/// Content hash of every embedded icon. One version for the whole set, so
+/// editing the SVG and re-rendering the PNG busts both `<link>`s at once.
+static ICON_VERSION: LazyLock<String> = LazyLock::new(|| {
+    let mut hasher = DefaultHasher::new();
+    for (name, _, bytes) in ICONS {
+        name.hash(&mut hasher);
+        bytes.hash(&mut hasher);
+    }
+    format!("{:x}", hasher.finish())
+});
+
 pub fn css_version() -> &'static str {
     CSS_VERSION.as_str()
+}
+
+pub fn icon_version() -> &'static str {
+    ICON_VERSION.as_str()
 }
 
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/assets/app.css", get(app_css))
         .route("/assets/fonts/{file}", get(font))
+        // Served from the root, not `/assets`: browsers and iOS probe these
+        // exact paths when a page omits the `<link>` (or when the URL is a
+        // bookmark rendered outside a page), so the conventional location is
+        // the useful one.
+        .route("/favicon.svg", get(icon))
+        .route("/apple-touch-icon.png", get(icon))
 }
 
 async fn app_css() -> impl IntoResponse {
@@ -98,6 +136,24 @@ async fn app_css() -> impl IntoResponse {
         ],
         APP_CSS.as_str(),
     )
+}
+
+/// Serve whichever icon the request path names. Both icon routes point here,
+/// so the table in `ICONS` stays the single place a name, its MIME type and
+/// its bytes are tied together.
+async fn icon(uri: Uri) -> impl IntoResponse {
+    let name = uri.path().trim_start_matches('/');
+    match ICONS.iter().find(|(n, _, _)| *n == name) {
+        Some((_, mime, bytes)) => (
+            [
+                (header::CONTENT_TYPE, *mime),
+                (header::CACHE_CONTROL, IMMUTABLE_CACHE),
+            ],
+            *bytes,
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn font(Path(file): Path<String>) -> impl IntoResponse {
