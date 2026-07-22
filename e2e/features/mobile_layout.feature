@@ -80,3 +80,18 @@ Feature: Mobile layout
     And I visit "/"
     Then the check row's status dot sits next to the name
     And the check row is a single line
+
+  # A project group's header (.gh) is one non-wrapping flex row: name,
+  # description, "N checks", a rule, and the "Manage →" link. Flex shrinks
+  # every item with the default flex-shrink: 1, so a long description squeezed
+  # the short labels too and broke "1 checks" into "1" / "checks" (and
+  # "Manage →" into "Manage" / "→"). The description is the only item that may
+  # give; it truncates with an ellipsis.
+  Scenario: The dashboard group header labels stay on one line at phone width
+    Given a project named "Nightly jobs"
+    And I open the project edit form
+    And I set the project description to "Backs up the primary database and every uploaded asset, then verifies the restore path end to end so a silent failure never goes unnoticed."
+    And a check named "backup" with period 60
+    When I view the site at 375px wide
+    And I visit "/"
+    Then the group header's count and manage link each stay on one line

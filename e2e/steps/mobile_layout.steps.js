@@ -160,6 +160,50 @@ Then("the check row's status dot sits next to the name", async ({ page }) => {
   expect(gap, `.status-dot sits ${gap}px from .cmeta`).toBeLessThanOrEqual(20);
 });
 
+// Line-box counting via a Range over the element's contents: `getClientRects()`
+// called on the element itself is useless here, because a flex item is
+// blockified and a block box reports one rect no matter how its text wraps. A
+// Range reports one rect per line box, which is exactly "did this text wrap",
+// and is font- and platform-independent.
+//
+// The description is asserted to be truncating as well, otherwise a header
+// that simply fits would satisfy the count/link check vacuously.
+Then(
+  "the group header's count and manage link each stay on one line",
+  async ({ page }) => {
+    const m = await page.evaluate(() => {
+      const gh = document.querySelector(".group > .gh");
+      const lineBoxes = (sel) => {
+        const range = document.createRange();
+        range.selectNodeContents(gh.querySelector(sel));
+        return range.getClientRects().length;
+      };
+      const truncated = (sel) => {
+        const e = gh.querySelector(sel);
+        return e.scrollWidth > e.clientWidth;
+      };
+      return {
+        count: lineBoxes(".count"),
+        link: lineBoxes("a"),
+        descTruncated: truncated(".gdesc"),
+        nameTruncated: truncated("h2"),
+      };
+    });
+    expect(
+      m.descTruncated,
+      "the description is not being truncated, so the header is not under width pressure and the checks below prove nothing"
+    ).toBe(true);
+    expect(m.count, `"N checks" spans ${m.count} lines — it wrapped`).toBe(1);
+    expect(m.link, `"Manage \u2192" spans ${m.link} lines — it wrapped`).toBe(1);
+    // Pinning the labels must not be paid for out of the project name: the
+    // description shrinks to nothing before the name gives up a character.
+    expect(
+      m.nameTruncated,
+      "the project name is truncated — the description should have absorbed the whole squeeze"
+    ).toBe(false);
+  }
+);
+
 // The mechanism: when the badge wraps to another line its centre drops far
 // below the dot's. On one line the two centres coincide.
 Then("the check row is a single line", async ({ page }) => {
