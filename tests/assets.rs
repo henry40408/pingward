@@ -102,6 +102,29 @@ async fn pages_link_the_content_hashed_icons() {
     }
 }
 
+/// The footer sits outside `base.html`'s `show_nav` guard, so it must render
+/// even on a nav-less page — `/setup` is one, which the second assertion pins
+/// down so this cannot silently pass on a page that grew a nav.
+#[tokio::test]
+async fn nav_less_pages_still_render_the_build_version() {
+    let server = server().await;
+    let res = server.get("/setup").await;
+    res.assert_status_ok();
+    let version = pingward::view::version();
+    assert!(!version.is_empty(), "build version must not be empty");
+    let body = res.text();
+    assert!(
+        body.contains(&format!(
+            r#"<span data-testid="app-version">pingward {version}</span>"#
+        )),
+        "build version missing from the footer"
+    );
+    assert!(
+        !body.contains(r#"data-testid="nav-account""#),
+        "/setup grew a nav — pick another nav-less page for this test"
+    );
+}
+
 #[tokio::test]
 async fn pages_link_the_content_hashed_stylesheet() {
     let server = server().await;

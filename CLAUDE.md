@@ -19,6 +19,16 @@ Build / run:
 - `cargo run` — starts the server (defaults: SQLite file `pingward.sqlite3`,
   bind `127.0.0.1:8080`). Override via env (see Config below).
 
+`build.rs` stamps the binary with `GIT_VERSION` (`git describe --tags --always
+--dirty`), read back by `view::version()` and rendered in the global footer
+(`templates/base.html`, outside the `show_nav` guard so signed-out pages carry
+it too). Releases are cut with `gh release create`, so the **git tag is the
+source of truth and `Cargo.toml`'s `version` is never bumped** — before the
+first tag, or from a shallow CI checkout, the string is a bare short SHA.
+An explicit `GIT_VERSION` env var overrides the describe call; the release
+image needs that because `.dockerignore` excludes `.git`, so `docker.yml`
+resolves the version on the runner and passes it as a `--build-arg`.
+
 Lint / format (must pass in CI):
 - `cargo fmt --all --check`
 - `cargo clippy --all-targets -- -D warnings`

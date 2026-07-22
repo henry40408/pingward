@@ -2,6 +2,15 @@ use crate::models::{Check, CheckStatus, Ping, PingKind};
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 
+/// Build version stamped in by `build.rs`, rendered in the global footer.
+///
+/// `git describe --tags --always --dirty`, so it reads as a release tag
+/// (`v1.2.0`), a tag plus distance (`v1.2.0-4-gabc1234`), or — before the
+/// first tag exists, or from a shallow CI checkout — a bare short SHA.
+pub fn version() -> &'static str {
+    env!("GIT_VERSION")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayStatus {
     New,

@@ -14,3 +14,15 @@ Feature: Static assets
   Scenario: The favicon is well-formed XML
     When I visit "/login"
     Then "/favicon.svg" is well-formed XML
+
+  # The footer sits outside base.html's `show_nav` guard on purpose, so both
+  # sides are asserted: the signed-out pages carry the version too, and those
+  # are exactly the ones a broken instance gets reported from.
+  Scenario: The build version is in the footer when signed out
+    When I visit "/login"
+    Then the footer shows the build version
+
+  Scenario: The build version is in the footer when signed in
+    Given an admin "admin" with password "password123" exists
+    And I am signed in as "admin" with password "password123"
+    Then the footer shows the build version

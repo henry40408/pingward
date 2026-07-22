@@ -175,6 +175,17 @@ a:hover {
   padding: 0 22px 40px;
 }
 
+/* ---- Footer ---- */
+/* Global build-version strip, outside .wrap so the rule spans the full width.
+   Deliberately quiet: it exists to be quoted in a bug report, not read. */
+.foot {
+  padding: 16px 22px 26px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* ---- Top bar ---- */
 header.bar {
   position: sticky;
