@@ -64,6 +64,45 @@ async fn stylesheet_font_urls_are_cache_busted() {
 }
 
 #[tokio::test]
+async fn serves_the_app_icons() {
+    let server = server().await;
+
+    let svg = server.get("/favicon.svg").await;
+    svg.assert_status_ok();
+    assert_eq!(svg.header("content-type"), "image/svg+xml");
+    assert!(svg.text().contains("<svg"), "favicon is not an SVG");
+
+    let png = server.get("/apple-touch-icon.png").await;
+    png.assert_status_ok();
+    assert_eq!(png.header("content-type"), "image/png");
+    // The rendered raster must be the PNG magic number, not an SVG that was
+    // copied into place — `npm run icons` is the only thing that writes it.
+    assert!(
+        png.as_bytes().starts_with(b"\x89PNG\r\n\x1a\n"),
+        "apple-touch-icon.png is not a PNG"
+    );
+}
+
+#[tokio::test]
+async fn pages_link_the_content_hashed_icons() {
+    let server = server().await;
+    let res = server.get("/setup").await;
+    res.assert_status_ok();
+    let version = pingward::assets::icon_version();
+    assert!(!version.is_empty(), "icon version must not be empty");
+    let body = res.text();
+    for expected in [
+        format!("/favicon.svg?v={version}"),
+        format!("/apple-touch-icon.png?v={version}"),
+    ] {
+        assert!(
+            body.contains(&expected),
+            "versioned icon link missing from rendered page: {expected}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn pages_link_the_content_hashed_stylesheet() {
     let server = server().await;
     let res = server.get("/setup").await;

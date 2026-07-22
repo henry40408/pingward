@@ -41,6 +41,17 @@ Browser E2E (Playwright + playwright-bdd, in `e2e/`):
   port. Selectors use `data-testid`.
 - Single feature/scenario: `cd e2e && npx bddgen && npx playwright test ping_kinds -g "POST body"`.
 
+README assets (Playwright's Chromium, no extra deps; both commit their output):
+- `cd e2e && npm run screenshots` — rebuilds `docs/screenshots/*.png`. Wipes a
+  throwaway DB, creates the admin via `POST /setup`, seeds backdated demo data
+  with the `sqlite3` CLI against the *stopped* DB, reboots, and captures framed
+  shots. `screenshots/seed.mjs` must keep every seeded check's timestamps inside
+  its schedule budget — the boot `scan_once` would otherwise rewrite the status
+  the shot is meant to show (cron checks anchor on a real fire time; see the
+  cron helper there).
+- `cd e2e && npm run icons` — re-renders `assets/apple-touch-icon.png` from
+  `assets/favicon.svg`. Run after editing the SVG.
+
 ## Architecture
 
 **Router composition** (`src/lib.rs::app`) merges three sibling routers under

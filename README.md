@@ -43,6 +43,34 @@ OS preference and the layout adapts to phones.
   change to switch backends.
 - **Configurable retention** — a prune loop deletes old pings and notifications.
 
+## Screenshots
+
+The UI is server-rendered and embedded in the binary — no build step, no
+JavaScript bundle. Dark/light follows your OS preference (with a manual
+override), and the layout adapts to phones.
+
+![Dashboard — one group per project, status tiles, per-check heartbeat strips and a name/status filter](docs/screenshots/dashboard-dark.png)
+
+![A down check — status and acknowledge action, its ping URL, the heartbeat of the last runs, and the notification channels bound to it](docs/screenshots/check-dark.png)
+
+![Recent pings and recent notifications for a check, with the failed run's captured output expanded](docs/screenshots/check-history-dark.png)
+
+![Project page — its checks and the notification channels defined on it](docs/screenshots/project-dark.png)
+
+![Admin — site-wide totals, check and notification health, and the scheduler heartbeat](docs/screenshots/admin-dark.png)
+
+<table>
+  <tr>
+    <td width="60%"><img src="docs/screenshots/dashboard-light.png" alt="The dashboard in the light theme"></td>
+    <td width="20%"><img src="docs/screenshots/dashboard-mobile.png" alt="The dashboard on a phone-width viewport"></td>
+    <td width="20%"><img src="docs/screenshots/check-mobile.png" alt="A check page on a phone-width viewport"></td>
+  </tr>
+  <tr>
+    <td align="center">Light theme</td>
+    <td align="center" colspan="2">Phone layout</td>
+  </tr>
+</table>
+
 ## Quick Start
 
 ### Docker
@@ -162,6 +190,28 @@ fresh compiled binary against a temporary SQLite database:
 ```sh
 cd e2e && npm test
 ```
+
+### Regenerating the screenshots and the app icon
+
+The images in `docs/screenshots/` come from a repeatable pipeline: it wipes a
+throwaway SQLite database, creates the first admin through the product's own
+`/setup` form, seeds backdated demo history with the `sqlite3` CLI, boots
+`pingward` on a throwaway port, and re-captures every framed shot with
+Playwright. Re-run it after a UI change and commit the updated PNGs:
+
+~~~sh
+cargo build                                  # the UI is compiled into the binary
+cd e2e
+npm ci && npx playwright install chromium    # first time only
+npm run screenshots
+~~~
+
+`assets/apple-touch-icon.png` is rendered from `assets/favicon.svg` by the same
+Chromium. Re-run it after editing the SVG:
+
+~~~sh
+cd e2e && npm run icons
+~~~
 
 ## License
 

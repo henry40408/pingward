@@ -20,7 +20,7 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
 | `src/`                 | The application: router composition, handlers, domain logic       |
 | `src/api/`             | The `/api/v1` REST surface (DTOs, input parsing, extractors, v1 handlers) |
 | `templates/`           | Askama HTML templates, compiled into the binary at build time     |
-| `assets/`              | Static CSS and embedded fonts, served by `src/assets.rs`          |
+| `assets/`              | Static CSS, embedded fonts and the app icons, served by `src/assets.rs` |
 | `migrations/sqlite/`   | SQLite schema migrations                                          |
 | `migrations/postgres/` | The same migrations, hand-duplicated for Postgres syntax          |
 | `tests/`                | Rust integration tests (one file per feature area), run with `cargo nextest run` |
@@ -91,7 +91,9 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
   naturally drifts past its expected time while legitimately still
   executing, and is itself beaten by `Down`/`Paused` so an in-flight run
   never masks an alert.
-- `src/assets.rs` — serves `assets/app.css` and the embedded webfonts.
+- `src/assets.rs` — serves `assets/app.css`, the embedded webfonts, and the
+  app icons (`/favicon.svg`, `/apple-touch-icon.png`), each content-addressed
+  by a hash of what it serves.
 - `src/error.rs` — `AppError`, the app-wide error type implementing
   `IntoResponse`.
 

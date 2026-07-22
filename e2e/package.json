@@ -7,7 +7,9 @@
   "scripts": {
     "test": "bddgen && playwright test",
     "test:headed": "bddgen && playwright test --headed",
-    "test:ui": "bddgen && playwright test --ui"
+    "test:ui": "bddgen && playwright test --ui",
+    "icons": "node screenshots/render-icon.mjs",
+    "screenshots": "node screenshots/capture.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
