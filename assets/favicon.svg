@@ -1,9 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="pingward">
   <!-- The nav brand mark (▚) as an app icon: two teal quadrants on the dark
        surface, the two dim quadrants filling out the checker. Colours are the
-       dark-theme tokens from assets/app.css (--bg, --brand, --border-ish).
-       No inner frame — at a 16px tab size the quadrants need the whole tile. -->
-  <rect data-frame width="32" height="32" rx="7" fill="#0b0e15"/>
+       dark-theme tokens from assets/app.css. No inner frame: at a 16px tab
+       size the quadrants need the whole tile.
+
+       This file is served as image/svg+xml and therefore parsed as XML, not
+       HTML: every attribute needs a value, and a comment may not contain a
+       double hyphen. Both rules are easy to break by habit and cost the whole
+       icon, so tests/assets.rs parses the served bytes. -->
+  <rect data-frame="true" width="32" height="32" rx="7" fill="#0b0e15"/>
   <g fill="#2fe3ce">
     <rect x="4" y="4" width="12" height="12" rx="2"/>
     <rect x="16" y="16" width="12" height="12" rx="2"/>
