@@ -75,6 +75,77 @@ async fn project_page_shows_running_badge_for_in_flight_check() {
     );
 }
 
+/// The "no channel" chip is rendered for a check with zero bound channels and
+/// absent for a check that has one — asserted both directions in the same
+/// test so a template that always (or never) emits the chip would fail.
+#[tokio::test]
+async fn project_page_no_channel_chip_reflects_binding_state() {
+    let (server, store, pid) = server_with_project().await;
+    let unbound_cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "no-chan",
+            ping_uuid: "cu-unbound",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let bound_cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "has-chan",
+            ping_uuid: "cu-bound",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let chan_id = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "hook",
+            r#"{"url":"http://x"}"#,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    store.bind_channel(bound_cid, chan_id).await.unwrap();
+
+    let res = server.get(&format!("/projects/{pid}")).await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert_eq!(
+        body.matches("data-testid=\"check-no-channel\"").count(),
+        1,
+        "exactly one row (the unbound check) must render the chip"
+    );
+    let rows: Vec<&str> = body.split("class=\"check\"").collect();
+    let unbound_row = rows
+        .iter()
+        .find(|r| r.contains(&format!("/checks/{unbound_cid}")))
+        .expect("unbound check's row present");
+    let bound_row = rows
+        .iter()
+        .find(|r| r.contains(&format!("/checks/{bound_cid}")))
+        .expect("bound check's row present");
+    assert!(
+        unbound_row.contains("data-testid=\"check-no-channel\""),
+        "the unbound check's row must carry the chip"
+    );
+    assert!(
+        !bound_row.contains("data-testid=\"check-no-channel\""),
+        "the bound check's row must not carry the chip"
+    );
+}
+
 /// Regression guard for this branch's behaviour change: `project.html`
 /// previously rendered the raw stored status (so a stored-`up` check could
 /// never show anything but "up") and now goes through `view::display_status`,

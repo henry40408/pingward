@@ -757,10 +757,48 @@ nav.links a:hover {
   border-color: var(--paused-bd);
 }
 
+/* A check row's "no channel" warning chip: rendered only when the check has no
+   bound channel at all, so it has to read as an exception rather than as
+   decoration. Amber (the `late` tokens, same palette as the badge) rather than
+   `--down`, which is reserved for a check that is actually failing.
+
+   Unlike .spark/.cwhen it survives the phone breakpoint below: those two are
+   detail a narrow row can afford to drop, this is the one thing on the row a
+   reader has to act on. It takes its own row there rather than its width out
+   of the name — see the phone-width block. */
+.nochan {
+  flex: none;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--late);
+  background: var(--late-bg);
+  border: 1px solid var(--late-bd);
+  padding: 3px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
 @media (max-width: 640px) {
   .spark,
   .cwhen {
     display: none;
+  }
+  /* The chip stays (it is the one thing on the row that asks to be acted on),
+     but it stops competing with the name for width. Beside the name at 375px
+     it left `.cmeta` so little room that anything past a short name wrapped —
+     `.cmeta` is `min-width: 0` and `.nm` has no ellipsis, so a squeeze costs a
+     line rather than a few characters. `order` + `flex-basis: 100%` moves it
+     onto its own row underneath instead, the same treatment `.beatcap`'s
+     legend gets; spanning the width there makes it read as a warning strip,
+     which is if anything harder to miss than the inline chip. `row-gap` keeps
+     the second line tight — `.check`'s 16px `gap` applies to both axes. */
+  .check {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .nochan {
+    order: 1;
+    flex-basis: 100%;
   }
 }
 
@@ -1155,6 +1193,41 @@ nav.links a:hover {
   border: 1px solid var(--border);
   padding: 2px 8px;
   border-radius: 6px;
+}
+
+/* Explicit ON/OFF state on each notify-channel row — an unticked checkbox is
+   easy to overlook, the word OFF is not. Both words are in the DOM and the
+   sibling selector shows one of them from the checkbox's live state, so the
+   pill shows what Save will store instead of going stale until reload. The
+   min-width keeps ON and OFF the same width so the column stays aligned. */
+.chk .onoff {
+  flex: none;
+  min-width: 42px;
+  text-align: center;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--faint);
+}
+.chk .onoff .on {
+  display: none;
+}
+.chk input:checked ~ .onoff {
+  color: var(--up);
+  background: var(--up-bg);
+  border-color: var(--up-bd);
+}
+.chk input:checked ~ .onoff .on {
+  display: inline;
+}
+.chk input:checked ~ .onoff .off {
+  display: none;
 }
 
 /* ---- Tables ---- */
@@ -1643,6 +1716,21 @@ h3.sec {
   color: var(--down);
   background: var(--down-bg);
   border-color: var(--down-bd);
+}
+/* Amber sibling of .flash.ok/.flash.err: a warning, not an error. */
+.flash.warn {
+  color: var(--late);
+  background: var(--late-bg);
+  border-color: var(--late-bd);
+}
+
+/* A flash that ends a card body must not stack its own bottom gap on top of
+   the body's padding: the project page's empty-channels warning is the only
+   child of its `.card .cb` (padding: 16px 18px), which would otherwise leave
+   32px below it against 16px above. The `<p class="note">` it replaced had no
+   margin at all. */
+.cb > .flash:last-child {
+  margin-bottom: 0;
 }
 
 /* ---- Inline forms (e.g. the top-bar logout button) ---- */

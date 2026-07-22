@@ -269,3 +269,64 @@ async fn check_description_round_trips_and_is_length_validated() {
         "a 2000-char description is exactly at the limit and must be accepted"
     );
 }
+
+/// A check created through the web form in a project that already has
+/// channels comes out bound to all of them (`Store::bind_all_project_channels`,
+/// called from `check_create_core`).
+#[tokio::test]
+async fn check_created_via_web_form_is_bound_to_existing_channels() {
+    let (server, store, pid) = server_with_project().await;
+    let token = csrf_token(&store).await;
+
+    let c1 = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "hook1",
+            r#"{"url":"http://x"}"#,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    let c2 = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "hook2",
+            r#"{"url":"http://y"}"#,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let res = server
+        .post(&format!("/projects/{pid}/checks"))
+        .form(&[
+            ("_csrf", token.as_str()),
+            ("name", "backup"),
+            ("description", ""),
+            ("schedule_kind", "period"),
+            ("period_secs", "3600"),
+            ("cron_expr", ""),
+            ("grace_secs", "300"),
+            ("timezone", "UTC"),
+            ("scan_interval_secs", ""),
+            ("max_runtime_secs", ""),
+            ("nag_interval_secs", ""),
+        ])
+        .await;
+    res.assert_status_see_other();
+
+    let checks = store.list_checks_for_project(pid).await.unwrap();
+    assert_eq!(checks.len(), 1);
+    let cid = checks[0].id;
+
+    let mut bound = store.bound_channel_ids(cid).await.unwrap();
+    bound.sort_unstable();
+    let mut expected = vec![c1, c2];
+    expected.sort_unstable();
+    assert_eq!(
+        bound, expected,
+        "a check created in a project with existing channels must come out bound to all of them"
+    );
+}

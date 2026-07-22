@@ -269,6 +269,10 @@ struct CheckRow {
     last: String,         // fmt_relative or "—"
     bars: Vec<crate::view::Bar>,
     description: String, // markdown::truncate_plain, single-line summary
+    /// True when the check has zero bound notification channels — rendered as
+    /// a "no channel" chip so a check nobody would be alerted for is visible
+    /// at a glance rather than silent.
+    no_channel: bool,
 }
 
 struct ProjectGroup {
@@ -477,6 +481,7 @@ async fn dashboard(
         .store
         .list_recent_pings_for_checks(&check_ids, 40)
         .await?;
+    let with_channels = state.store.checks_with_channels(&check_ids).await?;
     for (project, checks) in project_checks {
         let mut rows = Vec::with_capacity(checks.len());
         for c in &checks {
@@ -516,6 +521,7 @@ async fn dashboard(
                     .map_or_else(|| "—".into(), |t| crate::view::fmt_relative(t, now)),
                 bars,
                 description: crate::markdown::truncate_plain(&c.description, 120),
+                no_channel: !with_channels.contains(&c.id),
             });
         }
         // Under a status filter, a project whose checks are all filtered out is
@@ -712,6 +718,10 @@ struct ProjectCheckRow {
     status: &'static str, // view::DisplayStatus::as_str()
     schedule: String,
     description: String, // markdown::truncate_plain, single-line summary
+    /// True when the check has zero bound notification channels — rendered as
+    /// a "no channel" chip so a check nobody would be alerted for is visible
+    /// at a glance rather than silent.
+    no_channel: bool,
 }
 
 struct TestResult {
@@ -1006,15 +1016,17 @@ async fn render_project_page(
     csrf: String,
 ) -> Result<Response, AppError> {
     let now = Utc::now();
-    let checks = store
-        .list_checks_for_project(project.id)
-        .await?
+    let checks = store.list_checks_for_project(project.id).await?;
+    let check_ids: Vec<i64> = checks.iter().map(|c| c.id).collect();
+    let with_channels = store.checks_with_channels(&check_ids).await?;
+    let checks = checks
         .into_iter()
         .map(|c| ProjectCheckRow {
             id: c.id,
             status: crate::view::display_status(&c, now).as_str(),
             schedule: schedule_label(&c),
             description: crate::markdown::truncate_plain(&c.description, 120),
+            no_channel: !with_channels.contains(&c.id),
             name: c.name,
         })
         .collect();
@@ -1573,6 +1585,7 @@ async fn check_create_core(
             nag_interval_secs: v.nag_interval_secs,
         })
         .await?;
+    state.store.bind_all_project_channels(id, pid).await?;
     Ok(Redirect::to(&format!("{base}/checks/{id}")).into_response())
 }
 

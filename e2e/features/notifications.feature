@@ -80,3 +80,33 @@ Feature: Notification channels
     And the check's recent notifications show a delivery to "hook1"
     And the recent notifications table shows a "down" event
     And the recent notifications table shows a "up" event
+
+  # Ordering matters here: a check created AFTER a channel already exists is
+  # now auto-bound to it (check creation binds every channel the project
+  # already has). To end up with an unbound channel on a check, the check
+  # must be created BEFORE the channel — so both channels below are created
+  # only after "backup" exists, leaving it unbound to either until the
+  # explicit bind step runs.
+  Scenario: A check page shows explicit ON/OFF state per channel
+    Given a project named "Notify"
+    And I remember the current project
+    And a check named "backup" with period 3600
+    And I create a webhook channel named "hook-on"
+    And I create a webhook channel named "hook-off"
+    When I visit the check page for "backup"
+    And I bind the channel "hook-on" to the check
+    Then the channel "hook-on" shows as ON on the check page
+    And the channel "hook-off" shows as OFF on the check page
+
+  # Same ordering caveat as above: "solo" must be created before any channel
+  # exists in the project so auto-bind leaves it unbound, while "covered" is
+  # created after "hook1" exists so auto-bind binds it automatically.
+  Scenario: The dashboard flags a check with no notification channel
+    Given a project named "Notify"
+    And I remember the current project
+    And a check named "solo" with period 3600
+    And I create a webhook channel named "hook1"
+    And I create a check named "covered" with period 3600
+    When I visit the dashboard
+    Then the dashboard shows a "no channel" chip for the check "solo"
+    And the dashboard shows no "no channel" chip for the check "covered"

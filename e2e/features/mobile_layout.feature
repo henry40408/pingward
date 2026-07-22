@@ -93,6 +93,22 @@ Feature: Mobile layout
     Then the check row's status dot sits next to the name
     And the check row is a single line
 
+  # The "no channel" chip was originally hidden below 640px along with .spark
+  # and .cwhen, which meant the one thing on the row a reader has to act on was
+  # the one thing a phone never showed. It is visible at every width now, and
+  # the space it takes comes out of .cmeta — which is `min-width: 0` and whose
+  # .nm has no ellipsis, so the name wraps rather than truncates when squeezed.
+  # Both halves are asserted: the chip really is there (otherwise the line
+  # count below proves nothing) and the name it sits beside still fits on one
+  # line at 375px.
+  Scenario: A check with no channel is flagged at phone width too
+    Given a project named "Nightly jobs"
+    And a check named "nightly-database-backup" with period 60
+    When I view the site at 375px wide
+    And I visit "/"
+    Then the check row's name stays on one line beside the "no channel" chip
+    And the page has no horizontal scrollbar
+
   # A project group's header (.gh) is one non-wrapping flex row: name,
   # description, "N checks", a rule, and the "Manage →" link. Flex shrinks
   # every item with the default flex-shrink: 1, so a long description squeezed
