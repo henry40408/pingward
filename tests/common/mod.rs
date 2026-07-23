@@ -39,6 +39,39 @@ pub async fn newest_session_csrf(pool: &pingward::db::Pool) -> String {
     pingward::secret::derive_csrf(TEST_SECRET.as_bytes(), &id)
 }
 
+/// Starts a fresh anonymous session on `server` and returns its CSRF token, for
+/// use as the `_csrf` field of a `POST /login` or `POST /setup`.
+///
+/// Those two are no longer exempt from `csrf_guard`: `web::anonymous_session`
+/// hands even a logged-out visitor a signed cookie to derive a token from. A
+/// browser gets this for free — it loads the form first, and the form carries
+/// the hidden `_csrf`. `TestServer` posts blind, so it fetches the page once
+/// itself here.
+///
+/// The token comes from the *cookie*, not the database: an anonymous session
+/// has no `sessions` row (that is the whole point — see
+/// `web::anonymous_session`), so [`newest_session_csrf`] cannot see it. Use
+/// this before logging in and that one after.
+///
+/// Cookies are cleared first so the layer is guaranteed to mint — and hence
+/// `Set-Cookie` — on this request. `TestServer` exposes no reader for the jar
+/// it has saved, so the response is the only place the value can be read from.
+///
+/// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — each
+/// `tests/*.rs` binary compiles its own copy of this module.
+#[allow(dead_code)]
+pub async fn anonymous_csrf(server: &mut axum_test::TestServer) -> String {
+    server.clear_cookies();
+    let cookie = server
+        .get("/login")
+        .await
+        .maybe_cookie(pingward::auth::SESSION_COOKIE)
+        .expect("the anonymous-session layer sets a cookie on a session-less request");
+    let id = pingward::secret::verify_session(TEST_SECRET.as_bytes(), cookie.value())
+        .expect("the anonymous cookie is signed with the test secret");
+    pingward::secret::derive_csrf(TEST_SECRET.as_bytes(), &id)
+}
+
 /// Parses the body of a router's `pub fn routes() -> Router<AppState> {`
 /// function straight out of its own source to recover every `(method, path)`
 /// pair it registers, filtered to those starting with `prefix`. This is a

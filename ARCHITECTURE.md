@@ -105,22 +105,58 @@ attaches `AppState`:
 ```rust
 Router::new()
     .route("/healthz", get(|| async { "ok" }))
-    .merge(web::routes().layer(csrf_guard middleware))
+    .merge(web::routes()
+        .layer(csrf_guard)          // innermost
+        .layer(anonymous_session)
+        .layer(forward_auth_session))   // outermost — runs first
     .merge(ping::routes())
     .merge(api::routes())
     .merge(assets::routes())
     .with_state(state)
 ```
 
-Only `web::routes()` is wrapped in `web::csrf_guard`. Because the other
-routers are merged as *siblings* rather than nested under it, `/ping/*`
-(machine endpoints, no session), `/api/v1/*` (bearer-authenticated, never
-reads the session cookie), and the static asset/`/healthz` routes are
-**structurally** exempt from CSRF — there's no way for a change inside
-`web::routes()` to accidentally start covering them. `csrf_guard` itself
-lets safe methods (GET/HEAD/OPTIONS) and the pre-session `/login`/`/setup`
-paths through, and otherwise requires a per-session synchronizer token sent
-as `X-CSRF-Token` (or hidden form field).
+Only `web::routes()` carries those layers. Because the other routers are
+merged as *siblings* rather than nested under it, `/ping/*` (machine
+endpoints, no session), `/api/v1/*` (bearer-authenticated, never reads the
+session cookie), and the static asset/`/healthz` routes are **structurally**
+exempt from CSRF — there's no way for a change inside `web::routes()` to
+accidentally start covering them. `csrf_guard` itself lets safe methods
+(GET/HEAD/OPTIONS) through and otherwise requires a per-session synchronizer
+token sent as `X-CSRF-Token` (or hidden form field).
+
+### Session layers
+
+Both orderings above are load-bearing.
+
+The two session layers run **before** `csrf_guard` because a cookie minted
+during a request has to be visible to the guard on that same request — each
+layer therefore rewrites the request's `Cookie` header as well as setting
+`Set-Cookie` on the response, so a handler rendering a form can derive the
+matching token immediately.
+
+`forward_auth_session` runs **before** `anonymous_session` because when both
+would mint, the real session must win; reversed, the anonymous layer's
+`Set-Cookie` would be appended last and shadow it.
+
+- **`anonymous_session`** gives every visitor a signed cookie, logged in or
+  not — but writes **no `sessions` row**. The CSRF token is derived from a
+  session id, not looked up, so an id alone is enough (see below). This is why
+  `csrf_guard` needs no path exemptions: `/login` and `/setup` render a real
+  token and are CSRF-protected like everything else. `auth::resolve_user`
+  needs no special case either — an anonymous id matches no row, so the
+  visitor stays anonymous. Logging in rotates to a fresh id, so an
+  attacker-planted anonymous cookie cannot survive into an authenticated
+  session.
+- **`forward_auth_session`** turns a trusted `PINGWARD_FORWARD_AUTH_HEADER`
+  identity into a real session row plus cookie. Without it such a user is
+  authenticated but session-less, and everything keyed off the session
+  degrades silently — forms render an empty `_csrf`, every POST is rejected
+  with 403, and the account page lists no session to review or revoke. It
+  short-circuits before any database work when forward-auth is unconfigured or
+  the request already carries a live session. That liveness check is
+  deliberately a lookup rather than a bare signature check: with
+  `anonymous_session` in play, a valid signature no longer implies a row
+  exists.
 
 `/api/v1` data endpoints authenticate independently via the `ApiUser` bearer
 extractor; `/api/docs` and `/api/openapi.json` additionally accept a logged-in
@@ -144,7 +180,9 @@ print the cookie's signature into the page body.
 Two consequences follow from deriving rather than storing:
 
 - **`sessions` has no `csrf_token` column.** Rendering a form and checking a
-  submitted token are both pure computation, so neither costs a query.
+  submitted token are both pure computation, so neither costs a query — and a
+  session id needs no row behind it to carry a working token, which is what
+  makes the row-free `anonymous_session` layer possible.
 - **The cookie is verified before any database work.** A forged, stale, or
   DB-leaked `sessions.id` fails the signature check in `secret::verify_session`
   and never reaches a lookup. The raw cookie value is therefore *not* the

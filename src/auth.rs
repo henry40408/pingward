@@ -157,26 +157,45 @@ async fn resolve_user(parts: &mut Parts, state: &AppState) -> Option<User> {
         return Some(user);
     }
     // forward-auth fallback
-    let peer_ip = parts
-        .extensions
+    let peer_ip = peer_ip(&parts.extensions);
+    forward_auth_user(state, &parts.headers, peer_ip, now).await
+}
+
+/// The socket peer of the request, as `into_make_service_with_connect_info`
+/// records it in `main.rs`. `None` when the router is driven without connect
+/// info, which makes every trusted-proxy check fail closed.
+pub fn peer_ip(extensions: &axum::http::Extensions) -> Option<IpAddr> {
+    extensions
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip());
-    if let Some(username) = forward_auth_username(&parts.headers, peer_ip, &state.config) {
-        match state.store.find_user_by_username(&username).await {
-            Ok(Some(user)) => {
-                if !user.disabled {
-                    return Some(user);
-                }
-            }
-            Ok(None) => {
-                if let Ok(id) = state.store.create_user(&username, None, false, now).await {
-                    return state.store.find_user_by_id(id).await.ok().flatten();
-                }
-            }
-            Err(_) => {}
+        .map(|ci| ci.0.ip())
+}
+
+/// Resolve the user named by a trusted forward-auth header, auto-provisioning a
+/// non-admin, password-less account for a first-seen identity.
+///
+/// Returns `None` when forward-auth is not configured, the peer is not a
+/// trusted proxy, the header is absent, or the named account is disabled.
+/// Shared by [`resolve_user`] and `web::forward_auth_session`, which must agree
+/// on exactly who a given request belongs to.
+pub async fn forward_auth_user(
+    state: &AppState,
+    headers: &HeaderMap,
+    peer_ip: Option<IpAddr>,
+    now: chrono::DateTime<Utc>,
+) -> Option<User> {
+    let username = forward_auth_username(headers, peer_ip, &state.config)?;
+    match state.store.find_user_by_username(&username).await {
+        Ok(Some(user)) => (!user.disabled).then_some(user),
+        Ok(None) => {
+            let id = state
+                .store
+                .create_user(&username, None, false, now)
+                .await
+                .ok()?;
+            state.store.find_user_by_id(id).await.ok().flatten()
         }
+        Err(_) => None,
     }
-    None
 }
 
 pub struct CurrentUser(pub User);

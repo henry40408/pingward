@@ -66,7 +66,9 @@ README assets (Playwright's Chromium, no extra deps; both commit their output):
 
 **Router composition** (`src/lib.rs::app`) merges three sibling routers under
 one `AppState`:
-- `web::routes()` — the browser UI, wrapped in the `csrf_guard` middleware.
+- `web::routes()` — the browser UI, wrapped in three layers. Order is
+  load-bearing and documented in `ARCHITECTURE.md`: `forward_auth_session` →
+  `anonymous_session` → `csrf_guard` → handler.
 - `ping::routes()` — machine `/ping/*` endpoints. Merged as a sibling, so they
   are **structurally exempt from CSRF** (public, unauthenticated).
 - `assets::routes()` + `/healthz`.
@@ -77,7 +79,11 @@ one `AppState`:
 `csrf = HMAC(secret, "csrf:" ++ id)`. The prefixes are load-bearing: without
 them the two values are equal and every rendered form would print the cookie's
 signature. Because the CSRF token is *derived*, `sessions` has no `csrf_token`
-column and neither rendering nor checking a token costs a query. **The cookie
+column and neither rendering nor checking a token costs a query — and a session
+id needs no row behind it to carry a valid token, which is what lets
+`web::anonymous_session` hand every logged-out visitor a signed cookie without
+a single insert. That in turn is why `csrf_guard` has **no path exemptions**:
+`/login` and `/setup` are protected like everything else. **The cookie
 value is not the session id** — never use `cookie.value()` as one; go through
 `secret::session_id_from_jar`, which verifies the signature before any DB work
 (`auth::resolve_user`, `web::csrf_guard`, `logout`, and the `/account` session

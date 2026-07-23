@@ -26,10 +26,28 @@ pub fn app(state: AppState) -> Router {
     // CSRF protection applies to the browser-facing `web` router only. The
     // machine `/ping/*` endpoints, static assets, and `/healthz` are merged in
     // as sibling routers and are therefore structurally exempt.
-    let web = web::routes().layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        web::csrf_guard,
-    ));
+    // Layers run outside-in, so the last one added sees the request first:
+    // forward_auth_session -> anonymous_session -> csrf_guard -> handler.
+    //
+    // Both orderings here are load-bearing. The two session layers run before
+    // `csrf_guard` because the guard must see the cookie on the same request
+    // that minted it. And `forward_auth_session` runs before
+    // `anonymous_session` because when both would mint, the real session has
+    // to win — reversed, the anonymous layer's `Set-Cookie` would be appended
+    // last and shadow it.
+    let web = web::routes()
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            web::csrf_guard,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            web::anonymous_session,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            web::forward_auth_session,
+        ));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(web)

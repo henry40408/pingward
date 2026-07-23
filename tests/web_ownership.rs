@@ -55,9 +55,14 @@ async fn login_server(store: &Store, username: &str, password: &str) -> TestServ
     let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", username), ("password", password)])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", username),
+            ("password", password),
+        ])
         .await;
     let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());

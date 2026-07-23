@@ -7,6 +7,7 @@
       <h1>Create the first admin</h1>
       {% if let Some(error) = error %}<p class="flash err" data-testid="setup-error">{{ error }}</p>{% endif %}
       <form method="post" action="/setup">
+        <input type="hidden" name="_csrf" value="{{ csrf }}">
         <div class="field">
           <label for="username">Username</label>
           <input id="username" name="username" data-testid="username-input" required>

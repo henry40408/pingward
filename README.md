@@ -171,6 +171,71 @@ Confirm the peer's actual address with `docker inspect -f
 and note that `/admin` shows the value pingward parsed on its **Environment**
 card.
 
+### Forward authentication
+
+To let an authentication gateway (Authelia, Authentik, `oauth2-proxy`, …) sign
+users in, point `PINGWARD_FORWARD_AUTH_HEADER` at the header your proxy sets:
+
+```yaml
+environment:
+  PINGWARD_TRUSTED_PROXIES: "172.16.0.0/12"
+  PINGWARD_FORWARD_AUTH_HEADER: "Remote-User"
+```
+
+The header is honoured **only** from an address listed in
+`PINGWARD_TRUSTED_PROXIES` — otherwise anyone could set it and log in as
+anybody. A username seen for the first time gets a non-admin, password-less
+account provisioned automatically; promote it from `/admin`.
+
+Such a user is given a normal pingward session on first request, so the
+**Account** page lists it and it can be revoked like any other. Note that
+revoking it only ends that session — the next request through the proxy is
+authenticated again by the header. Sign-out is the gateway's job; there is
+nothing pingward can log you out of.
+
+#### Exclude the machine endpoints from the gateway
+
+**This part is not optional.** An authentication gateway in front of pingward
+protects *everything* by default, including the endpoints that have no browser
+and no session to redirect. Leave them covered and your monitoring silently
+stops working: every `curl` from a cron job gets the gateway's login page (a
+`302`, which most ping scripts treat as success), so checks never receive a
+heartbeat and pingward reports them all down.
+
+Exclude at least these:
+
+| Path | Why |
+| --- | --- |
+| `/ping/*` | The heartbeat endpoints. Public and unauthenticated by design — this is what your jobs call. |
+| `/api/v1/*` | Bearer-token API. It authenticates with its own key and never reads a session cookie. |
+| `/healthz` | Container/uptime health probes. |
+
+With Authelia, add a `bypass` rule *above* your catch-all — rules are matched
+in order, so a `bypass` listed after the `one_factor` rule never fires:
+
+```yaml
+access_control:
+  default_policy: deny
+  rules:
+    - domain: pingward.example.com
+      resources:
+        - '^/ping/.*$'
+        - '^/api/v1/.*$'
+        - '^/healthz$'
+      policy: bypass
+
+    - domain: pingward.example.com
+      policy: one_factor
+```
+
+If you also serve the OpenAPI docs to machines, add `^/api/openapi\.json$`.
+The equivalent in other gateways is the same idea under a different name —
+`skip_auth_routes` in `oauth2-proxy`, an unauthenticated path in Authentik.
+
+To verify, `curl -sS -o /dev/null -w '%{http_code}\n' https://pingward.example.com/ping/<uuid>`
+from outside your network: `200` means the bypass works, `302` means the
+gateway is still intercepting it.
+
 ## REST API
 
 pingward exposes a bearer-authenticated JSON API under `/api/v1`. Create a key
