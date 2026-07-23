@@ -35,6 +35,10 @@ pub struct Config {
     pub scan_interval_secs: u64,
     pub prune_interval_secs: u64,
     pub forward_auth_header: Option<String>,
+    /// Where `POST /logout` sends the browser. Unset means `/login`, which
+    /// under forward auth just re-authenticates on the next request — see
+    /// `web::logout`.
+    pub forward_auth_logout_url: Option<String>,
     pub trusted_proxies: Vec<String>,
     pub smtp: Option<SmtpConfig>,
     pub log_format: LogFormat,
@@ -146,6 +150,7 @@ impl Config {
             scan_interval_secs,
             prune_interval_secs,
             forward_auth_header: get("PINGWARD_FORWARD_AUTH_HEADER"),
+            forward_auth_logout_url: nonblank("PINGWARD_FORWARD_AUTH_LOGOUT_URL"),
             trusted_proxies,
             smtp,
             log_format,
@@ -265,6 +270,24 @@ mod tests {
     fn duration_env_var_zero_is_preserved() {
         let c = Config::from_map(|k| (k == "PINGWARD_SCAN_INTERVAL").then(|| "0".into()));
         assert_eq!(c.scan_interval_secs, 0);
+    }
+
+    #[test]
+    fn forward_auth_logout_url_is_optional_and_trimmed() {
+        assert!(Config::from_map(|_| None).forward_auth_logout_url.is_none());
+        let c = Config::from_map(|k| {
+            (k == "PINGWARD_FORWARD_AUTH_LOGOUT_URL")
+                .then(|| "  https://auth.example.com/logout ".into())
+        });
+        assert_eq!(
+            c.forward_auth_logout_url.as_deref(),
+            Some("https://auth.example.com/logout")
+        );
+        // A blank value is "unset", not "redirect to the empty string" — an
+        // empty `Location` would strand the browser on the logout POST.
+        let c =
+            Config::from_map(|k| (k == "PINGWARD_FORWARD_AUTH_LOGOUT_URL").then(|| "  ".into()));
+        assert!(c.forward_auth_logout_url.is_none());
     }
 
     #[test]

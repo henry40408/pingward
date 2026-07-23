@@ -57,11 +57,28 @@ fn warn_on_ephemeral_secret(source: SecretSource) {
     );
 }
 
+/// Warn when a forward-auth logout URL is configured without forward auth
+/// itself. The setting still takes effect — logout really does redirect there —
+/// but it was almost certainly meant to end a gateway session that nothing here
+/// is reading identities from, so the pairing is worth surfacing. A warning
+/// rather than a refusal: an operator staging the gateway config in two steps
+/// must still be able to boot.
+fn warn_on_orphan_logout_url(config: &Config) {
+    if config.forward_auth_logout_url.is_some() && config.forward_auth_header.is_none() {
+        tracing::warn!(
+            "PINGWARD_FORWARD_AUTH_LOGOUT_URL is set but PINGWARD_FORWARD_AUTH_HEADER is not; \
+             logging out will still redirect there, but no request is authenticated by a \
+             gateway header."
+        );
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let config = Config::from_env();
     init_tracing(config.log_format);
     warn_on_ephemeral_secret(config.secret_source);
+    warn_on_orphan_logout_url(&config);
 
     let bind = config.bind.clone();
     let scan_interval_secs = config.scan_interval_secs;

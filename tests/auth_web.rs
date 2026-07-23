@@ -457,6 +457,34 @@ async fn login_page_uses_auth_card_and_error_is_restyled() {
 }
 
 #[tokio::test]
+async fn login_page_bounces_an_already_signed_in_visitor() {
+    // Mostly there for forward auth, where `logout` lands on `/login` only to
+    // be re-authenticated by the gateway header before the page renders — but
+    // the rule is unconditional, so it is testable without a proxy.
+    let (mut server, store) = server().await;
+    let phc = pingward::auth::hash_password("secret1").unwrap();
+    store
+        .create_user("bob", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let csrf = common::anonymous_csrf(&mut server).await;
+    server
+        .post("/login")
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "bob"),
+            ("password", "secret1"),
+        ])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    let res = server.get("/login").await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/");
+}
+
+#[tokio::test]
 async fn login_logout_cycle() {
     let (mut server, store) = server().await;
     let phc = pingward::auth::hash_password("secret1").unwrap();

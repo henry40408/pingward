@@ -158,6 +158,18 @@ would mint, the real session must win; reversed, the anonymous layer's
   `anonymous_session` in play, a valid signature no longer implies a row
   exists.
 
+The same layer is why **logout cannot be local-only** under forward auth:
+`web::logout` deletes the row, but the next request still carries the gateway's
+header and `forward_auth_session` mints a replacement before any handler runs.
+Two things follow from that, both in `web.rs`. `logout` redirects to
+`PINGWARD_FORWARD_AUTH_LOGOUT_URL` when configured — the gateway's own sign-out
+endpoint, the only thing that can end the identity; the target comes from the
+operator's environment and never from the request, so it is not an open
+redirect. And `login_page` bounces an already-authenticated visitor to `/`,
+because the default target (`/login`) would otherwise render a login form to
+someone the layer has just signed back in. Both behave the same for password
+users, who simply never hit the re-authentication.
+
 `/api/v1` data endpoints authenticate independently via the `ApiUser` bearer
 extractor; `/api/docs` and `/api/openapi.json` additionally accept a logged-in
 web session (`CurrentUser`) but are read-only `GET`s, so they add no

@@ -39,6 +39,19 @@ fn forward_auth_config() -> Config {
     })
 }
 
+/// [`forward_auth_config`] plus a gateway sign-out URL.
+fn logout_url_config() -> Config {
+    Config::from_map(|k| match k {
+        "PINGWARD_FORWARD_AUTH_HEADER" => Some("Remote-User".into()),
+        "PINGWARD_TRUSTED_PROXIES" => Some("172.16.0.0/12".into()),
+        "PINGWARD_SECRET" => Some(common::TEST_SECRET.into()),
+        "PINGWARD_FORWARD_AUTH_LOGOUT_URL" => Some(GATEWAY_LOGOUT.into()),
+        _ => None,
+    })
+}
+
+const GATEWAY_LOGOUT: &str = "https://auth.example.com/logout";
+
 /// Drives one request against a router built from `state`, as `peer` would see
 /// it, optionally carrying `Remote-User` and a `Cookie` header.
 async fn request(
@@ -99,6 +112,37 @@ fn new_project_body(csrf: &str) -> Body {
         "_csrf={}&name=demo&description=&scan_interval_secs=60&nag_interval_secs=3600",
         form_urlencoded::byte_serialize(csrf.as_bytes()).collect::<String>()
     ))
+}
+
+fn csrf_body(csrf: &str) -> Body {
+    Body::from(format!(
+        "_csrf={}",
+        form_urlencoded::byte_serialize(csrf.as_bytes()).collect::<String>()
+    ))
+}
+
+/// Signs `alice` in through the gateway and returns her session cookie plus the
+/// CSRF token of the nav's log-out form, ready to POST with.
+async fn signed_in_via_gateway(state: &AppState) -> (String, String) {
+    let page = request(
+        state,
+        PROXY_PEER,
+        "GET",
+        "/projects/new",
+        Some("alice"),
+        None,
+        Body::empty(),
+    )
+    .await;
+    let cookie = session_cookie_of(&page).expect("forward auth mints a session cookie");
+    (cookie, csrf_of(&body_text(page).await))
+}
+
+async fn session_count(store: &Store) -> i64 {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -214,6 +258,77 @@ async fn forward_auth_header_from_an_untrusted_peer_mints_nothing() {
             .unwrap();
         assert_eq!(count, 0, "an untrusted peer must not populate `{table}`");
     }
+}
+
+#[tokio::test]
+async fn logout_hands_off_to_the_gateway_when_a_url_is_configured() {
+    // The local session is still ended — the redirect is what additionally lets
+    // the gateway end the identity that would otherwise sign the visitor
+    // straight back in.
+    let store = empty_store().await;
+    let state = AppState::new(store.clone(), logout_url_config());
+    let (cookie, csrf) = signed_in_via_gateway(&state).await;
+    assert_eq!(session_count(&store).await, 1);
+
+    let resp = request(
+        &state,
+        PROXY_PEER,
+        "POST",
+        "/logout",
+        Some("alice"),
+        Some(&cookie),
+        csrf_body(&csrf),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(resp.headers()["location"], GATEWAY_LOGOUT);
+    assert_eq!(
+        session_count(&store).await,
+        0,
+        "the local session must be deleted whatever the redirect target"
+    );
+}
+
+#[tokio::test]
+async fn without_a_logout_url_the_gateway_signs_you_back_in() {
+    // Not a bug to fix but a fact to pin: nothing pingward deletes can outlive
+    // the redirect while the gateway keeps sending an identity header. The
+    // visitor lands on `/`, not on a login form they are already past.
+    let store = empty_store().await;
+    let state = AppState::new(store.clone(), forward_auth_config());
+    let (cookie, csrf) = signed_in_via_gateway(&state).await;
+
+    let out = request(
+        &state,
+        PROXY_PEER,
+        "POST",
+        "/logout",
+        Some("alice"),
+        Some(&cookie),
+        csrf_body(&csrf),
+    )
+    .await;
+    assert_eq!(out.status(), StatusCode::SEE_OTHER);
+    assert_eq!(out.headers()["location"], "/login");
+    assert_eq!(session_count(&store).await, 0);
+
+    let back = request(
+        &state,
+        PROXY_PEER,
+        "GET",
+        "/login",
+        Some("alice"),
+        Some(&cookie),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(back.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        back.headers()["location"],
+        "/",
+        "a re-authenticated visitor must not be shown the login form"
+    );
+    assert_eq!(session_count(&store).await, 1, "a fresh session was minted");
 }
 
 #[tokio::test]

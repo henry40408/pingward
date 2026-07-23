@@ -9,10 +9,9 @@ const { Given, When, Then } = createBdd(test);
 // own data. We sign in as the member (they must own the rows), create the
 // project and check through the normal owner UI, and record their ids on
 // `world` for the admin-area navigation steps. The member was already created
-// in Background via the /users admin form. No explicit logout is needed: the
-// caller's "I am signed in as ..." step goes to /login (which always renders
-// the form, never redirecting an authed user) and login_submit starts a fresh
-// session that replaces the member's.
+// in Background via the /users admin form. We arrive here already signed in as
+// the admin; `signIn` handles the switch, since /login now bounces an
+// authenticated visitor to "/" and has to be reached signed out.
 Given(
   "{string} with password {string} owns a project {string} with a check {string} period {int}",
   async ({ page, serverUrl, world }, username, password, projectName, checkName, period) => {
