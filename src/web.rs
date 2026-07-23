@@ -7,6 +7,7 @@ use crate::models::{
     Channel, ChannelKind, Check, CheckStatus, Notification, Project, ScheduleKind, User,
 };
 use crate::notify::{EventKind, NotificationEvent, notifier_for};
+use crate::secret;
 use crate::state::AppState;
 use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
@@ -353,7 +354,7 @@ async fn setup_submit(
         .create_user(&creds.username, Some(&phc), true, Utc::now())
         .await?;
     let ua = request_user_agent(&headers);
-    let jar = start_session(&state.store, jar, uid, ua.as_deref(), conn.0.as_deref()).await?;
+    let jar = start_session(&state, jar, uid, ua.as_deref(), conn.0.as_deref()).await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
 
@@ -402,13 +403,13 @@ async fn login_submit(
         .into_response());
     }
     let ua = request_user_agent(&headers);
-    let jar = start_session(&state.store, jar, user.id, ua.as_deref(), conn.0.as_deref()).await?;
+    let jar = start_session(&state, jar, user.id, ua.as_deref(), conn.0.as_deref()).await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
 
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> Result<Response, AppError> {
-    if let Some(cookie) = jar.get(SESSION_COOKIE) {
-        state.store.delete_session(cookie.value()).await?;
+    if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
+        state.store.delete_session(&id).await?;
     }
     let jar = jar.remove(Cookie::from(SESSION_COOKIE));
     Ok((jar, Redirect::to("/login")).into_response())
@@ -538,7 +539,7 @@ async fn dashboard(
     }
     Ok(render(&DashboardTemplate {
         show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
+        csrf: current_csrf(&state, &jar),
         is_admin: user.is_admin,
         total,
         up,
@@ -569,49 +570,41 @@ fn request_user_agent(headers: &HeaderMap) -> Option<String> {
     })
 }
 
-/// Create a session row and return a jar carrying the session cookie.
+/// Create a session row and return a jar carrying the signed session cookie.
 async fn start_session(
-    store: &Store,
+    state: &AppState,
     jar: CookieJar,
     user_id: i64,
     user_agent: Option<&str>,
     ip: Option<&str>,
 ) -> Result<CookieJar, AppError> {
-    let token = new_session_token();
-    // Per-session CSRF synchronizer token, validated by `csrf_guard` on every
-    // state-changing browser request and embedded in POST forms by the render
-    // path (looked up via `Store::session_csrf_token`).
-    let csrf = new_session_token();
+    let session_id = new_session_token();
     let expires = Utc::now() + Duration::days(SESSION_TTL_DAYS);
-    store
-        .create_session(&token, user_id, &csrf, expires, user_agent, ip, Utc::now())
+    state
+        .store
+        .create_session(&session_id, user_id, expires, user_agent, ip, Utc::now())
         .await?;
-    let cookie = Cookie::build((SESSION_COOKIE, token))
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .path("/")
-        .build();
+    // The cookie carries `<id>.<hmac>`, never the bare id — see `crate::secret`.
+    let cookie = Cookie::build((
+        SESSION_COOKIE,
+        secret::sign_session(&state.config.secret, &session_id),
+    ))
+    .http_only(true)
+    .same_site(SameSite::Lax)
+    .path("/")
+    .build();
     Ok(jar.add(cookie))
 }
 
 /// Resolve the current session's CSRF synchronizer token from the request
 /// cookies, for embedding as a hidden `_csrf` field in rendered POST forms.
-/// Returns an empty string when there is no session or no stored token (e.g.
-/// the pre-session `login`/`setup` pages, which carry exempt forms).
-async fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
-    match jar.get(SESSION_COOKIE) {
-        Some(cookie) => match state.store.session_csrf_token(cookie.value()).await {
-            Ok(tok) => tok.unwrap_or_default(),
-            // Fail closed: an empty token yields an unsubmittable form (the guard
-            // rejects it) rather than a token-less bypass. Log so the operator can
-            // see the lookup failed instead of it being silently swallowed.
-            Err(e) => {
-                tracing::error!("failed to load CSRF token for form render: {e}");
-                String::new()
-            }
-        },
-        None => String::new(),
-    }
+/// Returns an empty string when the request carries no valid session (e.g. the
+/// pre-session `login`/`setup` pages, which carry exempt forms) — an empty
+/// token yields an unsubmittable form rather than a token-less bypass.
+fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
+    secret::session_id_from_jar(jar, &state.config.secret)
+        .map(|id| secret::derive_csrf(&state.config.secret, &id))
+        .unwrap_or_default()
 }
 
 /// CSRF synchronizer-token guard, applied to `web::routes()` only (the machine
@@ -620,11 +613,12 @@ async fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
 ///
 /// Safe methods (GET/HEAD/OPTIONS) and the pre-session `POST /login` and
 /// `POST /setup` paths pass through untouched. Every other state-changing
-/// request must present the session's stored token, taken from the
-/// `X-CSRF-Token` header or, failing that, the `_csrf` urlencoded form field
-/// (in which case the body is buffered and the request rebuilt so the
-/// downstream `Form<T>` extractor still works). The token is a random UUID, so
-/// a plain `==` comparison (no constant-time compare) is adequate here.
+/// request must present the session's token, taken from the `X-CSRF-Token`
+/// header or, failing that, the `_csrf` urlencoded form field (in which case
+/// the body is buffered and the request rebuilt so the downstream `Form<T>`
+/// extractor still works). The token is derived from the session id rather than
+/// stored, so this costs no database round trip; comparison is constant-time
+/// (`secret::verify_csrf`) because the token is now a MAC over a known input.
 ///
 /// Upper bound on the buffered request body when reading the `_csrf` form field.
 /// Browser POSTs to `web::routes()` carry small urlencoded forms; 1 MiB is a
@@ -641,14 +635,12 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
     if path == "/login" || path == "/setup" {
         return next.run(req).await;
     }
-    // Resolve the caller's session token from the cookie, then its stored CSRF.
+    // Resolve the caller's session id from the signed cookie. An unsigned or
+    // tampered cookie never gets this far, so no token can match it.
     let jar = CookieJar::from_headers(req.headers());
-    let stored = match jar.get(SESSION_COOKIE) {
-        Some(cookie) => match state.store.session_csrf_token(cookie.value()).await {
-            Ok(Some(tok)) if !tok.is_empty() => tok,
-            _ => return StatusCode::FORBIDDEN.into_response(),
-        },
-        None => return StatusCode::FORBIDDEN.into_response(),
+    let secret = &state.config.secret;
+    let Some(session_id) = secret::session_id_from_jar(&jar, secret) else {
+        return StatusCode::FORBIDDEN.into_response();
     };
     // Prefer the header token — this path avoids buffering the body.
     if let Some(submitted) = req
@@ -656,7 +648,7 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
         .get("x-csrf-token")
         .and_then(|v| v.to_str().ok())
     {
-        if stored == submitted {
+        if secret::verify_csrf(secret, &session_id, submitted) {
             return next.run(req).await;
         }
         return StatusCode::FORBIDDEN.into_response();
@@ -670,7 +662,7 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
     let submitted = form_urlencoded::parse(&bytes)
         .find(|(k, _)| k == "_csrf")
         .map(|(_, v)| v.into_owned());
-    if submitted.as_deref() != Some(stored.as_str()) {
+    if !submitted.is_some_and(|t| secret::verify_csrf(secret, &session_id, &t)) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let req = Request::from_parts(parts, axum::body::Body::from(bytes));
@@ -955,7 +947,7 @@ async fn project_new(
 ) -> Result<Response, AppError> {
     Ok(render(&ProjectFormTemplate {
         show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
+        csrf: current_csrf(&state, &jar),
         is_admin: user.is_admin,
         heading: "New project".into(),
         action: "/projects".into(),
@@ -977,7 +969,7 @@ async fn project_create(
     let (name, description, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
-            let csrf = current_csrf(&state, &jar).await;
+            let csrf = current_csrf(&state, &jar);
             let t = project_form_with_error(
                 "New project",
                 "/projects".into(),
@@ -1081,7 +1073,7 @@ async fn project_show(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = owned_project(&state.store, id, user.id).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     render_project_page(&state.store, project, None, false, user.is_admin, csrf).await
 }
 
@@ -1092,7 +1084,7 @@ async fn project_edit(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = owned_project(&state.store, id, user.id).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     Ok(render(&project_edit_form(project, false, user.is_admin, csrf))?.into_response())
 }
 
@@ -1107,7 +1099,7 @@ async fn project_update(
     let (name, description, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
-            let csrf = current_csrf(&state, &jar).await;
+            let csrf = current_csrf(&state, &jar);
             let t = project_form_with_error(
                 "Edit project",
                 format!("/projects/{id}"),
@@ -1519,7 +1511,7 @@ async fn check_new(
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     let form = empty_check_form(
         "New check",
         format!("/projects/{pid}/checks"),
@@ -1595,7 +1587,7 @@ async fn check_create(
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     check_create_core(&state, pid, form, false, user.is_admin, csrf).await
 }
 
@@ -1654,7 +1646,7 @@ async fn check_show(
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     let (jar, flash) = take_flash(jar, "channels");
     let resp = render_check_page(&state, check, false, user.is_admin, csrf, flash, page).await?;
     Ok((jar, resp).into_response())
@@ -2094,7 +2086,7 @@ async fn check_edit(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     Ok(render(&check_edit_form(check, false, user.is_admin, csrf))?.into_response())
 }
 
@@ -2164,7 +2156,7 @@ async fn check_update(
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     owned_check(&state.store, id, user.id).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     check_update_core(&state, id, form, false, user.is_admin, csrf).await
 }
 
@@ -2346,7 +2338,7 @@ async fn channel_new(
     owned_project(&state.store, pid, user.id).await?;
     Ok(render(&ChannelFormTemplate {
         show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
+        csrf: current_csrf(&state, &jar),
         is_admin: user.is_admin,
         admin: false,
         project_id: pid,
@@ -2403,7 +2395,7 @@ async fn channel_create(
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     channel_create_core(&state, pid, form, false, user.is_admin, csrf).await
 }
 
@@ -2465,7 +2457,7 @@ async fn channel_test(
         .ok_or(AppError::NotFound)?;
     let project = owned_project(&state.store, channel.project_id, user.id).await?;
     let result = run_channel_test(&state, &channel).await;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     render_project_page(
         &state.store,
         project,
@@ -2962,11 +2954,12 @@ async fn users_set_disabled(
 // --- account (session-authenticated self-service page for every logged-in
 // user: sessions, then API keys, merged onto a single `/account` page) ---
 //
-// `sessions.id` is the session cookie value — a bearer secret — and must
-// never be rendered or appear in a URL. Rows are identified in the UI (and in
-// the revoke route) by `handle`, the SHA-256 hex of the id, computed with the
-// same helper the API-key hashing uses. Session lists are tiny, so resolving
-// a handle back to a row is a linear scan rather than an indexed lookup.
+// `sessions.id` is half of the session cookie — the signed half is derived
+// from it (see `crate::secret`), so it is still a bearer secret and must never
+// be rendered or appear in a URL. Rows are identified in the UI (and in the
+// revoke route) by `handle`, the SHA-256 hex of the id, computed with the same
+// helper the API-key hashing uses. Session lists are tiny, so resolving a
+// handle back to a row is a linear scan rather than an indexed lookup.
 #[derive(Template)]
 #[template(path = "account.html")]
 struct AccountTemplate {
@@ -3052,9 +3045,10 @@ async fn render_account(
 ) -> Result<Response, AppError> {
     let now = Utc::now();
 
-    let current_handle = jar
-        .get(SESSION_COOKIE)
-        .map(|c| crate::apikey::hash_api_key(c.value()));
+    // The handle hashes the session *id*, so the cookie must be unwrapped first
+    // — hashing the raw cookie value would never match any row.
+    let current_handle = secret::session_id_from_jar(jar, &state.config.secret)
+        .map(|id| crate::apikey::hash_api_key(&id));
     let mut sessions: Vec<SessionRow> = state
         .store
         .list_sessions_for_user(user.id, now)
@@ -3090,7 +3084,7 @@ async fn render_account(
 
     Ok(render(&AccountTemplate {
         show_nav: true,
-        csrf: current_csrf(state, jar).await,
+        csrf: current_csrf(state, jar),
         is_admin: user.is_admin,
         sessions,
         other_count,
@@ -3170,9 +3164,8 @@ async fn sessions_revoke(
     else {
         return Ok((jar, Redirect::to("/account")).into_response());
     };
-    let is_current = jar
-        .get(SESSION_COOKIE)
-        .is_some_and(|c| c.value() == target.id);
+    let is_current =
+        secret::session_id_from_jar(&jar, &state.config.secret).is_some_and(|id| id == target.id);
     state
         .store
         .delete_session_owned(&target.id, user.id)
@@ -3193,10 +3186,10 @@ async fn sessions_revoke_others(
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
-    if let Some(cookie) = jar.get(SESSION_COOKIE) {
+    if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
         state
             .store
-            .delete_other_sessions_for_user(user.id, cookie.value())
+            .delete_other_sessions_for_user(user.id, &id)
             .await?;
     }
     Ok(Redirect::to("/account").into_response())
@@ -3478,7 +3471,7 @@ async fn render_admin(
     let (notif_ok, notif_err) = state.store.notification_counts_since(day_ago).await?;
     Ok(render(&AdminTemplate {
         show_nav: true,
-        csrf: current_csrf(state, jar).await,
+        csrf: current_csrf(state, jar),
         is_admin: true,
         user_count: state.store.count_users().await?,
         project_count: state.store.count_projects().await?,
@@ -3523,7 +3516,7 @@ async fn admin_project_show(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     render_project_page(&state.store, project, None, true, true, csrf).await
 }
 
@@ -3536,7 +3529,7 @@ async fn admin_project_edit(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let project = admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     Ok(render(&project_edit_form(project, true, true, csrf))?.into_response())
 }
 
@@ -3553,7 +3546,7 @@ async fn admin_project_update(
     let (name, description, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
-            let csrf = current_csrf(&state, &jar).await;
+            let csrf = current_csrf(&state, &jar);
             let t = project_form_with_error(
                 "Edit project",
                 format!("/admin/projects/{id}"),
@@ -3594,7 +3587,7 @@ async fn admin_check_new(
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     Ok(render(&empty_check_form(
         "New check",
         format!("/admin/projects/{pid}/checks"),
@@ -3614,7 +3607,7 @@ async fn admin_check_create(
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     check_create_core(&state, pid, form, true, true, csrf).await
 }
 
@@ -3628,7 +3621,7 @@ async fn admin_check_show(
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     let (jar, flash) = take_flash(jar, "channels");
     let resp = render_check_page(&state, check, true, true, csrf, flash, page).await?;
     Ok((jar, resp).into_response())
@@ -3643,7 +3636,7 @@ async fn admin_check_edit(
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     Ok(render(&check_edit_form(check, true, true, csrf))?.into_response())
 }
 
@@ -3657,7 +3650,7 @@ async fn admin_check_update(
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
     admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     check_update_core(&state, id, form, true, true, csrf).await
 }
 
@@ -3749,7 +3742,7 @@ async fn admin_channel_new(
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
     Ok(render(&ChannelFormTemplate {
         show_nav: true,
-        csrf: current_csrf(&state, &jar).await,
+        csrf: current_csrf(&state, &jar),
         is_admin: true,
         admin: true,
         project_id: pid,
@@ -3769,7 +3762,7 @@ async fn admin_channel_create(
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     channel_create_core(&state, pid, form, true, true, csrf).await
 }
 
@@ -3800,7 +3793,7 @@ async fn admin_channel_test(
         .await?
         .ok_or(AppError::NotFound)?;
     let result = run_channel_test(&state, &channel).await;
-    let csrf = current_csrf(&state, &jar).await;
+    let csrf = current_csrf(&state, &jar);
     render_project_page(&state.store, project, Some(result), true, true, csrf).await
 }
 

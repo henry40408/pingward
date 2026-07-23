@@ -1,6 +1,6 @@
 use axum::http::StatusCode;
 use axum_test::TestServer;
-use pingward::{app, config::Config, db, state::AppState, store::Store};
+use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
 
@@ -8,12 +8,7 @@ mod common;
 /// CSRF synchronizer token as a default `X-CSRF-Token` header so protected POSTs
 /// are not rejected by `csrf_guard`. Call after every (re)login.
 async fn set_csrf(server: &mut TestServer, store: &Store) {
-    let tok = sqlx::query_scalar::<_, String>(
-        "SELECT csrf_token FROM sessions ORDER BY expires_at DESC LIMIT 1",
-    )
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
+    let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
 }
 
@@ -21,7 +16,7 @@ async fn admin_server() -> (TestServer, Store, i64) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
     let phc = pingward::auth::hash_password("pw").unwrap();
@@ -60,7 +55,7 @@ async fn non_admin_forbidden_on_every_admin_route() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
     let phc = pingward::auth::hash_password("pw").unwrap();
@@ -115,7 +110,7 @@ async fn admin_sees_admin_nav_link_on_dashboard() {
 
     // A separate, non-admin member must NOT see the Admin nav link on their
     // own dashboard, proving the link reflects the viewer, not the route.
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     let mut member_server = TestServer::new(app(state));
     member_server.save_cookies();
     let phc = pingward::auth::hash_password("pw").unwrap();

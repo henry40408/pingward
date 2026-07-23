@@ -1,5 +1,7 @@
 use axum_test::TestServer;
-use pingward::{app, config::Config, state::AppState, store::Store};
+use pingward::{app, state::AppState, store::Store};
+
+mod common;
 
 async fn server() -> (TestServer, Store) {
     let pool = pingward::db::connect("sqlite::memory:").await.unwrap();
@@ -7,7 +9,7 @@ async fn server() -> (TestServer, Store) {
         .await
         .unwrap();
     let store = Store::new(pool);
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
     (server, store)
@@ -40,12 +42,7 @@ async fn server_with_project() -> (TestServer, Store, i64) {
 /// mirrors `tests/csrf.rs::csrf_token`, needed here to authorize the
 /// description-round-trip POSTs below.
 async fn csrf_token(store: &Store) -> String {
-    sqlx::query_scalar::<_, String>(
-        "SELECT csrf_token FROM sessions ORDER BY expires_at DESC LIMIT 1",
-    )
-    .fetch_one(&store.pool)
-    .await
-    .unwrap()
+    common::newest_session_csrf(&store.pool).await
 }
 
 /// The restyled channel form must keep the `.field` form-control class from

@@ -1705,6 +1705,7 @@ dependencies = [
  "chrono-tz",
  "cron",
  "form_urlencoded",
+ "hmac",
  "lettre",
  "mimalloc",
  "rand_core 0.6.4",

@@ -1,15 +1,12 @@
 use axum_test::TestServer;
-use pingward::{app, config::Config, db, state::AppState, store::Store};
+use pingward::{app, db, state::AppState, store::Store};
+
+mod common;
 
 /// After a session exists, send its CSRF token as a default `X-CSRF-Token`
 /// header so protected POSTs pass `csrf_guard`. Call after every (re)login.
 async fn set_csrf(server: &mut TestServer, store: &Store) {
-    let tok = sqlx::query_scalar::<_, String>(
-        "SELECT csrf_token FROM sessions ORDER BY expires_at DESC LIMIT 1",
-    )
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
+    let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
 }
 
@@ -17,7 +14,7 @@ async fn server() -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     // axum-test 21's `TestServer::new` returns `Self` directly (it panics
     // internally on failure rather than returning a `Result`), matching the
     // note in `tests/ping_api.rs`.
@@ -160,9 +157,12 @@ async fn server_with_project_and_smtp() -> (TestServer, Store, i64) {
         .await
         .unwrap();
     let store = Store::new(pool);
+    // Pins the same secret `common::test_config` uses, so `set_csrf` derives a
+    // token this server accepts — an unpinned secret is random per call.
     let cfg = Config::from_map(|k| match k {
         "PINGWARD_SMTP_HOST" => Some("mail.example.com".into()),
         "PINGWARD_SMTP_FROM" => Some("alerts@example.com".into()),
+        "PINGWARD_SECRET" => Some(common::TEST_SECRET.into()),
         _ => None,
     });
     let state = AppState::new(store.clone(), cfg);

@@ -3,6 +3,42 @@
 //! between `tests/*.rs` files without itself being compiled as a separate
 //! test binary.
 
+/// Fixed session/CSRF secret for tests.
+///
+/// `Config::from_map` generates a random secret when `PINGWARD_SECRET` is
+/// unset, which is right for production but would force every test to capture
+/// its `Config` just to derive one token. Tests pin it instead, via
+/// [`test_config`], so [`newest_session_csrf`] can derive without threading the
+/// secret through each call site. Tests that care about *rotation* build their
+/// own `Config` with a different secret rather than using this.
+#[allow(dead_code)]
+pub const TEST_SECRET: &str = "pingward-test-secret-32-bytes-xx";
+
+/// A default `Config` pinned to [`TEST_SECRET`].
+///
+/// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — each
+/// `tests/*.rs` binary compiles its own copy of this module.
+#[allow(dead_code)]
+pub fn test_config() -> pingward::config::Config {
+    pingward::config::Config::from_map(|k| (k == "PINGWARD_SECRET").then(|| TEST_SECRET.into()))
+}
+
+/// The CSRF token for the newest session row in `pool`, derived exactly as a
+/// server built with [`test_config`] derives it.
+///
+/// There is no `sessions.csrf_token` column any more — the token is
+/// `HMAC(secret, session id)` (see `pingward::secret`). "Newest" is by `rowid`:
+/// every session in a test is created within the same second, so
+/// `created_at`/`expires_at` cannot order two rows apart.
+#[allow(dead_code)]
+pub async fn newest_session_csrf(pool: &pingward::db::Pool) -> String {
+    let id = sqlx::query_scalar::<_, String>("SELECT id FROM sessions ORDER BY rowid DESC LIMIT 1")
+        .fetch_one(pool)
+        .await
+        .expect("a session row exists");
+    pingward::secret::derive_csrf(TEST_SECRET.as_bytes(), &id)
+}
+
 /// Parses the body of a router's `pub fn routes() -> Router<AppState> {`
 /// function straight out of its own source to recover every `(method, path)`
 /// pair it registers, filtered to those starting with `prefix`. This is a
@@ -19,6 +55,10 @@
 /// `source` is the file text; callers pass `include_str!(...)` at the call
 /// site so the path resolves relative to the calling file. `prefix` selects
 /// which registered paths to keep (e.g. `"/admin"`, `"/api/v1"`).
+///
+/// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — most
+/// binaries pull this module in only for the CSRF helpers above.
+#[allow(dead_code)]
 pub fn routes_in_router_source(source: &str, prefix: &str) -> Vec<(&'static str, String)> {
     let start_marker = "pub fn routes() -> Router<AppState> {";
     let start = source

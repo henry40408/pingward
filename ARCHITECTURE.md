@@ -120,13 +120,43 @@ reads the session cookie), and the static asset/`/healthz` routes are
 `web::routes()` to accidentally start covering them. `csrf_guard` itself
 lets safe methods (GET/HEAD/OPTIONS) and the pre-session `/login`/`/setup`
 paths through, and otherwise requires a per-session synchronizer token sent
-as `X-CSRF-Token` (or hidden form field) matching the one stored on the
-session.
+as `X-CSRF-Token` (or hidden form field).
 
 `/api/v1` data endpoints authenticate independently via the `ApiUser` bearer
 extractor; `/api/docs` and `/api/openapi.json` additionally accept a logged-in
 web session (`CurrentUser`) but are read-only `GET`s, so they add no
 CSRF-relevant ambient authority.
+
+### Session and CSRF secret
+
+Both browser credentials are keyed off one process secret (`src/secret.rs`,
+`PINGWARD_SECRET`):
+
+```
+session cookie = <session_id>.<HMAC-SHA256(secret, "session:" ++ session_id)>
+CSRF token     =                HMAC-SHA256(secret, "csrf:"    ++ session_id)
+```
+
+The domain-separation prefixes are load-bearing: without them the two values
+are identical, and every rendered form embeds the CSRF token — which would
+print the cookie's signature into the page body.
+
+Two consequences follow from deriving rather than storing:
+
+- **`sessions` has no `csrf_token` column.** Rendering a form and checking a
+  submitted token are both pure computation, so neither costs a query.
+- **The cookie is verified before any database work.** A forged, stale, or
+  DB-leaked `sessions.id` fails the signature check in `secret::verify_session`
+  and never reaches a lookup. The raw cookie value is therefore *not* the
+  session id — every consumer must go through `secret::session_id_from_jar`.
+
+Rotating the secret invalidates every signature at once, ending all browser
+sessions while leaving the rows intact (the prune loop reaps them on expiry).
+When `PINGWARD_SECRET` is unset a random secret is generated per process, so
+**every restart signs everyone out**; `main::warn_on_ephemeral_secret` logs a
+warning saying so at startup. API keys are unaffected either way — they are
+random bearer tokens matched by SHA-256 digest (`src/apikey.rs`) and never
+touch this secret.
 
 ## Persistence
 

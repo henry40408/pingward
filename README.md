@@ -120,7 +120,26 @@ All configuration is via environment variables:
 | `PINGWARD_LOG_FORMAT` | `text` | Log renderer: `text` (human-readable) or `json` (one JSON object per line for a log aggregator). Verbosity is set with `RUST_LOG`. |
 | `PINGWARD_TRUSTED_PROXIES` | — | Comma-separated addresses or CIDR blocks whose `X-Forwarded-For` (and forward-auth header) is believed. See below. |
 | `PINGWARD_FORWARD_AUTH_HEADER` | — | Header carrying a pre-authenticated username; honoured only from a trusted proxy. |
+| `PINGWARD_SECRET` | generated per process | Signing key for session cookies and CSRF tokens; at least 16 bytes. See below. |
 | `PINGWARD_SMTP_*` | — | Instance SMTP for the email channel (`HOST`/`FROM` required to enable; port/TLS defaulted). |
+
+### `PINGWARD_SECRET`
+
+Session cookies are signed with this key, and each session's CSRF token is
+derived from it. **Set it on any real deployment:**
+
+```
+PINGWARD_SECRET=$(openssl rand -hex 32)
+```
+
+Leave it unset and pingward generates a fresh key at every start, which
+invalidates every signed-in browser session — so each restart signs all users
+out (a warning at startup says so). A value shorter than 16 bytes is ignored
+and treated the same way. Changing the key has the same effect and is the way
+to force a global sign-out on purpose.
+
+API keys are not affected by any of this: they are independent bearer tokens,
+so programmatic clients keep working across restarts and key changes.
 
 Duration-valued settings (scan/nag/prune intervals and per-check period, grace,
 max-runtime) accept either raw seconds or a human-readable string (`5m`,
