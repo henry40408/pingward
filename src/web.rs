@@ -358,9 +358,26 @@ async fn setup_submit(
     Ok((jar, Redirect::to("/")).into_response())
 }
 
-async fn login_page(State(state): State<AppState>, jar: CookieJar) -> Result<Response, AppError> {
+/// Renders the login form — or bounces an already-signed-in visitor to the
+/// dashboard.
+///
+/// That bounce is load-bearing under forward auth. `logout` clears the session
+/// and lands here, but `forward_auth_session` runs first and, seeing the
+/// gateway's identity header still present, immediately mints a fresh one. The
+/// visitor would otherwise be shown a login form while already signed in as the
+/// very account they just tried to leave. Sending them to `/` is the honest
+/// outcome: only the gateway can end that identity (see
+/// `PINGWARD_FORWARD_AUTH_LOGOUT_URL`).
+async fn login_page(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    OptionalUser(user): OptionalUser,
+) -> Result<Response, AppError> {
     if state.store.count_users().await? == 0 {
         return Ok(Redirect::to("/setup").into_response());
+    }
+    if user.is_some() {
+        return Ok(Redirect::to("/").into_response());
     }
     Ok(render(&LoginTemplate {
         show_nav: false,
@@ -407,12 +424,30 @@ async fn login_submit(
     Ok((jar, Redirect::to("/")).into_response())
 }
 
+/// Ends the local session, then sends the browser to
+/// `PINGWARD_FORWARD_AUTH_LOGOUT_URL` when one is configured, else `/login`.
+///
+/// Deleting the row is never enough behind an authentication gateway: the next
+/// request still carries the gateway's identity header, so
+/// `forward_auth_session` signs the visitor straight back in. Only the gateway
+/// can end that identity, which is what the configured URL is for — it points
+/// at the gateway's own sign-out endpoint. Left unset, logout is still
+/// well-defined, it just does not outlive the redirect while the gateway
+/// session stands.
+///
+/// The redirect target comes from the operator's environment, never from the
+/// request, so it is not an open redirect.
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> Result<Response, AppError> {
     if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
         state.store.delete_session(&id).await?;
     }
     let jar = jar.remove(Cookie::from(SESSION_COOKIE));
-    Ok((jar, Redirect::to("/login")).into_response())
+    let target = state
+        .config
+        .forward_auth_logout_url
+        .as_deref()
+        .unwrap_or("/login");
+    Ok((jar, Redirect::to(target)).into_response())
 }
 
 async fn dashboard(
@@ -3424,6 +3459,15 @@ fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSet
             },
             default: "(unset)",
             description: "Proxy addresses trusted to set the forward-auth header.",
+        },
+        EnvSetting {
+            var: "PINGWARD_FORWARD_AUTH_LOGOUT_URL",
+            value: match &config.forward_auth_logout_url {
+                Some(u) => EnvValue::Set(u.clone()),
+                None => EnvValue::Unset,
+            },
+            default: "(unset)",
+            description: "Where logging out sends the browser — point it at the gateway's sign-out endpoint to end the SSO session too. Unset means /login.",
         },
     ];
     let smtp = &config.smtp;

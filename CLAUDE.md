@@ -257,7 +257,10 @@ also derives `as_str()` / `FromStr` — add variants there.
 `PINGWARD_PRUNE_INTERVAL_SECS`, `PINGWARD_LOG_FORMAT` (`text` default, or `json`
 for line-delimited structured logs — parsed into `config::LogFormat`, applied by
 `init_tracing` in `main.rs`), `PINGWARD_FORWARD_AUTH_HEADER` +
-`PINGWARD_TRUSTED_PROXIES`, `PINGWARD_SECRET` (session/CSRF signing key, ≥16
+`PINGWARD_TRUSTED_PROXIES`, `PINGWARD_FORWARD_AUTH_LOGOUT_URL` (logout's
+redirect target — the gateway's sign-out endpoint; unset means `/login`, which
+under forward auth just signs the visitor straight back in — see
+ARCHITECTURE.md's "Session layers"), `PINGWARD_SECRET` (session/CSRF signing key, ≥16
 bytes; generated per process when unset — see above), and `PINGWARD_SMTP_*`
 (host/from required to enable email; port/TLS defaulted). The scan and prune interval env vars accept raw
 seconds or a human-readable duration (`5m`, `1h30m`) via

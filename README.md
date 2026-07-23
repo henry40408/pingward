@@ -120,6 +120,7 @@ All configuration is via environment variables:
 | `PINGWARD_LOG_FORMAT` | `text` | Log renderer: `text` (human-readable) or `json` (one JSON object per line for a log aggregator). Verbosity is set with `RUST_LOG`. |
 | `PINGWARD_TRUSTED_PROXIES` | — | Comma-separated addresses or CIDR blocks whose `X-Forwarded-For` (and forward-auth header) is believed. See below. |
 | `PINGWARD_FORWARD_AUTH_HEADER` | — | Header carrying a pre-authenticated username; honoured only from a trusted proxy. |
+| `PINGWARD_FORWARD_AUTH_LOGOUT_URL` | — | Where **Log out** sends the browser. Point it at your gateway's sign-out endpoint so signing out ends the SSO session too. Unset means `/login`. |
 | `PINGWARD_SECRET` | generated per process | Signing key for session cookies and CSRF tokens; at least 16 bytes. See below. |
 | `PINGWARD_SMTP_*` | — | Instance SMTP for the email channel (`HOST`/`FROM` required to enable; port/TLS defaulted). |
 
@@ -190,8 +191,29 @@ account provisioned automatically; promote it from `/admin`.
 Such a user is given a normal pingward session on first request, so the
 **Account** page lists it and it can be revoked like any other. Note that
 revoking it only ends that session — the next request through the proxy is
-authenticated again by the header. Sign-out is the gateway's job; there is
-nothing pingward can log you out of.
+authenticated again by the header.
+
+#### Signing out
+
+The same applies to the **Log out** button: it deletes the session, but the very
+next request still carries your gateway's header, so you are signed back in
+before the page renders. Only the gateway can end that identity. Give pingward
+its sign-out URL and logging out hands off to it:
+
+```yaml
+environment:
+  PINGWARD_FORWARD_AUTH_LOGOUT_URL: "https://auth.example.com/logout"
+```
+
+For Authelia that is `https://<your-authelia-domain>/logout`; Authentik uses
+`https://<domain>/application/o/<slug>/end-session/`, and `oauth2-proxy`
+`https://<domain>/oauth2/sign_out`. The local session is deleted either way —
+the URL only decides where the browser goes next.
+
+Leave it unset and **Log out** lands on `/`, not on a login form: you are still
+signed in, and pretending otherwise would be a lie. This redirect applies to
+every account, including password ones, so set it only on deployments that are
+actually behind a gateway.
 
 #### Exclude the machine endpoints from the gateway
 
