@@ -1,6 +1,8 @@
 use axum::http::StatusCode;
 use axum_test::TestServer;
-use pingward::{apikey, app, config::Config, db, state::AppState, store::Store};
+use pingward::{apikey, app, db, state::AppState, store::Store};
+
+mod common;
 
 /// A store shared by every `TestServer` built against it, plus one logged-in
 /// **non-admin** member — account management is available to every
@@ -24,19 +26,14 @@ async fn member_store() -> (Store, i64) {
 /// same user already exists — `created_at`/`username` alone can't tell the
 /// two apart, but `rowid` reflects strict insertion order.
 async fn login_server(store: &Store, username: &str, password: &str) -> TestServer {
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
     server
         .post("/login")
         .form(&[("username", username), ("password", password)])
         .await;
-    let tok = sqlx::query_scalar::<_, String>(
-        "SELECT csrf_token FROM sessions ORDER BY rowid DESC LIMIT 1",
-    )
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
+    let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
     server
 }
@@ -163,7 +160,6 @@ async fn unknown_or_foreign_handle_revokes_nothing() {
         .create_session(
             "other-session",
             other_uid,
-            "csrf-other",
             chrono::Utc::now() + chrono::Duration::hours(1),
             None,
             None,
@@ -345,7 +341,7 @@ async fn create_without_csrf_is_forbidden() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
     let phc = pingward::auth::hash_password("pw").unwrap();

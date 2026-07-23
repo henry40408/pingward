@@ -871,24 +871,21 @@ impl Store {
         Ok(Some(user_id))
     }
 
-    #[allow(clippy::too_many_arguments, reason = "mirrors the sessions row shape")]
     pub async fn create_session(
         &self,
         id: &str,
         user_id: i64,
-        csrf_token: &str,
         expires_at: DateTime<Utc>,
         user_agent: Option<&str>,
         ip: Option<&str>,
         now: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, csrf_token, expires_at, created_at, user_agent, ip) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            "INSERT INTO sessions (id, user_id, expires_at, created_at, user_agent, ip) \
+             VALUES ($1,$2,$3,$4,$5,$6)",
         )
         .bind(id)
         .bind(user_id)
-        .bind(csrf_token)
         .bind(expires_at.to_rfc3339())
         .bind(now.to_rfc3339())
         .bind(user_agent)
@@ -896,18 +893,6 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
-    }
-
-    /// Look up the CSRF synchronizer token stored alongside a session row.
-    /// Returns `None` when the session does not exist.
-    pub async fn session_csrf_token(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<String>, sqlx::Error> {
-        sqlx::query_scalar("SELECT csrf_token FROM sessions WHERE id = $1")
-            .bind(session_id)
-            .fetch_optional(&self.pool)
-            .await
     }
 
     /// Resolve a session to its owning user, honoring expiry. On a match the
@@ -2008,7 +1993,6 @@ mod tests {
             .create_session(
                 "sess-1",
                 uid,
-                "csrf-1",
                 now + chrono::Duration::hours(1),
                 Some("curl/8.0"),
                 Some("127.0.0.1"),
@@ -2063,7 +2047,6 @@ mod tests {
             .create_session(
                 "sess-2",
                 uid,
-                "csrf-2",
                 now + chrono::Duration::hours(2),
                 None,
                 None,
@@ -2109,7 +2092,6 @@ mod tests {
             .create_session(
                 "sess-3",
                 uid,
-                "csrf-3",
                 now + chrono::Duration::hours(1),
                 None,
                 None,
@@ -2141,7 +2123,6 @@ mod tests {
             .create_session(
                 "sess-at-now",
                 uid,
-                "csrf-at-now",
                 now,
                 None,
                 None,
@@ -2154,7 +2135,6 @@ mod tests {
             .create_session(
                 "sess-future",
                 uid,
-                "csrf-future",
                 now + chrono::Duration::hours(1),
                 None,
                 None,

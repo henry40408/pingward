@@ -1,3 +1,5 @@
+use crate::secret::SecretSource;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmtpTls {
     Starttls,
@@ -36,6 +38,12 @@ pub struct Config {
     pub trusted_proxies: Vec<String>,
     pub smtp: Option<SmtpConfig>,
     pub log_format: LogFormat,
+    /// Process secret backing session-cookie signatures and CSRF tokens
+    /// (`crate::secret`). Not exposed on `/admin`'s Environment card — unlike
+    /// the SMTP password, even a configured/not-set indicator is unnecessary,
+    /// and `secret_source` already reaches the startup log.
+    pub secret: Vec<u8>,
+    pub secret_source: SecretSource,
 }
 
 /// Resolve an env duration to whole seconds: a raw integer (`300`) or a
@@ -128,6 +136,8 @@ impl Config {
             }
             _ => None,
         };
+        let (secret, secret_source) =
+            crate::secret::resolve(nonblank("PINGWARD_SECRET").as_deref());
         Config {
             database_url: get("DATABASE_URL")
                 .unwrap_or_else(|| "sqlite://pingward.sqlite3?mode=rwc".into()),
@@ -139,6 +149,8 @@ impl Config {
             trusted_proxies,
             smtp,
             log_format,
+            secret,
+            secret_source,
         }
     }
 }

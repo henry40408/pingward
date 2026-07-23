@@ -9,7 +9,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use pingward::{
     config::{Config, LogFormat},
-    db, scheduler, shutdown,
+    db, scheduler,
+    secret::SecretSource,
+    shutdown,
     state::AppState,
     store::Store,
 };
@@ -36,10 +38,30 @@ fn init_tracing(format: LogFormat) {
     }
 }
 
+/// Warn once at startup when the session/CSRF secret is not configured, since
+/// the consequence — every browser session ending on restart — is otherwise
+/// only visible as an unexplained logout. Emitted after `init_tracing` so it
+/// honours `PINGWARD_LOG_FORMAT`.
+fn warn_on_ephemeral_secret(source: SecretSource) {
+    let cause = match source {
+        SecretSource::Env => return,
+        SecretSource::Generated => "PINGWARD_SECRET is not set",
+        SecretSource::Rejected => {
+            "PINGWARD_SECRET is shorter than the 16-byte minimum and was ignored"
+        }
+    };
+    tracing::warn!(
+        "{cause}; using a secret generated for this process only. Every signed-in \
+         browser session will end on restart. Set PINGWARD_SECRET (e.g. `openssl rand -hex 32`) \
+         to keep sessions across restarts. API keys are unaffected."
+    );
+}
+
 #[tokio::main]
 async fn main() {
     let config = Config::from_env();
     init_tracing(config.log_format);
+    warn_on_ephemeral_secret(config.secret_source);
 
     let bind = config.bind.clone();
     let scan_interval_secs = config.scan_interval_secs;

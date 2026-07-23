@@ -17,6 +17,7 @@ askama = "0.16"
 axum = "0.8"
 axum-extra = { version = "0.12", default-features = false, features = ["cookie", "form"] }
 form_urlencoded = "1.2"
+hmac = "0.13"
 rand_core = { version = "0.6", features = ["getrandom"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "net", "sync"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

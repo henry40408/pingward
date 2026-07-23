@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use axum_test::TestServer;
 use chrono::Utc;
 use pingward::models::ChannelKind;
-use pingward::{app, config::Config, db, state::AppState, store::Store};
+use pingward::{app, db, state::AppState, store::Store};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -52,19 +52,14 @@ async fn test_store() -> Store {
 /// the same store — this test logs in two different users against one shared
 /// store.
 async fn login_server(store: &Store, username: &str, password: &str) -> TestServer {
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
     server
         .post("/login")
         .form(&[("username", username), ("password", password)])
         .await;
-    let tok = sqlx::query_scalar::<_, String>(
-        "SELECT csrf_token FROM sessions ORDER BY rowid DESC LIMIT 1",
-    )
-    .fetch_one(&store.pool)
-    .await
-    .unwrap();
+    let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
     server
 }

@@ -1,11 +1,13 @@
 use axum_test::TestServer;
 use pingward::{app, config::Config, db, state::AppState, store::Store};
 
+mod common;
+
 async fn logged_in_server() -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
     let phc = pingward::auth::hash_password("pw").unwrap();
@@ -20,14 +22,9 @@ async fn logged_in_server() -> (TestServer, Store) {
     (server, store)
 }
 
-/// Read the current session's CSRF synchronizer token straight from the DB.
+/// Derive the current session's CSRF synchronizer token the way the server does.
 async fn csrf_token(store: &Store) -> String {
-    sqlx::query_scalar::<_, String>(
-        "SELECT csrf_token FROM sessions ORDER BY expires_at DESC LIMIT 1",
-    )
-    .fetch_one(&store.pool)
-    .await
-    .unwrap()
+    common::newest_session_csrf(&store.pool).await
 }
 
 /// Pull the value of the first `name="_csrf"` hidden input out of a rendered
@@ -227,4 +224,102 @@ async fn login_post_needs_no_csrf() {
         .form(&[("username", "admin"), ("password", "pw")])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
+}
+
+/// The one live session's id.
+async fn session_id(store: &Store) -> String {
+    sqlx::query_scalar::<_, String>("SELECT id FROM sessions LIMIT 1")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+/// A cookie-less server over the same store, so a test can present exactly one
+/// hand-built `Cookie` header instead of the jar's saved one. `secret` is what
+/// the server verifies against — pass something other than `TEST_SECRET` to
+/// simulate a restart that rotated it.
+fn server_with_secret(store: &Store, secret: &str) -> TestServer {
+    let config = Config::from_map(|k| (k == "PINGWARD_SECRET").then(|| secret.into()));
+    TestServer::new(app(AppState::new(store.clone(), config)))
+}
+
+/// A GET that lands on the login redirect rather than the page — i.e. the
+/// cookie did not authenticate.
+fn assert_bounced_to_login(res: &axum_test::TestResponse) {
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/login");
+}
+
+// The cookie is `<id>.<hmac>`: the bare session id — the pre-signing cookie
+// format, and what a database leak would expose — authenticates nothing.
+#[tokio::test]
+async fn unsigned_session_id_does_not_authenticate() {
+    let (_server, store) = logged_in_server().await;
+    let id = session_id(&store).await;
+    let res = server_with_secret(&store, common::TEST_SECRET)
+        .get("/projects/new")
+        .add_header("cookie", format!("{}={id}", pingward::auth::SESSION_COOKIE))
+        .await;
+    assert_bounced_to_login(&res);
+}
+
+// Rotating the secret — what a restart does when PINGWARD_SECRET is unset —
+// ends every existing session. The row is still there and still unexpired; only
+// its signature stopped verifying.
+#[tokio::test]
+async fn a_rotated_secret_invalidates_existing_sessions() {
+    let (server, store) = logged_in_server().await;
+    server.get("/projects/new").await.assert_status_ok();
+
+    let id = session_id(&store).await;
+    let cookie = format!(
+        "{}={}",
+        pingward::auth::SESSION_COOKIE,
+        pingward::secret::sign_session(common::TEST_SECRET.as_bytes(), &id)
+    );
+    let res = server_with_secret(&store, "a-completely-different-secret")
+        .get("/projects/new")
+        .add_header("cookie", cookie)
+        .await;
+    assert_bounced_to_login(&res);
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+        1,
+        "the session row must survive a rotation — only the signature stops verifying"
+    );
+}
+
+// A CSRF token minted under one secret must not authorize a POST verified under
+// another, even when the session id is identical.
+#[tokio::test]
+async fn a_csrf_token_from_another_secret_is_rejected() {
+    let (_server, store) = logged_in_server().await;
+    let id = session_id(&store).await;
+    const OTHER: &str = "a-completely-different-secret";
+    let res = server_with_secret(&store, OTHER)
+        .post("/projects")
+        .add_header(
+            "cookie",
+            format!(
+                "{}={}",
+                pingward::auth::SESSION_COOKIE,
+                pingward::secret::sign_session(OTHER.as_bytes(), &id)
+            ),
+        )
+        .add_header(
+            "x-csrf-token",
+            pingward::secret::derive_csrf(common::TEST_SECRET.as_bytes(), &id),
+        )
+        .form(&[
+            ("name", "web"),
+            ("description", ""),
+            ("scan_interval_secs", ""),
+            ("nag_interval_secs", ""),
+        ])
+        .await;
+    res.assert_status(axum::http::StatusCode::FORBIDDEN);
 }

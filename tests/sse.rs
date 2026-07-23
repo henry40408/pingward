@@ -11,9 +11,11 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::Utc;
-use pingward::{app, config::Config, db, state::AppState, store::Store};
+use pingward::{app, db, state::AppState, store::Store};
 use std::time::Duration;
 use tower::ServiceExt;
+
+mod common;
 
 /// A fresh, empty, migrated in-memory-SQLite store.
 async fn test_store() -> Store {
@@ -26,7 +28,8 @@ async fn test_store() -> Store {
 /// store — bypassing the `/login` handshake, which is unnecessary here since
 /// `GET` requests are structurally exempt from the CSRF guard (see
 /// `web::csrf_guard`). Returns the `Cookie` header value to attach to a raw
-/// request.
+/// request — signed with `common::TEST_SECRET`, since the cookie carries
+/// `<id>.<hmac>` and the bare id no longer authenticates anything.
 async fn login_cookie(store: &Store, username: &str) -> String {
     let phc = pingward::auth::hash_password("pw").unwrap();
     let user_id = store
@@ -38,7 +41,6 @@ async fn login_cookie(store: &Store, username: &str) -> String {
         .create_session(
             &session_id,
             user_id,
-            "csrf-token-unused-for-get",
             Utc::now() + chrono::Duration::days(pingward::auth::SESSION_TTL_DAYS),
             None,
             None,
@@ -46,7 +48,8 @@ async fn login_cookie(store: &Store, username: &str) -> String {
         )
         .await
         .unwrap();
-    format!("{}={session_id}", pingward::auth::SESSION_COOKIE)
+    let value = pingward::secret::sign_session(common::TEST_SECRET.as_bytes(), &session_id);
+    format!("{}={value}", pingward::auth::SESSION_COOKIE)
 }
 
 /// Reads chunks off `body` until `needle` has appeared in the accumulated
@@ -91,7 +94,7 @@ async fn read_until_contains(body: axum::body::Body, needle: &str, timeout: Dura
 #[tokio::test]
 async fn owner_receives_changed_event_when_check_is_pinged() {
     let store = test_store().await;
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     let router = app(state);
 
     let cookie = login_cookie(&store, "alice").await;
@@ -160,7 +163,7 @@ async fn owner_receives_changed_event_when_check_is_pinged() {
 #[tokio::test]
 async fn non_owner_gets_404_from_check_events() {
     let store = test_store().await;
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
 
     let owner_id = {
         let phc = pingward::auth::hash_password("pw").unwrap();

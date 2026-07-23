@@ -148,8 +148,10 @@ pub fn verify_password(plain: &str, phc: &str) -> bool {
 async fn resolve_user(parts: &mut Parts, state: &AppState) -> Option<User> {
     let now = Utc::now();
     let jar = CookieJar::from_headers(&parts.headers);
-    if let Some(cookie) = jar.get(SESSION_COOKIE)
-        && let Ok(Some(user)) = state.store.find_session_user(cookie.value(), now).await
+    // The cookie is `<id>.<hmac>`; a bad signature short-circuits here, so a
+    // forged or stale cookie never reaches the database.
+    if let Some(session_id) = crate::secret::session_id_from_jar(&jar, &state.config.secret)
+        && let Ok(Some(user)) = state.store.find_session_user(&session_id, now).await
         && !user.disabled
     {
         return Some(user);

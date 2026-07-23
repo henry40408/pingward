@@ -71,6 +71,22 @@ one `AppState`:
   are **structurally exempt from CSRF** (public, unauthenticated).
 - `assets::routes()` + `/healthz`.
 
+**Session & CSRF secret** (`src/secret.rs`): one process secret
+(`PINGWARD_SECRET`) keys both browser credentials, domain-separated —
+`cookie = <session_id>.HMAC(secret, "session:" ++ id)` and
+`csrf = HMAC(secret, "csrf:" ++ id)`. The prefixes are load-bearing: without
+them the two values are equal and every rendered form would print the cookie's
+signature. Because the CSRF token is *derived*, `sessions` has no `csrf_token`
+column and neither rendering nor checking a token costs a query. **The cookie
+value is not the session id** — never use `cookie.value()` as one; go through
+`secret::session_id_from_jar`, which verifies the signature before any DB work
+(`auth::resolve_user`, `web::csrf_guard`, `logout`, and the `/account` session
+list/revoke handlers all do). Rotating the secret ends every browser session
+without touching the rows; with `PINGWARD_SECRET` unset a random secret is
+generated per process, so **every restart signs everyone out** — startup warns
+about exactly that. API keys are unaffected (`src/apikey.rs`, SHA-256 of a
+random bearer token, no secret involved).
+
 **Background loops** (`src/main.rs` spawns two tokio tasks, after building
 `AppState` so both loops and the HTTP server share `state.events`):
 - `scheduler::run_scan_loop` — periodically re-evaluates every check's
@@ -235,8 +251,9 @@ also derives `as_str()` / `FromStr` — add variants there.
 `PINGWARD_PRUNE_INTERVAL_SECS`, `PINGWARD_LOG_FORMAT` (`text` default, or `json`
 for line-delimited structured logs — parsed into `config::LogFormat`, applied by
 `init_tracing` in `main.rs`), `PINGWARD_FORWARD_AUTH_HEADER` +
-`PINGWARD_TRUSTED_PROXIES`, and `PINGWARD_SMTP_*` (host/from required to enable
-email; port/TLS defaulted). The scan and prune interval env vars accept raw
+`PINGWARD_TRUSTED_PROXIES`, `PINGWARD_SECRET` (session/CSRF signing key, ≥16
+bytes; generated per process when unset — see above), and `PINGWARD_SMTP_*`
+(host/from required to enable email; port/TLS defaulted). The scan and prune interval env vars accept raw
 seconds or a human-readable duration (`5m`, `1h30m`) via
 `duration::parse_duration`; an unparseable value falls back to the default
 rather than failing at boot. `Config::from_map` is the testable core —

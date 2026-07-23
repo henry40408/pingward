@@ -298,7 +298,6 @@ mod tests {
             .create_session(
                 "sess-expired",
                 user_id,
-                "csrf-expired",
                 now - Duration::hours(1),
                 None,
                 None,
@@ -310,7 +309,6 @@ mod tests {
             .create_session(
                 "sess-valid",
                 user_id,
-                "csrf-valid",
                 now + Duration::hours(1),
                 None,
                 None,
