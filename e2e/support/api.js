@@ -1,18 +1,28 @@
 // pingward has no open registration: the only bootstrap path is the one-time
-// POST /setup (first admin), which is CSRF-exempt (pre-session). We POST the
-// form and follow the redirect; a 2xx result means the admin was created.
-// Used only against a fresh server, so the empty-field / already-set-up
-// re-render branches never fire here.
+// POST /setup (first admin). It is CSRF-protected like every other POST — a
+// logged-out visitor still gets a signed session cookie to derive a token
+// from — so we do what a browser does: GET the page first, then submit its
+// cookie and hidden `_csrf` together. Used only against a fresh server, so the
+// empty-field / already-set-up re-render branches never fire here.
 export class ApiHelper {
   constructor(baseUrl) {
     this.baseUrl = baseUrl;
   }
 
   async bootstrapAdmin(username, password) {
-    const body = new URLSearchParams({ username, password });
+    const page = await fetch(`${this.baseUrl}/setup`);
+    const cookie = (page.headers.get("set-cookie") ?? "").split(";")[0];
+    const html = await page.text();
+    const csrf = html.match(/name="_csrf" value="([^"]*)"/)?.[1];
+    if (!cookie || !csrf) {
+      throw new Error(
+        `bootstrapAdmin could not read a session cookie and _csrf token from GET /setup`
+      );
+    }
+    const body = new URLSearchParams({ _csrf: csrf, username, password });
     const res = await fetch(`${this.baseUrl}/setup`, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
       body,
     });
     if (!res.ok) {

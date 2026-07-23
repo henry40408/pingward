@@ -16,15 +16,20 @@ async fn server() -> (TestServer, Store) {
 }
 
 async fn logged_in_server() -> (TestServer, Store, i64) {
-    let (server, store) = server().await;
+    let (mut server, store) = server().await;
     let phc = pingward::auth::hash_password("pw").unwrap();
     let uid = store
         .create_user("admin", Some(&phc), true, chrono::Utc::now())
         .await
         .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", "admin"), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "admin"),
+            ("password", "pw"),
+        ])
         .await;
     (server, store, uid)
 }

@@ -28,7 +28,7 @@ async fn server() -> (TestServer, Store) {
 
 #[tokio::test]
 async fn setup_creates_admin_then_dashboard_loads() {
-    let (server, store) = server().await;
+    let (mut server, store) = server().await;
 
     // With no users, root redirects to /setup.
     let res = server.get("/").await;
@@ -36,9 +36,14 @@ async fn setup_creates_admin_then_dashboard_loads() {
     assert_eq!(res.header("location"), "/setup");
 
     // Create the first admin.
+    let csrf = common::anonymous_csrf(&mut server).await;
     let res = server
         .post("/setup")
-        .form(&[("username", "admin"), ("password", "pw12345")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "admin"),
+            ("password", "pw12345"),
+        ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(store.count_users().await.unwrap(), 1);
@@ -56,9 +61,14 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
         .create_user("admin", Some(&phc), true, chrono::Utc::now())
         .await
         .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", "admin"), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "admin"),
+            ("password", "pw"),
+        ])
         .await;
     set_csrf(&mut server, &store).await;
     (server, store, uid)
@@ -78,16 +88,21 @@ async fn disabling_user_invalidates_session() {
 
 #[tokio::test]
 async fn disabled_user_cannot_log_in() {
-    let (server, store) = server().await;
+    let (mut server, store) = server().await;
     let phc = pingward::auth::hash_password("pw").unwrap();
     let uid = store
         .create_user("bob", Some(&phc), false, chrono::Utc::now())
         .await
         .unwrap();
     store.set_user_disabled(uid, true).await.unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
     let res = server
         .post("/login")
-        .form(&[("username", "bob"), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "bob"),
+            ("password", "pw"),
+        ])
         .await;
     // Login page re-renders with an error (200), no session cookie set.
     res.assert_status_ok();
@@ -173,9 +188,14 @@ async fn server_with_project_and_smtp() -> (TestServer, Store, i64) {
         .create_user("admin", Some(&phc), true, chrono::Utc::now())
         .await
         .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", "admin"), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "admin"),
+            ("password", "pw"),
+        ])
         .await;
     set_csrf(&mut server, &store).await;
     let pid = store
@@ -406,7 +426,7 @@ async fn setup_page_uses_auth_card() {
 
 #[tokio::test]
 async fn login_page_uses_auth_card_and_error_is_restyled() {
-    let (server, store) = server().await;
+    let (mut server, store) = server().await;
     let phc = pingward::auth::hash_password("secret1").unwrap();
     store
         .create_user("bob", Some(&phc), false, chrono::Utc::now())
@@ -418,9 +438,14 @@ async fn login_page_uses_auth_card_and_error_is_restyled() {
     assert!(res.text().contains("class=\"auth\""));
 
     // Wrong password → re-rendered login page, error still reachable.
+    let csrf = common::anonymous_csrf(&mut server).await;
     let res = server
         .post("/login")
-        .form(&[("username", "bob"), ("password", "nope")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "bob"),
+            ("password", "nope"),
+        ])
         .await;
     res.assert_status_ok();
     let body = res.text();
@@ -441,16 +466,26 @@ async fn login_logout_cycle() {
         .unwrap();
 
     // wrong password → back to login with 200 + error
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", "bob"), ("password", "nope")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "bob"),
+            ("password", "nope"),
+        ])
         .await
         .assert_status_ok();
 
     // right password → redirect, cookie set
+    let csrf = common::anonymous_csrf(&mut server).await;
     let res = server
         .post("/login")
-        .form(&[("username", "bob"), ("password", "secret1")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "bob"),
+            ("password", "secret1"),
+        ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     set_csrf(&mut server, &store).await;

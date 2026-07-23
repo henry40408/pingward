@@ -30,9 +30,14 @@ async fn server_as(username: &str, is_admin: bool) -> (TestServer, Store, i64) {
         .create_user(username, Some(&phc), is_admin, chrono::Utc::now())
         .await
         .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", username), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", username),
+            ("password", "pw"),
+        ])
         .await;
     set_csrf(&mut server, &store).await;
     (server, store, uid)

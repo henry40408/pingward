@@ -24,9 +24,14 @@ async fn admin_server() -> (TestServer, Store, i64) {
         .create_user("admin", Some(&phc), true, chrono::Utc::now())
         .await
         .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", "admin"), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "admin"),
+            ("password", "pw"),
+        ])
         .await;
     set_csrf(&mut server, &store).await;
     (server, store, admin_id)
@@ -63,9 +68,14 @@ async fn non_admin_forbidden_on_every_admin_route() {
         .create_user("member", Some(&phc), false, chrono::Utc::now())
         .await
         .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", "member"), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "member"),
+            ("password", "pw"),
+        ])
         .await;
     // A valid session + CSRF token proves every 403 below comes from the
     // `AdminUser` guard, not a missing/invalid CSRF token.

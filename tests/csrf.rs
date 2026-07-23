@@ -15,9 +15,14 @@ async fn logged_in_server() -> (TestServer, Store) {
         .create_user("admin", Some(&phc), true, chrono::Utc::now())
         .await
         .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", "admin"), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "admin"),
+            ("password", "pw"),
+        ])
         .await;
     (server, store)
 }
@@ -214,16 +219,78 @@ async fn ping_post_needs_no_csrf() {
     assert_ne!(res.status_code(), axum::http::StatusCode::FORBIDDEN);
 }
 
-// (d) POST /login is exempt (pre-session) and needs no token.
+// (d) POST /login is protected too. It has no exemption because
+// `web::anonymous_session` gives a logged-out visitor a token to embed, and
+// without the guard an attacker could log a victim into an account the
+// attacker controls.
 #[tokio::test]
-async fn login_post_needs_no_csrf() {
-    let (server, _store) = logged_in_server().await;
-    // Re-authenticating (valid creds, no CSRF header) still succeeds.
+async fn login_post_with_the_anonymous_token_succeeds() {
+    let (mut server, _store) = logged_in_server().await;
+    let csrf = common::anonymous_csrf(&mut server).await;
+    server
+        .post("/login")
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "admin"),
+            ("password", "pw"),
+        ])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn login_post_without_a_token_is_forbidden() {
+    let (mut server, _store) = logged_in_server().await;
+    // Prime an anonymous session, then submit valid credentials without the
+    // token it hands out.
+    common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
         .form(&[("username", "admin"), ("password", "pw")])
         .await
-        .assert_status(axum::http::StatusCode::SEE_OTHER);
+        .assert_status(axum::http::StatusCode::FORBIDDEN);
+}
+
+// The pre-login pages must actually embed the token, not merely be allowed to.
+// A missing hidden input renders a permanently unsubmittable form, and no
+// guard test would catch it — this asserts the templates carry it.
+#[tokio::test]
+async fn login_and_setup_pages_embed_a_token() {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let mut server = TestServer::new(app(AppState::new(store.clone(), common::test_config())));
+    server.save_cookies();
+
+    // No users yet: `/setup` renders, `/login` redirects to it.
+    assert!(!extract_csrf(&server.get("/setup").await.text()).is_empty());
+
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("admin", Some(&phc), true, chrono::Utc::now())
+        .await
+        .unwrap();
+    assert!(!extract_csrf(&server.get("/login").await.text()).is_empty());
+}
+
+// The anonymous session exists so a logged-out visitor has a token — it must
+// cost no `sessions` row, or a crawler hitting `/login` would grow the table
+// without bound.
+#[tokio::test]
+async fn an_anonymous_session_writes_no_row() {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let mut server = TestServer::new(app(AppState::new(store.clone(), common::test_config())));
+    server.save_cookies();
+
+    let token = common::anonymous_csrf(&mut server).await;
+    assert!(!token.is_empty(), "an anonymous visitor still gets a token");
+    let rows = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
 }
 
 /// The one live session's id.

@@ -12,7 +12,7 @@ use crate::state::AppState;
 use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -313,13 +313,13 @@ struct Credentials {
 }
 
 // --- handlers ---
-async fn setup_page(State(state): State<AppState>) -> Result<Response, AppError> {
+async fn setup_page(State(state): State<AppState>, jar: CookieJar) -> Result<Response, AppError> {
     if state.store.count_users().await? > 0 {
         return Ok(Redirect::to("/login").into_response());
     }
     Ok(render(&SetupTemplate {
         show_nav: false,
-        csrf: String::new(),
+        csrf: current_csrf(&state, &jar),
         is_admin: false,
         error: None,
     })?
@@ -339,7 +339,7 @@ async fn setup_submit(
     if creds.username.is_empty() || creds.password.is_empty() {
         return Ok(render(&SetupTemplate {
             show_nav: false,
-            csrf: String::new(),
+            csrf: current_csrf(&state, &jar),
             is_admin: false,
             error: Some("username and password are required".into()),
         })?
@@ -358,13 +358,13 @@ async fn setup_submit(
     Ok((jar, Redirect::to("/")).into_response())
 }
 
-async fn login_page(State(state): State<AppState>) -> Result<Response, AppError> {
+async fn login_page(State(state): State<AppState>, jar: CookieJar) -> Result<Response, AppError> {
     if state.store.count_users().await? == 0 {
         return Ok(Redirect::to("/setup").into_response());
     }
     Ok(render(&LoginTemplate {
         show_nav: false,
-        csrf: String::new(),
+        csrf: current_csrf(&state, &jar),
         is_admin: false,
         error: None,
     })?
@@ -386,7 +386,7 @@ async fn login_submit(
     if !ok {
         return Ok(render(&LoginTemplate {
             show_nav: false,
-            csrf: String::new(),
+            csrf: current_csrf(&state, &jar),
             is_admin: false,
             error: Some("invalid username or password".into()),
         })?
@@ -396,7 +396,7 @@ async fn login_submit(
     if user.disabled {
         return Ok(render(&LoginTemplate {
             show_nav: false,
-            csrf: String::new(),
+            csrf: current_csrf(&state, &jar),
             is_admin: false,
             error: Some("account is disabled".into()),
         })?
@@ -570,6 +570,30 @@ fn request_user_agent(headers: &HeaderMap) -> Option<String> {
     })
 }
 
+/// Create a session row and return the signed cookie that addresses it.
+async fn open_session(
+    state: &AppState,
+    user_id: i64,
+    user_agent: Option<&str>,
+    ip: Option<&str>,
+) -> Result<Cookie<'static>, AppError> {
+    let session_id = new_session_token();
+    let expires = Utc::now() + Duration::days(SESSION_TTL_DAYS);
+    state
+        .store
+        .create_session(&session_id, user_id, expires, user_agent, ip, Utc::now())
+        .await?;
+    // The cookie carries `<id>.<hmac>`, never the bare id — see `crate::secret`.
+    Ok(Cookie::build((
+        SESSION_COOKIE,
+        secret::sign_session(&state.config.secret, &session_id),
+    ))
+    .http_only(true)
+    .same_site(SameSite::Lax)
+    .path("/")
+    .build())
+}
+
 /// Create a session row and return a jar carrying the signed session cookie.
 async fn start_session(
     state: &AppState,
@@ -578,22 +602,139 @@ async fn start_session(
     user_agent: Option<&str>,
     ip: Option<&str>,
 ) -> Result<CookieJar, AppError> {
-    let session_id = new_session_token();
-    let expires = Utc::now() + Duration::days(SESSION_TTL_DAYS);
-    state
-        .store
-        .create_session(&session_id, user_id, expires, user_agent, ip, Utc::now())
-        .await?;
-    // The cookie carries `<id>.<hmac>`, never the bare id — see `crate::secret`.
+    Ok(jar.add(open_session(state, user_id, user_agent, ip).await?))
+}
+
+/// Give every visitor a signed session cookie, logged in or not.
+///
+/// The CSRF token is `HMAC(secret, "csrf:" + session id)` — it needs an id, not
+/// a database row. So an anonymous visitor can carry a perfectly good token
+/// with no `sessions` insert at all: this mints a random id, signs it, and
+/// writes nothing. Only a real login (or forward-auth) creates the row that
+/// turns that id into an authenticated session.
+///
+/// Two things fall out of that. Pages rendered before login — `/login`,
+/// `/setup` — can carry a real token, so [`csrf_guard`] needs no path
+/// exemptions and login itself is CSRF-protected. And `resolve_user` needs no
+/// change: an anonymous id simply matches no row, so the visitor stays
+/// anonymous.
+///
+/// Layered *inside* [`forward_auth_session`] (see `crate::app`) so that when
+/// both would mint, the forward-auth one wins — otherwise the outer layer's
+/// `Set-Cookie` would be appended last and shadow the real session with an
+/// anonymous id.
+pub async fn anonymous_session(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let jar = CookieJar::from_headers(req.headers());
+    if secret::session_id_from_jar(&jar, &state.config.secret).is_some() {
+        return next.run(req).await;
+    }
+    // Signature only — an anonymous id has no row to look up, and a stale
+    // signed cookie is left alone so its owner keeps one stable token.
     let cookie = Cookie::build((
         SESSION_COOKIE,
-        secret::sign_session(&state.config.secret, &session_id),
+        secret::sign_session(&state.config.secret, &new_session_token()),
     ))
     .http_only(true)
     .same_site(SameSite::Lax)
     .path("/")
     .build();
-    Ok(jar.add(cookie))
+    replace_request_cookie(&mut req, &cookie);
+    let mut resp = next.run(req).await;
+    if let Ok(value) = cookie.to_string().parse() {
+        resp.headers_mut().append(header::SET_COOKIE, value);
+    }
+    resp
+}
+
+/// Give a trusted forward-auth identity a real session, so the rest of the
+/// browser surface needs no special case for it.
+///
+/// Without this, a forward-auth user is authenticated (`resolve_user` falls
+/// back to the header) but session-less, and everything keyed off the session
+/// silently degrades: forms render an empty `_csrf`, [`csrf_guard`] rejects
+/// every POST with 403, and the account page lists no sessions to review or
+/// revoke. Minting the session here means only this function knows that
+/// forward-auth is different.
+///
+/// Layered *outside* [`anonymous_session`] and [`csrf_guard`] (see
+/// `crate::app`) so the guard sees the cookie on the same request that created
+/// it, and the newly signed cookie is injected into the request as well as set
+/// on the response — a handler rendering a form in this very request must be
+/// able to derive the matching token. Running first also means
+/// [`anonymous_session`] finds a cookie already in place and stays out of the
+/// way, so only one `Set-Cookie` is ever emitted.
+///
+/// Requests that already carry a live session, and every deployment that has
+/// not configured `PINGWARD_FORWARD_AUTH_HEADER`, short-circuit before any
+/// database work. Note the liveness check is deliberate rather than a bare
+/// signature check: with [`anonymous_session`] in play, a valid signature no
+/// longer implies a session row exists.
+pub async fn forward_auth_session(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    if state.config.forward_auth_header.is_none() {
+        return next.run(req).await;
+    }
+    let now = Utc::now();
+    // A cookie whose signature verifies *and* still addresses a live session
+    // needs nothing; a stale or forged one falls through and is replaced.
+    let jar = CookieJar::from_headers(req.headers());
+    if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret)
+        && matches!(state.store.find_session_user(&id, now).await, Ok(Some(_)))
+    {
+        return next.run(req).await;
+    }
+    let peer = crate::auth::peer_ip(req.extensions());
+    let Some(user) = crate::auth::forward_auth_user(&state, req.headers(), peer, now).await else {
+        return next.run(req).await;
+    };
+    let ua = request_user_agent(req.headers());
+    let ip = crate::auth::client_ip(req.headers(), peer, &state.config);
+    let cookie = match open_session(&state, user.id, ua.as_deref(), ip.as_deref()).await {
+        Ok(cookie) => cookie,
+        Err(e) => {
+            tracing::error!("failed to open a session for forward-auth user: {e}");
+            return next.run(req).await;
+        }
+    };
+    replace_request_cookie(&mut req, &cookie);
+    let mut resp = next.run(req).await;
+    if let Ok(value) = cookie.to_string().parse() {
+        resp.headers_mut().append(header::SET_COOKIE, value);
+    }
+    resp
+}
+
+/// Rewrite the request's `Cookie` header so downstream extractors see `cookie`
+/// instead of whatever value it had for that name.
+///
+/// Dropping the stale entry matters: `CookieJar::get` returns the first match,
+/// so appending would leave an expired session id shadowing the fresh one.
+fn replace_request_cookie(req: &mut Request, cookie: &Cookie<'static>) {
+    let kept: Vec<String> = req
+        .headers()
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .map(str::trim)
+        .filter(|pair| !pair.is_empty() && !pair.starts_with(&format!("{SESSION_COOKIE}=")))
+        .map(str::to_owned)
+        .chain(std::iter::once(format!(
+            "{}={}",
+            cookie.name(),
+            cookie.value()
+        )))
+        .collect();
+    if let Ok(value) = kept.join("; ").parse() {
+        req.headers_mut().insert(header::COOKIE, value);
+    }
 }
 
 /// Resolve the current session's CSRF synchronizer token from the request
@@ -611,9 +752,10 @@ fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
 /// `/ping/*` endpoints, assets, and `/healthz` live in sibling routers and are
 /// therefore structurally exempt).
 ///
-/// Safe methods (GET/HEAD/OPTIONS) and the pre-session `POST /login` and
-/// `POST /setup` paths pass through untouched. Every other state-changing
-/// request must present the session's token, taken from the `X-CSRF-Token`
+/// Safe methods (GET/HEAD/OPTIONS) pass through untouched. Every other
+/// state-changing request — `POST /login` and `POST /setup` included, since
+/// [`anonymous_session`] gives even a logged-out visitor a token to embed —
+/// must present the session's token, taken from the `X-CSRF-Token`
 /// header or, failing that, the `_csrf` urlencoded form field (in which case
 /// the body is buffered and the request rebuilt so the downstream `Form<T>`
 /// extractor still works). The token is derived from the session id rather than
@@ -628,11 +770,6 @@ const CSRF_MAX_BODY_BYTES: usize = 1 << 20;
 pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
     // Safe methods never change state.
     if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
-        return next.run(req).await;
-    }
-    // Pre-session paths: no session (and hence no token) exists yet.
-    let path = req.uri().path();
-    if path == "/login" || path == "/setup" {
         return next.run(req).await;
     }
     // Resolve the caller's session id from the signed cookie. An unsigned or

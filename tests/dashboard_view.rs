@@ -1,11 +1,13 @@
 use axum_test::TestServer;
-use pingward::{app, config::Config, db, state::AppState, store::Store};
+use pingward::{app, db, state::AppState, store::Store};
+
+mod common;
 
 async fn logged_in_server() -> (TestServer, Store, i64) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
     let phc = pingward::auth::hash_password("pw").unwrap();
@@ -13,9 +15,14 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
         .create_user("admin", Some(&phc), true, chrono::Utc::now())
         .await
         .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", "admin"), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "admin"),
+            ("password", "pw"),
+        ])
         .await;
     (server, store, uid)
 }

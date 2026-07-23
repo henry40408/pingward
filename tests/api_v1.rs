@@ -6,7 +6,7 @@ use chrono::Utc;
 use pingward::models::{ChannelKind, ScheduleKind};
 use pingward::notify::EventKind;
 use pingward::store::NewCheck;
-use pingward::{apikey, app, config::Config, db, state::AppState, store::Store};
+use pingward::{apikey, app, db, state::AppState, store::Store};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -16,7 +16,7 @@ async fn test_app() -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
-    let state = AppState::new(store.clone(), Config::from_map(|_| None));
+    let state = AppState::new(store.clone(), common::test_config());
     (TestServer::new(app(state)), store)
 }
 
@@ -404,9 +404,14 @@ async fn docs_are_served_to_a_logged_in_user() {
         .create_user("member", Some(&phc), false, Utc::now())
         .await
         .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
-        .form(&[("username", "member"), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "member"),
+            ("password", "pw"),
+        ])
         .await;
 
     let spec = server.get("/api/openapi.json").await;
