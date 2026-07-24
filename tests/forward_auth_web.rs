@@ -99,11 +99,17 @@ fn csrf_of(html: &str) -> String {
 
 /// The `pingward_session=...` pair from a response's `Set-Cookie` headers.
 fn session_cookie_of(resp: &Response<Body>) -> Option<String> {
+    set_cookie_of(resp, "pingward_session=")
+}
+
+/// The first `Set-Cookie` pair (`name=value`, attributes stripped) whose name
+/// starts with `prefix`.
+fn set_cookie_of(resp: &Response<Body>, prefix: &str) -> Option<String> {
     resp.headers()
         .get_all(header::SET_COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .find(|v| v.starts_with("pingward_session="))
+        .find(|v| v.starts_with(prefix))
         .map(|v| v.split(';').next().unwrap().to_owned())
 }
 
@@ -290,10 +296,11 @@ async fn logout_hands_off_to_the_gateway_when_a_url_is_configured() {
 }
 
 #[tokio::test]
-async fn without_a_logout_url_the_gateway_signs_you_back_in() {
-    // Not a bug to fix but a fact to pin: nothing pingward deletes can outlive
-    // the redirect while the gateway keeps sending an identity header. The
-    // visitor lands on `/`, not on a login form they are already past.
+async fn without_a_logout_url_a_forward_auth_logout_warns_on_the_dashboard() {
+    // Nothing pingward deletes can outlive the redirect while the gateway keeps
+    // sending an identity header. Rather than bounce to `/login` and silently
+    // re-authenticate, `logout` lands the visitor on `/` with a one-shot flash
+    // telling them only their proxy/SSO provider can end the session.
     let store = empty_store().await;
     let state = AppState::new(store.clone(), forward_auth_config());
     let (cookie, csrf) = signed_in_via_gateway(&state).await;
@@ -309,26 +316,76 @@ async fn without_a_logout_url_the_gateway_signs_you_back_in() {
     )
     .await;
     assert_eq!(out.status(), StatusCode::SEE_OTHER);
-    assert_eq!(out.headers()["location"], "/login");
-    assert_eq!(session_count(&store).await, 0);
+    assert_eq!(
+        out.headers()["location"],
+        "/",
+        "a forward-auth logout lands on the dashboard, not the login form"
+    );
+    assert_eq!(
+        session_count(&store).await,
+        0,
+        "the local session is deleted"
+    );
+    let flash = set_cookie_of(&out, "pingward_flash=").expect("the warning flash cookie is set");
+    assert_eq!(flash, "pingward_flash=forward_auth_logout");
 
-    let back = request(
+    // The dashboard the browser lands on: the gateway re-mints the session, and
+    // the flash renders exactly once.
+    let dash = request(
         &state,
         PROXY_PEER,
         "GET",
-        "/login",
+        "/",
         Some("alice"),
-        Some(&cookie),
+        Some(&format!("{cookie}; {flash}")),
         Body::empty(),
     )
     .await;
-    assert_eq!(back.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        back.headers()["location"],
-        "/",
-        "a re-authenticated visitor must not be shown the login form"
-    );
+    assert_eq!(dash.status(), StatusCode::OK);
     assert_eq!(session_count(&store).await, 1, "a fresh session was minted");
+    // The one-shot cookie is cleared on this render so the warning shows once.
+    let cleared = set_cookie_of(&dash, "pingward_flash=").expect("the flash cookie is cleared");
+    assert_eq!(cleared, "pingward_flash=");
+    let html = body_text(dash).await;
+    assert!(
+        html.contains(r#"data-testid="forward-auth-logout-flash""#),
+        "the dashboard must render the forward-auth logout warning"
+    );
+    assert!(
+        html.contains("log out at your proxy or SSO provider"),
+        "the warning must tell the visitor where to actually sign out"
+    );
+}
+
+#[tokio::test]
+async fn a_forward_auth_logout_flash_does_not_leak_onto_other_pages() {
+    // The flash cookie is path-scoped to `/`, so every page sees it; only the
+    // dashboard is meant to consume it. A page that does not know the surface
+    // must neither render nor clear it — otherwise a redirect that skips the
+    // dashboard would silently swallow the warning.
+    let store = empty_store().await;
+    let state = AppState::new(store.clone(), forward_auth_config());
+    let (cookie, _csrf) = signed_in_via_gateway(&state).await;
+
+    let page = request(
+        &state,
+        PROXY_PEER,
+        "GET",
+        "/projects/new",
+        Some("alice"),
+        Some(&format!("{cookie}; pingward_flash=forward_auth_logout")),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(page.status(), StatusCode::OK);
+    assert!(
+        set_cookie_of(&page, "pingward_flash=").is_none(),
+        "a page that does not own the surface must leave the cookie intact"
+    );
+    assert!(
+        !body_text(page).await.contains("forward-auth-logout-flash"),
+        "the warning must not render off the dashboard"
+    );
 }
 
 #[tokio::test]
