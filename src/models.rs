@@ -128,6 +128,7 @@ pub struct Session {
     pub expires_at: DateTime<Utc>,
     pub user_agent: Option<String>,
     pub ip: Option<String>,
+    pub sso: bool,
 }
 
 #[derive(Debug, Clone)]

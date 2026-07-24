@@ -354,7 +354,7 @@ async fn setup_submit(
         .create_user(&creds.username, Some(&phc), true, Utc::now())
         .await?;
     let ua = request_user_agent(&headers);
-    let jar = start_session(&state, jar, uid, ua.as_deref(), conn.0.as_deref()).await?;
+    let jar = start_session(&state, jar, uid, ua.as_deref(), conn.0.as_deref(), false).await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
 
@@ -420,7 +420,15 @@ async fn login_submit(
         .into_response());
     }
     let ua = request_user_agent(&headers);
-    let jar = start_session(&state, jar, user.id, ua.as_deref(), conn.0.as_deref()).await?;
+    let jar = start_session(
+        &state,
+        jar,
+        user.id,
+        ua.as_deref(),
+        conn.0.as_deref(),
+        false,
+    )
+    .await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
 
@@ -611,12 +619,21 @@ async fn open_session(
     user_id: i64,
     user_agent: Option<&str>,
     ip: Option<&str>,
+    sso: bool,
 ) -> Result<Cookie<'static>, AppError> {
     let session_id = new_session_token();
     let expires = Utc::now() + Duration::days(SESSION_TTL_DAYS);
     state
         .store
-        .create_session(&session_id, user_id, expires, user_agent, ip, Utc::now())
+        .create_session(
+            &session_id,
+            user_id,
+            expires,
+            user_agent,
+            ip,
+            sso,
+            Utc::now(),
+        )
         .await?;
     // The cookie carries `<id>.<hmac>`, never the bare id — see `crate::secret`.
     Ok(Cookie::build((
@@ -636,8 +653,9 @@ async fn start_session(
     user_id: i64,
     user_agent: Option<&str>,
     ip: Option<&str>,
+    sso: bool,
 ) -> Result<CookieJar, AppError> {
-    Ok(jar.add(open_session(state, user_id, user_agent, ip).await?))
+    Ok(jar.add(open_session(state, user_id, user_agent, ip, sso).await?))
 }
 
 /// Give every visitor a signed session cookie, logged in or not.
@@ -731,7 +749,7 @@ pub async fn forward_auth_session(
     };
     let ua = request_user_agent(req.headers());
     let ip = crate::auth::client_ip(req.headers(), peer, &state.config);
-    let cookie = match open_session(&state, user.id, ua.as_deref(), ip.as_deref()).await {
+    let cookie = match open_session(&state, user.id, ua.as_deref(), ip.as_deref(), true).await {
         Ok(cookie) => cookie,
         Err(e) => {
             tracing::error!("failed to open a session for forward-auth user: {e}");
@@ -3161,6 +3179,7 @@ struct SessionRow {
     user_agent: Option<String>,
     ip: Option<String>,
     current: bool,
+    sso: bool,
 }
 
 /// One row of the API-keys table. Mirrors [`crate::models::ApiKey`] plus a
@@ -3237,6 +3256,7 @@ async fn render_account(
                 user_agent: s.user_agent,
                 ip: s.ip,
                 current,
+                sso: s.sso,
             }
         })
         .collect();

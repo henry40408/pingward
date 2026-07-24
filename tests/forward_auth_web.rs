@@ -332,6 +332,32 @@ async fn without_a_logout_url_the_gateway_signs_you_back_in() {
 }
 
 #[tokio::test]
+async fn forward_auth_session_is_flagged_sso_on_the_account_page() {
+    // A session minted by the forward-auth middleware must be distinguishable
+    // from a plain password login on `/account` — the "SSO" pill.
+    let store = empty_store().await;
+    let state = AppState::new(store.clone(), forward_auth_config());
+    let (cookie, _csrf) = signed_in_via_gateway(&state).await;
+
+    let page = request(
+        &state,
+        PROXY_PEER,
+        "GET",
+        "/account",
+        Some("alice"),
+        Some(&cookie),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let body = body_text(page).await;
+    assert!(
+        body.contains("data-testid=\"session-sso\""),
+        "a forward-auth-minted session must render the SSO pill"
+    );
+}
+
+#[tokio::test]
 async fn a_stale_session_cookie_is_replaced_rather_than_trusted() {
     // The cookie outlives its row (pruned, or wiped by the 0012 migration).
     // Without replacement the user keeps a phantom session forever: authorised

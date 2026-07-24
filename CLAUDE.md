@@ -157,7 +157,8 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   comes from `auth::client_ip`: the socket peer, unless that peer is a
   configured trusted proxy, in which case the first `X-Forwarded-For` entry
   wins — the same trust gate `forward_auth_username` uses, so an untrusted
-  caller cannot spoof it.
+  caller cannot spoof it. Each row also shows an "SSO" badge when the session
+  was minted by `forward_auth_session` rather than a password/setup login.
 - That gate is `auth::is_trusted_proxy`, and a `PINGWARD_TRUSTED_PROXIES`
   entry is a bare address **or a CIDR block** (`172.16.0.0/12`, `fd00::/8`) —
   a containerised reverse proxy draws its address from the bridge network's

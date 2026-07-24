@@ -94,6 +94,24 @@ async fn account_page_lists_and_marks_current_session() {
 }
 
 #[tokio::test]
+async fn password_login_session_has_no_sso_pill() {
+    let (store, _uid) = member_store().await;
+    let server = login_server(&store, "member", "pw").await;
+
+    let body = server.get("/account").await.text();
+    // Guard against a vacuous pass: confirm the account page actually rendered a
+    // session row before asserting the SSO pill is absent from it.
+    assert!(
+        body.contains("session-current"),
+        "account page rendered a session"
+    );
+    assert!(
+        !body.contains("session-sso"),
+        "a plain password-login session must not be flagged SSO"
+    );
+}
+
+#[tokio::test]
 async fn second_login_lists_two_sessions_and_revoke_others_leaves_one() {
     let (store, _uid) = member_store().await;
     let server1 = login_server(&store, "member", "pw").await;
@@ -168,6 +186,7 @@ async fn unknown_or_foreign_handle_revokes_nothing() {
             chrono::Utc::now() + chrono::Duration::hours(1),
             None,
             None,
+            false,
             chrono::Utc::now(),
         )
         .await
