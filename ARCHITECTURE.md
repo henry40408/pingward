@@ -165,10 +165,17 @@ Two things follow from that, both in `web.rs`. `logout` redirects to
 `PINGWARD_FORWARD_AUTH_LOGOUT_URL` when configured — the gateway's own sign-out
 endpoint, the only thing that can end the identity; the target comes from the
 operator's environment and never from the request, so it is not an open
-redirect. And `login_page` bounces an already-authenticated visitor to `/`,
-because the default target (`/login`) would otherwise render a login form to
-someone the layer has just signed back in. Both behave the same for password
-users, who simply never hit the re-authentication.
+redirect. With **no** logout URL configured, `logout` looks at whether the
+trusted proxy identity header is present on the logout request itself (the same
+`auth::forward_auth_username` gate, fed the socket peer via the `PeerAddr`
+extractor): if it is, a local logout is provably a no-op, so instead of bouncing
+to `/login` and silently re-authenticating, it lands on the dashboard carrying a
+one-shot `forward_auth_logout` flash (`take_flash`/`flash_cookie`, consumed only
+by `dashboard`) that tells the visitor only their proxy/SSO provider can end the
+session. A password user's logout — no identity header on the request — still
+redirects to `/login` as before. `login_page` likewise bounces an
+already-authenticated visitor to `/`, because rendering a login form to someone
+the layer has just signed back in would be dishonest.
 
 `/api/v1` data endpoints authenticate independently via the `ApiUser` bearer
 extractor; `/api/docs` and `/api/openapi.json` additionally accept a logged-in

@@ -11,7 +11,7 @@ use crate::secret;
 use crate::state::AppState;
 use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -24,6 +24,7 @@ use chrono::{DateTime, Duration, Utc};
 use cron::Schedule;
 use serde::Deserialize;
 use std::convert::Infallible;
+use std::net::IpAddr;
 use std::str::FromStr;
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
@@ -157,6 +158,11 @@ struct DashboardTemplate {
     /// or empty for "all". Drives the `<select>`'s selected option and, with
     /// `q`, whether the "clear" affordance and no-results state show.
     status: String,
+    /// One-shot warning shown after a forward-auth Sign Out with no gateway
+    /// logout URL configured: the local session was cleared but the proxy will
+    /// re-authenticate, so the visitor must sign out at their proxy/SSO
+    /// provider. `None` on an ordinary dashboard load.
+    forward_auth_logout: Option<String>,
 }
 
 /// Query params for the dashboard filter. Absent, blank, or whitespace-only
@@ -424,30 +430,68 @@ async fn login_submit(
     Ok((jar, Redirect::to("/")).into_response())
 }
 
-/// Ends the local session, then sends the browser to
-/// `PINGWARD_FORWARD_AUTH_LOGOUT_URL` when one is configured, else `/login`.
+/// Ends the local session, then sends the browser onward.
 ///
 /// Deleting the row is never enough behind an authentication gateway: the next
 /// request still carries the gateway's identity header, so
 /// `forward_auth_session` signs the visitor straight back in. Only the gateway
-/// can end that identity, which is what the configured URL is for — it points
-/// at the gateway's own sign-out endpoint. Left unset, logout is still
-/// well-defined, it just does not outlive the redirect while the gateway
-/// session stands.
+/// can end that identity, which is what `PINGWARD_FORWARD_AUTH_LOGOUT_URL` is
+/// for — it points at the gateway's own sign-out endpoint. When configured, we
+/// hand the browser there regardless of how this request authenticated.
 ///
-/// The redirect target comes from the operator's environment, never from the
-/// request, so it is not an open redirect.
-async fn logout(State(state): State<AppState>, jar: CookieJar) -> Result<Response, AppError> {
+/// Left unset, the destination depends on whether the gateway's identity header
+/// is present on *this* request (the same trusted-proxy gate
+/// `forward_auth_session` uses):
+/// - present → a local logout is a no-op, since the next request re-mints the
+///   session. Rather than bounce to `/login` and silently sign the visitor
+///   straight back in, land on the dashboard with a one-shot flash telling them
+///   only their proxy/SSO provider can end the session.
+/// - absent → an ordinary password session; redirect to `/login` as before.
+///
+/// The redirect target comes from the operator's environment or a fixed
+/// in-app path, never from the request, so it is not an open redirect.
+async fn logout(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    PeerAddr(peer_ip): PeerAddr,
+) -> Result<Response, AppError> {
     if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
         state.store.delete_session(&id).await?;
     }
     let jar = jar.remove(Cookie::from(SESSION_COOKIE));
-    let target = state
-        .config
-        .forward_auth_logout_url
-        .as_deref()
-        .unwrap_or("/login");
-    Ok((jar, Redirect::to(target)).into_response())
+
+    // A configured gateway logout URL ends the upstream identity too, so honour
+    // it however the request authenticated.
+    if let Some(url) = state.config.forward_auth_logout_url.as_deref() {
+        return Ok((jar, Redirect::to(url)).into_response());
+    }
+
+    // No gateway logout URL. If the trusted proxy identity header is present,
+    // clearing the local session cannot outlive the redirect — be honest about
+    // it instead of pretending logout succeeded.
+    if crate::auth::forward_auth_username(&headers, peer_ip, &state.config).is_some() {
+        let jar = jar.add(flash_cookie("forward_auth_logout"));
+        return Ok((jar, Redirect::to("/")).into_response());
+    }
+
+    Ok((jar, Redirect::to("/login")).into_response())
+}
+
+/// The request's socket peer IP, or `None` when the router is driven without
+/// `ConnectInfo` (e.g. some tests) — the same fail-closed source
+/// `forward_auth_session` reads, so `logout`'s trusted-proxy check agrees with
+/// how the visitor was authenticated in the first place. Always succeeds.
+struct PeerAddr(Option<IpAddr>);
+
+impl FromRequestParts<AppState> for PeerAddr {
+    type Rejection = Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(crate::auth::peer_ip(&parts.extensions)))
+    }
 }
 
 async fn dashboard(
@@ -462,6 +506,10 @@ async fn dashboard(
     let Some(user) = user else {
         return Ok(Redirect::to("/login").into_response());
     };
+    // One-shot notice set by `logout` when a forward-auth visitor signed out
+    // with no gateway logout URL configured; consumed here so the removal
+    // Set-Cookie rides back on this response.
+    let (jar, forward_auth_logout) = take_flash(jar, "forward_auth_logout");
     let now = Utc::now();
     let q = query.q.unwrap_or_default().trim().to_string();
     let needle = q.to_lowercase();
@@ -572,7 +620,7 @@ async fn dashboard(
             checks: rows,
         });
     }
-    Ok(render(&DashboardTemplate {
+    let resp = render(&DashboardTemplate {
         show_nav: true,
         csrf: current_csrf(&state, &jar),
         is_admin: user.is_admin,
@@ -583,8 +631,9 @@ async fn dashboard(
         groups,
         q,
         status,
-    })?
-    .into_response())
+        forward_auth_logout,
+    })?;
+    Ok((jar, resp).into_response())
 }
 
 /// Column-bounding cap for a stored `user_agent` (raw browser headers can be
@@ -1787,6 +1836,9 @@ fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
         "users_blocked" => {
             "That action was refused: you cannot remove your own access, and the last enabled admin cannot be removed."
         }
+        "forward_auth_logout" => {
+            "Signed out locally, but you're authenticated through your reverse proxy — this app can't end that session. To sign out completely, log out at your proxy or SSO provider."
+        }
         _ => return (jar, None),
     };
     (
@@ -1795,18 +1847,23 @@ fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
     )
 }
 
+/// Build a one-shot flash cookie carrying `surface`, path-scoped to `/` so any
+/// page can consume it via [`take_flash`]. The value is a fixed surface key,
+/// never user input — [`take_flash`] maps only known keys to a message.
+fn flash_cookie(surface: &'static str) -> Cookie<'static> {
+    Cookie::build((FLASH_COOKIE, surface))
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .path("/")
+        .build()
+}
+
 /// Set the `users_blocked` flash cookie and redirect to `/admin`. Used by the
 /// self-guard and last-enabled-admin-guard branches in `users_delete`,
 /// `users_toggle_admin` and `users_set_disabled` — mirrors how
 /// `settings_save` sets `FLASH_COOKIE` for its own surface (~line 2413).
 fn users_blocked(jar: CookieJar) -> Response {
-    let jar = jar.add(
-        Cookie::build((FLASH_COOKIE, "users_blocked"))
-            .http_only(true)
-            .same_site(SameSite::Lax)
-            .path("/")
-            .build(),
-    );
+    let jar = jar.add(flash_cookie("users_blocked"));
     (jar, Redirect::to("/admin")).into_response()
 }
 
@@ -4274,6 +4331,15 @@ mod tests {
             msg.as_deref(),
             Some(
                 "That action was refused: you cannot remove your own access, and the last enabled admin cannot be removed."
+            )
+        );
+
+        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "forward_auth_logout"));
+        let (_, msg) = take_flash(jar, "forward_auth_logout");
+        assert_eq!(
+            msg.as_deref(),
+            Some(
+                "Signed out locally, but you're authenticated through your reverse proxy — this app can't end that session. To sign out completely, log out at your proxy or SSO provider."
             )
         );
     }

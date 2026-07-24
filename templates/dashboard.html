@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block body %}
+{% if let Some(msg) = forward_auth_logout %}<p class="flash warn" data-testid="forward-auth-logout-flash">{{ msg }}</p>{% endif %}
 <div class="phead">
   <div><h1>Checks</h1></div>
   <a class="btn-primary" href="/projects/new">New project</a>
