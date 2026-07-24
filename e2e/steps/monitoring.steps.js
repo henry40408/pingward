@@ -108,8 +108,10 @@ When("I resume the check", async ({ page }) => {
   await page.getByTestId("resume-button").click();
 });
 
-// Capture the current ping URL, regenerate, and confirm it changed.
+// Capture the current ping URL, regenerate (accepting the confirm dialog),
+// and confirm it changed.
 When("I regenerate the ping URL", async ({ page }) => {
+  page.on("dialog", (d) => d.accept());
   const before = (await page.getByTestId("ping-url").textContent()).trim();
   await page.getByTestId("regenerate-button").click();
   await expect(page.getByTestId("ping-url")).not.toHaveText(before);
