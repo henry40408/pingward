@@ -44,6 +44,7 @@ async fn login_cookie(store: &Store, username: &str) -> String {
             Utc::now() + chrono::Duration::days(pingward::auth::SESSION_TTL_DAYS),
             None,
             None,
+            false,
             Utc::now(),
         )
         .await

@@ -301,6 +301,7 @@ mod tests {
                 now - Duration::hours(1),
                 None,
                 None,
+                false,
                 now - Duration::hours(2),
             )
             .await
@@ -312,6 +313,7 @@ mod tests {
                 now + Duration::hours(1),
                 None,
                 None,
+                false,
                 now,
             )
             .await

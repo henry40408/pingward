@@ -156,7 +156,9 @@ would mint, the real session must win; reversed, the anonymous layer's
   the request already carries a live session. That liveness check is
   deliberately a lookup rather than a bare signature check: with
   `anonymous_session` in play, a valid signature no longer implies a row
-  exists.
+  exists. `create_session` stamps these rows with `sso = true` (a plain
+  password/setup login stamps `false`), and `/account` renders an "SSO" badge
+  next to any session created this way.
 
 The same layer is why **logout cannot be local-only** under forward auth:
 `web::logout` deletes the row, but the next request still carries the gateway's

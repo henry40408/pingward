@@ -294,6 +294,7 @@ fn row_to_session(row: &sqlx::any::AnyRow) -> Result<Session, sqlx::Error> {
             .ok_or_else(|| decode_err("sessions.expires_at must be RFC3339"))?,
         user_agent: row.get("user_agent"),
         ip: row.get("ip"),
+        sso: row.get::<i64, _>("sso") != 0,
     })
 }
 
@@ -871,6 +872,10 @@ impl Store {
         Ok(Some(user_id))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each param is a distinct piece of per-session metadata; a struct would just move the noise"
+    )]
     pub async fn create_session(
         &self,
         id: &str,
@@ -878,11 +883,12 @@ impl Store {
         expires_at: DateTime<Utc>,
         user_agent: Option<&str>,
         ip: Option<&str>,
+        sso: bool,
         now: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, expires_at, created_at, user_agent, ip) \
-             VALUES ($1,$2,$3,$4,$5,$6)",
+            "INSERT INTO sessions (id, user_id, expires_at, created_at, user_agent, ip, sso) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7)",
         )
         .bind(id)
         .bind(user_id)
@@ -890,6 +896,7 @@ impl Store {
         .bind(now.to_rfc3339())
         .bind(user_agent)
         .bind(ip)
+        .bind(sso as i64)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1996,6 +2003,7 @@ mod tests {
                 now + chrono::Duration::hours(1),
                 Some("curl/8.0"),
                 Some("127.0.0.1"),
+                false,
                 now,
             )
             .await
@@ -2050,6 +2058,7 @@ mod tests {
                 now + chrono::Duration::hours(2),
                 None,
                 None,
+                false,
                 created2,
             )
             .await
@@ -2095,6 +2104,7 @@ mod tests {
                 now + chrono::Duration::hours(1),
                 None,
                 None,
+                false,
                 now,
             )
             .await
@@ -2126,6 +2136,7 @@ mod tests {
                 now,
                 None,
                 None,
+                false,
                 now - chrono::Duration::hours(1),
             )
             .await
@@ -2138,6 +2149,7 @@ mod tests {
                 now + chrono::Duration::hours(1),
                 None,
                 None,
+                false,
                 now - chrono::Duration::hours(1),
             )
             .await
@@ -2151,6 +2163,47 @@ mod tests {
         let rows = store.list_sessions_for_user(uid, now).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "sess-future");
+    }
+
+    #[tokio::test]
+    async fn session_sso_flag_round_trips() {
+        let store = seeded().await;
+        let uid = store
+            .create_user("dave", Some("phc"), false, Utc::now())
+            .await
+            .unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+        store
+            .create_session(
+                "sess-sso",
+                uid,
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                true,
+                now,
+            )
+            .await
+            .unwrap();
+        store
+            .create_session(
+                "sess-password",
+                uid,
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                false,
+                now,
+            )
+            .await
+            .unwrap();
+
+        let rows = store.list_sessions_for_user(uid, now).await.unwrap();
+        let sso_row = rows.iter().find(|s| s.id == "sess-sso").unwrap();
+        let password_row = rows.iter().find(|s| s.id == "sess-password").unwrap();
+        assert!(sso_row.sso);
+        assert!(!password_row.sso);
     }
 
     #[tokio::test]

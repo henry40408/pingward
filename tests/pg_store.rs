@@ -221,6 +221,7 @@ async fn postgres_full_round_trip() {
             future_expiry,
             Some("curl/8.0"),
             Some("127.0.0.1"),
+            false,
             now,
         )
         .await
@@ -236,7 +237,7 @@ async fn postgres_full_round_trip() {
 
     let past_expiry = now - chrono::Duration::hours(1);
     store
-        .create_session("sess-expired", uid, past_expiry, None, None, now)
+        .create_session("sess-expired", uid, past_expiry, None, None, false, now)
         .await
         .unwrap();
     assert!(
@@ -266,6 +267,7 @@ async fn postgres_full_round_trip() {
             future_expiry,
             None,
             None,
+            false,
             now + chrono::Duration::seconds(1),
         )
         .await
@@ -308,7 +310,7 @@ async fn postgres_full_round_trip() {
 
     // Plain `delete_session` (used by logout) still works unscoped.
     store
-        .create_session("sess-active", uid, future_expiry, None, None, now)
+        .create_session("sess-active", uid, future_expiry, None, None, false, now)
         .await
         .unwrap();
     store.delete_session("sess-active").await.unwrap();
@@ -412,6 +414,7 @@ async fn postgres_full_round_trip() {
             now - chrono::Duration::hours(1),
             None,
             None,
+            false,
             now - chrono::Duration::hours(2),
         )
         .await
@@ -423,6 +426,7 @@ async fn postgres_full_round_trip() {
             now + chrono::Duration::hours(1),
             None,
             None,
+            false,
             now,
         )
         .await
