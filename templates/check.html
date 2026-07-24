@@ -26,7 +26,8 @@
   {% if status == "down" && !check.acknowledged %}
   <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/ack"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn primary" data-testid="ack-button">Acknowledge</button></form>
   {% endif %}
-  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/regenerate"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn" data-testid="regenerate-button">Regenerate URL</button></form>
+  <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/regenerate"
+        onsubmit="return confirm('Regenerate the ping URL? The current URL stops working immediately and any job using it must be updated.')"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" data-testid="regenerate-button">Regenerate URL</button></form>
   <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/delete"
         onsubmit="return confirm('Delete this check?')"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" data-testid="delete-check-button">Delete</button></form>
 </div>
