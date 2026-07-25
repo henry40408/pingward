@@ -199,6 +199,7 @@
   <div class="ch"><h2>All users</h2></div>
   <div class="cb">
     {% if let Some(f) = user_flash %}<p class="flash err" data-testid="users-flash">{{ f }}</p>{% endif %}
+    {% if let Some(f) = password_reset_flash %}<p class="flash warn" data-testid="password-reset-flash">{{ f }}</p>{% endif %}
     {# .tscroll confines the overflow to the table: without it the card body's
        own overflow-x scrolls the Add-user form below off-screen with it. #}
     <div class="tscroll">

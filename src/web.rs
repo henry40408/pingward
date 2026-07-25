@@ -1046,14 +1046,16 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
 /// Applied to the whole of `web::routes()`, not just authenticated pages:
 /// `/login` and `/setup` render a `_csrf` bound to that visitor's cookie (see
 /// `anonymous_session`), so they must not be cached either. The machine
-/// `/ping/*` endpoints, `/api/*`, static assets and `/healthz` are sibling
-/// routers and are structurally unaffected — `src/assets.rs`'s immutable
-/// caching is untouched. That is a real gap for `/api/*`, not just a
-/// structural one: `/api/docs` and `/api/openapi.json` accept a logged-in web
-/// session (`CurrentUser`) alongside `/api/v1`'s bearer auth, so those two
-/// responses are session-authenticated yet carry no `Cache-Control` at all.
-/// Known, not fixed here — adding this layer to the API router is a scope
-/// decision for whoever owns that surface.
+/// `/ping/*` endpoints, static assets and `/healthz` are sibling routers and
+/// are structurally unaffected — `src/assets.rs`'s immutable caching is
+/// untouched. `/api/*` is mostly exempt the same structural way, but not
+/// uniformly: `api::routes()` layers this same function a second time,
+/// scoped to just `/api/docs` and `/api/openapi.json`, because those two
+/// accept a logged-in web session (`CurrentUser`) alongside `/api/v1`'s
+/// bearer auth and are therefore session-authenticated responses too.
+/// `/api/v1` stays exempt on purpose: it is bearer-authenticated, was never
+/// going to carry a browser-cacheable session, and adding response headers
+/// there would affect API consumers for no benefit.
 ///
 /// Only filled in when the response does not already carry a `Cache-Control`,
 /// so any handler that wants to override still can.
@@ -2066,6 +2068,19 @@ fn take_flash(
     )
 }
 
+/// Build a one-shot flash cookie carrying `value`, path-scoped to `/` so any
+/// page can consume it via [`take_flash`]. Shared by [`flash_cookie`] (a
+/// fixed surface key) and [`password_reset_keys_flash`] (a value with counts
+/// baked in) so their cookie attributes cannot drift apart.
+fn flash_cookie_value(config: &crate::config::Config, value: String) -> Cookie<'static> {
+    Cookie::build((FLASH_COOKIE, value))
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .path("/")
+        .secure(config.cookie_secure)
+        .build()
+}
+
 /// Build a one-shot flash cookie carrying `surface`, path-scoped to `/` so any
 /// page can consume it via [`take_flash`]. The value is a fixed surface key,
 /// never user input — [`take_flash`] maps only known keys to a message.
@@ -2074,12 +2089,7 @@ fn take_flash(
 /// session material, but there is no reason for it to diverge from the
 /// session cookie's `Secure` behaviour.
 fn flash_cookie(config: &crate::config::Config, surface: &'static str) -> Cookie<'static> {
-    Cookie::build((FLASH_COOKIE, surface))
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .path("/")
-        .secure(config.cookie_secure)
-        .build()
+    flash_cookie_value(config, surface.to_string())
 }
 
 /// The empty-valued cookie used to clear the flash cookie; attributes are
@@ -2096,6 +2106,69 @@ fn flash_removal_cookie(config: &crate::config::Config) -> Cookie<'static> {
 fn users_blocked(config: &crate::config::Config, jar: CookieJar) -> Response {
     let jar = jar.add(flash_cookie(config, "users_blocked"));
     (jar, Redirect::to("/admin")).into_response()
+}
+
+/// Prefix for the dynamic flash value [`password_reset_keys_flash`] sets and
+/// [`take_password_reset_keys_flash`] reads back: `"password_reset_keys:
+/// <revoked>:<keys>"`. A separate scheme from [`take_flash`]'s, because that
+/// helper maps a fixed cookie value to a fixed message — there is no room in
+/// it for a message with numbers baked in.
+const PASSWORD_RESET_KEYS_PREFIX: &str = "password_reset_keys:";
+
+/// Set the `password_reset_keys` flash cookie and redirect to `/admin`.
+/// Called by `users_set_password` only when the target still has at least
+/// one API key after the reset, to surface the gap its doc comment already
+/// notes: the reset revokes sessions but never API keys. `revoked` and `keys`
+/// are always server-computed (a `DELETE`'s row count and
+/// `Store::list_api_keys_for_user`'s length), never user input, so baking
+/// them into the cookie value carries no injection risk.
+fn password_reset_keys_flash(
+    config: &crate::config::Config,
+    jar: CookieJar,
+    revoked: u64,
+    keys: u64,
+) -> Response {
+    let value = format!("{PASSWORD_RESET_KEYS_PREFIX}{revoked}:{keys}");
+    let jar = jar.add(flash_cookie_value(config, value));
+    (jar, Redirect::to("/admin")).into_response()
+}
+
+/// Read and clear the one-shot flash cookie if it carries a
+/// [`PASSWORD_RESET_KEYS_PREFIX`] value set by [`password_reset_keys_flash`].
+/// Mirrors [`take_flash`]'s one-shot-cookie contract but, unlike that
+/// function, decodes two counts out of the value rather than mapping it to a
+/// fixed message.
+fn take_password_reset_keys_flash(
+    config: &crate::config::Config,
+    jar: CookieJar,
+) -> (CookieJar, Option<String>) {
+    let Some(cookie) = jar.get(FLASH_COOKIE) else {
+        return (jar, None);
+    };
+    let Some(rest) = cookie.value().strip_prefix(PASSWORD_RESET_KEYS_PREFIX) else {
+        return (jar, None);
+    };
+    let Some((revoked, keys)) = rest.split_once(':') else {
+        return (jar, None);
+    };
+    let (Ok(revoked), Ok(keys)) = (revoked.parse::<u64>(), keys.parse::<u64>()) else {
+        return (jar, None);
+    };
+    let sessions_word = if revoked == 1 { "session" } else { "sessions" };
+    let (keys_word, keys_verb, keys_pronoun) = if keys == 1 {
+        ("key", "continues", "It")
+    } else {
+        ("keys", "continue", "They")
+    };
+    // The pronoun clause names the account holder deliberately: an admin
+    // resetting *someone else's* password cannot reach that user's keys from
+    // their own /account page, so "revoke them from /account" would send them
+    // somewhere the control they need does not exist. Disabling the account is
+    // the lever an admin actually holds.
+    let message = format!(
+        "Password reset revoked {revoked} {sessions_word}, but this user still has {keys} API {keys_word} that {keys_verb} to work. {keys_pronoun} can only be revoked from that user's own /account page — disable the account to cut off access immediately."
+    );
+    (jar.remove(flash_removal_cookie(config)), Some(message))
 }
 
 async fn check_show(
@@ -3060,13 +3133,14 @@ struct SettingsFields {
 
 /// The re-render inputs `render_admin` needs beyond the data it always
 /// gathers itself (overview stats, users, projects): the settings section's
-/// fields/error/flash, the users section's flash, and the add-user form's
-/// error.
+/// fields/error/flash, the users section's flash(es), and the add-user
+/// form's error.
 struct AdminRender {
     settings: SettingsFields,
     settings_error: Option<String>,
     settings_flash: Option<String>,
     user_flash: Option<String>,
+    password_reset_flash: Option<String>,
     user_error: Option<String>,
 }
 
@@ -3077,11 +3151,13 @@ async fn admin_page(
 ) -> Result<Response, AppError> {
     let (scan_interval, nag_interval, pings_retention_days, notifications_retention_days) =
         load_settings_fields(&state).await?;
-    // Chain both surfaces through the same jar: the cookie is path-scoped to
-    // "/", so each `take_flash` call only consumes it if the value matches
-    // its own surface, leaving it for the other to check.
+    // Chain every surface through the same jar: the cookie is path-scoped to
+    // "/", so each `take_flash`/`take_password_reset_keys_flash` call only
+    // consumes it if the value matches its own surface, leaving it for the
+    // next to check.
     let (jar, settings_flash) = take_flash(&state.config, jar, "settings");
     let (jar, user_flash) = take_flash(&state.config, jar, "users_blocked");
+    let (jar, password_reset_flash) = take_password_reset_keys_flash(&state.config, jar);
     let resp = render_admin(
         &state,
         &jar,
@@ -3096,6 +3172,7 @@ async fn admin_page(
             settings_error: None,
             settings_flash,
             user_flash,
+            password_reset_flash,
             user_error: None,
         },
     )
@@ -3164,6 +3241,7 @@ async fn settings_save(
                         settings_error: Some(msg),
                         settings_flash: None,
                         user_flash: None,
+                        password_reset_flash: None,
                         user_error: None,
                     },
                 )
@@ -3203,6 +3281,7 @@ async fn users_create(
                 settings_error: None,
                 settings_flash: None,
                 user_flash: None,
+                password_reset_flash: None,
                 user_error: Some("username and password are required".into()),
             },
         )
@@ -3357,6 +3436,20 @@ async fn users_set_password(
             Utc::now(),
         )
         .await?;
+    // Sessions are revoked above, but API keys are not (see the doc comment
+    // above) — a `pw_…` key minted before the reset keeps working
+    // indefinitely. Surface that gap instead of leaving it silent: if the
+    // target still has at least one key, flash a warning naming the residual
+    // access and where to close it.
+    let key_count = state.store.list_api_keys_for_user(id).await?.len() as u64;
+    if key_count > 0 {
+        return Ok(password_reset_keys_flash(
+            &state.config,
+            jar,
+            revoked,
+            key_count,
+        ));
+    }
     Ok(Redirect::to("/admin").into_response())
 }
 
@@ -3991,6 +4084,7 @@ struct AdminTemplate {
     // users
     users: Vec<UserRow>,
     user_flash: Option<String>,
+    password_reset_flash: Option<String>,
     user_error: Option<String>,
     // all projects
     projects: Vec<(Project, String)>,
@@ -4066,6 +4160,7 @@ async fn render_admin(
             .map(|u| UserRow::from_user(u, admin_id))
             .collect(),
         user_flash: r.user_flash,
+        password_reset_flash: r.password_reset_flash,
         user_error: r.user_error,
         projects: state.store.list_all_projects_with_owner().await?,
         env_rows: env_settings(&state.config),
