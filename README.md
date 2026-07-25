@@ -249,7 +249,7 @@ environment:
 
 `0` (the default) sends no header at all — byte-identical to today's
 behaviour. The value is `max-age` in seconds, accepting a raw integer or a
-duration string (`300`, `1y`, `31536000`). Ramp it up the way HSTS deployment
+duration string (`300`, `365d`, `31536000`). Ramp it up the way HSTS deployment
 guides recommend — `300` (5 minutes) → `86400` (1 day) → `31536000` (1 year)
 — rather than jumping straight to a year, since a browser that has cached the
 policy cannot be talked out of it before `max-age` expires. This knob

@@ -5,9 +5,9 @@
 
 /// Parse a duration into whole seconds. Accepts a bare integer (raw seconds,
 /// for back-compat with what the forms used to take) or one or more
-/// unit-suffixed components: `s`, `m`, `h`, `d`, `y` (a 365-day year) —
-/// combinable and whitespace/case tolerant (`1h30m`, `1H 30M`). Returns `None`
-/// for anything that is not fully consumed by that grammar.
+/// unit-suffixed components: `s`, `m`, `h`, `d` — combinable and
+/// whitespace/case tolerant (`1h30m`, `1H 30M`). Returns `None` for anything
+/// that is not fully consumed by that grammar.
 pub fn parse_duration(s: &str) -> Option<i64> {
     let cleaned: String = s.chars().filter(|c| !c.is_ascii_whitespace()).collect();
     let cleaned = cleaned.to_ascii_lowercase();
@@ -50,7 +50,6 @@ pub fn parse_duration(s: &str) -> Option<i64> {
             'm' => 60,
             'h' => 3600,
             'd' => 86400,
-            'y' => 31_536_000,
             _ => return None,
         };
         let n: i64 = digits.parse().ok()?;
@@ -111,7 +110,6 @@ mod tests {
         assert_eq!(parse_duration("5m"), Some(300));
         assert_eq!(parse_duration("2h"), Some(7200));
         assert_eq!(parse_duration("3d"), Some(259_200));
-        assert_eq!(parse_duration("1y"), Some(31_536_000));
     }
 
     #[test]

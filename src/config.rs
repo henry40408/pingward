@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn hsts_max_age_accepts_human_readable_duration() {
-        let c = Config::from_map(|k| (k == "PINGWARD_HSTS_MAX_AGE").then(|| "1y".into()));
+        let c = Config::from_map(|k| (k == "PINGWARD_HSTS_MAX_AGE").then(|| "365d".into()));
         assert_eq!(c.hsts_max_age_secs, 31_536_000);
     }
 
