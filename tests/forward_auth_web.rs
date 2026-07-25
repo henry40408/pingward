@@ -301,8 +301,10 @@ async fn logout_hands_off_to_the_gateway_when_a_url_is_configured() {
     );
     assert_eq!(
         resp.headers()["clear-site-data"],
-        r#""cache", "cookies""#,
-        "handing off to the gateway also asks the browser to drop this origin's data"
+        r#""cache""#,
+        "handing off to the gateway also asks the browser to drop this origin's cache \
+         (not \"cookies\": that directive reaches the whole registrable domain, which \
+         would clear the gateway's own cookies on a sibling subdomain)"
     );
 }
 
@@ -337,9 +339,10 @@ async fn without_a_logout_url_a_forward_auth_logout_warns_on_the_dashboard() {
         0,
         "the local session is deleted"
     );
-    // Core regression lock: this exit must NOT send Clear-Site-Data, because
-    // "cookies" risks the browser dropping the flash cookie set below before
-    // the dashboard gets to read it.
+    // Core regression lock: this exit must NOT send Clear-Site-Data. It is not
+    // a credential teardown at all (the gateway re-mints the session on the
+    // very next request regardless), and its whole job is delivering the
+    // flash cookie set below for the dashboard to read.
     assert!(
         !out.headers().contains_key("clear-site-data"),
         "the flash exit must omit Clear-Site-Data, or the warning below can never render"

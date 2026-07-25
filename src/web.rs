@@ -492,11 +492,12 @@ async fn login_submit(
 /// in-app path, never from the request, so it is not an open redirect.
 ///
 /// Two of the three exits also send `Clear-Site-Data` (see
-/// [`CLEAR_SITE_DATA`]) so the browser drops this origin's cookies and cache.
-/// The forward-auth flash exit deliberately does not: it carries the
-/// `pingward_flash` cookie that renders the "only your proxy/SSO provider can
-/// end this session" notice, and `Clear-Site-Data: "cookies"` would risk
-/// wiping it before `dashboard` gets to read it.
+/// [`CLEAR_SITE_DATA`]) so the browser drops this origin's cache. The
+/// forward-auth flash exit deliberately does not: it is not a credential
+/// teardown at all — the gateway re-mints the session on the very next
+/// request no matter what this response sends — and its whole job is
+/// delivering the `pingward_flash` cookie that renders the "only your
+/// proxy/SSO provider can end this session" notice.
 async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -517,10 +518,14 @@ async fn logout(
     let jar = jar.remove(session_removal_cookie(&state.config));
 
     // A configured gateway logout URL ends the upstream identity too, so honour
-    // it however the request authenticated. `Clear-Site-Data`'s "cookies"
-    // directive is origin-scoped, so it does not touch the gateway's own
-    // cookies on its (different) origin — no help and no harm to the SSO
-    // session, just a clean slate on this one before handing the browser off.
+    // it however the request authenticated. We deliberately do not include
+    // "cookies" in `Clear-Site-Data` here: that directive clears cookies for
+    // the entire registrable domain, not just this origin, so on a typical
+    // SSO layout (pingward and the gateway as sibling subdomains of the same
+    // parent domain) it would wipe the gateway's own session cookie before
+    // the browser even follows the redirect — breaking the logout handoff
+    // this URL exists for, and signing the user out of every other app on
+    // the domain too. `"cache"` alone is origin-scoped and safe to send.
     if let Some(url) = state.config.forward_auth_logout_url.as_deref() {
         return Ok((
             jar,
@@ -534,11 +539,13 @@ async fn logout(
     // clearing the local session cannot outlive the redirect — be honest about
     // it instead of pretending logout succeeded.
     if crate::auth::forward_auth_username(&headers, peer_ip, &state.config).is_some() {
-        // Deliberately no Clear-Site-Data here: this exit carries the
+        // Deliberately no Clear-Site-Data here: this exit is not a credential
+        // teardown at all — the gateway re-mints the session on the very next
+        // request no matter what this response sends — so there is nothing
+        // to ask the browser to drop. Its whole job is delivering the
         // `pingward_flash` cookie the dashboard needs to render the warning
-        // below, and clearing "cookies" risks the browser dropping it before
-        // `take_flash` gets to read it. Do not "restore consistency" by adding
-        // the header back — see `logout`'s doc comment.
+        // below. Do not "restore consistency" by adding the header back —
+        // see `logout`'s doc comment.
         let jar = jar.add(flash_cookie(&state.config, "forward_auth_logout"));
         return Ok((jar, Redirect::to("/")).into_response());
     }
@@ -551,9 +558,18 @@ async fn logout(
         .into_response())
 }
 
-/// Ask the browser to drop this origin's data on logout.
+/// Ask the browser to drop this origin's cache on logout.
 ///
-/// Deliberately **excludes** `"storage"`: the theme preference lives in
+/// Deliberately **excludes** `"cookies"`: unlike the other directives, it is
+/// scoped to the whole *registered domain*, including subdomains — not just
+/// this origin. On the SSO layout `PINGWARD_FORWARD_AUTH_LOGOUT_URL` is meant
+/// for (pingward and its gateway as sibling subdomains), sending it would
+/// clear the gateway's own session cookie before the browser follows the
+/// redirect, breaking the logout handoff and signing the user out of every
+/// other app on the domain. The session cookie is already ended by the
+/// removal `Set-Cookie` (`session_removal_cookie`), which *is* origin- and
+/// path-scoped, so nothing is lost by leaving "cookies" out here.
+/// Also deliberately **excludes** `"storage"`: the theme preference lives in
 /// `localStorage['pw-theme']` (templates/base.html), so clearing it would
 /// reset the user's appearance setting on every logout — and pingward keeps
 /// nothing secret in localStorage, so it is pure functional regression.
@@ -562,7 +578,7 @@ async fn logout(
 /// only honour `Clear-Site-Data` on a trustworthy origin, so on a plain-HTTP
 /// deployment (`PINGWARD_COOKIE_SECURE` off) sending it is a harmless no-op,
 /// not a security control.
-const CLEAR_SITE_DATA: &str = r#""cache", "cookies""#;
+const CLEAR_SITE_DATA: &str = r#""cache""#;
 
 /// The request's socket peer IP, or `None` when the router is driven without
 /// `ConnectInfo` (e.g. some tests) — the same fail-closed source
@@ -3296,6 +3312,12 @@ async fn users_set_password(
     // keeps the row exactly as `/account`'s "revoke others" does, and `logout`
     // only ever deletes the row for the browser issuing it. Evicting that
     // attacker therefore takes two steps: reset your password, then log out.
+    // This handler also does not touch the target's API keys, unlike
+    // `users_set_disabled` (covered because `api::extract::ApiUser` re-checks
+    // `disabled` on every request): a password reset revokes sessions only, so
+    // a `pw_…` key minted before the reset keeps working indefinitely, and
+    // evicting it requires revoking it from `/account` or disabling the
+    // account instead.
     let revoked = if id == admin.id {
         match secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state)) {
             Some(current) => {

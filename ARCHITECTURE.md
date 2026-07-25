@@ -217,16 +217,25 @@ redirects to `/login` as before. `login_page` likewise bounces an
 already-authenticated visitor to `/`, because rendering a login form to someone
 the layer has just signed back in would be dishonest.
 
-The `/login`- and gateway-URL exits also send `Clear-Site-Data: "cache",
-"cookies"` (`web::CLEAR_SITE_DATA`) so the browser drops this origin's cookies
-and cache on logout. The flash exit deliberately omits it: that exit's whole
-purpose is to carry the `pingward_flash` cookie to `/`, and mixing it with
-`Clear-Site-Data: "cookies"` risks the browser dropping that cookie before
-`dashboard` reads it. `"storage"` is never sent on any exit — it would wipe
-the `pw-theme` localStorage preference (`templates/base.html`) for no security
-benefit, since pingward keeps nothing secret in localStorage. Browsers only
-honour `Clear-Site-Data` on a trustworthy origin, so on a plain-HTTP
-deployment the header is sent but silently ignored — a no-op, not a gap.
+The `/login`- and gateway-URL exits also send `Clear-Site-Data: "cache"`
+(`web::CLEAR_SITE_DATA`) so the browser drops this origin's cache on logout.
+`"cookies"` is deliberately not included: that directive is scoped to the
+whole *registered domain*, including subdomains, not just this origin — on
+the SSO layout `PINGWARD_FORWARD_AUTH_LOGOUT_URL` is meant for (pingward and
+its gateway as sibling subdomains of the same parent domain), sending it would
+clear the gateway's own session cookie before the browser even follows the
+redirect, breaking the logout handoff and signing the user out of every other
+app on the domain too. The session cookie itself is already ended by the
+removal `Set-Cookie`, which *is* origin- and path-scoped, so nothing is lost
+by leaving "cookies" out. The flash exit omits the header entirely: it is not
+a credential teardown at all (the gateway re-mints the session on the very
+next request regardless), and its whole purpose is to carry the
+`pingward_flash` cookie to `/`. `"storage"` is never sent on any exit — it
+would wipe the `pw-theme` localStorage preference (`templates/base.html`) for
+no security benefit, since pingward keeps nothing secret in localStorage.
+Browsers only honour `Clear-Site-Data` on a trustworthy origin, so on a
+plain-HTTP deployment the header is sent but silently ignored — a no-op, not
+a gap.
 
 `/api/v1` data endpoints authenticate independently via the `ApiUser` bearer
 extractor; `/api/docs` and `/api/openapi.json` additionally accept a logged-in
@@ -394,17 +403,28 @@ Session expiry is two independent layers, not one:
   once for `expires` and once for the `created_at` argument passed to
   `create_session`, so `created_at` is strictly later than the timestamp
   `expires_at` was computed from. `cap = created_at + 30d` therefore comes out
-  strictly greater than `expires_at`, guard 1 (`expires_at >= cap`) evaluates
-  **false**, and a legacy row in the final half of its window *does* take the
-  slide branch — it can emit a `session.renewed` event the naive reading of
-  guard 1 would say is impossible. What actually keeps a pre-upgrade session
-  from outliving its original 30 days is `refreshed_expiry`'s `next.min(cap)`
-  clamp (the slide can only pull `expires_at` in toward the pre-existing cap,
-  never past it) together with `is_past_absolute_cap`'s independent check in
-  `find_session_user`, not guard 1 short-circuiting. The renewal this produces
-  is a no-op in practice — microseconds, the gap between the two `Utc::now()`
-  calls — but the guarantee rests on the clamp and the backstop, not on the
-  slide never firing.
+  strictly greater than `expires_at`, so guard 1 (`expires_at >= cap`) never
+  short-circuits a legacy row. Left at that, such a row would sail on its old
+  fixed-length expiry for weeks with no idle enforcement at all — the ordinary
+  half-life throttle only fires once fewer than 36 hours remain, and a legacy
+  row typically has most of its 30 days left the moment this branch ships.
+  `refreshed_expiry` therefore carries a second clamp ahead of that throttle:
+  whenever the stored `expires_at` already exceeds what the idle policy would
+  ever grant (`min(now + idle, cap)`), it is pulled *down* to that value on
+  the very next request, throttle or not. For a legacy row that means the
+  first request after the upgrade rewrites `expires_at` to `now + 72h`
+  immediately, so control #4 applies to pre-upgrade sessions from their first
+  request rather than only in their final 36 hours. The practical effect for
+  an operator: a pre-upgrade session that was already idle for more than 72
+  hours at that point is signed out on its very next request — that is the
+  idle control finally taking effect, not a regression — while an actively
+  used legacy session keeps working and simply starts sliding on the same
+  72-hour window as every session created after the upgrade. Rows this
+  branch creates never hit that clamp (their `expires_at` is always already
+  `<= now + idle`), so it is purely a one-time correction for rows that
+  predate the idle layer; `is_past_absolute_cap`'s independent check in
+  `find_session_user` remains the backstop that still bounds the clamp itself
+  at `cap`.
 
 `auth::is_trusted_proxy` is the single gate for that decision, shared by
 forward-auth and by `auth::client_ip` (the address stamped on a session row
