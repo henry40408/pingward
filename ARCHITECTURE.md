@@ -138,16 +138,17 @@ shared computer, or an intermediary proxy. It sits **outermost** of the four
 ordering: `no_store` only reads and writes response headers on the way out,
 so it never observes or affects the session/CSRF request-handling chain
 described below. It runs outermost purely so it wraps every early-return
-path too, including `csrf_guard`'s 403s. `/assets/*`, `/ping/*`, `/api/*`, and
+path too, including `csrf_guard`'s 403s. `/assets/*`, `/ping/*`, and
 `/healthz` are sibling routers and stay structurally exempt — see
-`src/assets.rs`'s `IMMUTABLE_CACHE`, unchanged by this layer. `/api/*`'s
-exemption has a real consequence, not just a structural one: `/api/v1` is
-bearer-authenticated and was never going to carry a browser-cacheable session
-anyway, but `/api/docs` and `/api/openapi.json` additionally accept a
-logged-in web session (`CurrentUser`) and are therefore session-authenticated
-responses that end up with **no** `Cache-Control` header at all. That is a
-known gap, not a fix made here — adding `no_store` to the API router is a
-scope decision left to whoever owns that surface.
+`src/assets.rs`'s `IMMUTABLE_CACHE`, unchanged by this layer. `/api/*` is
+exempt the same structural way, but not uniformly: `api::routes()` layers
+`no_store` a second time, scoped to just `/api/docs` and `/api/openapi.json`
+— those two additionally accept a logged-in web session (`CurrentUser`)
+alongside `/api/v1`'s bearer auth, so they are session-authenticated
+responses and need the same protection. `/api/v1` stays exempt on purpose: it
+is bearer-authenticated, was never going to carry a browser-cacheable session
+in the first place, and adding response headers there would affect API
+consumers for no benefit.
 
 `hsts` (`web::hsts`, gated by `PINGWARD_HSTS_MAX_AGE`) is layered outside
 every `.merge(...)` in the block above, not inside the `web` router the way
@@ -397,45 +398,22 @@ Session expiry is two independent layers, not one:
   costs roughly one write per 36 hours rather than one per request;
   `last_seen_at` keeps its separate 60-second throttle (see below) since
   `/account`'s display wants finer granularity than the slide does. Upgrade
-  compatibility: a pre-branch row has `expires_at == created_at + 30d`, but
-  that is **not** already equal to its own cap — the old single-layer
-  `open_session` (`git show aa17ca9:src/web.rs`) called `Utc::now()` twice,
-  once for `expires` and once for the `created_at` argument passed to
-  `create_session`, so `created_at` is strictly later than the timestamp
-  `expires_at` was computed from. `cap = created_at + 30d` therefore comes out
-  strictly greater than `expires_at`, so guard 1 (`expires_at >= cap`) never
-  short-circuits a legacy row. Left at that, such a row would sail on its old
-  fixed-length expiry for weeks with no idle enforcement at all — the ordinary
-  half-life throttle only fires once fewer than 36 hours remain, and a legacy
-  row typically has most of its 30 days left the moment this branch ships.
-  `refreshed_expiry` therefore carries a second clamp ahead of that throttle:
-  whenever the stored `expires_at` already exceeds what the idle policy would
-  ever grant (`min(now + idle, cap)`), it is pulled *down* to that value on
-  the very next request, throttle or not. For a legacy row that means the
-  first request after the upgrade rewrites `expires_at` to `now + 72h`
-  immediately, so control #4 applies to pre-upgrade sessions from their first
-  request rather than only in their final 36 hours. An actively used legacy
-  session keeps working and simply starts sliding on the same 72-hour window
-  as every session created after the upgrade. What the clamp does **not** do
-  is apply the idle window *retroactively*: the SQL gate reads `expires_at`,
-  and a legacy row's `expires_at` was never maintained as "last activity +
-  72h", so a pre-upgrade session that has sat untouched for weeks is still
-  **granted** on the request that finds it — that request is what clamps it,
-  not what rejects it. `last_seen_at` is loaded by the same query and would be
-  enough to reject it (`last_seen_at + idle <= now`), but that is deliberately
-  not done: it would change the resolution path for every session rather than
-  only for legacy rows. The residual exposure is bounded but real — a session
-  predating the upgrade stays resolvable until its original `created_at + 30d`
-  however long it has been idle, and only comes under the 72-hour window from
-  the first request that touches it. It closes itself within 30 days of the
-  upgrade, and does not arise at all where `PINGWARD_COOKIE_SECURE` turns on
-  in the same upgrade, since the `__Host-` rename invalidates every
-  pre-existing cookie regardless. Rows this
-  branch creates never hit that clamp (their `expires_at` is always already
-  `<= now + idle`), so it is purely a one-time correction for rows that
-  predate the idle layer; `is_past_absolute_cap`'s independent check in
-  `find_session_user` remains the backstop that still bounds the clamp itself
-  at `cap`.
+  compatibility: `refreshed_expiry` also carries a downward clamp — whenever
+  the stored `expires_at` already exceeds what the idle policy would ever
+  grant (`min(now + idle, cap)`), it is pulled *down* to that value on the
+  very next request, bypassing the write throttle. That clamp was written to
+  handle a pre-branch row, whose old single-layer `open_session` (`git show
+  aa17ca9:src/web.rs`) produced an `expires_at == created_at + 30d` that would
+  otherwise have sailed on its fixed-length expiry for weeks with no idle
+  enforcement — but migration `0015_invalidate_legacy_sessions.sql` now
+  deletes every session predating the idle window outright, so no such row
+  survives into a migrated database and this scenario cannot occur. The clamp
+  itself is not removed: it stays as defence in depth for the one case it
+  cannot rule out, a row whose `created_at` fails to parse (`cap == None`, see
+  `is_past_absolute_cap`'s doc comment) and so has no cap to compare
+  `expires_at` against in the first place. `is_past_absolute_cap`'s
+  independent check in `find_session_user` remains the backstop that still
+  bounds the clamp itself at `cap`.
 
 `auth::is_trusted_proxy` is the single gate for that decision, shared by
 forward-auth and by `auth::client_ip` (the address stamped on a session row
