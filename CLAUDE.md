@@ -264,7 +264,10 @@ instead lands on the dashboard with a one-shot flash telling the user to sign
 out at their proxy, since a local logout would just be re-authenticated, while a
 password logout still goes to `/login` — see ARCHITECTURE.md's "Session
 layers"), `PINGWARD_SECRET` (session/CSRF signing key, ≥16
-bytes; generated per process when unset — see above), and `PINGWARD_SMTP_*`
+bytes; generated per process when unset — see above), `PINGWARD_COOKIE_SECURE`
+(whether the session/flash cookie carries `Secure`; `true`/`false`/`1`/`0`,
+default derived from whether `PINGWARD_BASE_URL` starts with `https://` — see
+`config::parse_cookie_secure`), and `PINGWARD_SMTP_*`
 (host/from required to enable email; port/TLS defaulted). The scan and prune interval env vars accept raw
 seconds or a human-readable duration (`5m`, `1h30m`) via
 `duration::parse_duration`; an unparseable value falls back to the default

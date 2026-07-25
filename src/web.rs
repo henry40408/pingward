@@ -467,7 +467,7 @@ async fn logout(
     if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
         state.store.delete_session(&id).await?;
     }
-    let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+    let jar = jar.remove(session_removal_cookie(&state.config));
 
     // A configured gateway logout URL ends the upstream identity too, so honour
     // it however the request authenticated.
@@ -479,7 +479,7 @@ async fn logout(
     // clearing the local session cannot outlive the redirect — be honest about
     // it instead of pretending logout succeeded.
     if crate::auth::forward_auth_username(&headers, peer_ip, &state.config).is_some() {
-        let jar = jar.add(flash_cookie("forward_auth_logout"));
+        let jar = jar.add(flash_cookie(&state.config, "forward_auth_logout"));
         return Ok((jar, Redirect::to("/")).into_response());
     }
 
@@ -517,7 +517,7 @@ async fn dashboard(
     // One-shot notice set by `logout` when a forward-auth visitor signed out
     // with no gateway logout URL configured; consumed here so the removal
     // Set-Cookie rides back on this response.
-    let (jar, forward_auth_logout) = take_flash(jar, "forward_auth_logout");
+    let (jar, forward_auth_logout) = take_flash(&state.config, jar, "forward_auth_logout");
     let now = Utc::now();
     let q = query.q.unwrap_or_default().trim().to_string();
     let needle = q.to_lowercase();
@@ -662,6 +662,28 @@ fn request_user_agent(headers: &HeaderMap) -> Option<String> {
     })
 }
 
+/// The one place a session cookie is built. Its attributes must match
+/// `session_removal_cookie` exactly — RFC 6265bis §5.5 ("Leave Secure Cookies
+/// Alone") means a removal cookie whose attributes differ can fail to overwrite
+/// the original in some browsers.
+fn session_cookie(config: &crate::config::Config, value: String) -> Cookie<'static> {
+    Cookie::build((SESSION_COOKIE, value))
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .path("/")
+        .secure(config.cookie_secure)
+        // Deliberately no Max-Age/Expires: a non-persistent cookie is OWASP's
+        // explicit preference for an authenticated session. Do not add one —
+        // expiry is the server's job (`sessions.expires_at`).
+        .build()
+}
+
+/// The empty-valued cookie used to clear the session cookie; attributes are
+/// aligned with `session_cookie`.
+fn session_removal_cookie(config: &crate::config::Config) -> Cookie<'static> {
+    session_cookie(config, String::new())
+}
+
 /// Create a session row and return the signed cookie that addresses it.
 async fn open_session(
     state: &AppState,
@@ -685,14 +707,10 @@ async fn open_session(
         )
         .await?;
     // The cookie carries `<id>.<hmac>`, never the bare id — see `crate::secret`.
-    Ok(Cookie::build((
-        SESSION_COOKIE,
+    Ok(session_cookie(
+        &state.config,
         secret::sign_session(&state.config.secret, &session_id),
     ))
-    .http_only(true)
-    .same_site(SameSite::Lax)
-    .path("/")
-    .build())
 }
 
 /// Create a session row and return a jar carrying the signed session cookie.
@@ -736,14 +754,10 @@ pub async fn anonymous_session(
     }
     // Signature only — an anonymous id has no row to look up, and a stale
     // signed cookie is left alone so its owner keeps one stable token.
-    let cookie = Cookie::build((
-        SESSION_COOKIE,
+    let cookie = session_cookie(
+        &state.config,
         secret::sign_session(&state.config.secret, &new_session_token()),
-    ))
-    .http_only(true)
-    .same_site(SameSite::Lax)
-    .path("/")
-    .build();
+    );
     replace_request_cookie(&mut req, &cookie);
     let mut resp = next.run(req).await;
     if let Ok(value) = cookie.to_string().parse() {
@@ -1841,7 +1855,11 @@ const FLASH_COOKIE: &str = "pingward_flash";
 /// keeps a message from surfacing on the wrong page when a redirect is not
 /// followed or two tabs race. Only known keys map to a message, so a
 /// user-supplied cookie value never renders as arbitrary text.
-fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
+fn take_flash(
+    config: &crate::config::Config,
+    jar: CookieJar,
+    surface: &str,
+) -> (CookieJar, Option<String>) {
     let Some(cookie) = jar.get(FLASH_COOKIE) else {
         return (jar, None);
     };
@@ -1860,7 +1878,7 @@ fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
         _ => return (jar, None),
     };
     (
-        jar.remove(Cookie::build((FLASH_COOKIE, "")).path("/").build()),
+        jar.remove(flash_removal_cookie(config)),
         Some(message.to_string()),
     )
 }
@@ -1868,20 +1886,32 @@ fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
 /// Build a one-shot flash cookie carrying `surface`, path-scoped to `/` so any
 /// page can consume it via [`take_flash`]. The value is a fixed surface key,
 /// never user input — [`take_flash`] maps only known keys to a message.
-fn flash_cookie(surface: &'static str) -> Cookie<'static> {
+///
+/// Consistency tidy-up, not a security fix: the flash cookie carries no
+/// session material, but there is no reason for it to diverge from the
+/// session cookie's `Secure` behaviour.
+fn flash_cookie(config: &crate::config::Config, surface: &'static str) -> Cookie<'static> {
     Cookie::build((FLASH_COOKIE, surface))
         .http_only(true)
         .same_site(SameSite::Lax)
         .path("/")
+        .secure(config.cookie_secure)
         .build()
+}
+
+/// The empty-valued cookie used to clear the flash cookie; attributes are
+/// aligned with `flash_cookie` (see `session_removal_cookie` for why this
+/// matters).
+fn flash_removal_cookie(config: &crate::config::Config) -> Cookie<'static> {
+    flash_cookie(config, "")
 }
 
 /// Set the `users_blocked` flash cookie and redirect to `/admin`. Used by the
 /// self-guard and last-enabled-admin-guard branches in `users_delete`,
 /// `users_toggle_admin` and `users_set_disabled` — mirrors how
 /// `settings_save` sets `FLASH_COOKIE` for its own surface (~line 2413).
-fn users_blocked(jar: CookieJar) -> Response {
-    let jar = jar.add(flash_cookie("users_blocked"));
+fn users_blocked(config: &crate::config::Config, jar: CookieJar) -> Response {
+    let jar = jar.add(flash_cookie(config, "users_blocked"));
     (jar, Redirect::to("/admin")).into_response()
 }
 
@@ -1894,7 +1924,7 @@ async fn check_show(
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    let (jar, flash) = take_flash(jar, "channels");
+    let (jar, flash) = take_flash(&state.config, jar, "channels");
     let resp = render_check_page(&state, check, false, user.is_admin, csrf, flash, page).await?;
     Ok((jar, resp).into_response())
 }
@@ -2753,13 +2783,7 @@ async fn set_channels_core(
     for remove in current.difference(&desired) {
         state.store.unbind_channel(id, *remove).await?;
     }
-    let jar = jar.add(
-        Cookie::build((FLASH_COOKIE, "channels"))
-            .http_only(true)
-            .same_site(SameSite::Lax)
-            .path("/")
-            .build(),
-    );
+    let jar = jar.add(flash_cookie(&state.config, "channels"));
     Ok((jar, Redirect::to(&format!("{base}/checks/{id}"))).into_response())
 }
 
@@ -2873,8 +2897,8 @@ async fn admin_page(
     // Chain both surfaces through the same jar: the cookie is path-scoped to
     // "/", so each `take_flash` call only consumes it if the value matches
     // its own surface, leaving it for the other to check.
-    let (jar, settings_flash) = take_flash(jar, "settings");
-    let (jar, user_flash) = take_flash(jar, "users_blocked");
+    let (jar, settings_flash) = take_flash(&state.config, jar, "settings");
+    let (jar, user_flash) = take_flash(&state.config, jar, "users_blocked");
     let resp = render_admin(
         &state,
         &jar,
@@ -2969,13 +2993,7 @@ async fn settings_save(
         let value = v.map(|n| n.to_string()).unwrap_or_default();
         state.store.set_setting(key, &value).await?;
     }
-    let jar = jar.add(
-        Cookie::build((FLASH_COOKIE, "settings"))
-            .http_only(true)
-            .same_site(SameSite::Lax)
-            .path("/")
-            .build(),
-    );
+    let jar = jar.add(flash_cookie(&state.config, "settings"));
     Ok((jar, Redirect::to("/admin")).into_response())
 }
 
@@ -3043,7 +3061,7 @@ async fn users_delete(
 ) -> Result<Response, AppError> {
     // Never allow deleting yourself — you'd lose your own account mid-session.
     if id == admin.id {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
@@ -3055,7 +3073,7 @@ async fn users_delete(
     // implies count_enabled_admins() is already >= 2. Kept as
     // defence-in-depth behind the self-guard.
     if target.is_admin && !target.disabled && state.store.count_enabled_admins().await? <= 1 {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     state.store.delete_user(id).await?;
     state
@@ -3116,7 +3134,7 @@ async fn users_toggle_admin(
     // `/admin` immediately (the very next request re-resolves AdminUser and
     // 403s), mirroring the self-guards in `users_delete`/`users_set_disabled`.
     if id == admin.id {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
@@ -3132,7 +3150,7 @@ async fn users_toggle_admin(
         && !target.disabled
         && state.store.count_enabled_admins().await? <= 1
     {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     state.store.set_user_admin(id, new_admin).await?;
     state
@@ -3161,7 +3179,7 @@ async fn users_set_disabled(
 ) -> Result<Response, AppError> {
     // Never disable yourself.
     if id == admin.id {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
@@ -3177,7 +3195,7 @@ async fn users_set_disabled(
         && !target.disabled
         && state.store.count_enabled_admins().await? <= 1
     {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     state.store.set_user_disabled(id, new_disabled).await?;
     state
@@ -3424,7 +3442,7 @@ async fn sessions_revoke(
         // pathless removal cookie gets this route's own path
         // (`/account/sessions/{handle}/revoke`) and would not clear a
         // `path=/` cookie.
-        let jar = jar.remove(Cookie::build((SESSION_COOKIE, "")).path("/").build());
+        let jar = jar.remove(session_removal_cookie(&state.config));
         return Ok((jar, Redirect::to("/login")).into_response());
     }
     Ok((jar, Redirect::to("/account")).into_response())
@@ -3545,6 +3563,12 @@ fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSet
             },
             default: "(unset)",
             description: "Where logging out sends the browser — point it at the gateway's sign-out endpoint to end the SSO session too. Unset means /login.",
+        },
+        EnvSetting {
+            var: "PINGWARD_COOKIE_SECURE",
+            value: EnvValue::Set(config.cookie_secure.to_string()),
+            default: "derived from PINGWARD_BASE_URL's scheme",
+            description: "Whether the session cookie carries `Secure`. Leave unset unless TLS terminates upstream and PINGWARD_BASE_URL cannot say so.",
         },
     ];
     let smtp = &config.smtp;
@@ -3880,7 +3904,7 @@ async fn admin_check_show(
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
     let csrf = current_csrf(&state, &jar);
-    let (jar, flash) = take_flash(jar, "channels");
+    let (jar, flash) = take_flash(&state.config, jar, "channels");
     let resp = render_check_page(&state, check, true, true, csrf, flash, page).await?;
     Ok((jar, resp).into_response())
 }
@@ -4058,6 +4082,10 @@ async fn admin_channel_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_config() -> crate::config::Config {
+        crate::config::Config::from_map(|_| None)
+    }
 
     fn base_check() -> Check {
         Check {
@@ -4337,16 +4365,17 @@ mod tests {
 
     #[test]
     fn take_flash_maps_each_surface_to_its_own_message() {
+        let config = test_config();
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "settings"));
-        let (_, msg) = take_flash(jar, "settings");
+        let (_, msg) = take_flash(&config, jar, "settings");
         assert_eq!(msg.as_deref(), Some("Settings saved."));
 
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "channels"));
-        let (_, msg) = take_flash(jar, "channels");
+        let (_, msg) = take_flash(&config, jar, "channels");
         assert_eq!(msg.as_deref(), Some("Notify channels saved."));
 
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "users_blocked"));
-        let (_, msg) = take_flash(jar, "users_blocked");
+        let (_, msg) = take_flash(&config, jar, "users_blocked");
         assert_eq!(
             msg.as_deref(),
             Some(
@@ -4355,7 +4384,7 @@ mod tests {
         );
 
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "forward_auth_logout"));
-        let (_, msg) = take_flash(jar, "forward_auth_logout");
+        let (_, msg) = take_flash(&config, jar, "forward_auth_logout");
         assert_eq!(
             msg.as_deref(),
             Some(
@@ -4369,16 +4398,17 @@ mod tests {
         // The cookie is path-scoped to "/", so the settings page also sees a
         // check-page flash. It must neither render nor consume it — the page it
         // was set for still gets it.
+        let config = test_config();
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "channels"));
-        let (jar, msg) = take_flash(jar, "settings");
+        let (jar, msg) = take_flash(&config, jar, "settings");
         assert_eq!(msg, None);
-        let (_, msg) = take_flash(jar, "channels");
+        let (_, msg) = take_flash(&config, jar, "channels");
         assert_eq!(msg.as_deref(), Some("Notify channels saved."));
     }
 
     #[test]
     fn take_flash_without_a_cookie_is_none() {
-        let (_, msg) = take_flash(CookieJar::new(), "settings");
+        let (_, msg) = take_flash(&test_config(), CookieJar::new(), "settings");
         assert_eq!(msg, None);
     }
 
@@ -4387,7 +4417,7 @@ mod tests {
         // Even when the surface matches, an unknown key maps to no message, so a
         // user-supplied cookie value can never render as arbitrary text.
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "<script>"));
-        let (_, msg) = take_flash(jar, "<script>");
+        let (_, msg) = take_flash(&test_config(), jar, "<script>");
         assert_eq!(msg, None);
     }
 

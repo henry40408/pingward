@@ -122,6 +122,7 @@ All configuration is via environment variables:
 | `PINGWARD_FORWARD_AUTH_HEADER` | — | Header carrying a pre-authenticated username; honoured only from a trusted proxy. |
 | `PINGWARD_FORWARD_AUTH_LOGOUT_URL` | — | Where **Log out** sends the browser. Point it at your gateway's sign-out endpoint so signing out ends the SSO session too. Unset means `/login`. |
 | `PINGWARD_SECRET` | generated per process | Signing key for session cookies and CSRF tokens; at least 16 bytes. See below. |
+| `PINGWARD_COOKIE_SECURE` | derived from `PINGWARD_BASE_URL`'s scheme | Whether the session cookie carries `Secure` (`true`/`false`/`1`/`0`). Leave unset unless TLS terminates upstream and `PINGWARD_BASE_URL` cannot say so. |
 | `PINGWARD_SMTP_*` | — | Instance SMTP for the email channel (`HOST`/`FROM` required to enable; port/TLS defaulted). |
 
 ### `PINGWARD_SECRET`
@@ -171,6 +172,10 @@ Confirm the peer's actual address with `docker inspect -f
 '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' <caddy-container>`,
 and note that `/admin` shows the value pingward parsed on its **Environment**
 card.
+
+On an HTTPS deployment, `PINGWARD_BASE_URL` must use `https://` — the session
+cookie's `Secure` attribute is derived from its scheme, so an `http://` value
+(even behind a TLS-terminating proxy) leaves the cookie without `Secure`.
 
 ### Forward authentication
 

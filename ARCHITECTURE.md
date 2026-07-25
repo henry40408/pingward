@@ -217,6 +217,30 @@ warning saying so at startup. API keys are unaffected either way — they are
 random bearer tokens matched by SHA-256 digest (`src/apikey.rs`) and never
 touch this secret.
 
+### Cookie attributes
+
+Every session and flash cookie is built by exactly one pair of functions
+(`web::session_cookie`/`session_removal_cookie`, `web::flash_cookie`/
+`flash_removal_cookie`), so their attributes cannot drift between the
+mint and removal paths:
+
+- `HttpOnly` and `SameSite=Lax` always.
+- `Path=/`, so every route sees (and can clear) the cookie.
+- `Secure` follows `Config::cookie_secure` (`config::parse_cookie_secure`):
+  an explicit `PINGWARD_COOKIE_SECURE` wins, otherwise it is derived from
+  whether `PINGWARD_BASE_URL` starts with `https://`. It is not hardcoded —
+  a browser silently drops a `Secure` cookie sent over plain HTTP, which
+  would otherwise break login on a plaintext self-hosted LAN deployment.
+- **No `Max-Age`/`Expires`.** This is deliberate, not an oversight: OWASP's
+  session-management guidance prefers a non-persistent session cookie, so
+  expiry is enforced only server-side (`sessions.expires_at`), not by the
+  browser. Do not add one when touching this code.
+- A removal cookie's attributes must match the corresponding mint function
+  exactly (`session_cookie`/`session_removal_cookie`, `flash_cookie`/
+  `flash_removal_cookie`) — RFC 6265bis §5.5 ("Leave Secure Cookies Alone")
+  means a mismatched removal cookie can fail to clear the original in some
+  browsers.
+
 ## Persistence
 
 One `sqlx::AnyPool` (`src/db.rs::connect`) dispatches to SQLite or Postgres

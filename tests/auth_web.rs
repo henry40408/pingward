@@ -516,17 +516,111 @@ async fn login_logout_cycle() {
         ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let login_secure = res.cookie(pingward::auth::SESSION_COOKIE).secure();
     set_csrf(&mut server, &store).await;
     server.get("/").await.assert_status_ok();
 
     // logout → redirect, then root bounces to /login
-    server
-        .post("/logout")
-        .await
-        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    let logout_res = server.post("/logout").await;
+    logout_res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    // The removal cookie must carry `Path=/` (matching how the cookie was
+    // set) and the same `Secure` attribute as the cookie it clears —
+    // otherwise a browser can fail to overwrite/clear it. See
+    // `web::session_removal_cookie`.
+    let removal_cookie = logout_res.cookie(pingward::auth::SESSION_COOKIE);
+    assert_eq!(removal_cookie.path(), Some("/"));
+    assert_eq!(removal_cookie.secure(), login_secure);
     let res = server.get("/").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/login");
+}
+
+/// A server whose `Config` is pinned to [`common::TEST_SECRET`] and, when
+/// given, `PINGWARD_BASE_URL` — otherwise built exactly like [`server`].
+async fn server_with_base_url(base_url: Option<&str>) -> (TestServer, Store) {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let config = pingward::config::Config::from_map(|k| match k {
+        "PINGWARD_SECRET" => Some(common::TEST_SECRET.into()),
+        "PINGWARD_BASE_URL" => base_url.map(str::to_string),
+        _ => None,
+    });
+    let state = AppState::new(store.clone(), config);
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    (server, store)
+}
+
+/// Signs `alice` in and returns the login response, whose `Set-Cookie` carries
+/// the freshly minted session cookie.
+async fn login_alice(server: &mut TestServer, store: &Store) -> axum_test::TestResponse {
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("alice", Some(&phc), true, chrono::Utc::now())
+        .await
+        .unwrap();
+    let csrf = common::anonymous_csrf(server).await;
+    server
+        .post("/login")
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "alice"),
+            ("password", "pw"),
+        ])
+        .await
+}
+
+/// The raw `Set-Cookie` header value for `SESSION_COOKIE`, attributes and all.
+/// `cookie::Cookie::secure()` cannot tell "explicitly not Secure" apart from
+/// "Secure never mentioned" once a header round-trips through the parser (an
+/// absent flag parses to `None`, not `Some(false)`), so the raw header is the
+/// unambiguous way to check both presence and absence.
+fn raw_session_set_cookie(res: &axum_test::TestResponse) -> String {
+    res.headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|v| v.starts_with(&format!("{}=", pingward::auth::SESSION_COOKIE)))
+        .expect("a Set-Cookie for the session cookie")
+        .to_string()
+}
+
+/// P0-A: the session cookie's `Secure` attribute follows `PINGWARD_BASE_URL`'s
+/// scheme (via `config::parse_cookie_secure`), and it never carries
+/// `Max-Age`/`Expires` — a non-persistent cookie is OWASP's stated preference
+/// for an authenticated session, enforced server-side via
+/// `sessions.expires_at` instead. See `web::session_cookie`.
+#[tokio::test]
+async fn session_cookie_carries_secure_only_when_configured() {
+    let (mut https_server, https_store) =
+        server_with_base_url(Some("https://pingward.example")).await;
+    let res = login_alice(&mut https_server, &https_store).await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let set_cookie = raw_session_set_cookie(&res);
+    assert!(set_cookie.contains("; Secure"), "{set_cookie}");
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("max-age"),
+        "{set_cookie}"
+    );
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("expires"),
+        "{set_cookie}"
+    );
+
+    let (mut http_server, http_store) = server_with_base_url(None).await;
+    let res = login_alice(&mut http_server, &http_store).await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let set_cookie = raw_session_set_cookie(&res);
+    assert!(!set_cookie.contains("; Secure"), "{set_cookie}");
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("max-age"),
+        "{set_cookie}"
+    );
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("expires"),
+        "{set_cookie}"
+    );
 }
 
 #[tokio::test]
