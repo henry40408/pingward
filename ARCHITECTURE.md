@@ -414,12 +414,23 @@ Session expiry is two independent layers, not one:
   the very next request, throttle or not. For a legacy row that means the
   first request after the upgrade rewrites `expires_at` to `now + 72h`
   immediately, so control #4 applies to pre-upgrade sessions from their first
-  request rather than only in their final 36 hours. The practical effect for
-  an operator: a pre-upgrade session that was already idle for more than 72
-  hours at that point is signed out on its very next request — that is the
-  idle control finally taking effect, not a regression — while an actively
-  used legacy session keeps working and simply starts sliding on the same
-  72-hour window as every session created after the upgrade. Rows this
+  request rather than only in their final 36 hours. An actively used legacy
+  session keeps working and simply starts sliding on the same 72-hour window
+  as every session created after the upgrade. What the clamp does **not** do
+  is apply the idle window *retroactively*: the SQL gate reads `expires_at`,
+  and a legacy row's `expires_at` was never maintained as "last activity +
+  72h", so a pre-upgrade session that has sat untouched for weeks is still
+  **granted** on the request that finds it — that request is what clamps it,
+  not what rejects it. `last_seen_at` is loaded by the same query and would be
+  enough to reject it (`last_seen_at + idle <= now`), but that is deliberately
+  not done: it would change the resolution path for every session rather than
+  only for legacy rows. The residual exposure is bounded but real — a session
+  predating the upgrade stays resolvable until its original `created_at + 30d`
+  however long it has been idle, and only comes under the 72-hour window from
+  the first request that touches it. It closes itself within 30 days of the
+  upgrade, and does not arise at all where `PINGWARD_COOKIE_SECURE` turns on
+  in the same upgrade, since the `__Host-` rename invalidates every
+  pre-existing cookie regardless. Rows this
   branch creates never hit that clamp (their `expires_at` is always already
   `<= now + idle`), so it is purely a one-time correction for rows that
   predate the idle layer; `is_past_absolute_cap`'s independent check in
