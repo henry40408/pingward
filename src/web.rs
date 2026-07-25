@@ -1,5 +1,5 @@
 use crate::auth::{
-    AdminUser, CurrentUser, OptionalUser, SESSION_COOKIE, SESSION_TTL_DAYS, hash_password,
+    AdminUser, CurrentUser, OptionalUser, SESSION_COOKIE, SESSION_IDLE_TTL_HOURS, hash_password,
     new_session_token, verify_password,
 };
 use crate::error::AppError;
@@ -725,7 +725,7 @@ async fn open_session(
     sso: bool,
 ) -> Result<Cookie<'static>, AppError> {
     let session_id = new_session_token();
-    let expires = Utc::now() + Duration::days(SESSION_TTL_DAYS);
+    let expires = Utc::now() + Duration::hours(SESSION_IDLE_TTL_HOURS);
     state
         .store
         .create_session(

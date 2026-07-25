@@ -74,6 +74,46 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
     (server, store, uid)
 }
 
+/// P1-D: an active session's idle timer slides forward on use rather than
+/// counting down to a fixed cutoff. Time-independent by construction — rather
+/// than waiting out a real TTL, an existing session's `expires_at` is moved
+/// to just shy of expiry directly in the database, then one authenticated
+/// request is issued and the row is re-read.
+#[tokio::test]
+async fn an_active_session_survives_past_the_original_ttl() {
+    let (server, store, _uid) = logged_in_server().await;
+
+    let session_id: String =
+        sqlx::query_scalar::<_, String>("SELECT id FROM sessions ORDER BY rowid DESC LIMIT 1")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let near_expiry = chrono::Utc::now() + chrono::Duration::minutes(1);
+    sqlx::query("UPDATE sessions SET expires_at = $1 WHERE id = $2")
+        .bind(near_expiry.to_rfc3339())
+        .bind(&session_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    // One authenticated request — this is what triggers the slide.
+    server.get("/").await.assert_status_ok();
+
+    let expires_at: String =
+        sqlx::query_scalar::<_, String>("SELECT expires_at FROM sessions WHERE id = $1")
+            .bind(&session_id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let expires_at = chrono::DateTime::parse_from_rfc3339(&expires_at)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert!(
+        expires_at > near_expiry + chrono::Duration::hours(1),
+        "expires_at must have slid forward past its near-expiry value, got {expires_at}"
+    );
+}
+
 #[tokio::test]
 async fn disabling_user_invalidates_session() {
     let (server, store, uid) = logged_in_server().await;

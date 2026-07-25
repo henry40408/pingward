@@ -295,6 +295,33 @@ Sessions are a `pingward_session` cookie plus an argon2 password hash
 auto-provision a passwordless, non-admin user on first sight, but only when
 the request's peer IP is a configured trusted proxy.
 
+Session expiry is two independent layers, not one:
+
+- **Idle timeout** — `sessions.expires_at` means "last activity +
+  `SESSION_IDLE_TTL_HOURS`" (72h) and slides forward on use
+  (`auth::refreshed_expiry`, applied in `Store::find_session_user`). It is
+  checked in SQL (`WHERE s.expires_at > $2`).
+- **Absolute cap** — `SESSION_ABSOLUTE_MAX_DAYS` (30, unchanged from the old
+  single-layer TTL) measured from `created_at`; no amount of activity extends
+  it. This is enforced in Rust (`auth::is_past_absolute_cap`), not SQL,
+  because `created_at` can be `''` on a pre-`0010` row (`parse_ts` yields
+  `None` for that), and `''` sorts below every RFC3339 string — a SQL
+  predicate over it would misjudge those rows as infinitely old. `Store`
+  applies the same check in `list_sessions_for_user` (filtered after mapping)
+  so a session already refused by `find_session_user` never appears on
+  `/account`, and in `delete_expired_sessions` (an extra `OR` clause,
+  excluding `created_at = ''` explicitly) so prune reclaims rows that die from
+  either layer. `expires_at`'s write is throttled to firing only once past the
+  half-life of the idle window (`refreshed_expiry`'s guard), so a hot session
+  costs roughly one write per 36 hours rather than one per request;
+  `last_seen_at` keeps its separate 60-second throttle (see below) since
+  `/account`'s display wants finer granularity than the slide does. Upgrade
+  compatibility: an existing row has `expires_at == created_at + 30d`, which
+  already equals its own cap, so `refreshed_expiry`'s first guard
+  (`expires_at >= cap`) returns `None` immediately — no pre-upgrade session
+  ever slides, it simply lives out its original 30 days. Nobody is logged out
+  early by the upgrade.
+
 `auth::is_trusted_proxy` is the single gate for that decision, shared by
 forward-auth and by `auth::client_ip` (the address stamped on a session row
 and on `pings.source_ip`). A `PINGWARD_TRUSTED_PROXIES` entry is a bare

@@ -7,11 +7,57 @@ use axum::extract::FromRequestParts;
 use axum::http::{HeaderMap, StatusCode, request::Parts};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use std::net::{IpAddr, SocketAddr};
 
 pub const SESSION_COOKIE: &str = "pingward_session";
-pub const SESSION_TTL_DAYS: i64 = 30;
+
+/// Idle window: `sessions.expires_at` is always "last activity + this".
+///
+/// OWASP's suggested 15–30 minutes targets high-value applications; pingward
+/// is a self-hosted monitoring dashboard whose users routinely leave the
+/// board open in a tab for days, so that figure would produce a stream of
+/// spurious logouts. The requirement is that *both* an idle and an absolute
+/// layer exist; 72 hours is the value chosen for this one.
+pub const SESSION_IDLE_TTL_HOURS: i64 = 72;
+
+/// Absolute cap, measured from `created_at`. No amount of activity extends it.
+/// Kept at the previous 30 days so that no existing session's maximum lifetime
+/// is shortened by the upgrade.
+pub const SESSION_ABSOLUTE_MAX_DAYS: i64 = 30;
+
+/// Whether a session has passed its absolute cap.
+///
+/// A `None` `created_at` (a pre-`0010` row, whose `created_at = ''` yields
+/// `None` from `parse_ts`) is treated as *not* past the cap — only the idle
+/// window governs it. `0012_session_secret.sql` already ran `DELETE FROM
+/// sessions`, so no such row can exist in a migrated database; this branch is
+/// defensive.
+pub fn is_past_absolute_cap(created_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    created_at.is_some_and(|c| now >= c + Duration::days(SESSION_ABSOLUTE_MAX_DAYS))
+}
+
+/// The new `expires_at` when the session should slide, else `None`.
+///
+/// Already at/past the absolute cap → `None`; more than half the idle window
+/// still remaining → `None` (this is the write throttle); otherwise
+/// `min(now + idle, created_at + absolute)`.
+pub fn refreshed_expiry(
+    created_at: Option<DateTime<Utc>>,
+    expires_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
+    let cap = created_at.map(|c| c + Duration::days(SESSION_ABSOLUTE_MAX_DAYS));
+    if cap.is_some_and(|cap| expires_at >= cap) {
+        return None;
+    }
+    if expires_at - now >= idle / 2 {
+        return None;
+    }
+    let next = now + idle;
+    Some(cap.map_or(next, |cap| next.min(cap)))
+}
 
 pub fn new_session_token() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -429,5 +475,73 @@ mod tests {
         let b = new_session_token();
         assert_ne!(a, b);
         assert_eq!(a.len(), 36); // hyphenated uuid
+    }
+
+    fn ts(y: i32, m: u32, d: u32) -> DateTime<Utc> {
+        use chrono::TimeZone;
+        Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn refreshed_expiry_slides_only_past_the_half_life() {
+        let now = ts(2026, 1, 1);
+        let created = Some(now - Duration::days(1));
+        let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
+
+        // More than half the idle window remains: no write.
+        let fresh_expiry = now + idle - Duration::hours(1);
+        assert_eq!(refreshed_expiry(created, fresh_expiry, now), None);
+
+        // Less than half remains: slides to now + idle.
+        let stale_expiry = now + idle / 2 - Duration::hours(1);
+        assert_eq!(
+            refreshed_expiry(created, stale_expiry, now),
+            Some(now + idle)
+        );
+    }
+
+    #[test]
+    fn refreshed_expiry_clamps_to_the_absolute_cap() {
+        let created = ts(2026, 1, 1);
+        // now is close to the cap, so created + 30d < now + idle.
+        let now = created + Duration::days(29) + Duration::hours(23);
+        let cap = created + Duration::days(SESSION_ABSOLUTE_MAX_DAYS);
+        let stale_expiry = now; // definitely under half the idle window
+        let result = refreshed_expiry(Some(created), stale_expiry, now).unwrap();
+        assert_eq!(result, cap);
+        assert!(result <= cap);
+    }
+
+    #[test]
+    fn refreshed_expiry_stops_at_the_cap() {
+        let created = ts(2026, 1, 1);
+        let cap = created + Duration::days(SESSION_ABSOLUTE_MAX_DAYS);
+        let now = cap; // already at the cap
+        assert_eq!(refreshed_expiry(Some(created), cap, now), None);
+        // Past the cap too.
+        assert_eq!(
+            refreshed_expiry(Some(created), cap + Duration::hours(1), now),
+            None
+        );
+    }
+
+    #[test]
+    fn refreshed_expiry_without_created_at_has_no_cap() {
+        let now = ts(2026, 1, 1);
+        let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
+        let stale_expiry = now + Duration::hours(1);
+        assert_eq!(refreshed_expiry(None, stale_expiry, now), Some(now + idle));
+    }
+
+    #[test]
+    fn is_past_absolute_cap_boundary() {
+        let created = ts(2026, 1, 1);
+        let cap = created + Duration::days(SESSION_ABSOLUTE_MAX_DAYS);
+        assert!(is_past_absolute_cap(Some(created), cap));
+        assert!(!is_past_absolute_cap(
+            Some(created),
+            cap - Duration::seconds(1)
+        ));
+        assert!(!is_past_absolute_cap(None, cap + Duration::days(365)));
     }
 }

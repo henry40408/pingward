@@ -902,19 +902,25 @@ impl Store {
         Ok(())
     }
 
-    /// Resolve a session to its owning user, honoring expiry. On a match the
-    /// session's `last_seen_at` is refreshed, but writes are throttled to at
-    /// most once per 60s (mirroring [`Store::validate_api_key`]'s
-    /// `last_used_at` throttle) so a hot session doesn't cause a write per
-    /// request.
+    /// Resolve a session to its owning user, honoring the idle window
+    /// (`expires_at`, checked in SQL) and the absolute cap (`created_at`,
+    /// checked in Rust — see below). On a match, `last_seen_at` is refreshed,
+    /// throttled to at most once per 60s (mirroring
+    /// [`Store::validate_api_key`]'s `last_used_at` throttle) so a hot session
+    /// doesn't cause a write per request; `expires_at` only slides once past
+    /// the half-life of the idle window (`auth::refreshed_expiry`), roughly
+    /// one write per 36 hours, not one per minute and certainly not one per
+    /// request. The two throttles are independent, but a single UPDATE covers
+    /// both when either fires.
     pub async fn find_session_user(
         &self,
         session_id: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<User>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT u.*, s.last_seen_at AS session_last_seen_at FROM sessions s \
-             JOIN users u ON u.id = s.user_id \
+            "SELECT u.*, s.last_seen_at AS session_last_seen_at, \
+                    s.created_at AS session_created_at, s.expires_at AS session_expires_at \
+             FROM sessions s JOIN users u ON u.id = s.user_id \
              WHERE s.id = $1 AND s.expires_at > $2",
         )
         .bind(session_id)
@@ -924,14 +930,34 @@ impl Store {
         let Some(row) = row else {
             return Ok(None);
         };
+        // Checked here rather than in the WHERE clause: `created_at` may be ''
+        // (a pre-0010 row), and '' sorts below every RFC3339 string, so any SQL
+        // predicate over it would misjudge those rows.
+        let created = parse_ts(row.get("session_created_at"));
+        if crate::auth::is_past_absolute_cap(created, now) {
+            return Ok(None);
+        }
         let stale = parse_ts(row.get("session_last_seen_at"))
             .is_none_or(|t| now - t >= chrono::Duration::seconds(60));
-        if stale {
-            sqlx::query("UPDATE sessions SET last_seen_at = $1 WHERE id = $2")
-                .bind(now.to_rfc3339())
-                .bind(session_id)
-                .execute(&self.pool)
-                .await?;
+        let expires = parse_ts(row.get("session_expires_at"))
+            .ok_or_else(|| decode_err("sessions.expires_at is not RFC3339"))?;
+        match (stale, crate::auth::refreshed_expiry(created, expires, now)) {
+            (_, Some(next)) => {
+                sqlx::query("UPDATE sessions SET last_seen_at = $1, expires_at = $2 WHERE id = $3")
+                    .bind(now.to_rfc3339())
+                    .bind(next.to_rfc3339())
+                    .bind(session_id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+            (true, None) => {
+                sqlx::query("UPDATE sessions SET last_seen_at = $1 WHERE id = $2")
+                    .bind(now.to_rfc3339())
+                    .bind(session_id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+            (false, None) => {}
         }
         Ok(Some(row_to_user(&row)?))
     }
@@ -959,7 +985,12 @@ impl Store {
         .bind(now.to_rfc3339())
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(row_to_session).collect()
+        let sessions: Vec<Session> = rows.iter().map(row_to_session).collect::<Result<_, _>>()?;
+        // `find_session_user` already refuses these; /account must not list them.
+        Ok(sessions
+            .into_iter()
+            .filter(|s| !crate::auth::is_past_absolute_cap(s.created_at, now))
+            .collect())
     }
 
     /// Delete a session, scoped to its owner. Returns `true` if a row was
@@ -1535,15 +1566,25 @@ impl Store {
         Ok(r.rows_affected())
     }
 
-    /// Delete sessions whose `expires_at` has passed. Expired sessions are already
-    /// unusable (`list_sessions_for_user` and session lookup both require
-    /// `expires_at > now`), so this is unconditional rather than retention-driven.
-    /// Returns the number of rows removed.
-    pub async fn delete_expired_sessions(&self, now: &str) -> Result<u64, sqlx::Error> {
-        let r = sqlx::query("DELETE FROM sessions WHERE expires_at <= $1")
-            .bind(now)
-            .execute(&self.pool)
-            .await?;
+    /// Delete sessions that have expired for either reason: the idle window
+    /// lapsed (`expires_at <= now`) or the absolute cap was reached
+    /// (`created_at <= now - SESSION_ABSOLUTE_MAX_DAYS`). Both are already
+    /// unusable (`find_session_user` and `list_sessions_for_user` both refuse
+    /// them), so this is unconditional rather than retention-driven. Returns
+    /// the number of rows removed.
+    pub async fn delete_expired_sessions(&self, now: DateTime<Utc>) -> Result<u64, sqlx::Error> {
+        let cap_before =
+            (now - chrono::Duration::days(crate::auth::SESSION_ABSOLUTE_MAX_DAYS)).to_rfc3339();
+        let r = sqlx::query(
+            // The second predicate excludes created_at = '' (pre-0010 rows, which
+            // 0012's DELETE should have removed) so they are not mistaken for
+            // infinitely old and deleted.
+            "DELETE FROM sessions WHERE expires_at <= $1 OR (created_at <> '' AND created_at <= $2)",
+        )
+        .bind(now.to_rfc3339())
+        .bind(cap_before)
+        .execute(&self.pool)
+        .await?;
         Ok(r.rows_affected())
     }
 
@@ -2034,14 +2075,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(u.id, uid);
-        // expired two hours later
-        assert!(
-            store
-                .find_session_user("sess-1", now + chrono::Duration::hours(2))
-                .await
-                .unwrap()
-                .is_none()
-        );
+        // The lookup above found sess-1 well under half its idle window
+        // (1h remaining vs. a 72h window), so it just slid `expires_at` to
+        // `now + SESSION_IDLE_TTL_HOURS` — checking it "expires two hours
+        // later" the way a fixed-TTL session would is no longer meaningful
+        // here. Idle expiry without any intervening activity is covered
+        // separately below (`sess-idle-expiry`).
 
         // Listing surfaces the metadata stamped at creation, and the
         // `last_seen_at` throttle stamped it on the first `find_session_user`
@@ -2197,6 +2236,118 @@ mod tests {
                 .len(),
             1
         );
+
+        // Absolute cap: a session created 40 days ago is rejected even though
+        // its idle window (`expires_at`) has not lapsed, and does not appear
+        // in the listing.
+        store
+            .create_session(
+                "sess-abs-cap",
+                uid,
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                false,
+                now - chrono::Duration::days(40),
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .find_session_user("sess-abs-cap", now)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .list_sessions_for_user(uid, now)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Idle expiry alone (no prior activity to slide it) still rejects a
+        // session once its window lapses.
+        store
+            .create_session(
+                "sess-idle-expiry",
+                uid,
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                false,
+                now,
+            )
+            .await
+            .unwrap();
+        assert!(
+            store
+                .find_session_user("sess-idle-expiry", now + chrono::Duration::hours(2))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// A session with plenty of idle window left must not have `expires_at`
+    /// rewritten on lookup — only a lookup past the half-life should write.
+    #[tokio::test]
+    async fn find_session_user_does_not_slide_a_fresh_session() {
+        let store = seeded().await;
+        let uid = store
+            .create_user("erin", Some("phc"), false, Utc::now())
+            .await
+            .unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let original_expiry = now + chrono::Duration::hours(70); // > half of 72h
+        store
+            .create_session("sess-fresh", uid, original_expiry, None, None, false, now)
+            .await
+            .unwrap();
+
+        store.find_session_user("sess-fresh", now).await.unwrap();
+
+        let rows = sqlx::query("SELECT expires_at FROM sessions WHERE id = 'sess-fresh'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let expires_at: String = rows.get("expires_at");
+        assert_eq!(expires_at, original_expiry.to_rfc3339());
+    }
+
+    /// A session under half its idle window has `expires_at` slid forward to
+    /// `now + SESSION_IDLE_TTL_HOURS` on lookup.
+    #[tokio::test]
+    async fn find_session_user_slides_expiry() {
+        let store = seeded().await;
+        let uid = store
+            .create_user("frank", Some("phc"), false, Utc::now())
+            .await
+            .unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        store
+            .create_session(
+                "sess-stale",
+                uid,
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                false,
+                now,
+            )
+            .await
+            .unwrap();
+
+        store.find_session_user("sess-stale", now).await.unwrap();
+
+        let rows = sqlx::query("SELECT expires_at FROM sessions WHERE id = 'sess-stale'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        let expires_at: String = rows.get("expires_at");
+        let expected = now + chrono::Duration::hours(crate::auth::SESSION_IDLE_TTL_HOURS);
+        assert_eq!(expires_at, expected.to_rfc3339());
     }
 
     #[tokio::test]
@@ -2235,14 +2386,55 @@ mod tests {
             .await
             .unwrap();
 
-        let deleted = store
-            .delete_expired_sessions(&now.to_rfc3339())
-            .await
-            .unwrap();
+        let deleted = store.delete_expired_sessions(now).await.unwrap();
         assert_eq!(deleted, 1);
         let rows = store.list_sessions_for_user(uid, now).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "sess-future");
+
+        // A session inside its idle window but past the absolute cap must
+        // also be reclaimed.
+        store
+            .create_session(
+                "sess-abscap",
+                uid,
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                false,
+                now - chrono::Duration::days(40),
+            )
+            .await
+            .unwrap();
+        // A pre-0010 row (created_at = '') must survive: it is not "infinitely
+        // old", it is simply unaged — only its idle window governs it, and
+        // that has not lapsed here. Inserted with a raw query because
+        // `create_session` always stamps a real `created_at`.
+        sqlx::query(
+            "INSERT INTO sessions (id, user_id, expires_at, created_at, sso) \
+             VALUES ($1,$2,$3,'',0)",
+        )
+        .bind("sess-blank-created")
+        .bind(uid)
+        .bind((now + chrono::Duration::hours(1)).to_rfc3339())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let deleted = store.delete_expired_sessions(now).await.unwrap();
+        assert_eq!(deleted, 1, "only sess-abscap (past the cap) is reclaimed");
+        let ids: Vec<String> = store
+            .list_sessions_for_user(uid, now)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(!ids.contains(&"sess-abscap".to_string()));
+        assert!(ids.contains(&"sess-future".to_string()));
+        // `list_sessions_for_user` filters `is_past_absolute_cap`, which is
+        // `false` for a `None` created_at, so the blank-created row is listed.
+        assert!(ids.contains(&"sess-blank-created".to_string()));
     }
 
     #[tokio::test]

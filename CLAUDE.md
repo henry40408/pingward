@@ -151,7 +151,12 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
 - `/account` is the per-user account page (sessions, then API keys, stacked as
   ordinary cards — no tabs). It lets a user list and revoke their own login
   sessions (each row's `last_seen_at` is refreshed on use, throttled like
-  `ApiKey.last_used_at`); since `sessions.id` is the cookie's bearer secret,
+  `ApiKey.last_used_at`). Session expiry is two layers: `expires_at` is an
+  idle window (`SESSION_IDLE_TTL_HOURS`, 72h) that slides forward on use, past
+  the half-life of the window, so it writes far less often than
+  `last_seen_at`; a separate absolute cap (`SESSION_ABSOLUTE_MAX_DAYS`, 30d
+  from `created_at`) is enforced in Rust rather than SQL and never extends no
+  matter how active the session is. Since `sessions.id` is the cookie's bearer secret,
   rows are identified in the UI/URLs by a SHA-256 handle
   (`apikey::hash_api_key`) rather than the id itself. A session's stored IP
   comes from `auth::client_ip`: the socket peer, unless that peer is a

@@ -70,7 +70,7 @@ async fn prune_table(
 pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<(u64, u64, u64), sqlx::Error> {
     let pings_deleted = prune_table(store, now, PruneTable::Pings).await?;
     let notifications_deleted = prune_table(store, now, PruneTable::Notifications).await?;
-    let sessions_deleted = store.delete_expired_sessions(&now.to_rfc3339()).await?;
+    let sessions_deleted = store.delete_expired_sessions(now).await?;
     Ok((pings_deleted, notifications_deleted, sessions_deleted))
 }
 

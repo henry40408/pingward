@@ -259,6 +259,75 @@ async fn postgres_full_round_trip() {
     assert_eq!(sessions[0].ip.as_deref(), Some("127.0.0.1"));
     assert_eq!(sessions[0].last_seen_at, Some(now));
 
+    // P1-D: the idle timeout / absolute cap layers, exercised on Postgres —
+    // this is the only SQL-changing task in the series, so it cannot be
+    // skipped even though the Postgres suite doesn't run in this environment.
+
+    // (a) A session created far in the past is rejected even though its idle
+    // window (`expires_at`) has not lapsed, and it is not listed.
+    store
+        .create_session(
+            "sess-abscap",
+            uid,
+            future_expiry,
+            None,
+            None,
+            false,
+            now - chrono::Duration::days(40),
+        )
+        .await
+        .unwrap();
+    assert!(
+        store
+            .find_session_user("sess-abscap", now)
+            .await
+            .unwrap()
+            .is_none(),
+        "a session past its absolute cap must not resolve, even inside its idle window"
+    );
+    assert!(
+        !store
+            .list_sessions_for_user(uid, now)
+            .await
+            .unwrap()
+            .iter()
+            .any(|s| s.id == "sess-abscap"),
+        "a session past its absolute cap must not be listed"
+    );
+    store.delete_session("sess-abscap").await.unwrap();
+
+    // (b) Sliding renewal actually takes effect: a session well under half its
+    // idle window is extended on lookup, and the new `expires_at` is durably
+    // persisted (re-read directly, bypassing the `Store` API).
+    store
+        .create_session(
+            "sess-slide",
+            uid,
+            now + chrono::Duration::hours(1),
+            None,
+            None,
+            false,
+            now,
+        )
+        .await
+        .unwrap();
+    store.find_session_user("sess-slide", now).await.unwrap();
+    let slid: String =
+        sqlx::query_scalar::<_, String>("SELECT expires_at FROM sessions WHERE id = $1")
+            .bind("sess-slide")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let slid = chrono::DateTime::parse_from_rfc3339(&slid)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(
+        slid,
+        now + chrono::Duration::hours(pingward::auth::SESSION_IDLE_TTL_HOURS),
+        "expires_at must slide to now + the idle window"
+    );
+    store.delete_session("sess-slide").await.unwrap();
+
     // A second session, then "revoke others" keeps only it.
     store
         .create_session(
@@ -342,6 +411,40 @@ async fn postgres_full_round_trip() {
             .await
             .unwrap()
             .is_empty()
+    );
+
+    // (c) `delete_expired_sessions` reclaims rows of both expiry reasons: one
+    // whose idle window lapsed, and one that is only past the absolute cap.
+    // No session for `uid` remains at this point (confirmed above), so the
+    // count below is unambiguous.
+    store
+        .create_session(
+            "sess-idle-expired",
+            uid,
+            now - chrono::Duration::hours(1),
+            None,
+            None,
+            false,
+            now - chrono::Duration::hours(2),
+        )
+        .await
+        .unwrap();
+    store
+        .create_session(
+            "sess-cap-expired",
+            uid,
+            now + chrono::Duration::hours(1),
+            None,
+            None,
+            false,
+            now - chrono::Duration::days(40),
+        )
+        .await
+        .unwrap();
+    let deleted = store.delete_expired_sessions(now).await.unwrap();
+    assert_eq!(
+        deleted, 2,
+        "both the idle-expired and the cap-expired session must be reclaimed"
     );
 
     // nag: configure a per-check interval, down the check, stamp a baseline,
