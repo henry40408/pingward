@@ -3107,6 +3107,11 @@ async fn users_set_password(
     }
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
     state.store.set_user_password(id, &phc).await?;
+    // OWASP: a password change is a privilege level change, so existing
+    // sessions must be invalidated — otherwise resetting a password to evict
+    // an intruder leaves the intruder's cookie working.
+    let revoked = state.store.delete_sessions_for_user(id).await?;
+    let detail = format!("sessions_revoked={revoked}");
     state
         .store
         .record_audit(
@@ -3116,6 +3121,7 @@ async fn users_set_password(
                 action: "user.password_reset",
                 target_type: Some("user"),
                 target_id: Some(id),
+                detail: Some(&detail),
                 ..Default::default()
             },
             Utc::now(),
@@ -3198,6 +3204,20 @@ async fn users_set_disabled(
         return Ok(users_blocked(&state.config, jar));
     }
     state.store.set_user_disabled(id, new_disabled).await?;
+    // Only delete in the "disable" direction. Enabling has no sessions to
+    // delete; more importantly, not deleting would let "disable then enable"
+    // resurrect every old session (including one on a stolen device), because
+    // `resolve_user`'s disabled check only blocks *while* disabled.
+    let revoked = if new_disabled {
+        state.store.delete_sessions_for_user(id).await?
+    } else {
+        0
+    };
+    let detail = if new_disabled {
+        format!("disable sessions_revoked={revoked}")
+    } else {
+        "enable".to_string()
+    };
     state
         .store
         .record_audit(
@@ -3207,7 +3227,7 @@ async fn users_set_disabled(
                 action: "user.set_disabled",
                 target_type: Some("user"),
                 target_id: Some(id),
-                detail: Some(if new_disabled { "disable" } else { "enable" }),
+                detail: Some(&detail),
                 ..Default::default()
             },
             Utc::now(),

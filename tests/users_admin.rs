@@ -10,6 +10,26 @@ async fn set_csrf(server: &mut TestServer, store: &Store) {
     server.add_header("x-csrf-token", tok.as_str());
 }
 
+/// Log a fresh `TestServer` (its own cookie jar) into `store` as `username`,
+/// mirroring `account_web.rs`'s `login_server` — used so the target user's
+/// session lives on a separate `TestServer`/cookie jar from the admin's,
+/// letting a test check both after a privilege-level change on the target.
+async fn login_as(store: &Store, username: &str, password: &str) -> TestServer {
+    let state = AppState::new(store.clone(), common::test_config());
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    let csrf = common::anonymous_csrf(&mut server).await;
+    server
+        .post("/login")
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", username),
+            ("password", password),
+        ])
+        .await;
+    server
+}
+
 async fn admin_server() -> (TestServer, Store, i64) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -190,6 +210,12 @@ async fn admin_resets_password_and_target_can_login() {
         .await
         .unwrap();
     let dave = store.find_user_by_username("dave").await.unwrap().unwrap();
+
+    // Dave establishes a session before the reset — this is the session an
+    // intruder using his old password would be sitting on.
+    let dave_server = login_as(&store, "dave", "original").await;
+    dave_server.get("/account").await.assert_status_ok();
+
     server
         .post(&format!("/admin/users/{}/password", dave.id))
         .form(&[("password", "brandnew1")])
@@ -208,22 +234,64 @@ async fn admin_resets_password_and_target_can_login() {
             .iter()
             .any(|a| a.action == "user.password_reset" && a.target_id == Some(dave.id))
     );
+
+    // OWASP: the password reset must invalidate Dave's existing session, not
+    // just reject future logins with the old password.
+    assert!(
+        store
+            .list_sessions_for_user(dave.id, chrono::Utc::now())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let res = dave_server.get("/account").await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/login");
 }
 
 #[tokio::test]
 async fn disable_and_enable_member() {
     let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("pw").unwrap();
     let uid = store
-        .create_user("frank", Some("p"), false, chrono::Utc::now())
+        .create_user("frank", Some(&phc), false, chrono::Utc::now())
         .await
         .unwrap();
+    // Frank has a session before he's disabled.
+    login_as(&store, "frank", "pw").await;
+    assert_eq!(
+        store
+            .list_sessions_for_user(uid, chrono::Utc::now())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
     server
         .post(&format!("/admin/users/{uid}/disabled"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(uid).await.unwrap().unwrap().disabled);
+    // OWASP: disabling revokes the existing session immediately.
+    assert!(
+        store
+            .list_sessions_for_user(uid, chrono::Utc::now())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
     server.post(&format!("/admin/users/{uid}/disabled")).await;
     assert!(!store.find_user_by_id(uid).await.unwrap().unwrap().disabled);
+    // Core regression: re-enabling must NOT resurrect the old session.
+    assert!(
+        store
+            .list_sessions_for_user(uid, chrono::Utc::now())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         store
             .list_audit(50)
@@ -231,6 +299,41 @@ async fn disable_and_enable_member() {
             .unwrap()
             .iter()
             .any(|a| a.action == "user.set_disabled")
+    );
+}
+
+#[tokio::test]
+async fn deleting_user_cascades_its_sessions() {
+    let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    let uid = store
+        .create_user("grace", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    login_as(&store, "grace", "pw").await;
+    assert_eq!(
+        store
+            .list_sessions_for_user(uid, chrono::Utc::now())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    server
+        .post(&format!("/admin/users/{uid}/delete"))
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    // The `sessions.user_id … ON DELETE CASCADE` FK (plus `PRAGMA foreign_keys
+    // = ON`, see `src/db.rs`) must have removed grace's session row — this
+    // pins the implicit cascade dependency against a future regression.
+    assert!(
+        store
+            .list_sessions_for_user(uid, chrono::Utc::now())
+            .await
+            .unwrap()
+            .is_empty()
     );
 }
 

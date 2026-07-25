@@ -990,6 +990,25 @@ impl Store {
         Ok(res.rows_affected())
     }
 
+    /// Delete **all** of `user_id`'s sessions. Used when an admin resets a
+    /// password or disables an account — OWASP requires sessions to be
+    /// invalidated after a privilege level change.
+    ///
+    /// Unlike [`Store::delete_other_sessions_for_user`] this keeps no row: the
+    /// operator is a different user, whose own sessions have a different
+    /// `user_id` and are unaffected.
+    ///
+    /// If a "user changes their own password" flow is ever added, it MUST call
+    /// `delete_other_sessions_for_user(user.id, &current_session_id)` instead, so
+    /// the session the user is currently operating from survives.
+    pub async fn delete_sessions_for_user(&self, user_id: i64) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
     // --- projects ---
     pub async fn create_project(
         &self,
@@ -2116,6 +2135,67 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+
+        // `delete_sessions_for_user` removes every remaining session for the
+        // given user (unlike `delete_other_sessions_for_user`, it keeps
+        // none), and leaves other users' sessions untouched.
+        let other_uid = store
+            .create_user("carol", Some("phc"), false, now)
+            .await
+            .unwrap();
+        store
+            .create_session(
+                "sess-4",
+                uid,
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                false,
+                now,
+            )
+            .await
+            .unwrap();
+        store
+            .create_session(
+                "sess-5",
+                uid,
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                false,
+                now,
+            )
+            .await
+            .unwrap();
+        store
+            .create_session(
+                "sess-carol",
+                other_uid,
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                false,
+                now,
+            )
+            .await
+            .unwrap();
+        let removed = store.delete_sessions_for_user(uid).await.unwrap();
+        assert_eq!(removed, 2);
+        assert!(
+            store
+                .list_sessions_for_user(uid, now)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .list_sessions_for_user(other_uid, now)
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 

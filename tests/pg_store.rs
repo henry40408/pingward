@@ -323,6 +323,27 @@ async fn postgres_full_round_trip() {
         "deleted session must not resolve to a user"
     );
 
+    // `delete_sessions_for_user` (used on admin password reset / disable)
+    // removes every remaining session for the user, unlike
+    // `delete_other_sessions_for_user` it keeps none.
+    store
+        .create_session("sess-a", uid, future_expiry, None, None, false, now)
+        .await
+        .unwrap();
+    store
+        .create_session("sess-b", uid, future_expiry, None, None, false, now)
+        .await
+        .unwrap();
+    let removed = store.delete_sessions_for_user(uid).await.unwrap();
+    assert_eq!(removed, 2);
+    assert!(
+        store
+            .list_sessions_for_user(uid, now)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
     // nag: configure a per-check interval, down the check, stamp a baseline,
     // and confirm the reminder scan and acknowledge/clear cycle work on PG.
     store

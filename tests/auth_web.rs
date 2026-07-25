@@ -79,11 +79,25 @@ async fn disabling_user_invalidates_session() {
     let (server, store, uid) = logged_in_server().await;
     // Authenticated: dashboard is 200.
     server.get("/").await.assert_status_ok();
-    // Disable the account, then the same session must redirect to /login.
+    // Disable the account (mirroring what `web::users_set_disabled` does: set
+    // the flag, then revoke sessions — this test bypasses the HTTP route
+    // itself because the real route refuses to let an admin disable
+    // themselves, and `uid` here is the sole admin), then the same session
+    // must redirect to /login.
     store.set_user_disabled(uid, true).await.unwrap();
+    store.delete_sessions_for_user(uid).await.unwrap();
     let res = server.get("/projects/new").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/login");
+    // OWASP: the session row itself must be gone, not merely rejected by the
+    // `resolve_user` disabled check.
+    assert!(
+        store
+            .list_sessions_for_user(uid, chrono::Utc::now())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
