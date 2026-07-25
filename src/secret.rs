@@ -23,8 +23,6 @@ use hmac::{Hmac, KeyInit, Mac};
 use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 
-use crate::auth::SESSION_COOKIE;
-
 type HmacSha256 = Hmac<Sha256>;
 
 /// Domain-separation prefix for the session cookie signature.
@@ -152,8 +150,8 @@ pub fn verify_csrf(secret: &[u8], session_id: &str, submitted: &str) -> bool {
 }
 
 /// The verified session id carried by a request's cookies, if any.
-pub fn session_id_from_jar(jar: &CookieJar, secret: &[u8]) -> Option<String> {
-    verify_session(secret, jar.get(SESSION_COOKIE)?.value())
+pub fn session_id_from_jar(jar: &CookieJar, secret: &[u8], cookie_name: &str) -> Option<String> {
+    verify_session(secret, jar.get(cookie_name)?.value())
 }
 
 #[cfg(test)]

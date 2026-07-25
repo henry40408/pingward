@@ -257,6 +257,31 @@ mint and removal paths:
   `flash_removal_cookie`) — RFC 6265bis §5.5 ("Leave Secure Cookies Alone")
   means a mismatched removal cookie can fail to clear the original in some
   browsers.
+- **The session cookie's name is itself conditional on `Secure`**
+  (`auth::session_cookie_name`): `__Host-pingward_session` when
+  `cookie_secure` is true, the plain `pingward_session` otherwise. The
+  `__Host-` prefix is a browser-enforced guarantee, layered on top of the
+  server-side attributes above — the browser itself refuses to store or send
+  such a cookie unless it also carries `Secure`, `Path=/`, and no `Domain`,
+  so it cannot be overwritten by a sibling subdomain or by a response
+  downgraded to plain HTTP. It is applied conditionally, never
+  unconditionally: on a plaintext deployment a browser would refuse a
+  `__Host-` cookie outright, turning login into a silent failure. The flash
+  cookie is deliberately exempt — it carries no authority, just a redirect
+  surface hint, so prefixing it would double the change surface for nothing.
+  Every read of the session cookie goes through
+  `secret::session_id_from_jar(jar, secret, cookie_name)`, which now takes
+  the resolved name as a parameter rather than a hardcoded constant, so the
+  read and write sides cannot drift apart.
+
+  **Flipping `PINGWARD_COOKIE_SECURE` or the scheme of `PINGWARD_BASE_URL`
+  changes the cookie name and therefore signs everyone out once** — the
+  browser's existing cookie is under the old name and is simply no longer
+  read. There is precedent for this: `0012_session_secret.sql` already does
+  the equivalent (`DELETE FROM sessions`, "Everyone signs in again once, on
+  upgrade"). No read-side fallback to the other name is implemented on
+  purpose — it would add a permanent branch and a "when do we remove this?"
+  question for a one-time, self-healing inconvenience.
 
 ## Persistence
 

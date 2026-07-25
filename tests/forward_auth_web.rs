@@ -97,9 +97,15 @@ fn csrf_of(html: &str) -> String {
     html[start..start + html[start..].find('"').unwrap()].to_string()
 }
 
-/// The `pingward_session=...` pair from a response's `Set-Cookie` headers.
+/// The session cookie's `name=...` pair from a response's `Set-Cookie`
+/// headers. This file's server uses the default `http://` base URL, so
+/// `cookie_secure` is false and the name is the unprefixed
+/// `pingward_session` — not `__Host-pingward_session`.
 fn session_cookie_of(resp: &Response<Body>) -> Option<String> {
-    set_cookie_of(resp, "pingward_session=")
+    set_cookie_of(
+        resp,
+        &format!("{}=", pingward::auth::session_cookie_name(false)),
+    )
 }
 
 /// The first `Set-Cookie` pair (`name=value`, attributes stripped) whose name
@@ -454,7 +460,7 @@ async fn a_stale_session_cookie_is_replaced_rather_than_trusted() {
     // The form rendered in *this* request must match the fresh cookie, not the
     // stale one — that is what the request-side cookie rewrite buys.
     let id = fresh
-        .trim_start_matches("pingward_session=")
+        .trim_start_matches(&format!("{}=", pingward::auth::session_cookie_name(false)))
         .split('.')
         .next()
         .unwrap()

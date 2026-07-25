@@ -122,7 +122,7 @@ All configuration is via environment variables:
 | `PINGWARD_FORWARD_AUTH_HEADER` | — | Header carrying a pre-authenticated username; honoured only from a trusted proxy. |
 | `PINGWARD_FORWARD_AUTH_LOGOUT_URL` | — | Where **Log out** sends the browser. Point it at your gateway's sign-out endpoint so signing out ends the SSO session too. Unset means `/login`. |
 | `PINGWARD_SECRET` | generated per process | Signing key for session cookies and CSRF tokens; at least 16 bytes. See below. |
-| `PINGWARD_COOKIE_SECURE` | derived from `PINGWARD_BASE_URL`'s scheme | Whether the session cookie carries `Secure` (`true`/`false`/`1`/`0`). Leave unset unless TLS terminates upstream and `PINGWARD_BASE_URL` cannot say so. |
+| `PINGWARD_COOKIE_SECURE` | derived from `PINGWARD_BASE_URL`'s scheme | Whether the session cookie carries `Secure` (`true`/`false`/`1`/`0`). Leave unset unless TLS terminates upstream and `PINGWARD_BASE_URL` cannot say so. **Changing this value (or `PINGWARD_BASE_URL`'s scheme) also changes the session cookie's name** (plain `pingward_session` vs. the `__Host-`-prefixed `__Host-pingward_session`) **and signs everyone out once** — see below. |
 | `PINGWARD_SMTP_*` | — | Instance SMTP for the email channel (`HOST`/`FROM` required to enable; port/TLS defaulted). |
 
 Session creation, renewal and destruction are logged as `pingward::session`
@@ -194,6 +194,16 @@ limit by varying it.
 On an HTTPS deployment, `PINGWARD_BASE_URL` must use `https://` — the session
 cookie's `Secure` attribute is derived from its scheme, so an `http://` value
 (even behind a TLS-terminating proxy) leaves the cookie without `Secure`.
+
+When `Secure` is on, the session cookie also switches to the
+`__Host-pingward_session` name (the `__Host-` prefix, which the browser
+enforces alongside `Secure`, `Path=/`, and no `Domain`, so the cookie cannot
+be overwritten by a sibling subdomain or a downgraded HTTP response). Because
+the name itself changes, **toggling `PINGWARD_COOKIE_SECURE` or the scheme of
+`PINGWARD_BASE_URL` signs every existing session out once** — browsers still
+hold a cookie under the old name, which the server no longer reads. This is
+the same one-time inconvenience a `PINGWARD_SECRET` rotation or restart (with
+no `PINGWARD_SECRET` set) already causes; just sign in again.
 
 ### Forward authentication
 

@@ -325,7 +325,10 @@ async fn unsigned_session_id_does_not_authenticate() {
     let id = session_id(&store).await;
     let res = server_with_secret(&store, common::TEST_SECRET)
         .get("/projects/new")
-        .add_header("cookie", format!("{}={id}", pingward::auth::SESSION_COOKIE))
+        .add_header(
+            "cookie",
+            format!("{}={id}", pingward::auth::session_cookie_name(false)),
+        )
         .await;
     assert_bounced_to_login(&res);
 }
@@ -341,7 +344,7 @@ async fn a_rotated_secret_invalidates_existing_sessions() {
     let id = session_id(&store).await;
     let cookie = format!(
         "{}={}",
-        pingward::auth::SESSION_COOKIE,
+        pingward::auth::session_cookie_name(false),
         pingward::secret::sign_session(common::TEST_SECRET.as_bytes(), &id)
     );
     let res = server_with_secret(&store, "a-completely-different-secret")
@@ -373,7 +376,7 @@ async fn a_csrf_token_from_another_secret_is_rejected() {
             "cookie",
             format!(
                 "{}={}",
-                pingward::auth::SESSION_COOKIE,
+                pingward::auth::session_cookie_name(false),
                 pingward::secret::sign_session(OTHER.as_bytes(), &id)
             ),
         )

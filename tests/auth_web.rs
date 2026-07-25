@@ -570,7 +570,9 @@ async fn login_logout_cycle() {
         ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
-    let login_secure = res.cookie(pingward::auth::SESSION_COOKIE).secure();
+    let login_secure = res
+        .cookie(pingward::auth::session_cookie_name(false))
+        .secure();
     set_csrf(&mut server, &store).await;
     server.get("/").await.assert_status_ok();
 
@@ -581,7 +583,7 @@ async fn login_logout_cycle() {
     // set) and the same `Secure` attribute as the cookie it clears —
     // otherwise a browser can fail to overwrite/clear it. See
     // `web::session_removal_cookie`.
-    let removal_cookie = logout_res.cookie(pingward::auth::SESSION_COOKIE);
+    let removal_cookie = logout_res.cookie(pingward::auth::session_cookie_name(false));
     assert_eq!(removal_cookie.path(), Some("/"));
     assert_eq!(removal_cookie.secure(), login_secure);
     let res = server.get("/").await;
@@ -625,18 +627,22 @@ async fn login_alice(server: &mut TestServer, store: &Store) -> axum_test::TestR
         .await
 }
 
-/// The raw `Set-Cookie` header value for `SESSION_COOKIE`, attributes and all.
-/// `cookie::Cookie::secure()` cannot tell "explicitly not Secure" apart from
-/// "Secure never mentioned" once a header round-trips through the parser (an
-/// absent flag parses to `None`, not `Some(false)`), so the raw header is the
-/// unambiguous way to check both presence and absence.
-fn raw_session_set_cookie(res: &axum_test::TestResponse) -> String {
+/// The raw `Set-Cookie` header value for the session cookie, attributes and
+/// all. `cookie::Cookie::secure()` cannot tell "explicitly not Secure" apart
+/// from "Secure never mentioned" once a header round-trips through the
+/// parser (an absent flag parses to `None`, not `Some(false)`), so the raw
+/// header is the unambiguous way to check both presence and absence.
+///
+/// Takes `cookie_secure` because the cookie's *name* depends on it (P2-G):
+/// `__Host-pingward_session` when Secure is on, `pingward_session` otherwise.
+fn raw_session_set_cookie(res: &axum_test::TestResponse, cookie_secure: bool) -> String {
+    let name = pingward::auth::session_cookie_name(cookie_secure);
     res.headers()
         .get_all(axum::http::header::SET_COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .find(|v| v.starts_with(&format!("{}=", pingward::auth::SESSION_COOKIE)))
-        .expect("a Set-Cookie for the session cookie")
+        .find(|v| v.starts_with(&format!("{name}=")))
+        .unwrap_or_else(|| panic!("a Set-Cookie for {name}"))
         .to_string()
 }
 
@@ -645,14 +651,29 @@ fn raw_session_set_cookie(res: &axum_test::TestResponse) -> String {
 /// `Max-Age`/`Expires` — a non-persistent cookie is OWASP's stated preference
 /// for an authenticated session, enforced server-side via
 /// `sessions.expires_at` instead. See `web::session_cookie`.
+///
+/// P2-G: on the `https://` server, the cookie's name also carries the
+/// `__Host-` prefix, and all three of the prefix's browser-enforced
+/// conditions hold — `Secure`, `Path=/`, and no `Domain` — so the browser
+/// itself refuses to let a sibling subdomain or a downgraded HTTP response
+/// overwrite it.
 #[tokio::test]
 async fn session_cookie_carries_secure_only_when_configured() {
     let (mut https_server, https_store) =
         server_with_base_url(Some("https://pingward.example")).await;
     let res = login_alice(&mut https_server, &https_store).await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
-    let set_cookie = raw_session_set_cookie(&res);
+    let set_cookie = raw_session_set_cookie(&res, true);
+    assert!(
+        set_cookie.starts_with("__Host-pingward_session="),
+        "{set_cookie}"
+    );
     assert!(set_cookie.contains("; Secure"), "{set_cookie}");
+    assert!(set_cookie.contains("; Path=/"), "{set_cookie}");
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("domain="),
+        "{set_cookie}"
+    );
     assert!(
         !set_cookie.to_ascii_lowercase().contains("max-age"),
         "{set_cookie}"
@@ -665,7 +686,8 @@ async fn session_cookie_carries_secure_only_when_configured() {
     let (mut http_server, http_store) = server_with_base_url(None).await;
     let res = login_alice(&mut http_server, &http_store).await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
-    let set_cookie = raw_session_set_cookie(&res);
+    let set_cookie = raw_session_set_cookie(&res, false);
+    assert!(set_cookie.starts_with("pingward_session="), "{set_cookie}");
     assert!(!set_cookie.contains("; Secure"), "{set_cookie}");
     assert!(
         !set_cookie.to_ascii_lowercase().contains("max-age"),
@@ -675,6 +697,25 @@ async fn session_cookie_carries_secure_only_when_configured() {
         !set_cookie.to_ascii_lowercase().contains("expires"),
         "{set_cookie}"
     );
+}
+
+/// P2-G: the `__Host-` prefixed name is consistent across both the write side
+/// (`session_cookie`, exercised by login) and the read side
+/// (`secret::session_id_from_jar`, exercised by every authenticated route and
+/// by `logout`'s removal cookie) on a `Secure` deployment.
+#[tokio::test]
+async fn host_prefixed_cookie_round_trips() {
+    let (mut server, store) = server_with_base_url(Some("https://pingward.example")).await;
+    let res = login_alice(&mut server, &store).await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    server.get("/account").await.assert_status_ok();
+
+    set_csrf(&mut server, &store).await;
+    server
+        .post("/logout")
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
 }
 
 /// P1-F: every response from `web::routes()` carries `Cache-Control:

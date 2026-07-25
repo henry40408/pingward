@@ -1,6 +1,6 @@
 use crate::auth::{
-    AdminUser, CurrentUser, OptionalUser, SESSION_COOKIE, SESSION_IDLE_TTL_HOURS, hash_password,
-    new_session_token, verify_password,
+    AdminUser, CurrentUser, OptionalUser, SESSION_IDLE_TTL_HOURS, hash_password, new_session_token,
+    verify_password,
 };
 use crate::error::AppError;
 use crate::models::{
@@ -496,7 +496,9 @@ async fn logout(
     headers: HeaderMap,
     PeerAddr(peer_ip): PeerAddr,
 ) -> Result<Response, AppError> {
-    if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
+    if let Some(id) =
+        secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
+    {
         state.store.delete_session(&id).await?;
         tracing::info!(
             target: "pingward::session",
@@ -700,20 +702,30 @@ fn request_user_agent(headers: &HeaderMap) -> Option<String> {
     })
 }
 
+/// The session cookie name this process uses, resolved from `AppState`. A
+/// one-line wrapper around `auth::session_cookie_name` to cut the repetition
+/// at each of this file's several call sites.
+fn session_cookie_name(state: &AppState) -> &'static str {
+    crate::auth::session_cookie_name(state.config.cookie_secure)
+}
+
 /// The one place a session cookie is built. Its attributes must match
 /// `session_removal_cookie` exactly — RFC 6265bis §5.5 ("Leave Secure Cookies
 /// Alone") means a removal cookie whose attributes differ can fail to overwrite
 /// the original in some browsers.
 fn session_cookie(config: &crate::config::Config, value: String) -> Cookie<'static> {
-    Cookie::build((SESSION_COOKIE, value))
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .path("/")
-        .secure(config.cookie_secure)
-        // Deliberately no Max-Age/Expires: a non-persistent cookie is OWASP's
-        // explicit preference for an authenticated session. Do not add one —
-        // expiry is the server's job (`sessions.expires_at`).
-        .build()
+    Cookie::build((
+        crate::auth::session_cookie_name(config.cookie_secure),
+        value,
+    ))
+    .http_only(true)
+    .same_site(SameSite::Lax)
+    .path("/")
+    .secure(config.cookie_secure)
+    // Deliberately no Max-Age/Expires: a non-persistent cookie is OWASP's
+    // explicit preference for an authenticated session. Do not add one —
+    // expiry is the server's job (`sessions.expires_at`).
+    .build()
 }
 
 /// The empty-valued cookie used to clear the session cookie; attributes are
@@ -797,7 +809,9 @@ pub async fn anonymous_session(
     next: Next,
 ) -> Response {
     let jar = CookieJar::from_headers(req.headers());
-    if secret::session_id_from_jar(&jar, &state.config.secret).is_some() {
+    if secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
+        .is_some()
+    {
         return next.run(req).await;
     }
     // Signature only — an anonymous id has no row to look up, and a stale
@@ -849,7 +863,8 @@ pub async fn forward_auth_session(
     // A cookie whose signature verifies *and* still addresses a live session
     // needs nothing; a stale or forged one falls through and is replaced.
     let jar = CookieJar::from_headers(req.headers());
-    if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret)
+    if let Some(id) =
+        secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
         && matches!(state.store.find_session_user(&id, now).await, Ok(Some(_)))
     {
         return next.run(req).await;
@@ -881,6 +896,7 @@ pub async fn forward_auth_session(
 /// Dropping the stale entry matters: `CookieJar::get` returns the first match,
 /// so appending would leave an expired session id shadowing the fresh one.
 fn replace_request_cookie(req: &mut Request, cookie: &Cookie<'static>) {
+    let prefix = format!("{}=", cookie.name());
     let kept: Vec<String> = req
         .headers()
         .get_all(header::COOKIE)
@@ -888,7 +904,7 @@ fn replace_request_cookie(req: &mut Request, cookie: &Cookie<'static>) {
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
         .map(str::trim)
-        .filter(|pair| !pair.is_empty() && !pair.starts_with(&format!("{SESSION_COOKIE}=")))
+        .filter(|pair| !pair.is_empty() && !pair.starts_with(&prefix))
         .map(str::to_owned)
         .chain(std::iter::once(format!(
             "{}={}",
@@ -907,7 +923,7 @@ fn replace_request_cookie(req: &mut Request, cookie: &Cookie<'static>) {
 /// pre-session `login`/`setup` pages, which carry exempt forms) — an empty
 /// token yields an unsubmittable form rather than a token-less bypass.
 fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
-    secret::session_id_from_jar(jar, &state.config.secret)
+    secret::session_id_from_jar(jar, &state.config.secret, session_cookie_name(state))
         .map(|id| secret::derive_csrf(&state.config.secret, &id))
         .unwrap_or_default()
 }
@@ -940,7 +956,8 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
     // tampered cookie never gets this far, so no token can match it.
     let jar = CookieJar::from_headers(req.headers());
     let secret = &state.config.secret;
-    let Some(session_id) = secret::session_id_from_jar(&jar, secret) else {
+    let Some(session_id) = secret::session_id_from_jar(&jar, secret, session_cookie_name(&state))
+    else {
         return StatusCode::FORBIDDEN.into_response();
     };
     // Prefer the header token — this path avoids buffering the body.
@@ -1918,6 +1935,10 @@ async fn check_create(
 
 /// Name of the one-shot flash cookie set after a redirect (e.g. saving a
 /// check's notify channels) and cleared on the next render.
+///
+/// Deliberately never `__Host-` prefixed, unlike the session cookie: it
+/// carries no authority (just a redirect surface hint), so prefixing it would
+/// double the change surface for no security benefit.
 const FLASH_COOKIE: &str = "pingward_flash";
 
 /// Read and clear the one-shot flash cookie **if** it was set for `surface`,
@@ -3433,8 +3454,9 @@ async fn render_account(
 
     // The handle hashes the session *id*, so the cookie must be unwrapped first
     // — hashing the raw cookie value would never match any row.
-    let current_handle = secret::session_id_from_jar(jar, &state.config.secret)
-        .map(|id| crate::apikey::hash_api_key(&id));
+    let current_handle =
+        secret::session_id_from_jar(jar, &state.config.secret, session_cookie_name(state))
+            .map(|id| crate::apikey::hash_api_key(&id));
     let mut sessions: Vec<SessionRow> = state
         .store
         .list_sessions_for_user(user.id, now)
@@ -3552,7 +3574,8 @@ async fn sessions_revoke(
         return Ok((jar, Redirect::to("/account")).into_response());
     };
     let is_current =
-        secret::session_id_from_jar(&jar, &state.config.secret).is_some_and(|id| id == target.id);
+        secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
+            .is_some_and(|id| id == target.id);
     state
         .store
         .delete_session_owned(&target.id, user.id)
@@ -3581,7 +3604,9 @@ async fn sessions_revoke_others(
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
-    if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
+    if let Some(id) =
+        secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
+    {
         let count = state
             .store
             .delete_other_sessions_for_user(user.id, &id)

@@ -10,7 +10,26 @@ use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Duration, Utc};
 use std::net::{IpAddr, SocketAddr};
 
-pub const SESSION_COOKIE: &str = "pingward_session";
+/// The unprefixed session cookie name, used when `Secure` is off.
+pub const SESSION_COOKIE_BASE: &str = "pingward_session";
+/// The name used when `Secure` is on. The `__Host-` prefix makes the browser
+/// enforce Secure + Path=/ + no Domain, so the cookie cannot be overwritten by
+/// a sibling subdomain or by a response downgraded to HTTP.
+pub const SESSION_COOKIE_HOST_PREFIXED: &str = "__Host-pingward_session";
+
+/// The session cookie name this process uses.
+///
+/// This **must** be conditional on the resolved `cookie_secure`: applying
+/// `__Host-` unconditionally would make browsers on a plaintext HTTP
+/// deployment refuse the cookie outright, turning login into a silent
+/// failure.
+pub fn session_cookie_name(cookie_secure: bool) -> &'static str {
+    if cookie_secure {
+        SESSION_COOKIE_HOST_PREFIXED
+    } else {
+        SESSION_COOKIE_BASE
+    }
+}
 
 /// Idle window: `sessions.expires_at` is always "last activity + this".
 ///
@@ -214,7 +233,9 @@ async fn resolve_user(parts: &mut Parts, state: &AppState) -> Option<User> {
     let jar = CookieJar::from_headers(&parts.headers);
     // The cookie is `<id>.<hmac>`; a bad signature short-circuits here, so a
     // forged or stale cookie never reaches the database.
-    if let Some(session_id) = crate::secret::session_id_from_jar(&jar, &state.config.secret)
+    let cookie_name = session_cookie_name(state.config.cookie_secure);
+    if let Some(session_id) =
+        crate::secret::session_id_from_jar(&jar, &state.config.secret, cookie_name)
         && let Ok(Some(user)) = state.store.find_session_user(&session_id, now).await
         && !user.disabled
     {
@@ -326,6 +347,15 @@ mod tests {
     #[test]
     fn verify_rejects_garbage_hash() {
         assert!(!verify_password("hunter2", "not-a-phc-string"));
+    }
+
+    /// P2-G: the `__Host-` prefix is only safe to apply once `Secure` is
+    /// guaranteed on every response — otherwise a plaintext HTTP deployment's
+    /// browser would refuse the cookie outright.
+    #[test]
+    fn session_cookie_name_is_prefixed_only_when_secure() {
+        assert_eq!(session_cookie_name(true), SESSION_COOKIE_HOST_PREFIXED);
+        assert_eq!(session_cookie_name(false), SESSION_COOKIE_BASE);
     }
 
     use crate::config::Config;
