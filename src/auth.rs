@@ -7,14 +7,112 @@ use axum::extract::FromRequestParts;
 use axum::http::{HeaderMap, StatusCode, request::Parts};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use std::net::{IpAddr, SocketAddr};
 
-pub const SESSION_COOKIE: &str = "pingward_session";
-pub const SESSION_TTL_DAYS: i64 = 30;
+/// The unprefixed session cookie name, used when `Secure` is off.
+pub const SESSION_COOKIE_BASE: &str = "pingward_session";
+/// The name used when `Secure` is on. The `__Host-` prefix makes the browser
+/// enforce Secure + Path=/ + no Domain, so the cookie cannot be overwritten by
+/// a sibling subdomain or by a response downgraded to HTTP.
+pub const SESSION_COOKIE_HOST_PREFIXED: &str = "__Host-pingward_session";
+
+/// The session cookie name this process uses.
+///
+/// This **must** be conditional on the resolved `cookie_secure`: applying
+/// `__Host-` unconditionally would make browsers on a plaintext HTTP
+/// deployment refuse the cookie outright, turning login into a silent
+/// failure.
+pub fn session_cookie_name(cookie_secure: bool) -> &'static str {
+    if cookie_secure {
+        SESSION_COOKIE_HOST_PREFIXED
+    } else {
+        SESSION_COOKIE_BASE
+    }
+}
+
+/// Idle window: `sessions.expires_at` is always "last activity + this".
+///
+/// OWASP's suggested 15–30 minutes targets high-value applications; pingward
+/// is a self-hosted monitoring dashboard whose users routinely leave the
+/// board open in a tab for days, so that figure would produce a stream of
+/// spurious logouts. The requirement is that *both* an idle and an absolute
+/// layer exist; 72 hours is the value chosen for this one.
+pub const SESSION_IDLE_TTL_HOURS: i64 = 72;
+
+/// Absolute cap, measured from `created_at`. No amount of activity extends it.
+/// Kept at the previous 30 days so that no existing session's maximum lifetime
+/// is shortened by the upgrade.
+pub const SESSION_ABSOLUTE_MAX_DAYS: i64 = 30;
+
+/// Whether a session has passed its absolute cap.
+///
+/// A `None` `created_at` (a pre-`0010` row, whose `created_at = ''` yields
+/// `None` from `parse_ts`) is treated as *not* past the cap — only the idle
+/// window governs it. `0012_session_secret.sql` already ran `DELETE FROM
+/// sessions`, so no such row can exist in a migrated database; this branch is
+/// defensive.
+pub fn is_past_absolute_cap(created_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    created_at.is_some_and(|c| now >= c + Duration::days(SESSION_ABSOLUTE_MAX_DAYS))
+}
+
+/// The new `expires_at` when the session should slide, else `None`.
+///
+/// Already at/past the absolute cap → `None`. Otherwise, if the stored
+/// `expires_at` already carries a longer window than the idle policy would
+/// ever grant — only possible for a row created before this policy existed,
+/// since a row this branch writes never exceeds `now + idle` (see doc below)
+/// — it is clamped *down* to `min(now + idle, created_at + absolute)`
+/// immediately, bypassing the write throttle below: such a row must not keep
+/// sailing on its old fixed-length expiry until it happens to fall within the
+/// throttle's window. Otherwise, more than half the idle window still
+/// remaining → `None` (this is the write throttle); otherwise
+/// `min(now + idle, created_at + absolute)`.
+pub fn refreshed_expiry(
+    created_at: Option<DateTime<Utc>>,
+    expires_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
+    let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
+    let cap = created_at.map(|c| c + Duration::days(SESSION_ABSOLUTE_MAX_DAYS));
+    if cap.is_some_and(|cap| expires_at >= cap) {
+        return None;
+    }
+    let next = cap.map_or(now + idle, |cap| (now + idle).min(cap));
+    if expires_at > next {
+        // A row carrying a longer window than the idle policy allows — a
+        // pre-upgrade row with its fixed 30-day expiry — is pulled *down* to
+        // the idle window on first sight, so the invariant documented above
+        // holds for legacy rows too instead of only for rows this branch
+        // created.
+        return Some(next);
+    }
+    if expires_at - now >= idle / 2 {
+        return None;
+    }
+    Some(next)
+}
 
 pub fn new_session_token() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// The identifier used for a session in log events: the same SHA-256 handle
+/// `/account` uses to identify a row, truncated to 16 hex characters to keep
+/// log volume down. **Never log the session id itself** — it is the bearer
+/// secret the cookie signature is attached to.
+///
+/// Reusing that handle (rather than a second, separate hash) means a log line
+/// maps directly onto the row a user can see and revoke on /account.
+///
+/// To satisfy OWASP's literal "salted hash" wording more strictly, this could
+/// become a keyed digest under the process secret (a `LOG_DOMAIN = b"log:"`
+/// alongside the existing domains in src/secret.rs). UUID v4's 122 bits of
+/// entropy already put an unsalted SHA-256 beyond brute force, so the existing
+/// handle is used instead; switching to a keyed version would break the
+/// log ↔ /account correspondence, which is the deliberate trade-off here.
+pub fn session_log_handle(session_id: &str) -> String {
+    crate::apikey::hash_api_key(session_id)[..16].to_string()
 }
 
 /// True when `ip` is covered by one of the configured trusted-proxy patterns.
@@ -150,7 +248,9 @@ async fn resolve_user(parts: &mut Parts, state: &AppState) -> Option<User> {
     let jar = CookieJar::from_headers(&parts.headers);
     // The cookie is `<id>.<hmac>`; a bad signature short-circuits here, so a
     // forged or stale cookie never reaches the database.
-    if let Some(session_id) = crate::secret::session_id_from_jar(&jar, &state.config.secret)
+    let cookie_name = session_cookie_name(state.config.cookie_secure);
+    if let Some(session_id) =
+        crate::secret::session_id_from_jar(&jar, &state.config.secret, cookie_name)
         && let Ok(Some(user)) = state.store.find_session_user(&session_id, now).await
         && !user.disabled
     {
@@ -262,6 +362,15 @@ mod tests {
     #[test]
     fn verify_rejects_garbage_hash() {
         assert!(!verify_password("hunter2", "not-a-phc-string"));
+    }
+
+    /// P2-G: the `__Host-` prefix is only safe to apply once `Secure` is
+    /// guaranteed on every response — otherwise a plaintext HTTP deployment's
+    /// browser would refuse the cookie outright.
+    #[test]
+    fn session_cookie_name_is_prefixed_only_when_secure() {
+        assert_eq!(session_cookie_name(true), SESSION_COOKIE_HOST_PREFIXED);
+        assert_eq!(session_cookie_name(false), SESSION_COOKIE_BASE);
     }
 
     use crate::config::Config;
@@ -429,5 +538,117 @@ mod tests {
         let b = new_session_token();
         assert_ne!(a, b);
         assert_eq!(a.len(), 36); // hyphenated uuid
+    }
+
+    /// Regression lock: `session_log_handle` must never leak the raw session
+    /// id it derives from — it is the bearer secret backing the cookie.
+    #[test]
+    fn session_log_handle_is_never_the_raw_id() {
+        let id = new_session_token();
+        let handle = session_log_handle(&id);
+        assert_ne!(handle, id);
+        assert_eq!(handle.len(), 16);
+        assert!(!handle.contains(&id));
+    }
+
+    fn ts(y: i32, m: u32, d: u32) -> DateTime<Utc> {
+        use chrono::TimeZone;
+        Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn refreshed_expiry_slides_only_past_the_half_life() {
+        let now = ts(2026, 1, 1);
+        let created = Some(now - Duration::days(1));
+        let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
+
+        // More than half the idle window remains: no write.
+        let fresh_expiry = now + idle - Duration::hours(1);
+        assert_eq!(refreshed_expiry(created, fresh_expiry, now), None);
+
+        // Less than half remains: slides to now + idle.
+        let stale_expiry = now + idle / 2 - Duration::hours(1);
+        assert_eq!(
+            refreshed_expiry(created, stale_expiry, now),
+            Some(now + idle)
+        );
+    }
+
+    #[test]
+    fn refreshed_expiry_clamps_to_the_absolute_cap() {
+        let created = ts(2026, 1, 1);
+        // now is close to the cap, so created + 30d < now + idle.
+        let now = created + Duration::days(29) + Duration::hours(23);
+        let cap = created + Duration::days(SESSION_ABSOLUTE_MAX_DAYS);
+        let stale_expiry = now; // definitely under half the idle window
+        let result = refreshed_expiry(Some(created), stale_expiry, now).unwrap();
+        assert_eq!(result, cap);
+        assert!(result <= cap);
+    }
+
+    #[test]
+    fn refreshed_expiry_stops_at_the_cap() {
+        let created = ts(2026, 1, 1);
+        let cap = created + Duration::days(SESSION_ABSOLUTE_MAX_DAYS);
+        let now = cap; // already at the cap
+        assert_eq!(refreshed_expiry(Some(created), cap, now), None);
+        // Past the cap too.
+        assert_eq!(
+            refreshed_expiry(Some(created), cap + Duration::hours(1), now),
+            None
+        );
+    }
+
+    #[test]
+    fn refreshed_expiry_without_created_at_has_no_cap() {
+        let now = ts(2026, 1, 1);
+        let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
+        let stale_expiry = now + Duration::hours(1);
+        assert_eq!(refreshed_expiry(None, stale_expiry, now), Some(now + idle));
+    }
+
+    #[test]
+    fn refreshed_expiry_shortens_a_legacy_row_immediately() {
+        // A pre-branch row: created 1 day ago, but still carrying its old
+        // single-layer 30-day expiry (a hair under the cap, matching what the
+        // real upgrade produces — see the doc comment above). Far more than
+        // half the idle window "remains" on the stored value, so the ordinary
+        // throttle alone would leave it untouched for weeks; the clamp must
+        // pull it down to the idle window on this very first sight instead.
+        let now = ts(2026, 1, 1);
+        let created = now - Duration::days(1);
+        let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
+        let cap = created + Duration::days(SESSION_ABSOLUTE_MAX_DAYS);
+        let legacy_expiry = cap - Duration::seconds(1);
+        assert_eq!(
+            refreshed_expiry(Some(created), legacy_expiry, now),
+            Some(now + idle)
+        );
+    }
+
+    #[test]
+    fn refreshed_expiry_does_not_shorten_a_freshly_created_row() {
+        // A row produced by this branch's own policy: `expires_at` sits
+        // exactly at `now + idle`. The clamp added for legacy rows must not
+        // fire here — it is not "less than the idle window remains", it is
+        // "carries more than the idle window would ever grant" — so only the
+        // ordinary half-life throttle governs, and at exactly the full idle
+        // window it must not renew yet.
+        let now = ts(2026, 1, 1);
+        let created = Some(now);
+        let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
+        assert_eq!(refreshed_expiry(created, now + idle, now), None);
+    }
+
+    #[test]
+    fn is_past_absolute_cap_boundary() {
+        let created = ts(2026, 1, 1);
+        let cap = created + Duration::days(SESSION_ABSOLUTE_MAX_DAYS);
+        assert!(is_past_absolute_cap(Some(created), cap));
+        assert!(!is_past_absolute_cap(
+            Some(created),
+            cap - Duration::seconds(1)
+        ));
+        assert!(!is_past_absolute_cap(None, cap + Duration::days(365)));
     }
 }

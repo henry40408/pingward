@@ -1,6 +1,6 @@
 use crate::auth::{
-    AdminUser, CurrentUser, OptionalUser, SESSION_COOKIE, SESSION_TTL_DAYS, hash_password,
-    new_session_token, verify_password,
+    AdminUser, CurrentUser, OptionalUser, SESSION_IDLE_TTL_HOURS, hash_password, new_session_token,
+    verify_password,
 };
 use crate::error::AppError;
 use crate::models::{
@@ -12,7 +12,7 @@ use crate::state::AppState;
 use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -332,6 +332,9 @@ async fn setup_page(State(state): State<AppState>, jar: CookieJar) -> Result<Res
     .into_response())
 }
 
+// Deliberately not rate-limited, unlike `login_submit`: `/setup` only ever
+// accepts requests while `count_users() == 0`, so there is no credential yet
+// to brute-force.
 async fn setup_submit(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -399,8 +402,31 @@ async fn login_submit(
     jar: CookieJar,
     headers: HeaderMap,
     conn: crate::ping::ClientIp,
+    PeerAddr(peer_ip): PeerAddr,
     Form(creds): Form<Credentials>,
 ) -> Result<Response, AppError> {
+    // Rate-limit key is deliberately not `conn` (`ping::ClientIp`, which
+    // stamps the session's `ip` column below) — see `ratelimit::rate_limit_key`
+    // for why attribution and the security control must diverge. Reserving
+    // the attempt before `find_user_by_username` means a throttled request
+    // never pays for the argon2 verification that follows.
+    let client = crate::ratelimit::rate_limit_key(peer_ip, &headers, &state.config.trusted_proxies);
+    if !state.login_limiter.try_acquire(client) {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            [(
+                header::RETRY_AFTER,
+                crate::ratelimit::WINDOW_SECS.to_string(),
+            )],
+            render(&LoginTemplate {
+                show_nav: false,
+                csrf: current_csrf(&state, &jar),
+                is_admin: false,
+                error: Some("too many login attempts — try again in a minute".into()),
+            })?,
+        )
+            .into_response());
+    }
     let user = state.store.find_user_by_username(&creds.username).await?;
     let ok = user
         .as_ref()
@@ -417,6 +443,9 @@ async fn login_submit(
     }
     let user = user.unwrap();
     if user.disabled {
+        // Not released: valid credentials for a disabled account are not a
+        // successful login. Releasing here would let an attacker holding one
+        // known-disabled credential probe this client's budget indefinitely.
         return Ok(render(&LoginTemplate {
             show_nav: false,
             csrf: current_csrf(&state, &jar),
@@ -435,6 +464,9 @@ async fn login_submit(
         false,
     )
     .await?;
+    // A successful login hands the reservation back so signing in repeatedly
+    // (several devices, a test suite) never exhausts the window.
+    state.login_limiter.release(client);
     Ok((jar, Redirect::to("/")).into_response())
 }
 
@@ -458,33 +490,95 @@ async fn login_submit(
 ///
 /// The redirect target comes from the operator's environment or a fixed
 /// in-app path, never from the request, so it is not an open redirect.
+///
+/// Two of the three exits also send `Clear-Site-Data` (see
+/// [`CLEAR_SITE_DATA`]) so the browser drops this origin's cache. The
+/// forward-auth flash exit deliberately does not: it is not a credential
+/// teardown at all — the gateway re-mints the session on the very next
+/// request no matter what this response sends — and its whole job is
+/// delivering the `pingward_flash` cookie that renders the "only your
+/// proxy/SSO provider can end this session" notice.
 async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
     headers: HeaderMap,
     PeerAddr(peer_ip): PeerAddr,
 ) -> Result<Response, AppError> {
-    if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
+    if let Some(id) =
+        secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
+    {
         state.store.delete_session(&id).await?;
+        tracing::info!(
+            target: "pingward::session",
+            reason = "logout",
+            handle = %crate::auth::session_log_handle(&id),
+            "session.destroyed"
+        );
     }
-    let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+    let jar = jar.remove(session_removal_cookie(&state.config));
 
     // A configured gateway logout URL ends the upstream identity too, so honour
-    // it however the request authenticated.
+    // it however the request authenticated. We deliberately do not include
+    // "cookies" in `Clear-Site-Data` here: that directive clears cookies for
+    // the entire registrable domain, not just this origin, so on a typical
+    // SSO layout (pingward and the gateway as sibling subdomains of the same
+    // parent domain) it would wipe the gateway's own session cookie before
+    // the browser even follows the redirect — breaking the logout handoff
+    // this URL exists for, and signing the user out of every other app on
+    // the domain too. `"cache"` alone is origin-scoped and safe to send.
     if let Some(url) = state.config.forward_auth_logout_url.as_deref() {
-        return Ok((jar, Redirect::to(url)).into_response());
+        return Ok((
+            jar,
+            [(HeaderName::from_static("clear-site-data"), CLEAR_SITE_DATA)],
+            Redirect::to(url),
+        )
+            .into_response());
     }
 
     // No gateway logout URL. If the trusted proxy identity header is present,
     // clearing the local session cannot outlive the redirect — be honest about
     // it instead of pretending logout succeeded.
     if crate::auth::forward_auth_username(&headers, peer_ip, &state.config).is_some() {
-        let jar = jar.add(flash_cookie("forward_auth_logout"));
+        // Deliberately no Clear-Site-Data here: this exit is not a credential
+        // teardown at all — the gateway re-mints the session on the very next
+        // request no matter what this response sends — so there is nothing
+        // to ask the browser to drop. Its whole job is delivering the
+        // `pingward_flash` cookie the dashboard needs to render the warning
+        // below. Do not "restore consistency" by adding the header back —
+        // see `logout`'s doc comment.
+        let jar = jar.add(flash_cookie(&state.config, "forward_auth_logout"));
         return Ok((jar, Redirect::to("/")).into_response());
     }
 
-    Ok((jar, Redirect::to("/login")).into_response())
+    Ok((
+        jar,
+        [(HeaderName::from_static("clear-site-data"), CLEAR_SITE_DATA)],
+        Redirect::to("/login"),
+    )
+        .into_response())
 }
+
+/// Ask the browser to drop this origin's cache on logout.
+///
+/// Deliberately **excludes** `"cookies"`: unlike the other directives, it is
+/// scoped to the whole *registered domain*, including subdomains — not just
+/// this origin. On the SSO layout `PINGWARD_FORWARD_AUTH_LOGOUT_URL` is meant
+/// for (pingward and its gateway as sibling subdomains), sending it would
+/// clear the gateway's own session cookie before the browser follows the
+/// redirect, breaking the logout handoff and signing the user out of every
+/// other app on the domain. The session cookie is already ended by the
+/// removal `Set-Cookie` (`session_removal_cookie`), which *is* origin- and
+/// path-scoped, so nothing is lost by leaving "cookies" out here.
+/// Also deliberately **excludes** `"storage"`: the theme preference lives in
+/// `localStorage['pw-theme']` (templates/base.html), so clearing it would
+/// reset the user's appearance setting on every logout — and pingward keeps
+/// nothing secret in localStorage, so it is pure functional regression.
+/// `"executionContexts"` is excluded for the same kind of reason: it forces a
+/// reload, which fights with the redirect we are already issuing. Browsers
+/// only honour `Clear-Site-Data` on a trustworthy origin, so on a plain-HTTP
+/// deployment (`PINGWARD_COOKIE_SECURE` off) sending it is a harmless no-op,
+/// not a security control.
+const CLEAR_SITE_DATA: &str = r#""cache""#;
 
 /// The request's socket peer IP, or `None` when the router is driven without
 /// `ConnectInfo` (e.g. some tests) — the same fail-closed source
@@ -517,7 +611,7 @@ async fn dashboard(
     // One-shot notice set by `logout` when a forward-auth visitor signed out
     // with no gateway logout URL configured; consumed here so the removal
     // Set-Cookie rides back on this response.
-    let (jar, forward_auth_logout) = take_flash(jar, "forward_auth_logout");
+    let (jar, forward_auth_logout) = take_flash(&state.config, jar, "forward_auth_logout");
     let now = Utc::now();
     let q = query.q.unwrap_or_default().trim().to_string();
     let needle = q.to_lowercase();
@@ -662,6 +756,38 @@ fn request_user_agent(headers: &HeaderMap) -> Option<String> {
     })
 }
 
+/// The session cookie name this process uses, resolved from `AppState`. A
+/// one-line wrapper around `auth::session_cookie_name` to cut the repetition
+/// at each of this file's several call sites.
+fn session_cookie_name(state: &AppState) -> &'static str {
+    crate::auth::session_cookie_name(state.config.cookie_secure)
+}
+
+/// The one place a session cookie is built. Its attributes must match
+/// `session_removal_cookie` exactly — RFC 6265bis §5.5 ("Leave Secure Cookies
+/// Alone") means a removal cookie whose attributes differ can fail to overwrite
+/// the original in some browsers.
+fn session_cookie(config: &crate::config::Config, value: String) -> Cookie<'static> {
+    Cookie::build((
+        crate::auth::session_cookie_name(config.cookie_secure),
+        value,
+    ))
+    .http_only(true)
+    .same_site(SameSite::Lax)
+    .path("/")
+    .secure(config.cookie_secure)
+    // Deliberately no Max-Age/Expires: a non-persistent cookie is OWASP's
+    // explicit preference for an authenticated session. Do not add one —
+    // expiry is the server's job (`sessions.expires_at`).
+    .build()
+}
+
+/// The empty-valued cookie used to clear the session cookie; attributes are
+/// aligned with `session_cookie`.
+fn session_removal_cookie(config: &crate::config::Config) -> Cookie<'static> {
+    session_cookie(config, String::new())
+}
+
 /// Create a session row and return the signed cookie that addresses it.
 async fn open_session(
     state: &AppState,
@@ -671,7 +797,7 @@ async fn open_session(
     sso: bool,
 ) -> Result<Cookie<'static>, AppError> {
     let session_id = new_session_token();
-    let expires = Utc::now() + Duration::days(SESSION_TTL_DAYS);
+    let expires = Utc::now() + Duration::hours(SESSION_IDLE_TTL_HOURS);
     state
         .store
         .create_session(
@@ -684,15 +810,21 @@ async fn open_session(
             Utc::now(),
         )
         .await?;
+    tracing::info!(
+        target: "pingward::session",
+        handle = %crate::auth::session_log_handle(&session_id),
+        user_id,
+        sso,
+        ip,
+        user_agent,
+        expires_at = %expires.to_rfc3339(),
+        "session.created"
+    );
     // The cookie carries `<id>.<hmac>`, never the bare id — see `crate::secret`.
-    Ok(Cookie::build((
-        SESSION_COOKIE,
+    Ok(session_cookie(
+        &state.config,
         secret::sign_session(&state.config.secret, &session_id),
     ))
-    .http_only(true)
-    .same_site(SameSite::Lax)
-    .path("/")
-    .build())
 }
 
 /// Create a session row and return a jar carrying the signed session cookie.
@@ -731,19 +863,17 @@ pub async fn anonymous_session(
     next: Next,
 ) -> Response {
     let jar = CookieJar::from_headers(req.headers());
-    if secret::session_id_from_jar(&jar, &state.config.secret).is_some() {
+    if secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
+        .is_some()
+    {
         return next.run(req).await;
     }
     // Signature only — an anonymous id has no row to look up, and a stale
     // signed cookie is left alone so its owner keeps one stable token.
-    let cookie = Cookie::build((
-        SESSION_COOKIE,
+    let cookie = session_cookie(
+        &state.config,
         secret::sign_session(&state.config.secret, &new_session_token()),
-    ))
-    .http_only(true)
-    .same_site(SameSite::Lax)
-    .path("/")
-    .build();
+    );
     replace_request_cookie(&mut req, &cookie);
     let mut resp = next.run(req).await;
     if let Ok(value) = cookie.to_string().parse() {
@@ -787,7 +917,8 @@ pub async fn forward_auth_session(
     // A cookie whose signature verifies *and* still addresses a live session
     // needs nothing; a stale or forged one falls through and is replaced.
     let jar = CookieJar::from_headers(req.headers());
-    if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret)
+    if let Some(id) =
+        secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
         && matches!(state.store.find_session_user(&id, now).await, Ok(Some(_)))
     {
         return next.run(req).await;
@@ -819,6 +950,7 @@ pub async fn forward_auth_session(
 /// Dropping the stale entry matters: `CookieJar::get` returns the first match,
 /// so appending would leave an expired session id shadowing the fresh one.
 fn replace_request_cookie(req: &mut Request, cookie: &Cookie<'static>) {
+    let prefix = format!("{}=", cookie.name());
     let kept: Vec<String> = req
         .headers()
         .get_all(header::COOKIE)
@@ -826,7 +958,7 @@ fn replace_request_cookie(req: &mut Request, cookie: &Cookie<'static>) {
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
         .map(str::trim)
-        .filter(|pair| !pair.is_empty() && !pair.starts_with(&format!("{SESSION_COOKIE}=")))
+        .filter(|pair| !pair.is_empty() && !pair.starts_with(&prefix))
         .map(str::to_owned)
         .chain(std::iter::once(format!(
             "{}={}",
@@ -845,7 +977,7 @@ fn replace_request_cookie(req: &mut Request, cookie: &Cookie<'static>) {
 /// pre-session `login`/`setup` pages, which carry exempt forms) — an empty
 /// token yields an unsubmittable form rather than a token-less bypass.
 fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
-    secret::session_id_from_jar(jar, &state.config.secret)
+    secret::session_id_from_jar(jar, &state.config.secret, session_cookie_name(state))
         .map(|id| secret::derive_csrf(&state.config.secret, &id))
         .unwrap_or_default()
 }
@@ -878,7 +1010,8 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
     // tampered cookie never gets this far, so no token can match it.
     let jar = CookieJar::from_headers(req.headers());
     let secret = &state.config.secret;
-    let Some(session_id) = secret::session_id_from_jar(&jar, secret) else {
+    let Some(session_id) = secret::session_id_from_jar(&jar, secret, session_cookie_name(&state))
+    else {
         return StatusCode::FORBIDDEN.into_response();
     };
     // Prefer the header token — this path avoids buffering the body.
@@ -906,6 +1039,66 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
     }
     let req = Request::from_parts(parts, axum::body::Body::from(bytes));
     next.run(req).await
+}
+
+/// Add `Cache-Control: no-store` to every browser response.
+///
+/// Applied to the whole of `web::routes()`, not just authenticated pages:
+/// `/login` and `/setup` render a `_csrf` bound to that visitor's cookie (see
+/// `anonymous_session`), so they must not be cached either. The machine
+/// `/ping/*` endpoints, `/api/*`, static assets and `/healthz` are sibling
+/// routers and are structurally unaffected — `src/assets.rs`'s immutable
+/// caching is untouched. That is a real gap for `/api/*`, not just a
+/// structural one: `/api/docs` and `/api/openapi.json` accept a logged-in web
+/// session (`CurrentUser`) alongside `/api/v1`'s bearer auth, so those two
+/// responses are session-authenticated yet carry no `Cache-Control` at all.
+/// Known, not fixed here — adding this layer to the API router is a scope
+/// decision for whoever owns that surface.
+///
+/// Only filled in when the response does not already carry a `Cache-Control`,
+/// so any handler that wants to override still can.
+///
+/// The legacy `Pragma: no-cache` / `Expires: 0` pair is deliberately not
+/// added: every modern browser honours `no-store`, and those two headers only
+/// ever meant anything to HTTP/1.0 caches.
+pub async fn no_store(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    if !resp.headers().contains_key(header::CACHE_CONTROL) {
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    resp
+}
+
+/// Adds `Strict-Transport-Security` when `PINGWARD_HSTS_MAX_AGE` is
+/// configured. A zero-cost no-op by default: pingward does not terminate TLS,
+/// so sending HSTS unconditionally would tell browsers "HTTPS only" on a
+/// deployment that may be plain HTTP behind an internal reverse proxy — the
+/// reverse proxy is the right place to set this header, and `README.md`'s
+/// "Running behind a reverse proxy" section documents that. This knob exists
+/// for operators who cannot edit proxy headers.
+///
+/// App-wide rather than `web`-only (unlike [`no_store`]): the point of HSTS is
+/// telling the browser the *origin* is HTTPS-only, which applies just as much
+/// to `/ping/*`, `/healthz` and static assets as to the browser UI. It is
+/// layered in `lib.rs` outside every `.merge(...)`, not inside the `web`
+/// router.
+///
+/// Deliberately emits neither `includeSubDomains` nor `preload`: both are
+/// close to irreversible once a browser caches them (a wrong
+/// `includeSubDomains` takes out unrelated hosts on the same domain, and
+/// `preload` list removal can take months). An operator who wants either sets
+/// it on the reverse proxy.
+pub async fn hsts(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    let max_age = state.config.hsts_max_age_secs;
+    if max_age > 0
+        && let Ok(value) = HeaderValue::from_str(&format!("max-age={max_age}"))
+    {
+        resp.headers_mut()
+            .insert(header::STRICT_TRANSPORT_SECURITY, value);
+    }
+    resp
 }
 
 // --- project templates ---
@@ -1832,6 +2025,10 @@ async fn check_create(
 
 /// Name of the one-shot flash cookie set after a redirect (e.g. saving a
 /// check's notify channels) and cleared on the next render.
+///
+/// Deliberately never `__Host-` prefixed, unlike the session cookie: it
+/// carries no authority (just a redirect surface hint), so prefixing it would
+/// double the change surface for no security benefit.
 const FLASH_COOKIE: &str = "pingward_flash";
 
 /// Read and clear the one-shot flash cookie **if** it was set for `surface`,
@@ -1841,7 +2038,11 @@ const FLASH_COOKIE: &str = "pingward_flash";
 /// keeps a message from surfacing on the wrong page when a redirect is not
 /// followed or two tabs race. Only known keys map to a message, so a
 /// user-supplied cookie value never renders as arbitrary text.
-fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
+fn take_flash(
+    config: &crate::config::Config,
+    jar: CookieJar,
+    surface: &str,
+) -> (CookieJar, Option<String>) {
     let Some(cookie) = jar.get(FLASH_COOKIE) else {
         return (jar, None);
     };
@@ -1860,7 +2061,7 @@ fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
         _ => return (jar, None),
     };
     (
-        jar.remove(Cookie::build((FLASH_COOKIE, "")).path("/").build()),
+        jar.remove(flash_removal_cookie(config)),
         Some(message.to_string()),
     )
 }
@@ -1868,20 +2069,32 @@ fn take_flash(jar: CookieJar, surface: &str) -> (CookieJar, Option<String>) {
 /// Build a one-shot flash cookie carrying `surface`, path-scoped to `/` so any
 /// page can consume it via [`take_flash`]. The value is a fixed surface key,
 /// never user input — [`take_flash`] maps only known keys to a message.
-fn flash_cookie(surface: &'static str) -> Cookie<'static> {
+///
+/// Consistency tidy-up, not a security fix: the flash cookie carries no
+/// session material, but there is no reason for it to diverge from the
+/// session cookie's `Secure` behaviour.
+fn flash_cookie(config: &crate::config::Config, surface: &'static str) -> Cookie<'static> {
     Cookie::build((FLASH_COOKIE, surface))
         .http_only(true)
         .same_site(SameSite::Lax)
         .path("/")
+        .secure(config.cookie_secure)
         .build()
+}
+
+/// The empty-valued cookie used to clear the flash cookie; attributes are
+/// aligned with `flash_cookie` (see `session_removal_cookie` for why this
+/// matters).
+fn flash_removal_cookie(config: &crate::config::Config) -> Cookie<'static> {
+    flash_cookie(config, "")
 }
 
 /// Set the `users_blocked` flash cookie and redirect to `/admin`. Used by the
 /// self-guard and last-enabled-admin-guard branches in `users_delete`,
 /// `users_toggle_admin` and `users_set_disabled` — mirrors how
 /// `settings_save` sets `FLASH_COOKIE` for its own surface (~line 2413).
-fn users_blocked(jar: CookieJar) -> Response {
-    let jar = jar.add(flash_cookie("users_blocked"));
+fn users_blocked(config: &crate::config::Config, jar: CookieJar) -> Response {
+    let jar = jar.add(flash_cookie(config, "users_blocked"));
     (jar, Redirect::to("/admin")).into_response()
 }
 
@@ -1894,7 +2107,7 @@ async fn check_show(
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    let (jar, flash) = take_flash(jar, "channels");
+    let (jar, flash) = take_flash(&state.config, jar, "channels");
     let resp = render_check_page(&state, check, false, user.is_admin, csrf, flash, page).await?;
     Ok((jar, resp).into_response())
 }
@@ -2753,13 +2966,7 @@ async fn set_channels_core(
     for remove in current.difference(&desired) {
         state.store.unbind_channel(id, *remove).await?;
     }
-    let jar = jar.add(
-        Cookie::build((FLASH_COOKIE, "channels"))
-            .http_only(true)
-            .same_site(SameSite::Lax)
-            .path("/")
-            .build(),
-    );
+    let jar = jar.add(flash_cookie(&state.config, "channels"));
     Ok((jar, Redirect::to(&format!("{base}/checks/{id}"))).into_response())
 }
 
@@ -2873,8 +3080,8 @@ async fn admin_page(
     // Chain both surfaces through the same jar: the cookie is path-scoped to
     // "/", so each `take_flash` call only consumes it if the value matches
     // its own surface, leaving it for the other to check.
-    let (jar, settings_flash) = take_flash(jar, "settings");
-    let (jar, user_flash) = take_flash(jar, "users_blocked");
+    let (jar, settings_flash) = take_flash(&state.config, jar, "settings");
+    let (jar, user_flash) = take_flash(&state.config, jar, "users_blocked");
     let resp = render_admin(
         &state,
         &jar,
@@ -2969,13 +3176,7 @@ async fn settings_save(
         let value = v.map(|n| n.to_string()).unwrap_or_default();
         state.store.set_setting(key, &value).await?;
     }
-    let jar = jar.add(
-        Cookie::build((FLASH_COOKIE, "settings"))
-            .http_only(true)
-            .same_site(SameSite::Lax)
-            .path("/")
-            .build(),
-    );
+    let jar = jar.add(flash_cookie(&state.config, "settings"));
     Ok((jar, Redirect::to("/admin")).into_response())
 }
 
@@ -3043,7 +3244,7 @@ async fn users_delete(
 ) -> Result<Response, AppError> {
     // Never allow deleting yourself — you'd lose your own account mid-session.
     if id == admin.id {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
@@ -3055,9 +3256,19 @@ async fn users_delete(
     // implies count_enabled_admins() is already >= 2. Kept as
     // defence-in-depth behind the self-guard.
     if target.is_admin && !target.disabled && state.store.count_enabled_admins().await? <= 1 {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     state.store.delete_user(id).await?;
+    // No `count` field here: the user's session rows go via the FK's ON
+    // DELETE CASCADE, not a direct DELETE this handler issues, so no row
+    // count is available to log.
+    tracing::info!(
+        target: "pingward::session",
+        reason = "user_deleted",
+        user_id = id,
+        actor_user_id = admin.id,
+        "session.destroyed"
+    );
     state
         .store
         .record_audit(
@@ -3079,6 +3290,7 @@ async fn users_set_password(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
+    jar: CookieJar,
     Form(form): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
     if form.password.is_empty() {
@@ -3089,6 +3301,47 @@ async fn users_set_password(
     }
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
     state.store.set_user_password(id, &phc).await?;
+    // OWASP: a password change is a privilege level change, so existing
+    // sessions must be invalidated — otherwise resetting a password to evict
+    // an intruder leaves the intruder's cookie working. When the admin resets
+    // their *own* password (the reset form is not hidden behind `is_self` in
+    // `templates/admin.html`), the session they are currently operating from
+    // must survive — see `Store::delete_sessions_for_user`'s doc comment.
+    // Consequence: a self-targeted reset no longer evicts an attacker sharing
+    // that same session row (e.g. a shoulder-surfed or exported cookie) — it
+    // keeps the row exactly as `/account`'s "revoke others" does, and `logout`
+    // only ever deletes the row for the browser issuing it. Evicting that
+    // attacker therefore takes two steps: reset your password, then log out.
+    // This handler also does not touch the target's API keys, unlike
+    // `users_set_disabled` (covered because `api::extract::ApiUser` re-checks
+    // `disabled` on every request): a password reset revokes sessions only, so
+    // a `pw_…` key minted before the reset keeps working indefinitely, and
+    // evicting it requires revoking it from `/account` or disabling the
+    // account instead.
+    let revoked = if id == admin.id {
+        match secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state)) {
+            Some(current) => {
+                state
+                    .store
+                    .delete_other_sessions_for_user(id, &current)
+                    .await?
+            }
+            // Should not happen for an authenticated AdminUser, but fail safe
+            // rather than leave stale sessions behind.
+            None => state.store.delete_sessions_for_user(id).await?,
+        }
+    } else {
+        state.store.delete_sessions_for_user(id).await?
+    };
+    tracing::info!(
+        target: "pingward::session",
+        reason = "password_reset",
+        user_id = id,
+        count = revoked,
+        actor_user_id = admin.id,
+        "session.destroyed"
+    );
+    let detail = format!("sessions_revoked={revoked}");
     state
         .store
         .record_audit(
@@ -3098,6 +3351,7 @@ async fn users_set_password(
                 action: "user.password_reset",
                 target_type: Some("user"),
                 target_id: Some(id),
+                detail: Some(&detail),
                 ..Default::default()
             },
             Utc::now(),
@@ -3116,7 +3370,7 @@ async fn users_toggle_admin(
     // `/admin` immediately (the very next request re-resolves AdminUser and
     // 403s), mirroring the self-guards in `users_delete`/`users_set_disabled`.
     if id == admin.id {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
@@ -3132,7 +3386,7 @@ async fn users_toggle_admin(
         && !target.disabled
         && state.store.count_enabled_admins().await? <= 1
     {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     state.store.set_user_admin(id, new_admin).await?;
     state
@@ -3161,7 +3415,7 @@ async fn users_set_disabled(
 ) -> Result<Response, AppError> {
     // Never disable yourself.
     if id == admin.id {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
@@ -3177,9 +3431,33 @@ async fn users_set_disabled(
         && !target.disabled
         && state.store.count_enabled_admins().await? <= 1
     {
-        return Ok(users_blocked(jar));
+        return Ok(users_blocked(&state.config, jar));
     }
     state.store.set_user_disabled(id, new_disabled).await?;
+    // Only delete in the "disable" direction. Enabling has no sessions to
+    // delete; more importantly, not deleting would let "disable then enable"
+    // resurrect every old session (including one on a stolen device), because
+    // `resolve_user`'s disabled check only blocks *while* disabled.
+    let revoked = if new_disabled {
+        state.store.delete_sessions_for_user(id).await?
+    } else {
+        0
+    };
+    if new_disabled {
+        tracing::info!(
+            target: "pingward::session",
+            reason = "user_disabled",
+            user_id = id,
+            count = revoked,
+            actor_user_id = admin.id,
+            "session.destroyed"
+        );
+    }
+    let detail = if new_disabled {
+        format!("disable sessions_revoked={revoked}")
+    } else {
+        "enable".to_string()
+    };
     state
         .store
         .record_audit(
@@ -3189,7 +3467,7 @@ async fn users_set_disabled(
                 action: "user.set_disabled",
                 target_type: Some("user"),
                 target_id: Some(id),
-                detail: Some(if new_disabled { "disable" } else { "enable" }),
+                detail: Some(&detail),
                 ..Default::default()
             },
             Utc::now(),
@@ -3295,8 +3573,9 @@ async fn render_account(
 
     // The handle hashes the session *id*, so the cookie must be unwrapped first
     // — hashing the raw cookie value would never match any row.
-    let current_handle = secret::session_id_from_jar(jar, &state.config.secret)
-        .map(|id| crate::apikey::hash_api_key(&id));
+    let current_handle =
+        secret::session_id_from_jar(jar, &state.config.secret, session_cookie_name(state))
+            .map(|id| crate::apikey::hash_api_key(&id));
     let mut sessions: Vec<SessionRow> = state
         .store
         .list_sessions_for_user(user.id, now)
@@ -3414,17 +3693,26 @@ async fn sessions_revoke(
         return Ok((jar, Redirect::to("/account")).into_response());
     };
     let is_current =
-        secret::session_id_from_jar(&jar, &state.config.secret).is_some_and(|id| id == target.id);
+        secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
+            .is_some_and(|id| id == target.id);
     state
         .store
         .delete_session_owned(&target.id, user.id)
         .await?;
+    tracing::info!(
+        target: "pingward::session",
+        reason = "revoked",
+        handle = %crate::auth::session_log_handle(&target.id),
+        user_id = user.id,
+        is_current,
+        "session.destroyed"
+    );
     if is_current {
         // Must carry `path("/")` to match how the cookie was set — a
         // pathless removal cookie gets this route's own path
         // (`/account/sessions/{handle}/revoke`) and would not clear a
         // `path=/` cookie.
-        let jar = jar.remove(Cookie::build((SESSION_COOKIE, "")).path("/").build());
+        let jar = jar.remove(session_removal_cookie(&state.config));
         return Ok((jar, Redirect::to("/login")).into_response());
     }
     Ok((jar, Redirect::to("/account")).into_response())
@@ -3435,11 +3723,20 @@ async fn sessions_revoke_others(
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
-    if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
-        state
+    if let Some(id) =
+        secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
+    {
+        let count = state
             .store
             .delete_other_sessions_for_user(user.id, &id)
             .await?;
+        tracing::info!(
+            target: "pingward::session",
+            reason = "revoke_others",
+            user_id = user.id,
+            count,
+            "session.destroyed"
+        );
     }
     Ok(Redirect::to("/account").into_response())
 }
@@ -3502,6 +3799,12 @@ fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSet
             default: "text",
             description: "Log line format (text or json); applied at process startup — changing it requires a restart.",
         },
+        EnvSetting {
+            var: "PINGWARD_HSTS_MAX_AGE",
+            value: EnvValue::Set(config.hsts_max_age_secs.to_string()),
+            default: "0 (off)",
+            description: "Strict-Transport-Security max-age in seconds; 0 sends no header. Prefer setting this on the reverse proxy — see README.",
+        },
     ];
     let scheduling = vec![
         EnvSetting {
@@ -3545,6 +3848,12 @@ fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSet
             },
             default: "(unset)",
             description: "Where logging out sends the browser — point it at the gateway's sign-out endpoint to end the SSO session too. Unset means /login.",
+        },
+        EnvSetting {
+            var: "PINGWARD_COOKIE_SECURE",
+            value: EnvValue::Set(config.cookie_secure.to_string()),
+            default: "derived from PINGWARD_BASE_URL's scheme",
+            description: "Whether the session cookie carries `Secure`. Leave unset unless TLS terminates upstream and PINGWARD_BASE_URL cannot say so.",
         },
     ];
     let smtp = &config.smtp;
@@ -3880,7 +4189,7 @@ async fn admin_check_show(
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
     let csrf = current_csrf(&state, &jar);
-    let (jar, flash) = take_flash(jar, "channels");
+    let (jar, flash) = take_flash(&state.config, jar, "channels");
     let resp = render_check_page(&state, check, true, true, csrf, flash, page).await?;
     Ok((jar, resp).into_response())
 }
@@ -4058,6 +4367,10 @@ async fn admin_channel_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_config() -> crate::config::Config {
+        crate::config::Config::from_map(|_| None)
+    }
 
     fn base_check() -> Check {
         Check {
@@ -4337,16 +4650,17 @@ mod tests {
 
     #[test]
     fn take_flash_maps_each_surface_to_its_own_message() {
+        let config = test_config();
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "settings"));
-        let (_, msg) = take_flash(jar, "settings");
+        let (_, msg) = take_flash(&config, jar, "settings");
         assert_eq!(msg.as_deref(), Some("Settings saved."));
 
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "channels"));
-        let (_, msg) = take_flash(jar, "channels");
+        let (_, msg) = take_flash(&config, jar, "channels");
         assert_eq!(msg.as_deref(), Some("Notify channels saved."));
 
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "users_blocked"));
-        let (_, msg) = take_flash(jar, "users_blocked");
+        let (_, msg) = take_flash(&config, jar, "users_blocked");
         assert_eq!(
             msg.as_deref(),
             Some(
@@ -4355,7 +4669,7 @@ mod tests {
         );
 
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "forward_auth_logout"));
-        let (_, msg) = take_flash(jar, "forward_auth_logout");
+        let (_, msg) = take_flash(&config, jar, "forward_auth_logout");
         assert_eq!(
             msg.as_deref(),
             Some(
@@ -4369,16 +4683,17 @@ mod tests {
         // The cookie is path-scoped to "/", so the settings page also sees a
         // check-page flash. It must neither render nor consume it — the page it
         // was set for still gets it.
+        let config = test_config();
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "channels"));
-        let (jar, msg) = take_flash(jar, "settings");
+        let (jar, msg) = take_flash(&config, jar, "settings");
         assert_eq!(msg, None);
-        let (_, msg) = take_flash(jar, "channels");
+        let (_, msg) = take_flash(&config, jar, "channels");
         assert_eq!(msg.as_deref(), Some("Notify channels saved."));
     }
 
     #[test]
     fn take_flash_without_a_cookie_is_none() {
-        let (_, msg) = take_flash(CookieJar::new(), "settings");
+        let (_, msg) = take_flash(&test_config(), CookieJar::new(), "settings");
         assert_eq!(msg, None);
     }
 
@@ -4387,7 +4702,7 @@ mod tests {
         // Even when the surface matches, an unknown key maps to no message, so a
         // user-supplied cookie value can never render as arbitrary text.
         let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "<script>"));
-        let (_, msg) = take_flash(jar, "<script>");
+        let (_, msg) = take_flash(&test_config(), jar, "<script>");
         assert_eq!(msg, None);
     }
 

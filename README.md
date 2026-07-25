@@ -122,7 +122,16 @@ All configuration is via environment variables:
 | `PINGWARD_FORWARD_AUTH_HEADER` | — | Header carrying a pre-authenticated username; honoured only from a trusted proxy. |
 | `PINGWARD_FORWARD_AUTH_LOGOUT_URL` | — | Where **Log out** sends the browser. Point it at your gateway's sign-out endpoint so signing out ends the SSO session too. Unset means `/login`. |
 | `PINGWARD_SECRET` | generated per process | Signing key for session cookies and CSRF tokens; at least 16 bytes. See below. |
+| `PINGWARD_COOKIE_SECURE` | derived from `PINGWARD_BASE_URL`'s scheme | Whether the session cookie carries `Secure` (`true`/`false`/`1`/`0`). Leave unset unless TLS terminates upstream and `PINGWARD_BASE_URL` cannot say so. **Changing this value (or `PINGWARD_BASE_URL`'s scheme) also changes the session cookie's name** (plain `pingward_session` vs. the `__Host-`-prefixed `__Host-pingward_session`) **and signs everyone out once** — see below. |
+| `PINGWARD_HSTS_MAX_AGE` | — (off) | `max-age` in seconds for a `Strict-Transport-Security` header sent on every response. Off by default: pingward does not terminate TLS, so sending HSTS unconditionally would be wrong on a plain-HTTP internal deployment — set this only when the reverse proxy in front of it can't add the header itself. |
 | `PINGWARD_SMTP_*` | — | Instance SMTP for the email channel (`HOST`/`FROM` required to enable; port/TLS defaulted). |
+
+Session creation, renewal and destruction are logged as `pingward::session`
+events (timestamp, a truncated hash of the session — never the raw id —
+source IP, user agent) and are visible at the **default** `info` filter. To
+keep those but quiet everything else down, or vice versa, scope `RUST_LOG` to
+the target, e.g. `RUST_LOG=info,pingward::session=warn` silences them without
+touching the rest of the `info` output.
 
 ### `PINGWARD_SECRET`
 
@@ -171,6 +180,82 @@ Confirm the peer's actual address with `docker inspect -f
 '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' <caddy-container>`,
 and note that `/admin` shows the value pingward parsed on its **Environment**
 card.
+
+`PINGWARD_TRUSTED_PROXIES` also governs login rate limiting: `POST /login`
+allows 5 attempts per client IP per 60-second window. Leaving it unset behind
+a reverse proxy means every request's peer *is* the proxy, so every client
+shares one bucket — five failed logins from anywhere lock out sign-in for the
+whole site for 60 seconds. The limiter keys on the **rightmost**
+`X-Forwarded-For` hop (and assumes exactly one trusted proxy in the chain),
+the opposite end from the **leftmost** hop used for session/ping IP
+attribution above — the leftmost entry is client-controlled, which is fine
+for a value a human reads later but would let an attacker bypass the rate
+limit by varying it.
+
+On an HTTPS deployment, `PINGWARD_BASE_URL` must use `https://` — the session
+cookie's `Secure` attribute is derived from its scheme, so an `http://` value
+(even behind a TLS-terminating proxy) leaves the cookie without `Secure`.
+
+When `Secure` is on, the session cookie also switches to the
+`__Host-pingward_session` name (the `__Host-` prefix, which the browser
+enforces alongside `Secure`, `Path=/`, and no `Domain`, so the cookie cannot
+be overwritten by a sibling subdomain or a downgraded HTTP response). Because
+the name itself changes, **toggling `PINGWARD_COOKIE_SECURE` or the scheme of
+`PINGWARD_BASE_URL` signs every existing session out once** — browsers still
+hold a cookie under the old name, which the server no longer reads. This is
+the same one-time inconvenience a `PINGWARD_SECRET` rotation or restart (with
+no `PINGWARD_SECRET` set) already causes; just sign in again.
+
+#### HSTS (Strict-Transport-Security)
+
+pingward does not terminate TLS, so it does not send
+`Strict-Transport-Security` by default — only your reverse proxy knows the
+deployment is actually HTTPS, and only it can scope `includeSubDomains`
+correctly. Set it there:
+
+```caddyfile
+# Caddy
+header Strict-Transport-Security "max-age=31536000"
+```
+
+```nginx
+# nginx
+add_header Strict-Transport-Security "max-age=31536000" always;
+```
+
+```yaml
+# Traefik (dynamic config)
+http:
+  middlewares:
+    hsts:
+      headers:
+        stsSeconds: 31536000
+```
+
+**`includeSubDomains` and `preload` are effectively irreversible.** Once a
+browser has fetched a response carrying `includeSubDomains`, it refuses plain
+HTTP for *every* subdomain of that domain until `max-age` elapses — a typo or
+an unrelated subdomain that cannot yet do HTTPS goes dark with no easy way
+back. `preload` is worse: it submits the domain to a list baked into browser
+source, and removal can take months even after you stop sending the header.
+Add either only once you are certain every subdomain is HTTPS-only for good.
+
+If your proxy cannot be configured to add response headers, pingward can send
+this one itself:
+
+```yaml
+environment:
+  PINGWARD_HSTS_MAX_AGE: "300"
+```
+
+`0` (the default) sends no header at all — byte-identical to today's
+behaviour. The value is `max-age` in seconds, accepting a raw integer or a
+duration string (`300`, `365d`, `31536000`). Ramp it up the way HSTS deployment
+guides recommend — `300` (5 minutes) → `86400` (1 day) → `31536000` (1 year)
+— rather than jumping straight to a year, since a browser that has cached the
+policy cannot be talked out of it before `max-age` expires. This knob
+deliberately does **not** offer `includeSubDomains` or `preload` — set those
+on the reverse proxy if you need them, once you're sure.
 
 ### Forward authentication
 

@@ -70,7 +70,7 @@ async fn prune_table(
 pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<(u64, u64, u64), sqlx::Error> {
     let pings_deleted = prune_table(store, now, PruneTable::Pings).await?;
     let notifications_deleted = prune_table(store, now, PruneTable::Notifications).await?;
-    let sessions_deleted = store.delete_expired_sessions(&now.to_rfc3339()).await?;
+    let sessions_deleted = store.delete_expired_sessions(now).await?;
     Ok((pings_deleted, notifications_deleted, sessions_deleted))
 }
 
@@ -87,6 +87,19 @@ pub async fn run_prune_loop(store: Store, interval_secs: u64, shutdown: Shutdown
             Ok((p, n, s)) => {
                 if p > 0 || n > 0 || s > 0 {
                     tracing::info!("pruned {p} pings, {n} notifications, {s} sessions");
+                }
+                if s > 0 {
+                    // `delete_expired_sessions` returns only a row count, not
+                    // the ids of the sessions it removed, so this is one
+                    // aggregate `session.destroyed` event per prune pass
+                    // rather than one per expired session — per-row logging
+                    // would need a preceding SELECT.
+                    tracing::info!(
+                        target: "pingward::session",
+                        reason = "expired",
+                        count = s,
+                        "session.destroyed"
+                    );
                 }
             }
             Err(e) => tracing::error!("prune_once failed: {e}"),

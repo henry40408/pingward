@@ -57,15 +57,21 @@ pub async fn newest_session_csrf(pool: &pingward::db::Pool) -> String {
 /// `Set-Cookie` — on this request. `TestServer` exposes no reader for the jar
 /// it has saved, so the response is the only place the value can be read from.
 ///
+/// Tries both session cookie names (P2-G): most callers build their server
+/// from [`test_config`] or an equivalent `PINGWARD_BASE_URL`-less `Config`, so
+/// `cookie_secure` is false and the cookie is unprefixed — but a handful build
+/// a `Secure` (`__Host-`-prefixed) server directly, so this does not assume
+/// either name and checks whichever one the response actually set.
+///
 /// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — each
 /// `tests/*.rs` binary compiles its own copy of this module.
 #[allow(dead_code)]
 pub async fn anonymous_csrf(server: &mut axum_test::TestServer) -> String {
     server.clear_cookies();
-    let cookie = server
-        .get("/login")
-        .await
-        .maybe_cookie(pingward::auth::SESSION_COOKIE)
+    let res = server.get("/login").await;
+    let cookie = res
+        .maybe_cookie(pingward::auth::session_cookie_name(true))
+        .or_else(|| res.maybe_cookie(pingward::auth::session_cookie_name(false)))
         .expect("the anonymous-session layer sets a cookie on a session-less request");
     let id = pingward::secret::verify_session(TEST_SECRET.as_bytes(), cookie.value())
         .expect("the anonymous cookie is signed with the test secret");

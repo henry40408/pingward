@@ -52,6 +52,10 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
   `CurrentUser`/`OptionalUser`/`AdminUser` request extractors.
 - `src/apikey.rs` — API key generation (`pw_...`) and SHA-256 hashing for the
   REST API's bearer tokens.
+- `src/ratelimit.rs` — `RateLimiter`, the in-memory per-client-IP fixed-window
+  limiter guarding `POST /login`, and `rate_limit_key`, which resolves the
+  bucket key from the trusted-proxy-gated **rightmost** `X-Forwarded-For` hop
+  (deliberately the opposite end from `auth::client_ip`'s leftmost).
 - `src/state.rs` — `AppState { store, config }`, `Clone` + `FromRef` so
   handlers can extract either piece independently.
 - `src/store.rs` — `Store`, the single data-access layer; every query in the
@@ -108,10 +112,12 @@ Router::new()
     .merge(web::routes()
         .layer(csrf_guard)          // innermost
         .layer(anonymous_session)
-        .layer(forward_auth_session))   // outermost — runs first
+        .layer(forward_auth_session)
+        .layer(no_store))               // outermost of the `web` layers
     .merge(ping::routes())
     .merge(api::routes())
     .merge(assets::routes())
+    .layer(hsts)                        // outermost overall — app-wide, not `web`-only
     .with_state(state)
 ```
 
@@ -124,9 +130,41 @@ accidentally start covering them. `csrf_guard` itself lets safe methods
 (GET/HEAD/OPTIONS) through and otherwise requires a per-session synchronizer
 token sent as `X-CSRF-Token` (or hidden form field).
 
+`no_store` sets `Cache-Control: no-store` on every response that doesn't
+already carry one, so authenticated pages and the `/login`/`/setup` forms
+(which embed a cookie-bound `_csrf`) are never cached by the browser, a
+shared computer, or an intermediary proxy. It sits **outermost** of the four
+`web` layers — but unlike the other three, that position is not about request
+ordering: `no_store` only reads and writes response headers on the way out,
+so it never observes or affects the session/CSRF request-handling chain
+described below. It runs outermost purely so it wraps every early-return
+path too, including `csrf_guard`'s 403s. `/assets/*`, `/ping/*`, `/api/*`, and
+`/healthz` are sibling routers and stay structurally exempt — see
+`src/assets.rs`'s `IMMUTABLE_CACHE`, unchanged by this layer. `/api/*`'s
+exemption has a real consequence, not just a structural one: `/api/v1` is
+bearer-authenticated and was never going to carry a browser-cacheable session
+anyway, but `/api/docs` and `/api/openapi.json` additionally accept a
+logged-in web session (`CurrentUser`) and are therefore session-authenticated
+responses that end up with **no** `Cache-Control` header at all. That is a
+known gap, not a fix made here — adding `no_store` to the API router is a
+scope decision left to whoever owns that surface.
+
+`hsts` (`web::hsts`, gated by `PINGWARD_HSTS_MAX_AGE`) is layered outside
+every `.merge(...)` in the block above, not inside the `web` router the way
+`no_store` is. `no_store` is a browser-page-caching concern scoped to
+`web::routes()` — the pages that render a cookie-bound `_csrf`. HSTS instead
+tells the browser the whole *origin* is HTTPS-only, so it has to cover
+`/healthz`, `/ping/*`, `/api/*`, and static assets too, none of which
+`no_store` touches. Like `no_store`, it is a no-op response-only layer (it
+defaults off — see `web::hsts`'s doc comment for why sending it
+unconditionally would be wrong on a plain-HTTP internal deployment), so its
+position relative to the session/CSRF request-ordering chain below does not
+matter; it is placed outermost purely to cover every response, including
+early returns from the layers nested inside `web`.
+
 ### Session layers
 
-Both orderings above are load-bearing.
+Both orderings among the session/CSRF layers below are load-bearing.
 
 The two session layers run **before** `csrf_guard` because a cookie minted
 during a request has to be visible to the guard on that same request — each
@@ -179,6 +217,26 @@ redirects to `/login` as before. `login_page` likewise bounces an
 already-authenticated visitor to `/`, because rendering a login form to someone
 the layer has just signed back in would be dishonest.
 
+The `/login`- and gateway-URL exits also send `Clear-Site-Data: "cache"`
+(`web::CLEAR_SITE_DATA`) so the browser drops this origin's cache on logout.
+`"cookies"` is deliberately not included: that directive is scoped to the
+whole *registered domain*, including subdomains, not just this origin — on
+the SSO layout `PINGWARD_FORWARD_AUTH_LOGOUT_URL` is meant for (pingward and
+its gateway as sibling subdomains of the same parent domain), sending it would
+clear the gateway's own session cookie before the browser even follows the
+redirect, breaking the logout handoff and signing the user out of every other
+app on the domain too. The session cookie itself is already ended by the
+removal `Set-Cookie`, which *is* origin- and path-scoped, so nothing is lost
+by leaving "cookies" out. The flash exit omits the header entirely: it is not
+a credential teardown at all (the gateway re-mints the session on the very
+next request regardless), and its whole purpose is to carry the
+`pingward_flash` cookie to `/`. `"storage"` is never sent on any exit — it
+would wipe the `pw-theme` localStorage preference (`templates/base.html`) for
+no security benefit, since pingward keeps nothing secret in localStorage.
+Browsers only honour `Clear-Site-Data` on a trustworthy origin, so on a
+plain-HTTP deployment the header is sent but silently ignored — a no-op, not
+a gap.
+
 `/api/v1` data endpoints authenticate independently via the `ApiUser` bearer
 extractor; `/api/docs` and `/api/openapi.json` additionally accept a logged-in
 web session (`CurrentUser`) but are read-only `GET`s, so they add no
@@ -216,6 +274,55 @@ When `PINGWARD_SECRET` is unset a random secret is generated per process, so
 warning saying so at startup. API keys are unaffected either way — they are
 random bearer tokens matched by SHA-256 digest (`src/apikey.rs`) and never
 touch this secret.
+
+### Cookie attributes
+
+Every session and flash cookie is built by exactly one pair of functions
+(`web::session_cookie`/`session_removal_cookie`, `web::flash_cookie`/
+`flash_removal_cookie`), so their attributes cannot drift between the
+mint and removal paths:
+
+- `HttpOnly` and `SameSite=Lax` always.
+- `Path=/`, so every route sees (and can clear) the cookie.
+- `Secure` follows `Config::cookie_secure` (`config::parse_cookie_secure`):
+  an explicit `PINGWARD_COOKIE_SECURE` wins, otherwise it is derived from
+  whether `PINGWARD_BASE_URL` starts with `https://`. It is not hardcoded —
+  a browser silently drops a `Secure` cookie sent over plain HTTP, which
+  would otherwise break login on a plaintext self-hosted LAN deployment.
+- **No `Max-Age`/`Expires`.** This is deliberate, not an oversight: OWASP's
+  session-management guidance prefers a non-persistent session cookie, so
+  expiry is enforced only server-side (`sessions.expires_at`), not by the
+  browser. Do not add one when touching this code.
+- A removal cookie's attributes must match the corresponding mint function
+  exactly (`session_cookie`/`session_removal_cookie`, `flash_cookie`/
+  `flash_removal_cookie`) — RFC 6265bis §5.5 ("Leave Secure Cookies Alone")
+  means a mismatched removal cookie can fail to clear the original in some
+  browsers.
+- **The session cookie's name is itself conditional on `Secure`**
+  (`auth::session_cookie_name`): `__Host-pingward_session` when
+  `cookie_secure` is true, the plain `pingward_session` otherwise. The
+  `__Host-` prefix is a browser-enforced guarantee, layered on top of the
+  server-side attributes above — the browser itself refuses to store or send
+  such a cookie unless it also carries `Secure`, `Path=/`, and no `Domain`,
+  so it cannot be overwritten by a sibling subdomain or by a response
+  downgraded to plain HTTP. It is applied conditionally, never
+  unconditionally: on a plaintext deployment a browser would refuse a
+  `__Host-` cookie outright, turning login into a silent failure. The flash
+  cookie is deliberately exempt — it carries no authority, just a redirect
+  surface hint, so prefixing it would double the change surface for nothing.
+  Every read of the session cookie goes through
+  `secret::session_id_from_jar(jar, secret, cookie_name)`, which now takes
+  the resolved name as a parameter rather than a hardcoded constant, so the
+  read and write sides cannot drift apart.
+
+  **Flipping `PINGWARD_COOKIE_SECURE` or the scheme of `PINGWARD_BASE_URL`
+  changes the cookie name and therefore signs everyone out once** — the
+  browser's existing cookie is under the old name and is simply no longer
+  read. There is precedent for this: `0012_session_secret.sql` already does
+  the equivalent (`DELETE FROM sessions`, "Everyone signs in again once, on
+  upgrade"). No read-side fallback to the other name is implemented on
+  purpose — it would add a permanent branch and a "when do we remove this?"
+  question for a one-time, self-healing inconvenience.
 
 ## Persistence
 
@@ -261,11 +368,74 @@ single pool connection since `:memory:` is scoped to one physical connection.
 
 ## Auth & authorization
 
-Sessions are a `pingward_session` cookie plus an argon2 password hash
-(`src/auth.rs`). An optional trusted forward-auth header
+Sessions are a `session_cookie_name(cookie_secure)`-named cookie — plain
+`pingward_session`, or `__Host-pingward_session` when `PINGWARD_COOKIE_SECURE`
+is on — plus an argon2 password hash (`src/auth.rs`). An optional trusted
+forward-auth header
 (`PINGWARD_FORWARD_AUTH_HEADER` + `PINGWARD_TRUSTED_PROXIES`) can
 auto-provision a passwordless, non-admin user on first sight, but only when
 the request's peer IP is a configured trusted proxy.
+
+Session expiry is two independent layers, not one:
+
+- **Idle timeout** — `sessions.expires_at` means "last activity +
+  `SESSION_IDLE_TTL_HOURS`" (72h) and slides forward on use
+  (`auth::refreshed_expiry`, applied in `Store::find_session_user`). It is
+  checked in SQL (`WHERE s.expires_at > $2`).
+- **Absolute cap** — `SESSION_ABSOLUTE_MAX_DAYS` (30, unchanged from the old
+  single-layer TTL) measured from `created_at`; no amount of activity extends
+  it. This is enforced in Rust (`auth::is_past_absolute_cap`), not SQL,
+  because `created_at` can be `''` on a pre-`0010` row (`parse_ts` yields
+  `None` for that), and `''` sorts below every RFC3339 string — a SQL
+  predicate over it would misjudge those rows as infinitely old. `Store`
+  applies the same check in `list_sessions_for_user` (filtered after mapping)
+  so a session already refused by `find_session_user` never appears on
+  `/account`, and in `delete_expired_sessions` (an extra `OR` clause,
+  excluding `created_at = ''` explicitly) so prune reclaims rows that die from
+  either layer. `expires_at`'s write is throttled to firing only once past the
+  half-life of the idle window (`refreshed_expiry`'s guard), so a hot session
+  costs roughly one write per 36 hours rather than one per request;
+  `last_seen_at` keeps its separate 60-second throttle (see below) since
+  `/account`'s display wants finer granularity than the slide does. Upgrade
+  compatibility: a pre-branch row has `expires_at == created_at + 30d`, but
+  that is **not** already equal to its own cap — the old single-layer
+  `open_session` (`git show aa17ca9:src/web.rs`) called `Utc::now()` twice,
+  once for `expires` and once for the `created_at` argument passed to
+  `create_session`, so `created_at` is strictly later than the timestamp
+  `expires_at` was computed from. `cap = created_at + 30d` therefore comes out
+  strictly greater than `expires_at`, so guard 1 (`expires_at >= cap`) never
+  short-circuits a legacy row. Left at that, such a row would sail on its old
+  fixed-length expiry for weeks with no idle enforcement at all — the ordinary
+  half-life throttle only fires once fewer than 36 hours remain, and a legacy
+  row typically has most of its 30 days left the moment this branch ships.
+  `refreshed_expiry` therefore carries a second clamp ahead of that throttle:
+  whenever the stored `expires_at` already exceeds what the idle policy would
+  ever grant (`min(now + idle, cap)`), it is pulled *down* to that value on
+  the very next request, throttle or not. For a legacy row that means the
+  first request after the upgrade rewrites `expires_at` to `now + 72h`
+  immediately, so control #4 applies to pre-upgrade sessions from their first
+  request rather than only in their final 36 hours. An actively used legacy
+  session keeps working and simply starts sliding on the same 72-hour window
+  as every session created after the upgrade. What the clamp does **not** do
+  is apply the idle window *retroactively*: the SQL gate reads `expires_at`,
+  and a legacy row's `expires_at` was never maintained as "last activity +
+  72h", so a pre-upgrade session that has sat untouched for weeks is still
+  **granted** on the request that finds it — that request is what clamps it,
+  not what rejects it. `last_seen_at` is loaded by the same query and would be
+  enough to reject it (`last_seen_at + idle <= now`), but that is deliberately
+  not done: it would change the resolution path for every session rather than
+  only for legacy rows. The residual exposure is bounded but real — a session
+  predating the upgrade stays resolvable until its original `created_at + 30d`
+  however long it has been idle, and only comes under the 72-hour window from
+  the first request that touches it. It closes itself within 30 days of the
+  upgrade, and does not arise at all where `PINGWARD_COOKIE_SECURE` turns on
+  in the same upgrade, since the `__Host-` rename invalidates every
+  pre-existing cookie regardless. Rows this
+  branch creates never hit that clamp (their `expires_at` is always already
+  `<= now + idle`), so it is purely a one-time correction for rows that
+  predate the idle layer; `is_past_absolute_cap`'s independent check in
+  `find_session_user` remains the backstop that still bounds the clamp itself
+  at `cap`.
 
 `auth::is_trusted_proxy` is the single gate for that decision, shared by
 forward-auth and by `auth::client_ip` (the address stamped on a session row
@@ -275,8 +445,64 @@ reverse proxy on a bridge network draws its address from a pool and a pinned
 literal silently stops matching after the network is recreated. Addresses are
 compared (and stored) canonically, so an IPv4-mapped IPv6 peer matches an
 IPv4 entry; an unparseable entry matches nothing and DNS is never consulted.
-Resolution happens in the `ping::ClientIp` extractor rather than per handler,
-which is what keeps `/ping/*` and the login handlers on the same rule.
+
+`POST /login` is additionally guarded by `ratelimit::RateLimiter`
+(`AppState::login_limiter`, `src/ratelimit.rs`): 5 attempts per client IP per
+60-second window, reserved *before* the argon2 verification and released back
+on a successful login only, so a legitimate user signing in repeatedly never
+exhausts the window. Its key comes from `ratelimit::rate_limit_key`, gated by
+the same `is_trusted_proxy` check but reading the **rightmost**
+`X-Forwarded-For` hop rather than `client_ip`'s leftmost — under a stock
+appending proxy (nginx's `$proxy_add_x_forwarded_for`, Caddy's
+`reverse_proxy`) the leftmost entry is client-controlled, and keying a
+security control on it would let an attacker mint a fresh bucket per request.
+Like `AppState::events` (see "Live-tail signal bus" below), the limiter's
+state is in-process only: a multi-replica deployment counts each replica
+separately (effective budget is `5 × replicas`), and a restart resets every
+counter to zero.
+
+`ping::ClientIp` and `ratelimit::rate_limit_key` resolve the client address
+differently on purpose, and the two must never be merged. `ClientIp` wraps
+`auth::client_ip`'s **leftmost** hop and exists for *attribution* —
+`pings.source_ip`, the IP a session row stamps — which is why `/ping/*` and
+the login/setup handlers share it for "whose request was this." It is not
+used for the limiter: `rate_limit_key` reads the **rightmost** hop instead,
+because the limiter is a *security control*, and under a stock appending
+proxy the leftmost hop is client-controlled — keying the limiter on it (via
+`ClientIp` or otherwise) would let an attacker mint a fresh bucket per
+request, reopening the exact bypass `rate_limit_key` exists to close.
+
+Session creation, renewal and destruction are logged as `tracing` events under
+the `pingward::session` target (not the `audit_log` table — that models "an
+admin acted on a target" via `actor_*`/`target_*` columns with no `ip`/
+`user_agent`, whereas these are per-request, higher-volume, and already have a
+JSON log pipeline aimed at a log aggregator; see `PINGWARD_LOG_FORMAT` below).
+The target lets an operator silence them independently
+(`RUST_LOG=info,pingward::session=warn`) without touching the rest of the
+`info` filter. Where an event does carry a per-session identifier it is
+always `handle` — `auth::session_log_handle`, the same (truncated to 16 hex
+characters) SHA-256 handle `/account` uses to identify a row — **never the
+raw session id**, which is the bearer secret the cookie signature is attached
+to. Not every event has one to carry: the bulk `session.destroyed` reasons
+below (`revoke_others`, `password_reset`, `user_disabled`, `user_deleted`,
+`expired`) act on many rows via a single query, so they log `count` instead.
+Fields:
+
+- `session.created` (`web::open_session`, the single mint point for all three
+  creation paths — `setup_submit`, `login_submit`, and `forward_auth_session`,
+  distinguished by `sso`) — `handle`, `user_id`, `sso`, `ip`, `user_agent`,
+  `expires_at`.
+- `session.renewed` (`Store::find_session_user`, the slide branch) — `handle`,
+  `user_id`, `ip`, `user_agent`, `expires_at`.
+- `session.destroyed` — one per teardown path, each tagged with a `reason`:
+  `logout`, `revoked` (self-service, `handle`/`user_id`/`is_current`),
+  `revoke_others` (`user_id`/`count`), `password_reset`
+  (`user_id`/`count`/`actor_user_id`), `user_disabled` (same fields, only on
+  the disabling direction), `user_deleted` (`user_id`/`actor_user_id` — no
+  `count`, since those rows go via `ON DELETE CASCADE` rather than a query
+  this handler issues), and `expired` (`prune::prune_once`, one aggregate
+  `count` per prune pass rather than one event per row, since
+  `delete_expired_sessions` returns no ids to build a `handle` from).
 
 Three request extractors resolve the caller:
 

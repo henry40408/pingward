@@ -48,6 +48,23 @@ pub struct Config {
     /// and `secret_source` already reaches the startup log.
     pub secret: Vec<u8>,
     pub secret_source: SecretSource,
+    /// Whether session/flash cookies carry `Secure`. See
+    /// [`parse_cookie_secure`].
+    pub cookie_secure: bool,
+    /// HSTS `max-age`, in seconds. `0` (the default) means the header is not
+    /// sent.
+    ///
+    /// Seconds rather than a boolean so an operator can ramp up the way the
+    /// HSTS deployment guides advise (`300` → `86400` → `31536000`) instead of
+    /// jumping straight to a year — once a browser has cached the policy it
+    /// cannot be withdrawn before max-age expires.
+    ///
+    /// `includeSubDomains` and `preload` are deliberately not offered: both
+    /// are traps on a self-hosted subdomain deployment (a wrong
+    /// `includeSubDomains` takes out unrelated hosts on the same domain, and
+    /// `preload` is close to irreversible). Anyone who needs them should set
+    /// them on the reverse proxy.
+    pub hsts_max_age_secs: u64,
 }
 
 /// Resolve an env duration to whole seconds: a raw integer (`300`) or a
@@ -58,6 +75,40 @@ fn env_duration_secs(raw: Option<String>, default: u64) -> u64 {
     raw.and_then(|v| crate::duration::parse_duration(&v))
         .and_then(|s| u64::try_from(s).ok())
         .unwrap_or(default)
+}
+
+/// `true` when `base_url` looks like an HTTPS origin.
+fn derived_from_base_url(base_url: &str) -> bool {
+    base_url
+        .trim_start()
+        .to_ascii_lowercase()
+        .starts_with("https://")
+}
+
+/// Whether session/flash cookies carry `Secure`.
+///
+/// An explicit `PINGWARD_COOKIE_SECURE` wins; otherwise it is derived from the
+/// scheme of `PINGWARD_BASE_URL`. Deliberately not forced on: browsers silently
+/// drop a `Secure` cookie sent over HTTP, so hardcoding true would make a
+/// plaintext self-hosted deployment fail to log in with no error message.
+pub fn parse_cookie_secure(raw: Option<&str>, base_url: &str) -> bool {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(v) if v.eq_ignore_ascii_case("true") || v == "1" => true,
+        Some(v) if v.eq_ignore_ascii_case("false") || v == "0" => false,
+        Some(v) => {
+            // `Config::from_map` cannot fail (see its signature), and this
+            // project's env convention is "fall back to the default and keep
+            // booting" (see `env_duration_secs`). But the default here may be
+            // true, so warn rather than silently treating it as false — the
+            // latter would quietly strip `Secure` from a correct HTTPS deploy.
+            tracing::warn!(
+                "invalid PINGWARD_COOKIE_SECURE '{v}': expected true/false/1/0; \
+                 falling back to the scheme of PINGWARD_BASE_URL"
+            );
+            derived_from_base_url(base_url)
+        }
+        None => derived_from_base_url(base_url),
+    }
 }
 
 impl Config {
@@ -142,11 +193,11 @@ impl Config {
         };
         let (secret, secret_source) =
             crate::secret::resolve(nonblank("PINGWARD_SECRET").as_deref());
+        let base_url = get("PINGWARD_BASE_URL").unwrap_or_else(|| "http://localhost:8080".into());
         Config {
             database_url: get("DATABASE_URL")
                 .unwrap_or_else(|| "sqlite://pingward.sqlite3?mode=rwc".into()),
             bind: get("PINGWARD_BIND").unwrap_or_else(|| "127.0.0.1:8080".into()),
-            base_url: get("PINGWARD_BASE_URL").unwrap_or_else(|| "http://localhost:8080".into()),
             scan_interval_secs,
             prune_interval_secs,
             forward_auth_header: get("PINGWARD_FORWARD_AUTH_HEADER"),
@@ -156,6 +207,12 @@ impl Config {
             log_format,
             secret,
             secret_source,
+            cookie_secure: parse_cookie_secure(
+                nonblank("PINGWARD_COOKIE_SECURE").as_deref(),
+                &base_url,
+            ),
+            hsts_max_age_secs: env_duration_secs(get("PINGWARD_HSTS_MAX_AGE"), 0),
+            base_url,
         }
     }
 }
@@ -388,6 +445,31 @@ mod tests {
     }
 
     #[test]
+    fn cookie_secure_derived_from_base_url_scheme() {
+        assert!(parse_cookie_secure(None, "https://pingward.example"));
+        assert!(!parse_cookie_secure(None, "http://pingward.example"));
+        // The default base_url is plain HTTP.
+        assert!(!parse_cookie_secure(None, "http://localhost:8080"));
+    }
+
+    #[test]
+    fn cookie_secure_explicit_value_overrides_derivation() {
+        assert!(parse_cookie_secure(Some("true"), "http://pingward.example"));
+        assert!(parse_cookie_secure(Some("1"), "http://pingward.example"));
+        assert!(!parse_cookie_secure(
+            Some("false"),
+            "https://pingward.example"
+        ));
+        assert!(!parse_cookie_secure(Some("0"), "https://pingward.example"));
+    }
+
+    #[test]
+    fn cookie_secure_invalid_value_falls_back_to_derived() {
+        assert!(!parse_cookie_secure(Some("yes"), "http://pingward.example"));
+        assert!(parse_cookie_secure(Some("yes"), "https://pingward.example"));
+    }
+
+    #[test]
     fn smtp_tls_implicit_defaults_port_465() {
         let c = Config::from_map(|k| match k {
             "PINGWARD_SMTP_HOST" => Some("mail.x".into()),
@@ -417,5 +499,23 @@ mod tests {
             _ => None,
         });
         assert_eq!(c.smtp.unwrap().port, 587, "no TLS set still defaults 587");
+    }
+
+    #[test]
+    fn hsts_max_age_defaults_to_off() {
+        assert_eq!(Config::from_map(|_| None).hsts_max_age_secs, 0);
+    }
+
+    #[test]
+    fn hsts_max_age_accepts_human_readable_duration() {
+        let c = Config::from_map(|k| (k == "PINGWARD_HSTS_MAX_AGE").then(|| "365d".into()));
+        assert_eq!(c.hsts_max_age_secs, 31_536_000);
+    }
+
+    #[test]
+    fn hsts_max_age_invalid_falls_back_to_off() {
+        let c =
+            Config::from_map(|k| (k == "PINGWARD_HSTS_MAX_AGE").then(|| "not-a-duration".into()));
+        assert_eq!(c.hsts_max_age_secs, 0);
     }
 }

@@ -74,16 +74,70 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
     (server, store, uid)
 }
 
+/// P1-D: an active session's idle timer slides forward on use rather than
+/// counting down to a fixed cutoff. Time-independent by construction — rather
+/// than waiting out a real TTL, an existing session's `expires_at` is moved
+/// to just shy of expiry directly in the database, then one authenticated
+/// request is issued and the row is re-read.
+#[tokio::test]
+async fn an_active_session_survives_past_the_original_ttl() {
+    let (server, store, _uid) = logged_in_server().await;
+
+    let session_id: String =
+        sqlx::query_scalar::<_, String>("SELECT id FROM sessions ORDER BY rowid DESC LIMIT 1")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let near_expiry = chrono::Utc::now() + chrono::Duration::minutes(1);
+    sqlx::query("UPDATE sessions SET expires_at = $1 WHERE id = $2")
+        .bind(near_expiry.to_rfc3339())
+        .bind(&session_id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    // One authenticated request — this is what triggers the slide.
+    server.get("/").await.assert_status_ok();
+
+    let expires_at: String =
+        sqlx::query_scalar::<_, String>("SELECT expires_at FROM sessions WHERE id = $1")
+            .bind(&session_id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    let expires_at = chrono::DateTime::parse_from_rfc3339(&expires_at)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert!(
+        expires_at > near_expiry + chrono::Duration::hours(1),
+        "expires_at must have slid forward past its near-expiry value, got {expires_at}"
+    );
+}
+
 #[tokio::test]
 async fn disabling_user_invalidates_session() {
     let (server, store, uid) = logged_in_server().await;
     // Authenticated: dashboard is 200.
     server.get("/").await.assert_status_ok();
-    // Disable the account, then the same session must redirect to /login.
+    // Disable the account (mirroring what `web::users_set_disabled` does: set
+    // the flag, then revoke sessions — this test bypasses the HTTP route
+    // itself because the real route refuses to let an admin disable
+    // themselves, and `uid` here is the sole admin), then the same session
+    // must redirect to /login.
     store.set_user_disabled(uid, true).await.unwrap();
+    store.delete_sessions_for_user(uid).await.unwrap();
     let res = server.get("/projects/new").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/login");
+    // OWASP: the session row itself must be gone, not merely rejected by the
+    // `resolve_user` disabled check.
+    assert!(
+        store
+            .list_sessions_for_user(uid, chrono::Utc::now())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -516,17 +570,237 @@ async fn login_logout_cycle() {
         ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let login_secure = res
+        .cookie(pingward::auth::session_cookie_name(false))
+        .secure();
     set_csrf(&mut server, &store).await;
     server.get("/").await.assert_status_ok();
 
     // logout → redirect, then root bounces to /login
-    server
-        .post("/logout")
-        .await
-        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    let logout_res = server.post("/logout").await;
+    logout_res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    // The removal cookie must carry `Path=/` (matching how the cookie was
+    // set) and the same `Secure` attribute as the cookie it clears —
+    // otherwise a browser can fail to overwrite/clear it. See
+    // `web::session_removal_cookie`.
+    let removal_cookie = logout_res.cookie(pingward::auth::session_cookie_name(false));
+    assert_eq!(removal_cookie.path(), Some("/"));
+    assert_eq!(removal_cookie.secure(), login_secure);
+    // A password logout asks the browser to drop this origin's cache — but
+    // never "cookies" (registrable-domain-scoped, would reach a gateway on a
+    // sibling subdomain) or "storage", which would wipe the pw-theme
+    // preference.
+    let clear_site_data = logout_res
+        .header("clear-site-data")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(clear_site_data, r#""cache""#);
+    assert!(!clear_site_data.contains("storage"));
     let res = server.get("/").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/login");
+}
+
+/// A server whose `Config` is pinned to [`common::TEST_SECRET`] and, when
+/// given, `PINGWARD_BASE_URL` — otherwise built exactly like [`server`].
+async fn server_with_base_url(base_url: Option<&str>) -> (TestServer, Store) {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let config = pingward::config::Config::from_map(|k| match k {
+        "PINGWARD_SECRET" => Some(common::TEST_SECRET.into()),
+        "PINGWARD_BASE_URL" => base_url.map(str::to_string),
+        _ => None,
+    });
+    let state = AppState::new(store.clone(), config);
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    (server, store)
+}
+
+/// Signs `alice` in and returns the login response, whose `Set-Cookie` carries
+/// the freshly minted session cookie.
+async fn login_alice(server: &mut TestServer, store: &Store) -> axum_test::TestResponse {
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("alice", Some(&phc), true, chrono::Utc::now())
+        .await
+        .unwrap();
+    let csrf = common::anonymous_csrf(server).await;
+    server
+        .post("/login")
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "alice"),
+            ("password", "pw"),
+        ])
+        .await
+}
+
+/// The raw `Set-Cookie` header value for the session cookie, attributes and
+/// all. `cookie::Cookie::secure()` cannot tell "explicitly not Secure" apart
+/// from "Secure never mentioned" once a header round-trips through the
+/// parser (an absent flag parses to `None`, not `Some(false)`), so the raw
+/// header is the unambiguous way to check both presence and absence.
+///
+/// Takes `cookie_secure` because the cookie's *name* depends on it (P2-G):
+/// `__Host-pingward_session` when Secure is on, `pingward_session` otherwise.
+fn raw_session_set_cookie(res: &axum_test::TestResponse, cookie_secure: bool) -> String {
+    let name = pingward::auth::session_cookie_name(cookie_secure);
+    res.headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|v| v.starts_with(&format!("{name}=")))
+        .unwrap_or_else(|| panic!("a Set-Cookie for {name}"))
+        .to_string()
+}
+
+/// P0-A: the session cookie's `Secure` attribute follows `PINGWARD_BASE_URL`'s
+/// scheme (via `config::parse_cookie_secure`), and it never carries
+/// `Max-Age`/`Expires` — a non-persistent cookie is OWASP's stated preference
+/// for an authenticated session, enforced server-side via
+/// `sessions.expires_at` instead. See `web::session_cookie`.
+///
+/// P2-G: on the `https://` server, the cookie's name also carries the
+/// `__Host-` prefix, and all three of the prefix's browser-enforced
+/// conditions hold — `Secure`, `Path=/`, and no `Domain` — so the browser
+/// itself refuses to let a sibling subdomain or a downgraded HTTP response
+/// overwrite it.
+#[tokio::test]
+async fn session_cookie_carries_secure_only_when_configured() {
+    let (mut https_server, https_store) =
+        server_with_base_url(Some("https://pingward.example")).await;
+    let res = login_alice(&mut https_server, &https_store).await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let set_cookie = raw_session_set_cookie(&res, true);
+    assert!(
+        set_cookie.starts_with("__Host-pingward_session="),
+        "{set_cookie}"
+    );
+    assert!(set_cookie.contains("; Secure"), "{set_cookie}");
+    assert!(set_cookie.contains("; Path=/"), "{set_cookie}");
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("domain="),
+        "{set_cookie}"
+    );
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("max-age"),
+        "{set_cookie}"
+    );
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("expires"),
+        "{set_cookie}"
+    );
+
+    let (mut http_server, http_store) = server_with_base_url(None).await;
+    let res = login_alice(&mut http_server, &http_store).await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let set_cookie = raw_session_set_cookie(&res, false);
+    assert!(set_cookie.starts_with("pingward_session="), "{set_cookie}");
+    assert!(!set_cookie.contains("; Secure"), "{set_cookie}");
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("max-age"),
+        "{set_cookie}"
+    );
+    assert!(
+        !set_cookie.to_ascii_lowercase().contains("expires"),
+        "{set_cookie}"
+    );
+}
+
+/// P2-G: the `__Host-` prefixed name is consistent across both the write side
+/// (`session_cookie`, exercised by login) and the read side
+/// (`secret::session_id_from_jar`, exercised by every authenticated route and
+/// by `logout`'s removal cookie) on a `Secure` deployment.
+#[tokio::test]
+async fn host_prefixed_cookie_round_trips() {
+    let (mut server, store) = server_with_base_url(Some("https://pingward.example")).await;
+    let res = login_alice(&mut server, &store).await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    server.get("/account").await.assert_status_ok();
+
+    set_csrf(&mut server, &store).await;
+    let res = server.post("/logout").await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    // The session row itself must be gone — asserting only the 303 would
+    // still pass if `logout` read/cleared the *unprefixed* cookie name on
+    // this Secure deployment and left the real `__Host-` cookie (and its
+    // row) alone.
+    let alice = store.find_user_by_username("alice").await.unwrap().unwrap();
+    assert!(
+        store
+            .list_sessions_for_user(alice.id, chrono::Utc::now())
+            .await
+            .unwrap()
+            .is_empty(),
+        "logout must delete the session row"
+    );
+
+    // And the removal `Set-Cookie` must target the `__Host-` prefixed name
+    // with the attributes the prefix requires (`Secure`, `Path=/`) — using
+    // `raw_session_set_cookie` rather than the `secure()` accessor, whose
+    // `None`-vs-`Some(false)` ambiguity it exists to dodge.
+    let removal_cookie = raw_session_set_cookie(&res, true);
+    assert!(
+        removal_cookie.starts_with("__Host-pingward_session="),
+        "{removal_cookie}"
+    );
+    assert!(removal_cookie.contains("; Secure"), "{removal_cookie}");
+    assert!(removal_cookie.contains("; Path=/"), "{removal_cookie}");
+}
+
+/// P1-F: every response from `web::routes()` carries `Cache-Control:
+/// no-store`, so an authenticated page, the pre-login CSRF-bearing forms, and
+/// even a `csrf_guard` rejection are never cached by the browser, a shared
+/// computer, or an intermediary proxy. See `web::no_store`.
+#[tokio::test]
+async fn browser_responses_are_not_cacheable() {
+    let (auth_server, store, uid) = logged_in_server().await;
+
+    let res = auth_server.get("/").await;
+    res.assert_status_ok();
+    assert_eq!(res.header("cache-control"), "no-store");
+
+    let pid = store
+        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    let cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: "cu",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let res = auth_server.get(&format!("/checks/{cid}")).await;
+    res.assert_status_ok();
+    assert_eq!(res.header("cache-control"), "no-store");
+
+    // A fresh, logged-out server still carries the header on the pre-login
+    // forms, which embed a cookie-bound `_csrf`.
+    let (logged_out, _store) = server().await;
+    let res = logged_out.get("/login").await;
+    assert_eq!(res.header("cache-control"), "no-store");
+
+    // A POST rejected by `csrf_guard` (missing/invalid token -> 403) still
+    // carries it — `no_store` sits outermost precisely so early returns like
+    // this one are covered too.
+    let res = logged_out
+        .post("/login")
+        .form(&[("username", "admin"), ("password", "pw")])
+        .await;
+    res.assert_status(axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(res.header("cache-control"), "no-store");
 }
 
 #[tokio::test]

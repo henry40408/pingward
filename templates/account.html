@@ -24,7 +24,7 @@
   <div class="cb">
     <div class="tscroll">
       <table>
-        <thead><tr><th>Started</th><th>Last seen</th><th>IP</th><th>Browser</th><th>Expires</th><th></th></tr></thead>
+        <thead><tr><th>Started</th><th>Last seen</th><th>IP</th><th>Browser</th><th>Idle expiry</th><th></th></tr></thead>
         <tbody>
           {% for s in sessions %}
           <tr data-testid="session-row-{{ s.handle }}">

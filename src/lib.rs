@@ -14,6 +14,7 @@ pub mod models;
 pub mod notify;
 pub mod ping;
 pub mod prune;
+pub mod ratelimit;
 pub mod scheduler;
 pub mod secret;
 pub mod shutdown;
@@ -27,14 +28,19 @@ pub fn app(state: AppState) -> Router {
     // machine `/ping/*` endpoints, static assets, and `/healthz` are merged in
     // as sibling routers and are therefore structurally exempt.
     // Layers run outside-in, so the last one added sees the request first:
-    // forward_auth_session -> anonymous_session -> csrf_guard -> handler.
+    // no_store -> forward_auth_session -> anonymous_session -> csrf_guard ->
+    // handler.
     //
-    // Both orderings here are load-bearing. The two session layers run before
-    // `csrf_guard` because the guard must see the cookie on the same request
-    // that minted it. And `forward_auth_session` runs before
-    // `anonymous_session` because when both would mint, the real session has
-    // to win — reversed, the anonymous layer's `Set-Cookie` would be appended
-    // last and shadow it.
+    // Both orderings among the session/CSRF layers are load-bearing. The two
+    // session layers run before `csrf_guard` because the guard must see the
+    // cookie on the same request that minted it. And `forward_auth_session`
+    // runs before `anonymous_session` because when both would mint, the real
+    // session has to win — reversed, the anonymous layer's `Set-Cookie` would
+    // be appended last and shadow it. `no_store` only reads and writes
+    // response headers, so it does not participate in that request-ordering
+    // chain at all — it sits outermost purely so it covers every early-return
+    // path, including `csrf_guard`'s 403s and the session layers' own
+    // responses.
     let web = web::routes()
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -47,7 +53,17 @@ pub fn app(state: AppState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             web::forward_auth_session,
-        ));
+        ))
+        .layer(axum::middleware::from_fn(web::no_store));
+    // `web::hsts` is layered here, outside every `.merge(...)`, rather than
+    // inside the `web` router the way `no_store` is layered above. `no_store`
+    // is a browser-page-caching concern scoped to the `web` router; HSTS tells
+    // the browser the whole *origin* is HTTPS-only, so it must also cover
+    // `/healthz`, `/ping/*`, `/api/*` and static assets — sibling routers
+    // `no_store` never touches. It is a no-op response-only layer like
+    // `no_store` (see `web::hsts`'s doc comment for why it defaults off), so
+    // its position relative to the request-ordering chain above does not
+    // matter.
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(web)
@@ -58,5 +74,9 @@ pub fn app(state: AppState) -> Router {
         // change no state, so the whole router stays structurally CSRF-exempt.
         .merge(api::routes())
         .merge(assets::routes())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            web::hsts,
+        ))
         .with_state(state)
 }

@@ -97,9 +97,15 @@ fn csrf_of(html: &str) -> String {
     html[start..start + html[start..].find('"').unwrap()].to_string()
 }
 
-/// The `pingward_session=...` pair from a response's `Set-Cookie` headers.
+/// The session cookie's `name=...` pair from a response's `Set-Cookie`
+/// headers. This file's server uses the default `http://` base URL, so
+/// `cookie_secure` is false and the name is the unprefixed
+/// `pingward_session` — not `__Host-pingward_session`.
 fn session_cookie_of(resp: &Response<Body>) -> Option<String> {
-    set_cookie_of(resp, "pingward_session=")
+    set_cookie_of(
+        resp,
+        &format!("{}=", pingward::auth::session_cookie_name(false)),
+    )
 }
 
 /// The first `Set-Cookie` pair (`name=value`, attributes stripped) whose name
@@ -293,6 +299,13 @@ async fn logout_hands_off_to_the_gateway_when_a_url_is_configured() {
         0,
         "the local session must be deleted whatever the redirect target"
     );
+    assert_eq!(
+        resp.headers()["clear-site-data"],
+        r#""cache""#,
+        "handing off to the gateway also asks the browser to drop this origin's cache \
+         (not \"cookies\": that directive reaches the whole registrable domain, which \
+         would clear the gateway's own cookies on a sibling subdomain)"
+    );
 }
 
 #[tokio::test]
@@ -325,6 +338,14 @@ async fn without_a_logout_url_a_forward_auth_logout_warns_on_the_dashboard() {
         session_count(&store).await,
         0,
         "the local session is deleted"
+    );
+    // Core regression lock: this exit must NOT send Clear-Site-Data. It is not
+    // a credential teardown at all (the gateway re-mints the session on the
+    // very next request regardless), and its whole job is delivering the
+    // flash cookie set below for the dashboard to read.
+    assert!(
+        !out.headers().contains_key("clear-site-data"),
+        "the flash exit must omit Clear-Site-Data, or the warning below can never render"
     );
     let flash = set_cookie_of(&out, "pingward_flash=").expect("the warning flash cookie is set");
     assert_eq!(flash, "pingward_flash=forward_auth_logout");
@@ -454,7 +475,7 @@ async fn a_stale_session_cookie_is_replaced_rather_than_trusted() {
     // The form rendered in *this* request must match the fresh cookie, not the
     // stale one — that is what the request-side cookie rewrite buys.
     let id = fresh
-        .trim_start_matches("pingward_session=")
+        .trim_start_matches(&format!("{}=", pingward::auth::session_cookie_name(false)))
         .split('.')
         .next()
         .unwrap()

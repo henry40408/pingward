@@ -142,7 +142,9 @@ never be read from the filesystem at startup. SQLite pragmas (foreign keys,
 busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
 
 **Auth & authorization** (`src/auth.rs`):
-- Session cookie (`pingward_session`) + argon2 password hashing. An optional
+- Session cookie (`session_cookie_name(cookie_secure)` — plain
+  `pingward_session`, or `__Host-pingward_session` when
+  `PINGWARD_COOKIE_SECURE` is on) + argon2 password hashing. An optional
   trusted forward-auth header auto-provisions a passwordless non-admin user.
 - Request extractors: `CurrentUser` (401/redirect if none), `OptionalUser`,
   `AdminUser` (403 if not admin).
@@ -151,7 +153,12 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
 - `/account` is the per-user account page (sessions, then API keys, stacked as
   ordinary cards — no tabs). It lets a user list and revoke their own login
   sessions (each row's `last_seen_at` is refreshed on use, throttled like
-  `ApiKey.last_used_at`); since `sessions.id` is the cookie's bearer secret,
+  `ApiKey.last_used_at`). Session expiry is two layers: `expires_at` is an
+  idle window (`SESSION_IDLE_TTL_HOURS`, 72h) that slides forward on use, past
+  the half-life of the window, so it writes far less often than
+  `last_seen_at`; a separate absolute cap (`SESSION_ABSOLUTE_MAX_DAYS`, 30d
+  from `created_at`) is enforced in Rust rather than SQL and never extends no
+  matter how active the session is. Since `sessions.id` is the cookie's bearer secret,
   rows are identified in the UI/URLs by a SHA-256 handle
   (`apikey::hash_api_key`) rather than the id itself. A session's stored IP
   comes from `auth::client_ip`: the socket peer, unless that peer is a
@@ -264,7 +271,13 @@ instead lands on the dashboard with a one-shot flash telling the user to sign
 out at their proxy, since a local logout would just be re-authenticated, while a
 password logout still goes to `/login` — see ARCHITECTURE.md's "Session
 layers"), `PINGWARD_SECRET` (session/CSRF signing key, ≥16
-bytes; generated per process when unset — see above), and `PINGWARD_SMTP_*`
+bytes; generated per process when unset — see above), `PINGWARD_COOKIE_SECURE`
+(whether the session/flash cookie carries `Secure`; `true`/`false`/`1`/`0`,
+default derived from whether `PINGWARD_BASE_URL` starts with `https://` — see
+`config::parse_cookie_secure`), `PINGWARD_HSTS_MAX_AGE` (`max-age` seconds for
+an app-wide `Strict-Transport-Security` header, `web::hsts`; off by default
+since pingward does not terminate TLS itself — see ARCHITECTURE.md's router
+composition section), and `PINGWARD_SMTP_*`
 (host/from required to enable email; port/TLS defaulted). The scan and prune interval env vars accept raw
 seconds or a human-readable duration (`5m`, `1h30m`) via
 `duration::parse_duration`; an unparseable value falls back to the default

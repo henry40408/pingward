@@ -41,7 +41,7 @@ async fn login_cookie(store: &Store, username: &str) -> String {
         .create_session(
             &session_id,
             user_id,
-            Utc::now() + chrono::Duration::days(pingward::auth::SESSION_TTL_DAYS),
+            Utc::now() + chrono::Duration::hours(pingward::auth::SESSION_IDLE_TTL_HOURS),
             None,
             None,
             false,
@@ -50,7 +50,7 @@ async fn login_cookie(store: &Store, username: &str) -> String {
         .await
         .unwrap();
     let value = pingward::secret::sign_session(common::TEST_SECRET.as_bytes(), &session_id);
-    format!("{}={value}", pingward::auth::SESSION_COOKIE)
+    format!("{}={value}", pingward::auth::session_cookie_name(false))
 }
 
 /// Reads chunks off `body` until `needle` has appeared in the accumulated
