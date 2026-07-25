@@ -558,7 +558,10 @@ async fn logout(
 /// reset the user's appearance setting on every logout — and pingward keeps
 /// nothing secret in localStorage, so it is pure functional regression.
 /// `"executionContexts"` is excluded for the same kind of reason: it forces a
-/// reload, which fights with the redirect we are already issuing.
+/// reload, which fights with the redirect we are already issuing. Browsers
+/// only honour `Clear-Site-Data` on a trustworthy origin, so on a plain-HTTP
+/// deployment (`PINGWARD_COOKIE_SECURE` off) sending it is a harmless no-op,
+/// not a security control.
 const CLEAR_SITE_DATA: &str = r#""cache", "cookies""#;
 
 /// The request's socket peer IP, or `None` when the router is driven without
@@ -3266,6 +3269,7 @@ async fn users_set_password(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
+    jar: CookieJar,
     Form(form): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
     if form.password.is_empty() {
@@ -3278,8 +3282,25 @@ async fn users_set_password(
     state.store.set_user_password(id, &phc).await?;
     // OWASP: a password change is a privilege level change, so existing
     // sessions must be invalidated — otherwise resetting a password to evict
-    // an intruder leaves the intruder's cookie working.
-    let revoked = state.store.delete_sessions_for_user(id).await?;
+    // an intruder leaves the intruder's cookie working. When the admin resets
+    // their *own* password (the reset form is not hidden behind `is_self` in
+    // `templates/admin.html`), the session they are currently operating from
+    // must survive — see `Store::delete_sessions_for_user`'s doc comment.
+    let revoked = if id == admin.id {
+        match secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state)) {
+            Some(current) => {
+                state
+                    .store
+                    .delete_other_sessions_for_user(id, &current)
+                    .await?
+            }
+            // Should not happen for an authenticated AdminUser, but fail safe
+            // rather than leave stale sessions behind.
+            None => state.store.delete_sessions_for_user(id).await?,
+        }
+    } else {
+        state.store.delete_sessions_for_user(id).await?
+    };
     tracing::info!(
         target: "pingward::session",
         reason = "password_reset",

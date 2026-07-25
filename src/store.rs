@@ -1038,13 +1038,12 @@ impl Store {
     /// password or disables an account — OWASP requires sessions to be
     /// invalidated after a privilege level change.
     ///
-    /// Unlike [`Store::delete_other_sessions_for_user`] this keeps no row: the
-    /// operator is a different user, whose own sessions have a different
-    /// `user_id` and are unaffected.
-    ///
-    /// If a "user changes their own password" flow is ever added, it MUST call
-    /// `delete_other_sessions_for_user(user.id, &current_session_id)` instead, so
-    /// the session the user is currently operating from survives.
+    /// Unlike [`Store::delete_other_sessions_for_user`] this keeps no row, so
+    /// it is only correct when the operator is a different user, whose own
+    /// sessions have a different `user_id` and are unaffected. When an admin
+    /// resets their *own* password, `web::users_set_password` calls
+    /// [`Store::delete_other_sessions_for_user`] instead, so the session they
+    /// are currently operating from survives the reset.
     pub async fn delete_sessions_for_user(&self, user_id: i64) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
             .bind(user_id)

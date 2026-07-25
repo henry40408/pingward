@@ -249,6 +249,55 @@ async fn admin_resets_password_and_target_can_login() {
     assert_eq!(res.header("location"), "/login");
 }
 
+/// Regression: `templates/admin.html` renders the password-reset form for
+/// every row, including the admin's own — unlike delete/toggle-admin/
+/// toggle-disabled it is not hidden behind `is_self`. Resetting your own
+/// password must not sign out the browser you are using to do it, only every
+/// *other* session belonging to the same account.
+#[tokio::test]
+async fn admin_resets_own_password_keeps_current_session() {
+    let (server, store, admin_id) = admin_server().await;
+    // A second session for the same admin — e.g. another browser/device —
+    // must still be revoked by the reset.
+    let other_admin_session = login_as(&store, "admin", "pw").await;
+    other_admin_session.get("/account").await.assert_status_ok();
+    assert_eq!(
+        store
+            .list_sessions_for_user(admin_id, chrono::Utc::now())
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+
+    server
+        .post(&format!("/admin/users/{admin_id}/password"))
+        .form(&[("password", "brandnew1")])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    // (a) the admin's own session, the one that issued the reset, still works.
+    server.get("/account").await.assert_status_ok();
+
+    // (b) the other session belonging to the same admin is gone.
+    let res = other_admin_session.get("/account").await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/login");
+
+    assert_eq!(
+        store
+            .list_sessions_for_user(admin_id, chrono::Utc::now())
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // (c) the new password now logs in.
+    let relogged = login_as(&store, "admin", "brandnew1").await;
+    relogged.get("/account").await.assert_status_ok();
+}
+
 #[tokio::test]
 async fn disable_and_enable_member() {
     let (server, store, _admin) = admin_server().await;
