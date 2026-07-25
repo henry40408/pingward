@@ -803,6 +803,23 @@ async fn browser_responses_are_not_cacheable() {
     assert_eq!(res.header("cache-control"), "no-store");
 }
 
+/// `/api/docs` and `/api/openapi.json` accept a logged-in web session
+/// (`CurrentUser`) alongside `/api/v1`'s bearer auth, so — unlike `/api/v1`
+/// itself, which stays exempt — they carry `Cache-Control: no-store` too. See
+/// `web::no_store` and `api::docs_routes`.
+#[tokio::test]
+async fn api_docs_are_not_cacheable() {
+    let (auth_server, _store, _uid) = logged_in_server().await;
+
+    let res = auth_server.get("/api/docs").await;
+    res.assert_status_ok();
+    assert_eq!(res.header("cache-control"), "no-store");
+
+    let res = auth_server.get("/api/openapi.json").await;
+    res.assert_status_ok();
+    assert_eq!(res.header("cache-control"), "no-store");
+}
+
 #[tokio::test]
 async fn admin_sets_global_scan_interval() {
     let (server, store, _uid) = logged_in_server().await; // admin
