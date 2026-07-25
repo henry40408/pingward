@@ -158,6 +158,16 @@ impl RateLimiter {
 /// `crate::auth::client_ip` and `crate::auth::is_trusted_proxy` already
 /// normalise an IPv4-mapped IPv6 peer.
 ///
+/// (d) HTTP permits a header name to appear on multiple lines, and
+/// `HeaderMap::get` returns only the *first* one. A proxy that appends its
+/// own hop as a **new** `X-Forwarded-For` line — rather than extending the
+/// client-supplied line with a comma, as `$proxy_add_x_forwarded_for` does —
+/// would leave that first line entirely client-controlled, reopening exactly
+/// the bypass defect 1 fixes, just one header line up. This function
+/// therefore reads `headers.get_all("x-forwarded-for")` and takes the
+/// **last** line before splitting *that* line on commas for the rightmost
+/// hop.
+///
 /// A missing peer (`None`) — the router driven without `ConnectInfo`, as in
 /// tests; see `src/main.rs`'s `into_make_service_with_connect_info` — falls
 /// back to a single shared loopback bucket rather than disabling the limiter.
@@ -171,7 +181,7 @@ pub fn rate_limit_key(
     };
     let peer = peer.to_canonical();
     if crate::auth::is_trusted_proxy(trusted_proxies, peer)
-        && let Some(value) = headers.get("x-forwarded-for")
+        && let Some(value) = headers.get_all("x-forwarded-for").iter().next_back()
         && let Ok(raw) = value.to_str()
         && let Some(last) = raw.rsplit(',').next()
         && let Ok(ip) = last.trim().parse::<IpAddr>()
@@ -253,6 +263,39 @@ mod tests {
                 .len()
                 <= 4
         );
+    }
+
+    /// `map_is_pruned_at_capacity` above uses a 60-second window, so nothing
+    /// in it ever expires and it only exercises the fail-open `return true`
+    /// path (no prune, no insert). Here every tracked window has already
+    /// elapsed (a zero-second window, as in `window_expiry_resets_the_counter`),
+    /// so hitting capacity must actually prune the map — its length must drop
+    /// below the cap, not merely stay at or under it by never growing.
+    #[test]
+    fn expired_entries_are_pruned_when_capacity_is_reached() {
+        let mut limiter = RateLimiter::new(5, 0);
+        limiter.max_entries = 4;
+        for last in 0..4u8 {
+            assert!(limiter.try_acquire(ip(last)));
+        }
+        assert_eq!(
+            4,
+            limiter
+                .attempts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
+        );
+
+        // The map is now at capacity and every entry's window has already
+        // elapsed. A fresh key must trigger a real prune.
+        assert!(limiter.try_acquire(ip(99)));
+        let len = limiter
+            .attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        assert!(len < 4, "map was not pruned: len = {len}");
     }
 
     /// Regression for defect 3: a spray of fresh keys used to hit
@@ -337,6 +380,27 @@ mod tests {
             );
             assert_eq!(real, rate_limit_key(Some(trusted_peer), &headers, &proxies));
         }
+    }
+
+    /// Regression for defect (d), see the module doc: a proxy that appends
+    /// its own hop as a **new** `X-Forwarded-For` header line — rather than
+    /// extending the existing line with a comma — must not let the first,
+    /// fully client-controlled line win. `HeaderMap::get` would return only
+    /// that first line; `rate_limit_key` must use `get_all` and take the
+    /// last one instead.
+    #[test]
+    fn rate_limit_key_uses_the_last_xff_header_line() {
+        let proxies = trusted(&["10.0.0.1"]);
+        let trusted_peer = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let mut headers = HeaderMap::new();
+        // First line: entirely attacker-supplied, spoofing an unrelated hop.
+        headers.append("x-forwarded-for", "9.9.9.9, 8.8.8.8".parse().unwrap());
+        // Second line: appended by the trusted proxy itself.
+        headers.append("x-forwarded-for", "198.51.100.7".parse().unwrap());
+        assert_eq!(
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)),
+            rate_limit_key(Some(trusted_peer), &headers, &proxies)
+        );
     }
 
     #[test]
