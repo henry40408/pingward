@@ -142,7 +142,9 @@ never be read from the filesystem at startup. SQLite pragmas (foreign keys,
 busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
 
 **Auth & authorization** (`src/auth.rs`):
-- Session cookie (`pingward_session`) + argon2 password hashing. An optional
+- Session cookie (`session_cookie_name(cookie_secure)` — plain
+  `pingward_session`, or `__Host-pingward_session` when
+  `PINGWARD_COOKIE_SECURE` is on) + argon2 password hashing. An optional
   trusted forward-auth header auto-provisions a passwordless non-admin user.
 - Request extractors: `CurrentUser` (401/redirect if none), `OptionalUser`,
   `AdminUser` (403 if not admin).

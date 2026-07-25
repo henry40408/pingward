@@ -721,10 +721,34 @@ async fn host_prefixed_cookie_round_trips() {
     server.get("/account").await.assert_status_ok();
 
     set_csrf(&mut server, &store).await;
-    server
-        .post("/logout")
-        .await
-        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    let res = server.post("/logout").await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    // The session row itself must be gone — asserting only the 303 would
+    // still pass if `logout` read/cleared the *unprefixed* cookie name on
+    // this Secure deployment and left the real `__Host-` cookie (and its
+    // row) alone.
+    let alice = store.find_user_by_username("alice").await.unwrap().unwrap();
+    assert!(
+        store
+            .list_sessions_for_user(alice.id, chrono::Utc::now())
+            .await
+            .unwrap()
+            .is_empty(),
+        "logout must delete the session row"
+    );
+
+    // And the removal `Set-Cookie` must target the `__Host-` prefixed name
+    // with the attributes the prefix requires (`Secure`, `Path=/`) — using
+    // `raw_session_set_cookie` rather than the `secure()` accessor, whose
+    // `None`-vs-`Some(false)` ambiguity it exists to dodge.
+    let removal_cookie = raw_session_set_cookie(&res, true);
+    assert!(
+        removal_cookie.starts_with("__Host-pingward_session="),
+        "{removal_cookie}"
+    );
+    assert!(removal_cookie.contains("; Secure"), "{removal_cookie}");
+    assert!(removal_cookie.contains("; Path=/"), "{removal_cookie}");
 }
 
 /// P1-F: every response from `web::routes()` carries `Cache-Control:

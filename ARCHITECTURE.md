@@ -203,7 +203,9 @@ purpose is to carry the `pingward_flash` cookie to `/`, and mixing it with
 `Clear-Site-Data: "cookies"` risks the browser dropping that cookie before
 `dashboard` reads it. `"storage"` is never sent on any exit — it would wipe
 the `pw-theme` localStorage preference (`templates/base.html`) for no security
-benefit, since pingward keeps nothing secret in localStorage.
+benefit, since pingward keeps nothing secret in localStorage. Browsers only
+honour `Clear-Site-Data` on a trustworthy origin, so on a plain-HTTP
+deployment the header is sent but silently ignored — a no-op, not a gap.
 
 `/api/v1` data endpoints authenticate independently via the `ApiUser` bearer
 extractor; `/api/docs` and `/api/openapi.json` additionally accept a logged-in
@@ -336,8 +338,10 @@ single pool connection since `:memory:` is scoped to one physical connection.
 
 ## Auth & authorization
 
-Sessions are a `pingward_session` cookie plus an argon2 password hash
-(`src/auth.rs`). An optional trusted forward-auth header
+Sessions are a `session_cookie_name(cookie_secure)`-named cookie — plain
+`pingward_session`, or `__Host-pingward_session` when `PINGWARD_COOKIE_SECURE`
+is on — plus an argon2 password hash (`src/auth.rs`). An optional trusted
+forward-auth header
 (`PINGWARD_FORWARD_AUTH_HEADER` + `PINGWARD_TRUSTED_PROXIES`) can
 auto-provision a passwordless, non-admin user on first sight, but only when
 the request's peer IP is a configured trusted proxy.
@@ -392,8 +396,17 @@ Like `AppState::events` (see "Live-tail signal bus" below), the limiter's
 state is in-process only: a multi-replica deployment counts each replica
 separately (effective budget is `5 × replicas`), and a restart resets every
 counter to zero.
-Resolution happens in the `ping::ClientIp` extractor rather than per handler,
-which is what keeps `/ping/*` and the login handlers on the same rule.
+
+`ping::ClientIp` and `ratelimit::rate_limit_key` resolve the client address
+differently on purpose, and the two must never be merged. `ClientIp` wraps
+`auth::client_ip`'s **leftmost** hop and exists for *attribution* —
+`pings.source_ip`, the IP a session row stamps — which is why `/ping/*` and
+the login/setup handlers share it for "whose request was this." It is not
+used for the limiter: `rate_limit_key` reads the **rightmost** hop instead,
+because the limiter is a *security control*, and under a stock appending
+proxy the leftmost hop is client-controlled — keying the limiter on it (via
+`ClientIp` or otherwise) would let an attacker mint a fresh bucket per
+request, reopening the exact bypass `rate_limit_key` exists to close.
 
 Session creation, renewal and destruction are logged as `tracing` events under
 the `pingward::session` target (not the `audit_log` table — that models "an
@@ -402,10 +415,14 @@ admin acted on a target" via `actor_*`/`target_*` columns with no `ip`/
 JSON log pipeline aimed at a log aggregator; see `PINGWARD_LOG_FORMAT` below).
 The target lets an operator silence them independently
 (`RUST_LOG=info,pingward::session=warn`) without touching the rest of the
-`info` filter. Every event carries `handle` — `auth::session_log_handle`,
-the same (truncated to 16 hex characters) SHA-256 handle `/account` uses to
-identify a row — **never the raw session id**, which is the bearer secret the
-cookie signature is attached to. Fields:
+`info` filter. Where an event does carry a per-session identifier it is
+always `handle` — `auth::session_log_handle`, the same (truncated to 16 hex
+characters) SHA-256 handle `/account` uses to identify a row — **never the
+raw session id**, which is the bearer secret the cookie signature is attached
+to. Not every event has one to carry: the bulk `session.destroyed` reasons
+below (`revoke_others`, `password_reset`, `user_disabled`, `user_deleted`,
+`expired`) act on many rows via a single query, so they log `count` instead.
+Fields:
 
 - `session.created` (`web::open_session`, the single mint point for all three
   creation paths — `setup_submit`, `login_submit`, and `forward_auth_session`,
