@@ -28,14 +28,19 @@ pub fn app(state: AppState) -> Router {
     // machine `/ping/*` endpoints, static assets, and `/healthz` are merged in
     // as sibling routers and are therefore structurally exempt.
     // Layers run outside-in, so the last one added sees the request first:
-    // forward_auth_session -> anonymous_session -> csrf_guard -> handler.
+    // no_store -> forward_auth_session -> anonymous_session -> csrf_guard ->
+    // handler.
     //
-    // Both orderings here are load-bearing. The two session layers run before
-    // `csrf_guard` because the guard must see the cookie on the same request
-    // that minted it. And `forward_auth_session` runs before
-    // `anonymous_session` because when both would mint, the real session has
-    // to win — reversed, the anonymous layer's `Set-Cookie` would be appended
-    // last and shadow it.
+    // Both orderings among the session/CSRF layers are load-bearing. The two
+    // session layers run before `csrf_guard` because the guard must see the
+    // cookie on the same request that minted it. And `forward_auth_session`
+    // runs before `anonymous_session` because when both would mint, the real
+    // session has to win — reversed, the anonymous layer's `Set-Cookie` would
+    // be appended last and shadow it. `no_store` only reads and writes
+    // response headers, so it does not participate in that request-ordering
+    // chain at all — it sits outermost purely so it covers every early-return
+    // path, including `csrf_guard`'s 403s and the session layers' own
+    // responses.
     let web = web::routes()
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -48,7 +53,8 @@ pub fn app(state: AppState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             web::forward_auth_session,
-        ));
+        ))
+        .layer(axum::middleware::from_fn(web::no_store));
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(web)

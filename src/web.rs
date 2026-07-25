@@ -12,7 +12,7 @@ use crate::state::AppState;
 use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -968,6 +968,30 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
     }
     let req = Request::from_parts(parts, axum::body::Body::from(bytes));
     next.run(req).await
+}
+
+/// Add `Cache-Control: no-store` to every browser response.
+///
+/// Applied to the whole of `web::routes()`, not just authenticated pages:
+/// `/login` and `/setup` render a `_csrf` bound to that visitor's cookie (see
+/// `anonymous_session`), so they must not be cached either. The machine
+/// `/ping/*` endpoints, static assets and `/healthz` are sibling routers and
+/// are structurally unaffected — `src/assets.rs`'s immutable caching is
+/// untouched.
+///
+/// Only filled in when the response does not already carry a `Cache-Control`,
+/// so any handler that wants to override still can.
+///
+/// The legacy `Pragma: no-cache` / `Expires: 0` pair is deliberately not
+/// added: every modern browser honours `no-store`, and those two headers only
+/// ever meant anything to HTTP/1.0 caches.
+pub async fn no_store(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    if !resp.headers().contains_key(header::CACHE_CONTROL) {
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    resp
 }
 
 // --- project templates ---

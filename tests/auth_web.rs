@@ -677,6 +677,56 @@ async fn session_cookie_carries_secure_only_when_configured() {
     );
 }
 
+/// P1-F: every response from `web::routes()` carries `Cache-Control:
+/// no-store`, so an authenticated page, the pre-login CSRF-bearing forms, and
+/// even a `csrf_guard` rejection are never cached by the browser, a shared
+/// computer, or an intermediary proxy. See `web::no_store`.
+#[tokio::test]
+async fn browser_responses_are_not_cacheable() {
+    let (auth_server, store, uid) = logged_in_server().await;
+
+    let res = auth_server.get("/").await;
+    res.assert_status_ok();
+    assert_eq!(res.header("cache-control"), "no-store");
+
+    let pid = store
+        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    let cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: "cu",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let res = auth_server.get(&format!("/checks/{cid}")).await;
+    res.assert_status_ok();
+    assert_eq!(res.header("cache-control"), "no-store");
+
+    // A fresh, logged-out server still carries the header on the pre-login
+    // forms, which embed a cookie-bound `_csrf`.
+    let (logged_out, _store) = server().await;
+    let res = logged_out.get("/login").await;
+    assert_eq!(res.header("cache-control"), "no-store");
+
+    // A POST rejected by `csrf_guard` (missing/invalid token -> 403) still
+    // carries it — `no_store` sits outermost precisely so early returns like
+    // this one are covered too.
+    let res = logged_out
+        .post("/login")
+        .form(&[("username", "admin"), ("password", "pw")])
+        .await;
+    res.assert_status(axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(res.header("cache-control"), "no-store");
+}
+
 #[tokio::test]
 async fn admin_sets_global_scan_interval() {
     let (server, store, _uid) = logged_in_server().await; // admin

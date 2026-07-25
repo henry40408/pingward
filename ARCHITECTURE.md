@@ -112,7 +112,8 @@ Router::new()
     .merge(web::routes()
         .layer(csrf_guard)          // innermost
         .layer(anonymous_session)
-        .layer(forward_auth_session))   // outermost — runs first
+        .layer(forward_auth_session)
+        .layer(no_store))               // outermost — runs first
     .merge(ping::routes())
     .merge(api::routes())
     .merge(assets::routes())
@@ -128,9 +129,21 @@ accidentally start covering them. `csrf_guard` itself lets safe methods
 (GET/HEAD/OPTIONS) through and otherwise requires a per-session synchronizer
 token sent as `X-CSRF-Token` (or hidden form field).
 
+`no_store` sets `Cache-Control: no-store` on every response that doesn't
+already carry one, so authenticated pages and the `/login`/`/setup` forms
+(which embed a cookie-bound `_csrf`) are never cached by the browser, a
+shared computer, or an intermediary proxy. It sits **outermost** of the four
+`web` layers — but unlike the other three, that position is not about request
+ordering: `no_store` only reads and writes response headers on the way out,
+so it never observes or affects the session/CSRF request-handling chain
+described below. It runs outermost purely so it wraps every early-return
+path too, including `csrf_guard`'s 403s. `/assets/*`, `/ping/*`, and
+`/healthz` are sibling routers and stay structurally exempt — see
+`src/assets.rs`'s `IMMUTABLE_CACHE`, unchanged by this layer.
+
 ### Session layers
 
-Both orderings above are load-bearing.
+Both orderings among the session/CSRF layers below are load-bearing.
 
 The two session layers run **before** `csrf_guard` because a cookie minted
 during a request has to be visible to the guard on that same request — each
