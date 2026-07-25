@@ -55,6 +55,15 @@ pub fn app(state: AppState) -> Router {
             web::forward_auth_session,
         ))
         .layer(axum::middleware::from_fn(web::no_store));
+    // `web::hsts` is layered here, outside every `.merge(...)`, rather than
+    // inside the `web` router the way `no_store` is layered above. `no_store`
+    // is a browser-page-caching concern scoped to the `web` router; HSTS tells
+    // the browser the whole *origin* is HTTPS-only, so it must also cover
+    // `/healthz`, `/ping/*`, `/api/*` and static assets — sibling routers
+    // `no_store` never touches. It is a no-op response-only layer like
+    // `no_store` (see `web::hsts`'s doc comment for why it defaults off), so
+    // its position relative to the request-ordering chain above does not
+    // matter.
     Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(web)
@@ -65,5 +74,9 @@ pub fn app(state: AppState) -> Router {
         // change no state, so the whole router stays structurally CSRF-exempt.
         .merge(api::routes())
         .merge(assets::routes())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            web::hsts,
+        ))
         .with_state(state)
 }

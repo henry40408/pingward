@@ -51,6 +51,20 @@ pub struct Config {
     /// Whether session/flash cookies carry `Secure`. See
     /// [`parse_cookie_secure`].
     pub cookie_secure: bool,
+    /// HSTS `max-age`, in seconds. `0` (the default) means the header is not
+    /// sent.
+    ///
+    /// Seconds rather than a boolean so an operator can ramp up the way the
+    /// HSTS deployment guides advise (`300` → `86400` → `31536000`) instead of
+    /// jumping straight to a year — once a browser has cached the policy it
+    /// cannot be withdrawn before max-age expires.
+    ///
+    /// `includeSubDomains` and `preload` are deliberately not offered: both
+    /// are traps on a self-hosted subdomain deployment (a wrong
+    /// `includeSubDomains` takes out unrelated hosts on the same domain, and
+    /// `preload` is close to irreversible). Anyone who needs them should set
+    /// them on the reverse proxy.
+    pub hsts_max_age_secs: u64,
 }
 
 /// Resolve an env duration to whole seconds: a raw integer (`300`) or a
@@ -197,6 +211,7 @@ impl Config {
                 nonblank("PINGWARD_COOKIE_SECURE").as_deref(),
                 &base_url,
             ),
+            hsts_max_age_secs: env_duration_secs(get("PINGWARD_HSTS_MAX_AGE"), 0),
             base_url,
         }
     }
@@ -484,5 +499,23 @@ mod tests {
             _ => None,
         });
         assert_eq!(c.smtp.unwrap().port, 587, "no TLS set still defaults 587");
+    }
+
+    #[test]
+    fn hsts_max_age_defaults_to_off() {
+        assert_eq!(Config::from_map(|_| None).hsts_max_age_secs, 0);
+    }
+
+    #[test]
+    fn hsts_max_age_accepts_human_readable_duration() {
+        let c = Config::from_map(|k| (k == "PINGWARD_HSTS_MAX_AGE").then(|| "1y".into()));
+        assert_eq!(c.hsts_max_age_secs, 31_536_000);
+    }
+
+    #[test]
+    fn hsts_max_age_invalid_falls_back_to_off() {
+        let c =
+            Config::from_map(|k| (k == "PINGWARD_HSTS_MAX_AGE").then(|| "not-a-duration".into()));
+        assert_eq!(c.hsts_max_age_secs, 0);
     }
 }

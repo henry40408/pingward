@@ -1046,6 +1046,37 @@ pub async fn no_store(req: Request, next: Next) -> Response {
     resp
 }
 
+/// Adds `Strict-Transport-Security` when `PINGWARD_HSTS_MAX_AGE` is
+/// configured. A zero-cost no-op by default: pingward does not terminate TLS,
+/// so sending HSTS unconditionally would tell browsers "HTTPS only" on a
+/// deployment that may be plain HTTP behind an internal reverse proxy — the
+/// reverse proxy is the right place to set this header, and `README.md`'s
+/// "Running behind a reverse proxy" section documents that. This knob exists
+/// for operators who cannot edit proxy headers.
+///
+/// App-wide rather than `web`-only (unlike [`no_store`]): the point of HSTS is
+/// telling the browser the *origin* is HTTPS-only, which applies just as much
+/// to `/ping/*`, `/healthz` and static assets as to the browser UI. It is
+/// layered in `lib.rs` outside every `.merge(...)`, not inside the `web`
+/// router.
+///
+/// Deliberately emits neither `includeSubDomains` nor `preload`: both are
+/// close to irreversible once a browser caches them (a wrong
+/// `includeSubDomains` takes out unrelated hosts on the same domain, and
+/// `preload` list removal can take months). An operator who wants either sets
+/// it on the reverse proxy.
+pub async fn hsts(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    let max_age = state.config.hsts_max_age_secs;
+    if max_age > 0
+        && let Ok(value) = HeaderValue::from_str(&format!("max-age={max_age}"))
+    {
+        resp.headers_mut()
+            .insert(header::STRICT_TRANSPORT_SECURITY, value);
+    }
+    resp
+}
+
 // --- project templates ---
 #[derive(Template)]
 #[template(path = "project_form.html")]
@@ -3714,6 +3745,12 @@ fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSet
             value: EnvValue::Set(log_format.to_string()),
             default: "text",
             description: "Log line format (text or json); applied at process startup — changing it requires a restart.",
+        },
+        EnvSetting {
+            var: "PINGWARD_HSTS_MAX_AGE",
+            value: EnvValue::Set(config.hsts_max_age_secs.to_string()),
+            default: "0 (off)",
+            description: "Strict-Transport-Security max-age in seconds; 0 sends no header. Prefer setting this on the reverse proxy — see README.",
         },
     ];
     let scheduling = vec![

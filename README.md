@@ -205,6 +205,57 @@ hold a cookie under the old name, which the server no longer reads. This is
 the same one-time inconvenience a `PINGWARD_SECRET` rotation or restart (with
 no `PINGWARD_SECRET` set) already causes; just sign in again.
 
+#### HSTS (Strict-Transport-Security)
+
+pingward does not terminate TLS, so it does not send
+`Strict-Transport-Security` by default — only your reverse proxy knows the
+deployment is actually HTTPS, and only it can scope `includeSubDomains`
+correctly. Set it there:
+
+```caddyfile
+# Caddy
+header Strict-Transport-Security "max-age=31536000"
+```
+
+```nginx
+# nginx
+add_header Strict-Transport-Security "max-age=31536000" always;
+```
+
+```yaml
+# Traefik (dynamic config)
+http:
+  middlewares:
+    hsts:
+      headers:
+        stsSeconds: 31536000
+```
+
+**`includeSubDomains` and `preload` are effectively irreversible.** Once a
+browser has fetched a response carrying `includeSubDomains`, it refuses plain
+HTTP for *every* subdomain of that domain until `max-age` elapses — a typo or
+an unrelated subdomain that cannot yet do HTTPS goes dark with no easy way
+back. `preload` is worse: it submits the domain to a list baked into browser
+source, and removal can take months even after you stop sending the header.
+Add either only once you are certain every subdomain is HTTPS-only for good.
+
+If your proxy cannot be configured to add response headers, pingward can send
+this one itself:
+
+```yaml
+environment:
+  PINGWARD_HSTS_MAX_AGE: "300"
+```
+
+`0` (the default) sends no header at all — byte-identical to today's
+behaviour. The value is `max-age` in seconds, accepting a raw integer or a
+duration string (`300`, `1y`, `31536000`). Ramp it up the way HSTS deployment
+guides recommend — `300` (5 minutes) → `86400` (1 day) → `31536000` (1 year)
+— rather than jumping straight to a year, since a browser that has cached the
+policy cannot be talked out of it before `max-age` expires. This knob
+deliberately does **not** offer `includeSubDomains` or `preload` — set those
+on the reverse proxy if you need them, once you're sure.
+
 ### Forward authentication
 
 To let an authentication gateway (Authelia, Authentik, `oauth2-proxy`, …) sign
