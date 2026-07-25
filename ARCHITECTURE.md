@@ -348,6 +348,34 @@ counter to zero.
 Resolution happens in the `ping::ClientIp` extractor rather than per handler,
 which is what keeps `/ping/*` and the login handlers on the same rule.
 
+Session creation, renewal and destruction are logged as `tracing` events under
+the `pingward::session` target (not the `audit_log` table — that models "an
+admin acted on a target" via `actor_*`/`target_*` columns with no `ip`/
+`user_agent`, whereas these are per-request, higher-volume, and already have a
+JSON log pipeline aimed at a log aggregator; see `PINGWARD_LOG_FORMAT` below).
+The target lets an operator silence them independently
+(`RUST_LOG=info,pingward::session=warn`) without touching the rest of the
+`info` filter. Every event carries `handle` — `auth::session_log_handle`,
+the same (truncated to 16 hex characters) SHA-256 handle `/account` uses to
+identify a row — **never the raw session id**, which is the bearer secret the
+cookie signature is attached to. Fields:
+
+- `session.created` (`web::open_session`, the single mint point for all three
+  creation paths — `setup_submit`, `login_submit`, and `forward_auth_session`,
+  distinguished by `sso`) — `handle`, `user_id`, `sso`, `ip`, `user_agent`,
+  `expires_at`.
+- `session.renewed` (`Store::find_session_user`, the slide branch) — `handle`,
+  `user_id`, `ip`, `user_agent`, `expires_at`.
+- `session.destroyed` — one per teardown path, each tagged with a `reason`:
+  `logout`, `revoked` (self-service, `handle`/`user_id`/`is_current`),
+  `revoke_others` (`user_id`/`count`), `password_reset`
+  (`user_id`/`count`/`actor_user_id`), `user_disabled` (same fields, only on
+  the disabling direction), `user_deleted` (`user_id`/`actor_user_id` — no
+  `count`, since those rows go via `ON DELETE CASCADE` rather than a query
+  this handler issues), and `expired` (`prune::prune_once`, one aggregate
+  `count` per prune pass rather than one event per row, since
+  `delete_expired_sessions` returns no ids to build a `handle` from).
+
 Three request extractors resolve the caller:
 
 - `CurrentUser` — 401/redirects to `/login` if no session/forward-auth user.

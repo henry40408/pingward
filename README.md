@@ -125,6 +125,13 @@ All configuration is via environment variables:
 | `PINGWARD_COOKIE_SECURE` | derived from `PINGWARD_BASE_URL`'s scheme | Whether the session cookie carries `Secure` (`true`/`false`/`1`/`0`). Leave unset unless TLS terminates upstream and `PINGWARD_BASE_URL` cannot say so. |
 | `PINGWARD_SMTP_*` | — | Instance SMTP for the email channel (`HOST`/`FROM` required to enable; port/TLS defaulted). |
 
+Session creation, renewal and destruction are logged as `pingward::session`
+events (timestamp, a truncated hash of the session — never the raw id —
+source IP, user agent) and are visible at the **default** `info` filter. To
+keep those but quiet everything else down, or vice versa, scope `RUST_LOG` to
+the target, e.g. `RUST_LOG=info,pingward::session=warn` silences them without
+touching the rest of the `info` output.
+
 ### `PINGWARD_SECRET`
 
 Session cookies are signed with this key, and each session's CSRF token is

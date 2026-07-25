@@ -498,6 +498,12 @@ async fn logout(
 ) -> Result<Response, AppError> {
     if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
         state.store.delete_session(&id).await?;
+        tracing::info!(
+            target: "pingward::session",
+            reason = "logout",
+            handle = %crate::auth::session_log_handle(&id),
+            "session.destroyed"
+        );
     }
     let jar = jar.remove(session_removal_cookie(&state.config));
 
@@ -738,6 +744,16 @@ async fn open_session(
             Utc::now(),
         )
         .await?;
+    tracing::info!(
+        target: "pingward::session",
+        handle = %crate::auth::session_log_handle(&session_id),
+        user_id,
+        sso,
+        ip,
+        user_agent,
+        expires_at = %expires.to_rfc3339(),
+        "session.created"
+    );
     // The cookie carries `<id>.<hmac>`, never the bare id — see `crate::secret`.
     Ok(session_cookie(
         &state.config,
@@ -3108,6 +3124,16 @@ async fn users_delete(
         return Ok(users_blocked(&state.config, jar));
     }
     state.store.delete_user(id).await?;
+    // No `count` field here: the user's session rows go via the FK's ON
+    // DELETE CASCADE, not a direct DELETE this handler issues, so no row
+    // count is available to log.
+    tracing::info!(
+        target: "pingward::session",
+        reason = "user_deleted",
+        user_id = id,
+        actor_user_id = admin.id,
+        "session.destroyed"
+    );
     state
         .store
         .record_audit(
@@ -3143,6 +3169,14 @@ async fn users_set_password(
     // sessions must be invalidated — otherwise resetting a password to evict
     // an intruder leaves the intruder's cookie working.
     let revoked = state.store.delete_sessions_for_user(id).await?;
+    tracing::info!(
+        target: "pingward::session",
+        reason = "password_reset",
+        user_id = id,
+        count = revoked,
+        actor_user_id = admin.id,
+        "session.destroyed"
+    );
     let detail = format!("sessions_revoked={revoked}");
     state
         .store
@@ -3245,6 +3279,16 @@ async fn users_set_disabled(
     } else {
         0
     };
+    if new_disabled {
+        tracing::info!(
+            target: "pingward::session",
+            reason = "user_disabled",
+            user_id = id,
+            count = revoked,
+            actor_user_id = admin.id,
+            "session.destroyed"
+        );
+    }
     let detail = if new_disabled {
         format!("disable sessions_revoked={revoked}")
     } else {
@@ -3489,6 +3533,14 @@ async fn sessions_revoke(
         .store
         .delete_session_owned(&target.id, user.id)
         .await?;
+    tracing::info!(
+        target: "pingward::session",
+        reason = "revoked",
+        handle = %crate::auth::session_log_handle(&target.id),
+        user_id = user.id,
+        is_current,
+        "session.destroyed"
+    );
     if is_current {
         // Must carry `path("/")` to match how the cookie was set — a
         // pathless removal cookie gets this route's own path
@@ -3506,10 +3558,17 @@ async fn sessions_revoke_others(
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
     if let Some(id) = secret::session_id_from_jar(&jar, &state.config.secret) {
-        state
+        let count = state
             .store
             .delete_other_sessions_for_user(user.id, &id)
             .await?;
+        tracing::info!(
+            target: "pingward::session",
+            reason = "revoke_others",
+            user_id = user.id,
+            count,
+            "session.destroyed"
+        );
     }
     Ok(Redirect::to("/account").into_response())
 }

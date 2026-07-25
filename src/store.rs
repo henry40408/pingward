@@ -919,7 +919,8 @@ impl Store {
     ) -> Result<Option<User>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT u.*, s.last_seen_at AS session_last_seen_at, \
-                    s.created_at AS session_created_at, s.expires_at AS session_expires_at \
+                    s.created_at AS session_created_at, s.expires_at AS session_expires_at, \
+                    s.ip AS session_ip, s.user_agent AS session_user_agent \
              FROM sessions s JOIN users u ON u.id = s.user_id \
              WHERE s.id = $1 AND s.expires_at > $2",
         )
@@ -949,6 +950,18 @@ impl Store {
                     .bind(session_id)
                     .execute(&self.pool)
                     .await?;
+                let user_id: i64 = row.get("id");
+                let ip: Option<String> = row.get("session_ip");
+                let user_agent: Option<String> = row.get("session_user_agent");
+                tracing::info!(
+                    target: "pingward::session",
+                    handle = %crate::auth::session_log_handle(session_id),
+                    user_id,
+                    ip = ip.as_deref(),
+                    user_agent = user_agent.as_deref(),
+                    expires_at = %next.to_rfc3339(),
+                    "session.renewed"
+                );
             }
             (true, None) => {
                 sqlx::query("UPDATE sessions SET last_seen_at = $1 WHERE id = $2")

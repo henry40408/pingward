@@ -88,6 +88,19 @@ pub async fn run_prune_loop(store: Store, interval_secs: u64, shutdown: Shutdown
                 if p > 0 || n > 0 || s > 0 {
                     tracing::info!("pruned {p} pings, {n} notifications, {s} sessions");
                 }
+                if s > 0 {
+                    // `delete_expired_sessions` returns only a row count, not
+                    // the ids of the sessions it removed, so this is one
+                    // aggregate `session.destroyed` event per prune pass
+                    // rather than one per expired session — per-row logging
+                    // would need a preceding SELECT.
+                    tracing::info!(
+                        target: "pingward::session",
+                        reason = "expired",
+                        count = s,
+                        "session.destroyed"
+                    );
+                }
             }
             Err(e) => tracing::error!("prune_once failed: {e}"),
         }

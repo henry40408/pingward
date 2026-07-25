@@ -63,6 +63,24 @@ pub fn new_session_token() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// The identifier used for a session in log events: the same SHA-256 handle
+/// `/account` uses to identify a row, truncated to 16 hex characters to keep
+/// log volume down. **Never log the session id itself** — it is the bearer
+/// secret the cookie signature is attached to.
+///
+/// Reusing that handle (rather than a second, separate hash) means a log line
+/// maps directly onto the row a user can see and revoke on /account.
+///
+/// To satisfy OWASP's literal "salted hash" wording more strictly, this could
+/// become a keyed digest under the process secret (a `LOG_DOMAIN = b"log:"`
+/// alongside the existing domains in src/secret.rs). UUID v4's 122 bits of
+/// entropy already put an unsalted SHA-256 beyond brute force, so the existing
+/// handle is used instead; switching to a keyed version would break the
+/// log ↔ /account correspondence, which is the deliberate trade-off here.
+pub fn session_log_handle(session_id: &str) -> String {
+    crate::apikey::hash_api_key(session_id)[..16].to_string()
+}
+
 /// True when `ip` is covered by one of the configured trusted-proxy patterns.
 ///
 /// A pattern is either a bare address (`10.0.0.1`) or a CIDR block
@@ -475,6 +493,17 @@ mod tests {
         let b = new_session_token();
         assert_ne!(a, b);
         assert_eq!(a.len(), 36); // hyphenated uuid
+    }
+
+    /// Regression lock: `session_log_handle` must never leak the raw session
+    /// id it derives from — it is the bearer secret backing the cookie.
+    #[test]
+    fn session_log_handle_is_never_the_raw_id() {
+        let id = new_session_token();
+        let handle = session_log_handle(&id);
+        assert_ne!(handle, id);
+        assert_eq!(handle.len(), 16);
+        assert!(!handle.contains(&id));
     }
 
     fn ts(y: i32, m: u32, d: u32) -> DateTime<Utc> {
