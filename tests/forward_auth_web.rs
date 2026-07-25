@@ -299,6 +299,11 @@ async fn logout_hands_off_to_the_gateway_when_a_url_is_configured() {
         0,
         "the local session must be deleted whatever the redirect target"
     );
+    assert_eq!(
+        resp.headers()["clear-site-data"],
+        r#""cache", "cookies""#,
+        "handing off to the gateway also asks the browser to drop this origin's data"
+    );
 }
 
 #[tokio::test]
@@ -331,6 +336,13 @@ async fn without_a_logout_url_a_forward_auth_logout_warns_on_the_dashboard() {
         session_count(&store).await,
         0,
         "the local session is deleted"
+    );
+    // Core regression lock: this exit must NOT send Clear-Site-Data, because
+    // "cookies" risks the browser dropping the flash cookie set below before
+    // the dashboard gets to read it.
+    assert!(
+        !out.headers().contains_key("clear-site-data"),
+        "the flash exit must omit Clear-Site-Data, or the warning below can never render"
     );
     let flash = set_cookie_of(&out, "pingward_flash=").expect("the warning flash cookie is set");
     assert_eq!(flash, "pingward_flash=forward_auth_logout");

@@ -12,7 +12,7 @@ use crate::state::AppState;
 use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -490,6 +490,13 @@ async fn login_submit(
 ///
 /// The redirect target comes from the operator's environment or a fixed
 /// in-app path, never from the request, so it is not an open redirect.
+///
+/// Two of the three exits also send `Clear-Site-Data` (see
+/// [`CLEAR_SITE_DATA`]) so the browser drops this origin's cookies and cache.
+/// The forward-auth flash exit deliberately does not: it carries the
+/// `pingward_flash` cookie that renders the "only your proxy/SSO provider can
+/// end this session" notice, and `Clear-Site-Data: "cookies"` would risk
+/// wiping it before `dashboard` gets to read it.
 async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -510,21 +517,49 @@ async fn logout(
     let jar = jar.remove(session_removal_cookie(&state.config));
 
     // A configured gateway logout URL ends the upstream identity too, so honour
-    // it however the request authenticated.
+    // it however the request authenticated. `Clear-Site-Data`'s "cookies"
+    // directive is origin-scoped, so it does not touch the gateway's own
+    // cookies on its (different) origin — no help and no harm to the SSO
+    // session, just a clean slate on this one before handing the browser off.
     if let Some(url) = state.config.forward_auth_logout_url.as_deref() {
-        return Ok((jar, Redirect::to(url)).into_response());
+        return Ok((
+            jar,
+            [(HeaderName::from_static("clear-site-data"), CLEAR_SITE_DATA)],
+            Redirect::to(url),
+        )
+            .into_response());
     }
 
     // No gateway logout URL. If the trusted proxy identity header is present,
     // clearing the local session cannot outlive the redirect — be honest about
     // it instead of pretending logout succeeded.
     if crate::auth::forward_auth_username(&headers, peer_ip, &state.config).is_some() {
+        // Deliberately no Clear-Site-Data here: this exit carries the
+        // `pingward_flash` cookie the dashboard needs to render the warning
+        // below, and clearing "cookies" risks the browser dropping it before
+        // `take_flash` gets to read it. Do not "restore consistency" by adding
+        // the header back — see `logout`'s doc comment.
         let jar = jar.add(flash_cookie(&state.config, "forward_auth_logout"));
         return Ok((jar, Redirect::to("/")).into_response());
     }
 
-    Ok((jar, Redirect::to("/login")).into_response())
+    Ok((
+        jar,
+        [(HeaderName::from_static("clear-site-data"), CLEAR_SITE_DATA)],
+        Redirect::to("/login"),
+    )
+        .into_response())
 }
+
+/// Ask the browser to drop this origin's data on logout.
+///
+/// Deliberately **excludes** `"storage"`: the theme preference lives in
+/// `localStorage['pw-theme']` (templates/base.html), so clearing it would
+/// reset the user's appearance setting on every logout — and pingward keeps
+/// nothing secret in localStorage, so it is pure functional regression.
+/// `"executionContexts"` is excluded for the same kind of reason: it forces a
+/// reload, which fights with the redirect we are already issuing.
+const CLEAR_SITE_DATA: &str = r#""cache", "cookies""#;
 
 /// The request's socket peer IP, or `None` when the router is driven without
 /// `ConnectInfo` (e.g. some tests) — the same fail-closed source

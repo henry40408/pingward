@@ -586,6 +586,15 @@ async fn login_logout_cycle() {
     let removal_cookie = logout_res.cookie(pingward::auth::session_cookie_name(false));
     assert_eq!(removal_cookie.path(), Some("/"));
     assert_eq!(removal_cookie.secure(), login_secure);
+    // A password logout asks the browser to drop this origin's cookies and
+    // cache — but never "storage", which would wipe the pw-theme preference.
+    let clear_site_data = logout_res
+        .header("clear-site-data")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(clear_site_data, r#""cache", "cookies""#);
+    assert!(!clear_site_data.contains("storage"));
     let res = server.get("/").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/login");

@@ -196,6 +196,15 @@ redirects to `/login` as before. `login_page` likewise bounces an
 already-authenticated visitor to `/`, because rendering a login form to someone
 the layer has just signed back in would be dishonest.
 
+The `/login`- and gateway-URL exits also send `Clear-Site-Data: "cache",
+"cookies"` (`web::CLEAR_SITE_DATA`) so the browser drops this origin's cookies
+and cache on logout. The flash exit deliberately omits it: that exit's whole
+purpose is to carry the `pingward_flash` cookie to `/`, and mixing it with
+`Clear-Site-Data: "cookies"` risks the browser dropping that cookie before
+`dashboard` reads it. `"storage"` is never sent on any exit — it would wipe
+the `pw-theme` localStorage preference (`templates/base.html`) for no security
+benefit, since pingward keeps nothing secret in localStorage.
+
 `/api/v1` data endpoints authenticate independently via the `ApiUser` bearer
 extractor; `/api/docs` and `/api/openapi.json` additionally accept a logged-in
 web session (`CurrentUser`) but are read-only `GET`s, so they add no
