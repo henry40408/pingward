@@ -58,8 +58,15 @@ pub fn is_past_absolute_cap(created_at: Option<DateTime<Utc>>, now: DateTime<Utc
 
 /// The new `expires_at` when the session should slide, else `None`.
 ///
-/// Already at/past the absolute cap → `None`; more than half the idle window
-/// still remaining → `None` (this is the write throttle); otherwise
+/// Already at/past the absolute cap → `None`. Otherwise, if the stored
+/// `expires_at` already carries a longer window than the idle policy would
+/// ever grant — only possible for a row created before this policy existed,
+/// since a row this branch writes never exceeds `now + idle` (see doc below)
+/// — it is clamped *down* to `min(now + idle, created_at + absolute)`
+/// immediately, bypassing the write throttle below: such a row must not keep
+/// sailing on its old fixed-length expiry until it happens to fall within the
+/// throttle's window. Otherwise, more than half the idle window still
+/// remaining → `None` (this is the write throttle); otherwise
 /// `min(now + idle, created_at + absolute)`.
 pub fn refreshed_expiry(
     created_at: Option<DateTime<Utc>>,
@@ -71,11 +78,19 @@ pub fn refreshed_expiry(
     if cap.is_some_and(|cap| expires_at >= cap) {
         return None;
     }
+    let next = cap.map_or(now + idle, |cap| (now + idle).min(cap));
+    if expires_at > next {
+        // A row carrying a longer window than the idle policy allows — a
+        // pre-upgrade row with its fixed 30-day expiry — is pulled *down* to
+        // the idle window on first sight, so the invariant documented above
+        // holds for legacy rows too instead of only for rows this branch
+        // created.
+        return Some(next);
+    }
     if expires_at - now >= idle / 2 {
         return None;
     }
-    let next = now + idle;
-    Some(cap.map_or(next, |cap| next.min(cap)))
+    Some(next)
 }
 
 pub fn new_session_token() -> String {
@@ -590,6 +605,39 @@ mod tests {
         let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
         let stale_expiry = now + Duration::hours(1);
         assert_eq!(refreshed_expiry(None, stale_expiry, now), Some(now + idle));
+    }
+
+    #[test]
+    fn refreshed_expiry_shortens_a_legacy_row_immediately() {
+        // A pre-branch row: created 1 day ago, but still carrying its old
+        // single-layer 30-day expiry (a hair under the cap, matching what the
+        // real upgrade produces — see the doc comment above). Far more than
+        // half the idle window "remains" on the stored value, so the ordinary
+        // throttle alone would leave it untouched for weeks; the clamp must
+        // pull it down to the idle window on this very first sight instead.
+        let now = ts(2026, 1, 1);
+        let created = now - Duration::days(1);
+        let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
+        let cap = created + Duration::days(SESSION_ABSOLUTE_MAX_DAYS);
+        let legacy_expiry = cap - Duration::seconds(1);
+        assert_eq!(
+            refreshed_expiry(Some(created), legacy_expiry, now),
+            Some(now + idle)
+        );
+    }
+
+    #[test]
+    fn refreshed_expiry_does_not_shorten_a_freshly_created_row() {
+        // A row produced by this branch's own policy: `expires_at` sits
+        // exactly at `now + idle`. The clamp added for legacy rows must not
+        // fire here — it is not "less than the idle window remains", it is
+        // "carries more than the idle window would ever grant" — so only the
+        // ordinary half-life throttle governs, and at exactly the full idle
+        // window it must not renew yet.
+        let now = ts(2026, 1, 1);
+        let created = Some(now);
+        let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
+        assert_eq!(refreshed_expiry(created, now + idle, now), None);
     }
 
     #[test]
