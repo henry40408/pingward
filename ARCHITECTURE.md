@@ -52,6 +52,10 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
   `CurrentUser`/`OptionalUser`/`AdminUser` request extractors.
 - `src/apikey.rs` — API key generation (`pw_...`) and SHA-256 hashing for the
   REST API's bearer tokens.
+- `src/ratelimit.rs` — `RateLimiter`, the in-memory per-client-IP fixed-window
+  limiter guarding `POST /login`, and `rate_limit_key`, which resolves the
+  bucket key from the trusted-proxy-gated **rightmost** `X-Forwarded-For` hop
+  (deliberately the opposite end from `auth::client_ip`'s leftmost).
 - `src/state.rs` — `AppState { store, config }`, `Clone` + `FromRef` so
   handlers can extract either piece independently.
 - `src/store.rs` — `Store`, the single data-access layer; every query in the
@@ -299,6 +303,21 @@ reverse proxy on a bridge network draws its address from a pool and a pinned
 literal silently stops matching after the network is recreated. Addresses are
 compared (and stored) canonically, so an IPv4-mapped IPv6 peer matches an
 IPv4 entry; an unparseable entry matches nothing and DNS is never consulted.
+
+`POST /login` is additionally guarded by `ratelimit::RateLimiter`
+(`AppState::login_limiter`, `src/ratelimit.rs`): 5 attempts per client IP per
+60-second window, reserved *before* the argon2 verification and released back
+on a successful login only, so a legitimate user signing in repeatedly never
+exhausts the window. Its key comes from `ratelimit::rate_limit_key`, gated by
+the same `is_trusted_proxy` check but reading the **rightmost**
+`X-Forwarded-For` hop rather than `client_ip`'s leftmost — under a stock
+appending proxy (nginx's `$proxy_add_x_forwarded_for`, Caddy's
+`reverse_proxy`) the leftmost entry is client-controlled, and keying a
+security control on it would let an attacker mint a fresh bucket per request.
+Like `AppState::events` (see "Live-tail signal bus" below), the limiter's
+state is in-process only: a multi-replica deployment counts each replica
+separately (effective budget is `5 × replicas`), and a restart resets every
+counter to zero.
 Resolution happens in the `ping::ClientIp` extractor rather than per handler,
 which is what keeps `/ping/*` and the login handlers on the same rule.
 

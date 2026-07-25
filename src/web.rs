@@ -332,6 +332,9 @@ async fn setup_page(State(state): State<AppState>, jar: CookieJar) -> Result<Res
     .into_response())
 }
 
+// Deliberately not rate-limited, unlike `login_submit`: `/setup` only ever
+// accepts requests while `count_users() == 0`, so there is no credential yet
+// to brute-force.
 async fn setup_submit(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -399,8 +402,31 @@ async fn login_submit(
     jar: CookieJar,
     headers: HeaderMap,
     conn: crate::ping::ClientIp,
+    PeerAddr(peer_ip): PeerAddr,
     Form(creds): Form<Credentials>,
 ) -> Result<Response, AppError> {
+    // Rate-limit key is deliberately not `conn` (`ping::ClientIp`, which
+    // stamps the session's `ip` column below) — see `ratelimit::rate_limit_key`
+    // for why attribution and the security control must diverge. Reserving
+    // the attempt before `find_user_by_username` means a throttled request
+    // never pays for the argon2 verification that follows.
+    let client = crate::ratelimit::rate_limit_key(peer_ip, &headers, &state.config.trusted_proxies);
+    if !state.login_limiter.try_acquire(client) {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            [(
+                header::RETRY_AFTER,
+                crate::ratelimit::WINDOW_SECS.to_string(),
+            )],
+            render(&LoginTemplate {
+                show_nav: false,
+                csrf: current_csrf(&state, &jar),
+                is_admin: false,
+                error: Some("too many login attempts — try again in a minute".into()),
+            })?,
+        )
+            .into_response());
+    }
     let user = state.store.find_user_by_username(&creds.username).await?;
     let ok = user
         .as_ref()
@@ -417,6 +443,9 @@ async fn login_submit(
     }
     let user = user.unwrap();
     if user.disabled {
+        // Not released: valid credentials for a disabled account are not a
+        // successful login. Releasing here would let an attacker holding one
+        // known-disabled credential probe this client's budget indefinitely.
         return Ok(render(&LoginTemplate {
             show_nav: false,
             csrf: current_csrf(&state, &jar),
@@ -435,6 +464,9 @@ async fn login_submit(
         false,
     )
     .await?;
+    // A successful login hands the reservation back so signing in repeatedly
+    // (several devices, a test suite) never exhausts the window.
+    state.login_limiter.release(client);
     Ok((jar, Redirect::to("/")).into_response())
 }
 

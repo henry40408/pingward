@@ -173,6 +173,17 @@ Confirm the peer's actual address with `docker inspect -f
 and note that `/admin` shows the value pingward parsed on its **Environment**
 card.
 
+`PINGWARD_TRUSTED_PROXIES` also governs login rate limiting: `POST /login`
+allows 5 attempts per client IP per 60-second window. Leaving it unset behind
+a reverse proxy means every request's peer *is* the proxy, so every client
+shares one bucket — five failed logins from anywhere lock out sign-in for the
+whole site for 60 seconds. The limiter keys on the **rightmost**
+`X-Forwarded-For` hop (and assumes exactly one trusted proxy in the chain),
+the opposite end from the **leftmost** hop used for session/ping IP
+attribution above — the leftmost entry is client-controlled, which is fine
+for a value a human reads later but would let an attacker bypass the rate
+limit by varying it.
+
 On an HTTPS deployment, `PINGWARD_BASE_URL` must use `https://` — the session
 cookie's `Secure` attribute is derived from its scheme, so an `http://` value
 (even behind a TLS-terminating proxy) leaves the cookie without `Secure`.

@@ -14,6 +14,7 @@ pub mod models;
 pub mod notify;
 pub mod ping;
 pub mod prune;
+pub mod ratelimit;
 pub mod scheduler;
 pub mod secret;
 pub mod shutdown;

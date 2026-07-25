@@ -18,6 +18,11 @@ pub struct AppState {
     /// transitions it). Carries no payload data — subscribers re-fetch the
     /// existing HTML fragment instead.
     pub events: broadcast::Sender<i64>,
+    /// Login-attempt limiter. In-memory and per-process — see
+    /// `crate::ratelimit`. The `Arc` is what makes every `AppState::clone()`
+    /// share one set of counters; a bare `RateLimiter` here would give each
+    /// clone its own and silently disable the control.
+    pub login_limiter: Arc<crate::ratelimit::RateLimiter>,
 }
 
 impl AppState {
@@ -27,6 +32,10 @@ impl AppState {
             store,
             config: Arc::new(config),
             events,
+            login_limiter: Arc::new(crate::ratelimit::RateLimiter::new(
+                crate::ratelimit::MAX_ATTEMPTS,
+                crate::ratelimit::WINDOW_SECS,
+            )),
         }
     }
 }
