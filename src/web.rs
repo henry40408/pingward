@@ -1030,9 +1030,14 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
 /// Applied to the whole of `web::routes()`, not just authenticated pages:
 /// `/login` and `/setup` render a `_csrf` bound to that visitor's cookie (see
 /// `anonymous_session`), so they must not be cached either. The machine
-/// `/ping/*` endpoints, static assets and `/healthz` are sibling routers and
-/// are structurally unaffected — `src/assets.rs`'s immutable caching is
-/// untouched.
+/// `/ping/*` endpoints, `/api/*`, static assets and `/healthz` are sibling
+/// routers and are structurally unaffected — `src/assets.rs`'s immutable
+/// caching is untouched. That is a real gap for `/api/*`, not just a
+/// structural one: `/api/docs` and `/api/openapi.json` accept a logged-in web
+/// session (`CurrentUser`) alongside `/api/v1`'s bearer auth, so those two
+/// responses are session-authenticated yet carry no `Cache-Control` at all.
+/// Known, not fixed here — adding this layer to the API router is a scope
+/// decision for whoever owns that surface.
 ///
 /// Only filled in when the response does not already carry a `Cache-Control`,
 /// so any handler that wants to override still can.
@@ -3286,6 +3291,11 @@ async fn users_set_password(
     // their *own* password (the reset form is not hidden behind `is_self` in
     // `templates/admin.html`), the session they are currently operating from
     // must survive — see `Store::delete_sessions_for_user`'s doc comment.
+    // Consequence: a self-targeted reset no longer evicts an attacker sharing
+    // that same session row (e.g. a shoulder-surfed or exported cookie) — it
+    // keeps the row exactly as `/account`'s "revoke others" does, and `logout`
+    // only ever deletes the row for the browser issuing it. Evicting that
+    // attacker therefore takes two steps: reset your password, then log out.
     let revoked = if id == admin.id {
         match secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state)) {
             Some(current) => {

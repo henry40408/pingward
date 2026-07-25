@@ -123,6 +123,7 @@ All configuration is via environment variables:
 | `PINGWARD_FORWARD_AUTH_LOGOUT_URL` | — | Where **Log out** sends the browser. Point it at your gateway's sign-out endpoint so signing out ends the SSO session too. Unset means `/login`. |
 | `PINGWARD_SECRET` | generated per process | Signing key for session cookies and CSRF tokens; at least 16 bytes. See below. |
 | `PINGWARD_COOKIE_SECURE` | derived from `PINGWARD_BASE_URL`'s scheme | Whether the session cookie carries `Secure` (`true`/`false`/`1`/`0`). Leave unset unless TLS terminates upstream and `PINGWARD_BASE_URL` cannot say so. **Changing this value (or `PINGWARD_BASE_URL`'s scheme) also changes the session cookie's name** (plain `pingward_session` vs. the `__Host-`-prefixed `__Host-pingward_session`) **and signs everyone out once** — see below. |
+| `PINGWARD_HSTS_MAX_AGE` | — (off) | `max-age` in seconds for a `Strict-Transport-Security` header sent on every response. Off by default: pingward does not terminate TLS, so sending HSTS unconditionally would be wrong on a plain-HTTP internal deployment — set this only when the reverse proxy in front of it can't add the header itself. |
 | `PINGWARD_SMTP_*` | — | Instance SMTP for the email channel (`HOST`/`FROM` required to enable; port/TLS defaulted). |
 
 Session creation, renewal and destruction are logged as `pingward::session`

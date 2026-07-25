@@ -274,7 +274,10 @@ layers"), `PINGWARD_SECRET` (session/CSRF signing key, ≥16
 bytes; generated per process when unset — see above), `PINGWARD_COOKIE_SECURE`
 (whether the session/flash cookie carries `Secure`; `true`/`false`/`1`/`0`,
 default derived from whether `PINGWARD_BASE_URL` starts with `https://` — see
-`config::parse_cookie_secure`), and `PINGWARD_SMTP_*`
+`config::parse_cookie_secure`), `PINGWARD_HSTS_MAX_AGE` (`max-age` seconds for
+an app-wide `Strict-Transport-Security` header, `web::hsts`; off by default
+since pingward does not terminate TLS itself — see ARCHITECTURE.md's router
+composition section), and `PINGWARD_SMTP_*`
 (host/from required to enable email; port/TLS defaulted). The scan and prune interval env vars accept raw
 seconds or a human-readable duration (`5m`, `1h30m`) via
 `duration::parse_duration`; an unparseable value falls back to the default

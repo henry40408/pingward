@@ -113,10 +113,11 @@ Router::new()
         .layer(csrf_guard)          // innermost
         .layer(anonymous_session)
         .layer(forward_auth_session)
-        .layer(no_store))               // outermost — runs first
+        .layer(no_store))               // outermost of the `web` layers
     .merge(ping::routes())
     .merge(api::routes())
     .merge(assets::routes())
+    .layer(hsts)                        // outermost overall — app-wide, not `web`-only
     .with_state(state)
 ```
 
@@ -137,9 +138,29 @@ shared computer, or an intermediary proxy. It sits **outermost** of the four
 ordering: `no_store` only reads and writes response headers on the way out,
 so it never observes or affects the session/CSRF request-handling chain
 described below. It runs outermost purely so it wraps every early-return
-path too, including `csrf_guard`'s 403s. `/assets/*`, `/ping/*`, and
+path too, including `csrf_guard`'s 403s. `/assets/*`, `/ping/*`, `/api/*`, and
 `/healthz` are sibling routers and stay structurally exempt — see
-`src/assets.rs`'s `IMMUTABLE_CACHE`, unchanged by this layer.
+`src/assets.rs`'s `IMMUTABLE_CACHE`, unchanged by this layer. `/api/*`'s
+exemption has a real consequence, not just a structural one: `/api/v1` is
+bearer-authenticated and was never going to carry a browser-cacheable session
+anyway, but `/api/docs` and `/api/openapi.json` additionally accept a
+logged-in web session (`CurrentUser`) and are therefore session-authenticated
+responses that end up with **no** `Cache-Control` header at all. That is a
+known gap, not a fix made here — adding `no_store` to the API router is a
+scope decision left to whoever owns that surface.
+
+`hsts` (`web::hsts`, gated by `PINGWARD_HSTS_MAX_AGE`) is layered outside
+every `.merge(...)` in the block above, not inside the `web` router the way
+`no_store` is. `no_store` is a browser-page-caching concern scoped to
+`web::routes()` — the pages that render a cookie-bound `_csrf`. HSTS instead
+tells the browser the whole *origin* is HTTPS-only, so it has to cover
+`/healthz`, `/ping/*`, `/api/*`, and static assets too, none of which
+`no_store` touches. Like `no_store`, it is a no-op response-only layer (it
+defaults off — see `web::hsts`'s doc comment for why sending it
+unconditionally would be wrong on a plain-HTTP internal deployment), so its
+position relative to the session/CSRF request-ordering chain below does not
+matter; it is placed outermost purely to cover every response, including
+early returns from the layers nested inside `web`.
 
 ### Session layers
 
@@ -367,11 +388,23 @@ Session expiry is two independent layers, not one:
   costs roughly one write per 36 hours rather than one per request;
   `last_seen_at` keeps its separate 60-second throttle (see below) since
   `/account`'s display wants finer granularity than the slide does. Upgrade
-  compatibility: an existing row has `expires_at == created_at + 30d`, which
-  already equals its own cap, so `refreshed_expiry`'s first guard
-  (`expires_at >= cap`) returns `None` immediately — no pre-upgrade session
-  ever slides, it simply lives out its original 30 days. Nobody is logged out
-  early by the upgrade.
+  compatibility: a pre-branch row has `expires_at == created_at + 30d`, but
+  that is **not** already equal to its own cap — the old single-layer
+  `open_session` (`git show aa17ca9:src/web.rs`) called `Utc::now()` twice,
+  once for `expires` and once for the `created_at` argument passed to
+  `create_session`, so `created_at` is strictly later than the timestamp
+  `expires_at` was computed from. `cap = created_at + 30d` therefore comes out
+  strictly greater than `expires_at`, guard 1 (`expires_at >= cap`) evaluates
+  **false**, and a legacy row in the final half of its window *does* take the
+  slide branch — it can emit a `session.renewed` event the naive reading of
+  guard 1 would say is impossible. What actually keeps a pre-upgrade session
+  from outliving its original 30 days is `refreshed_expiry`'s `next.min(cap)`
+  clamp (the slide can only pull `expires_at` in toward the pre-existing cap,
+  never past it) together with `is_past_absolute_cap`'s independent check in
+  `find_session_user`, not guard 1 short-circuiting. The renewal this produces
+  is a no-op in practice — microseconds, the gap between the two `Utc::now()`
+  calls — but the guarantee rests on the clamp and the backstop, not on the
+  slide never firing.
 
 `auth::is_trusted_proxy` is the single gate for that decision, shared by
 forward-auth and by `auth::client_ip` (the address stamped on a session row
