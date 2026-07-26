@@ -818,6 +818,17 @@ async fn api_docs_are_not_cacheable() {
     let res = auth_server.get("/api/openapi.json").await;
     res.assert_status_ok();
     assert_eq!(res.header("cache-control"), "no-store");
+
+    // `/api/v1` stays exempt on purpose (see `web::no_store`'s doc comment
+    // and `ARCHITECTURE.md`'s router-composition section) — this locks in
+    // that hoisting `.layer(no_store)` from `docs_routes()` up to
+    // `api::routes()` would silently break that contract. A 401 is enough to
+    // prove it: `no_store` would apply to every response through this layer
+    // regardless of status, and minting a bearer token isn't cheap with the
+    // helpers this test file already has.
+    let res = auth_server.get("/api/v1/projects").await;
+    res.assert_status(axum::http::StatusCode::UNAUTHORIZED);
+    assert!(res.maybe_header("cache-control").is_none());
 }
 
 #[tokio::test]

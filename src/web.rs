@@ -2029,8 +2029,13 @@ async fn check_create(
 /// check's notify channels) and cleared on the next render.
 ///
 /// Deliberately never `__Host-` prefixed, unlike the session cookie: it
-/// carries no authority (just a redirect surface hint), so prefixing it would
-/// double the change surface for no security benefit.
+/// carries no authority — its value is either a fixed key mapped to a fixed
+/// message, or (for `password_reset_keys:<revoked>:<keys>`) a pair of
+/// `u64`-parsed counts that Askama escapes on render, so a planted cookie can
+/// neither elevate nor inject markup. The residual cost of leaving it
+/// unprefixed: a response from a sibling subdomain can still plant a
+/// misleading count into the admin's residual-API-key warning banner, which
+/// is judged not worth doubling the change surface to close.
 const FLASH_COOKIE: &str = "pingward_flash";
 
 /// Read and clear the one-shot flash cookie **if** it was set for `surface`,
@@ -3378,9 +3383,9 @@ async fn users_set_password(
     if form.password.is_empty() {
         return Ok(Redirect::to("/admin").into_response());
     }
-    if state.store.find_user_by_id(id).await?.is_none() {
+    let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
-    }
+    };
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
     state.store.set_user_password(id, &phc).await?;
     // OWASP: a password change is a privilege level change, so existing
@@ -3399,7 +3404,10 @@ async fn users_set_password(
     // `disabled` on every request): a password reset revokes sessions only, so
     // a `pw_…` key minted before the reset keeps working indefinitely, and
     // evicting it requires revoking it from `/account` or disabling the
-    // account instead.
+    // account instead. That same re-check is why the residual-access flash
+    // below is suppressed for a target who is already disabled: their keys
+    // are already inert, so the warning would name access that does not
+    // exist.
     let revoked = if id == admin.id {
         match secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state)) {
             Some(current) => {
@@ -3455,7 +3463,11 @@ async fn users_set_password(
         .iter()
         .filter(|k| k.expires_at.is_none_or(|e| e > now))
         .count() as u64;
-    if key_count > 0 {
+    // A disabled account's keys are already inert: `api::extract::ApiUser`
+    // re-checks `disabled` on every request, so warning about residual access
+    // here would name access that does not exist — and point at a remedy
+    // (disable the account) that is already in effect.
+    if key_count > 0 && !target.disabled {
         return Ok(password_reset_keys_flash(
             &state.config,
             jar,

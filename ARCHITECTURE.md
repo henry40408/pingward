@@ -309,9 +309,15 @@ mint and removal paths:
   downgraded to plain HTTP. It is applied conditionally, never
   unconditionally: on a plaintext deployment a browser would refuse a
   `__Host-` cookie outright, turning login into a silent failure. The flash
-  cookie is deliberately exempt — it carries no authority, just a redirect
-  surface hint, so prefixing it would double the change surface for nothing.
-  Every read of the session cookie goes through
+  cookie is deliberately exempt — it carries no authority: its value is
+  either a fixed key mapped to a fixed message, or (for
+  `password_reset_keys:<revoked>:<keys>`) a pair of `u64`-parsed counts that
+  Askama escapes on render, so a planted cookie can neither elevate nor
+  inject markup. Leaving it unprefixed is not free, though: without
+  `__Host-`, a response from a sibling subdomain could still plant a
+  misleading count into the admin's residual-API-key warning banner — a
+  cosmetic risk judged not worth doubling the change surface for. Every read
+  of the session cookie goes through
   `secret::session_id_from_jar(jar, secret, cookie_name)`, which now takes
   the resolved name as a parameter rather than a hardcoded constant, so the
   read and write sides cannot drift apart.
@@ -401,19 +407,29 @@ Session expiry is two independent layers, not one:
   compatibility: `refreshed_expiry` also carries a downward clamp — whenever
   the stored `expires_at` already exceeds what the idle policy would ever
   grant (`min(now + idle, cap)`), it is pulled *down* to that value on the
-  very next request, bypassing the write throttle. That clamp was written to
-  handle a pre-branch row, whose old single-layer `open_session` (`git show
-  aa17ca9:src/web.rs`) produced an `expires_at == created_at + 30d` that would
-  otherwise have sailed on its fixed-length expiry for weeks with no idle
-  enforcement — but migration `0015_invalidate_legacy_sessions.sql` now
-  deletes every session predating the idle window outright, so no such row
-  survives into a migrated database and this scenario cannot occur. The clamp
-  itself is not removed: it stays as defence in depth for the one case it
-  cannot rule out, a row whose `created_at` fails to parse (`cap == None`, see
-  `is_past_absolute_cap`'s doc comment) and so has no cap to compare
-  `expires_at` against in the first place. `is_past_absolute_cap`'s
-  independent check in `find_session_user` remains the backstop that still
-  bounds the clamp itself at `cap`.
+  very next request, bypassing the write throttle. That clamp was originally
+  written to handle a pre-branch row, whose old single-layer `open_session`
+  (`git show aa17ca9:src/web.rs`) produced an `expires_at == created_at + 30d`
+  that would otherwise have sailed on its fixed-length expiry for weeks with
+  no idle enforcement — migration `0015_invalidate_legacy_sessions.sql` now
+  deletes every session predating the idle window outright, so that row shape
+  cannot occur **in a single-instance deployment**: `db::migrate` runs before
+  `TcpListener::bind` (`src/main.rs`), so this process cannot mint a legacy
+  row ahead of its own `DELETE`. The migration cannot order *other* processes
+  against the same database, though — a rolling deploy where a pre-`0015`
+  binary is still serving after the new binary's migration commits, or two
+  instances sharing one `DATABASE_URL` at different versions, can each still
+  write such a row after the database has already been migrated. The retained
+  clamp is what covers that multi-instance case, consistent with this
+  document's framing elsewhere that multi-instance pingward is only
+  semi-supported (see the SSE bus, which is in-process only). The clamp is
+  not scoped to that scenario alone, either: it is also what protects a
+  future build that *lowers* `SESSION_IDLE_TTL_HOURS` — every session minted
+  under the old, longer window carries an `expires_at` the new window would
+  never grant on its own, and the clamp pulls each one down to the new policy
+  the first time it's read rather than letting it ride out its old expiry.
+  `is_past_absolute_cap`'s independent check in `find_session_user` remains
+  the backstop that still bounds the clamp itself at `cap`.
 
 `auth::is_trusted_proxy` is the single gate for that decision, shared by
 forward-auth and by `auth::client_ip` (the address stamped on a session row

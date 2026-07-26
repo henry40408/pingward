@@ -454,6 +454,38 @@ async fn password_reset_has_no_warning_when_only_key_is_expired() {
     );
 }
 
+/// A disabled target's keys are already inert — `api::extract::ApiUser`
+/// re-checks `disabled` on every request — so the flash must not claim
+/// residual access, even though the key itself is still live (not expired).
+#[tokio::test]
+async fn password_reset_has_no_warning_when_target_is_disabled() {
+    let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("original").unwrap();
+    let dave_id = store
+        .create_user("dave", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let (_full, prefix, hash) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(dave_id, "ci", &hash, &prefix, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    store.set_user_disabled(dave_id, true).await.unwrap();
+
+    let res = server
+        .post(&format!("/admin/users/{dave_id}/password"))
+        .form(&[("password", "brandnew1")])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(res.maybe_cookie("pingward_flash").is_none());
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        !body.contains("data-testid=\"password-reset-flash\""),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn disable_and_enable_member() {
     let (server, store, _admin) = admin_server().await;
