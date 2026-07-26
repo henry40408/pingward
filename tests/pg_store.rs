@@ -87,6 +87,18 @@ async fn postgres_full_round_trip() {
     store.bind_channel(cid, chid).await.unwrap();
     assert_eq!(store.bound_channel_ids(cid).await.unwrap(), vec![chid]);
     assert_eq!(store.channels_for_check(cid).await.unwrap().len(), 1);
+    store
+        .update_channel(chid, "renamed", "{\"url\":\"http://y\"}")
+        .await
+        .unwrap();
+    let edited = store.find_channel(chid).await.unwrap().unwrap();
+    assert_eq!(edited.name, "renamed");
+    assert_eq!(edited.config_json, "{\"url\":\"http://y\"}");
+    assert_eq!(
+        edited.kind,
+        ChannelKind::Webhook,
+        "update_channel must not touch the immutable kind"
+    );
 
     // pings + status transition
     store

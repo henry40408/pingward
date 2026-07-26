@@ -59,6 +59,7 @@ use utoipa_scalar::Scalar;
         v1::regenerate_check,
         v1::set_check_channels,
         v1::create_channel,
+        v1::update_channel,
         v1::delete_channel,
     ),
     components(schemas(
@@ -172,7 +173,9 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/checks/{id}/channels", put(v1::set_check_channels))
         .route(
             "/api/v1/channels/{id}",
-            get(v1::get_channel).delete(v1::delete_channel),
+            get(v1::get_channel)
+                .patch(v1::update_channel)
+                .delete(v1::delete_channel),
         )
         .route("/api/v1/keys", get(v1::list_keys))
         .merge(docs_routes())

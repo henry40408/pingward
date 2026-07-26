@@ -37,6 +37,42 @@ Feature: Notification channels
     When I delete the channel named "hook1"
     Then the project shows no channels
 
+  # A rename must not require re-typing the delivery secret: the edit form
+  # renders the stored URL as a blank "unchanged" input (it is a capability
+  # token, so it is never printed back into the page), which means the only
+  # proof the merge worked is that delivery still reaches the same mock server.
+  Scenario: Renaming a channel keeps its stored webhook URL working
+    Given a project named "Notify"
+    And I remember the current project
+    And a webhook channel named "hook1" targeting the mock server
+    When I open the edit form for the channel "hook1"
+    Then the edit form hides the stored webhook URL
+    When I rename the channel to "hook-renamed"
+    Then the project lists a channel named "hook-renamed" of kind "webhook"
+    When I send a test notification to the channel "hook-renamed"
+    Then a channel success banner is shown
+    And the mock server receives a "test" notification
+
+  # The mirror image: a submitted URL overwrites. "hook1" starts pointed at a
+  # dead port (as in the unreachable-webhook scenario above), so a successful
+  # delivery afterwards can only come from the rotated value.
+  Scenario: Rotating a channel's webhook URL redirects delivery
+    Given a project named "Notify"
+    And I remember the current project
+    And I create a webhook channel named "hook1"
+    When I open the edit form for the channel "hook1"
+    And I change the channel's webhook URL to the mock server
+    And I send a test notification to the channel "hook1"
+    Then a channel success banner is shown
+    And the mock server receives a "test" notification
+
+  Scenario: A channel's kind cannot be changed from the edit form
+    Given a project named "Notify"
+    And I remember the current project
+    And I create a webhook channel named "hook1"
+    When I open the edit form for the channel "hook1"
+    Then the kind is shown as static text "webhook"
+
   Scenario: A check whose project has no channels shows an empty state
     Given a project named "Notify"
     And a check named "backup" with period 3600

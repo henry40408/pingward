@@ -1248,6 +1248,25 @@ impl Store {
         rows.iter().map(row_to_channel).collect()
     }
 
+    /// Update a channel's name and config. `kind` is deliberately absent —
+    /// it is immutable once created, because a stored `config_json` only has
+    /// meaning for the kind that wrote it and there is no sensible way to
+    /// carry it across a kind change.
+    pub async fn update_channel(
+        &self,
+        id: i64,
+        name: &str,
+        config_json: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE channels SET name = $1, config_json = $2 WHERE id = $3")
+            .bind(name)
+            .bind(config_json)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn delete_channel(&self, id: i64) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM channels WHERE id = $1")
             .bind(id)

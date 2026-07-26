@@ -580,6 +580,9 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
             Some(json!({ "channel_ids": [] })),
         ),
         (("GET", "/api/v1/channels/{id}"), None),
+        // A merge patch, so an empty object is a valid (no-op) body — every
+        // field of `ChannelInput` is `#[serde(default)]`.
+        (("PATCH", "/api/v1/channels/{id}"), Some(json!({}))),
         (("DELETE", "/api/v1/channels/{id}"), None),
     ]);
 

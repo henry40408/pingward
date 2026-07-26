@@ -5,7 +5,9 @@
 use axum::http::StatusCode;
 use axum_test::TestServer;
 use chrono::Utc;
-use pingward::{apikey, app, config::Config, db, state::AppState, store::Store};
+use pingward::{
+    apikey, app, config::Config, db, models::ChannelKind, state::AppState, store::Store,
+};
 use serde_json::{Value, json};
 
 async fn test_app() -> (TestServer, Store) {
@@ -537,6 +539,213 @@ async fn create_channel_hides_secrets_then_delete() {
         .await
         .assert_status(StatusCode::NO_CONTENT);
     assert!(store.find_channel(chid).await.unwrap().is_none());
+}
+
+/// `PATCH /channels/{id}` merges rather than replaces: a field the caller does
+/// not send keeps its stored value. That is not a convenience — a client
+/// *cannot* re-send the secrets, because no API response ever contains them
+/// (`create_channel_hides_secrets_then_delete` above), so a replacement patch
+/// would make renaming a channel impossible without re-typing its credentials.
+#[tokio::test]
+async fn patch_channel_renames_without_touching_the_stored_secret() {
+    let (server, store) = test_app().await;
+    let (uid, token) = user_with_key(&store, "alice", false).await;
+    let pid = store
+        .create_project(uid, "p", "", None, None, Utc::now())
+        .await
+        .unwrap();
+    let secret = "https://hooks.example.com/SECRET";
+    let chid = store
+        .create_channel(
+            pid,
+            ChannelKind::Webhook,
+            "hook",
+            &json!({ "url": secret }).to_string(),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let res = server
+        .patch(&format!("/api/v1/channels/{chid}"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "name": "renamed" }))
+        .await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(
+        !body.contains(secret),
+        "a patch response must not echo the stored secret back"
+    );
+    assert!(!body.contains("config_json"));
+    assert_eq!(res.json::<Value>()["name"], "renamed");
+
+    let stored = store.find_channel(chid).await.unwrap().unwrap();
+    assert_eq!(stored.name, "renamed");
+    assert!(
+        stored.config_json.contains(secret),
+        "an omitted credential must keep its stored value, got {}",
+        stored.config_json
+    );
+}
+
+/// The other half of the merge rule: a field the caller *does* send overwrites.
+/// Rotating one credential must not require re-sending the rest.
+#[tokio::test]
+async fn patch_channel_rotates_only_the_submitted_credential() {
+    let (server, store) = test_app().await;
+    let (uid, token) = user_with_key(&store, "alice", false).await;
+    let pid = store
+        .create_project(uid, "p", "", None, None, Utc::now())
+        .await
+        .unwrap();
+    let chid = store
+        .create_channel(
+            pid,
+            ChannelKind::Telegram,
+            "tg",
+            &json!({ "token": "OLD-TOKEN", "chat_id": "12345" }).to_string(),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    server
+        .patch(&format!("/api/v1/channels/{chid}"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "telegram_token": "NEW-TOKEN" }))
+        .await
+        .assert_status_ok();
+
+    let stored = store.find_channel(chid).await.unwrap().unwrap();
+    let cfg: Value = serde_json::from_str(&stored.config_json).unwrap();
+    assert_eq!(cfg["token"], "NEW-TOKEN", "the submitted secret must win");
+    assert_eq!(cfg["chat_id"], "12345", "the omitted field must be kept");
+    assert_eq!(stored.name, "tg", "an omitted name must be kept");
+}
+
+/// A channel's kind is immutable: the stored `config_json` only has meaning for
+/// the kind that wrote it, so a submitted `kind` is ignored rather than
+/// silently reinterpreting the config.
+#[tokio::test]
+async fn patch_channel_ignores_a_submitted_kind() {
+    let (server, store) = test_app().await;
+    let (uid, token) = user_with_key(&store, "alice", false).await;
+    let pid = store
+        .create_project(uid, "p", "", None, None, Utc::now())
+        .await
+        .unwrap();
+    let chid = store
+        .create_channel(
+            pid,
+            ChannelKind::Webhook,
+            "hook",
+            &json!({ "url": "https://hooks.example.com/SECRET" }).to_string(),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let res = server
+        .patch(&format!("/api/v1/channels/{chid}"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "kind": "slack", "slack_url": "https://hooks.slack.com/services/X" }))
+        .await;
+    res.assert_status_ok();
+    assert_eq!(res.json::<Value>()["kind"], "webhook");
+
+    let stored = store.find_channel(chid).await.unwrap().unwrap();
+    assert_eq!(stored.kind, ChannelKind::Webhook);
+    // The webhook block read `slack_url`? No — it reads `webhook_url`, which
+    // was blank, so the stored URL stands. The slack field is simply ignored.
+    let cfg: Value = serde_json::from_str(&stored.config_json).unwrap();
+    assert_eq!(cfg["url"], "https://hooks.example.com/SECRET");
+}
+
+/// The one optional secret needs an explicit clear: "blank keeps the stored
+/// value" would otherwise make a set ntfy token impossible to remove.
+#[tokio::test]
+async fn patch_channel_clears_the_ntfy_token_on_request() {
+    let (server, store) = test_app().await;
+    let (uid, token) = user_with_key(&store, "alice", false).await;
+    let pid = store
+        .create_project(uid, "p", "", None, None, Utc::now())
+        .await
+        .unwrap();
+    let chid = store
+        .create_channel(
+            pid,
+            ChannelKind::Ntfy,
+            "n",
+            &json!({ "base_url": "https://ntfy.sh", "topic": "t", "token": "TOK" }).to_string(),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    // A blank token alone keeps it — that's the merge rule, asserted here so
+    // the clear below is proven to be what did the work.
+    server
+        .patch(&format!("/api/v1/channels/{chid}"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "ntfy_token": "" }))
+        .await
+        .assert_status_ok();
+    let kept = store.find_channel(chid).await.unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&kept.config_json).unwrap()["token"],
+        "TOK"
+    );
+
+    server
+        .patch(&format!("/api/v1/channels/{chid}"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "ntfy_token_clear": true }))
+        .await
+        .assert_status_ok();
+    let cleared = store.find_channel(chid).await.unwrap().unwrap();
+    let cfg: Value = serde_json::from_str(&cleared.config_json).unwrap();
+    assert_eq!(cfg["token"], "");
+    assert_eq!(
+        cfg["topic"], "t",
+        "clearing the token must not touch the rest"
+    );
+}
+
+/// A patch that would leave a *required* credential empty is still rejected —
+/// the merge shares one rule set with create, it does not relax it.
+#[tokio::test]
+async fn patch_channel_rejects_blanking_a_required_credential() {
+    let (server, store) = test_app().await;
+    let (uid, token) = user_with_key(&store, "alice", false).await;
+    let pid = store
+        .create_project(uid, "p", "", None, None, Utc::now())
+        .await
+        .unwrap();
+    // A config with no `url` at all (as if written before the field existed):
+    // a blank submission has nothing to fall back to.
+    let chid = store
+        .create_channel(
+            pid,
+            ChannelKind::Webhook,
+            "hook",
+            &json!({}).to_string(),
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    server
+        .patch(&format!("/api/v1/channels/{chid}"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "name": "renamed" }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(
+        store.find_channel(chid).await.unwrap().unwrap().name,
+        "hook",
+        "a rejected patch must not have applied the name either"
+    );
 }
 
 #[tokio::test]

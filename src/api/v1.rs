@@ -18,7 +18,8 @@ use crate::models::{Channel, Check, CheckStatus, Project, User};
 use crate::state::AppState;
 use crate::store::{NewAudit, NewCheck, NotifFilter, PageCursor, PingFilter, UpdateCheck};
 use crate::web::{
-    ChannelForm, CheckForm, ProjectForm, validate_channel, validate_check, validate_project,
+    ChannelForm, CheckForm, ProjectForm, validate_channel, validate_channel_update, validate_check,
+    validate_project,
 };
 use axum::Json;
 use axum::extract::{OriginalUri, Path, Query, State};
@@ -754,6 +755,44 @@ pub async fn create_channel(
         .await?
         .ok_or_else(ApiError::internal)?;
     Ok((StatusCode::CREATED, Json(ch.into())))
+}
+
+/// Update a notification channel's name and credentials.
+///
+/// A **merge**, not a replacement: an omitted or blank field keeps the stored
+/// value, so one credential can be rotated without re-sending the others (the
+/// API never returns a stored secret, so a client could not echo them back
+/// anyway). `kind` is immutable and ignored here. Send `ntfy_token_clear: true`
+/// to remove a stored ntfy token.
+#[utoipa::path(
+    patch, path = "/api/v1/channels/{id}", tag = "channels",
+    security(("api_key" = [])),
+    params(("id" = i64, Path, description = "Channel id")),
+    request_body = ChannelInput,
+    responses(
+        (status = 200, description = "The updated channel", body = ChannelDto),
+        (status = 400, description = "Invalid input", body = crate::api::error::ApiErrorInner),
+        (status = 404, description = "Not found", body = crate::api::error::ApiErrorInner)
+    )
+)]
+pub async fn update_channel(
+    State(state): State<AppState>,
+    ApiUser(user): ApiUser,
+    OriginalUri(uri): OriginalUri,
+    Path(id): Path<i64>,
+    ApiJson(input): ApiJson<ChannelInput>,
+) -> Result<Json<ChannelDto>, ApiError> {
+    let existing = resolve_channel(&state, id, &user, "PATCH", uri.path()).await?;
+    let form: ChannelForm = input.into();
+    let (_kind, name, config) =
+        validate_channel_update(&form, Some(&existing)).map_err(ApiError::bad_request)?;
+    state.store.update_channel(id, &name, &config).await?;
+    let ch = state
+        .store
+        .find_channel(id)
+        .await?
+        .ok_or_else(ApiError::internal)?;
+    Ok(Json(ch.into()))
 }
 
 /// Delete a notification channel (also unbinds it from every check).
