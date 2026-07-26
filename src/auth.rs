@@ -67,9 +67,11 @@ pub fn is_past_absolute_cap(created_at: Option<DateTime<Utc>>, now: DateTime<Utc
 /// `min(now + idle, created_at + absolute)` immediately, bypassing the write
 /// throttle below. `0015_invalidate_legacy_sessions.sql` deletes every such
 /// pre-policy row on upgrade, so this clamp is no longer the mechanism
-/// operators depend on; it remains as defence in depth for a row whose
-/// `created_at` fails to parse (`cap == None`, see `is_past_absolute_cap`'s
-/// doc comment), which must not keep sailing on a stale `expires_at` either.
+/// operators depend on for *that* case. It stays because two others remain:
+/// a rolling deploy or a second instance on the same `DATABASE_URL` can
+/// still write a pre-policy row after the migration has run, and any future
+/// build that *lowers* `SESSION_IDLE_TTL_HOURS` leaves every live row
+/// carrying a window the new policy would never grant.
 /// Otherwise, more than half the idle window still remaining → `None` (this
 /// is the write throttle); otherwise `min(now + idle, created_at +
 /// absolute)`.
@@ -88,10 +90,11 @@ pub fn refreshed_expiry(
         // A row carrying a longer window than the idle policy allows would,
         // before `0015_invalidate_legacy_sessions.sql`, have been a
         // pre-upgrade row with its fixed 30-day expiry; that migration now
-        // deletes those on upgrade, so in practice this only guards a row
-        // whose `created_at` failed to parse (`cap == None`) and somehow
-        // still carries a stale `expires_at` — pulled *down* to the idle
-        // window rather than trusted as-is.
+        // deletes those on upgrade. What is left for this branch to catch is
+        // a row written by another process still running the old code, or —
+        // whenever `SESSION_IDLE_TTL_HOURS` is lowered — one minted under the
+        // previous, longer window: pulled *down* to the current policy rather
+        // than trusted as-is.
         return Some(next);
     }
     if expires_at - now >= idle / 2 {
