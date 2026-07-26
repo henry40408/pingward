@@ -451,3 +451,102 @@ async fn validate_rejects_expired_and_unknown_keys() {
     // Unknown hash → rejected.
     assert_eq!(store.validate_api_key("deadbeef", now).await.unwrap(), None);
 }
+
+/// A session past the absolute cap (`created_at + 30d`) is already inert —
+/// `find_session_user` refuses it — but it used to stay in the table, hidden
+/// from `/account`, until the next prune pass: its owner could neither see it
+/// nor revoke it. Opening the page must now reap it, so "not listed" means
+/// "gone".
+#[tokio::test]
+async fn opening_the_account_page_reaps_a_session_past_the_absolute_cap() {
+    let (store, uid) = member_store().await;
+    let now = chrono::Utc::now();
+    // Older than the cap, yet carrying a still-future `expires_at` — the shape
+    // a build that *lowers* the cap leaves behind, and the only one that is
+    // neither refused by the `expires_at` predicate nor reaped by prune's.
+    store
+        .create_session(
+            "capped-session",
+            uid,
+            now + chrono::Duration::hours(1),
+            Some("curl/8"),
+            Some("203.0.113.5"),
+            false,
+            now - chrono::Duration::days(31),
+        )
+        .await
+        .unwrap();
+    assert_eq!(session_count(&store, uid).await, 1, "seeded");
+
+    let server = login_server(&store, "member", "pw").await;
+    assert_eq!(
+        session_count(&store, uid).await,
+        2,
+        "the login added a second, live session"
+    );
+
+    let body = server.get("/account").await.text();
+    assert!(
+        !body.contains("203.0.113.5"),
+        "a capped session must not be listed: {body}"
+    );
+    assert_eq!(
+        session_count(&store, uid).await,
+        1,
+        "the capped row must be deleted, not merely hidden — the live session stays"
+    );
+}
+
+/// The reap is scoped to the caller: one user opening `/account` must not
+/// touch another user's rows.
+#[tokio::test]
+async fn the_reap_does_not_touch_another_users_sessions() {
+    let (store, uid) = member_store().await;
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    let other = store
+        .create_user("other", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let now = chrono::Utc::now();
+    for (id, owner) in [("mine", uid), ("theirs", other)] {
+        store
+            .create_session(
+                id,
+                owner,
+                now + chrono::Duration::hours(1),
+                None,
+                None,
+                false,
+                now - chrono::Duration::days(31),
+            )
+            .await
+            .unwrap();
+    }
+
+    let server = login_server(&store, "member", "pw").await;
+    server.get("/account").await.assert_status_ok();
+
+    // Two-sided: the caller's own capped row must be gone (only the login's
+    // live session is left), or "the other user's survived" would hold
+    // vacuously with no reap running at all.
+    assert_eq!(
+        session_count(&store, uid).await,
+        1,
+        "the caller's own capped session must be reaped"
+    );
+    assert_eq!(
+        session_count(&store, other).await,
+        1,
+        "the other user's capped session must survive"
+    );
+}
+
+/// Sessions belonging to `user_id`, counted straight out of the table so the
+/// assertion sees rows the handlers deliberately hide.
+async fn session_count(store: &Store, user_id: i64) -> i64 {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}

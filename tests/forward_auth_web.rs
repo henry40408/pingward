@@ -348,7 +348,16 @@ async fn without_a_logout_url_a_forward_auth_logout_warns_on_the_dashboard() {
         "the flash exit must omit Clear-Site-Data, or the warning below can never render"
     );
     let flash = set_cookie_of(&out, "pingward_flash=").expect("the warning flash cookie is set");
-    assert_eq!(flash, "pingward_flash=forward_auth_logout");
+    // The cookie is signed (`<payload>.<hmac>`), so the payload has to be
+    // verified out of it rather than compared literally.
+    let payload = flash
+        .strip_prefix("pingward_flash=")
+        .and_then(common::flash_payload);
+    assert_eq!(
+        payload.as_deref(),
+        Some("forward_auth_logout"),
+        "the flash must carry a forward_auth_logout payload signed by this server: {flash}"
+    );
 
     // The dashboard the browser lands on: the gateway re-mints the session, and
     // the flash renders exactly once.
@@ -394,7 +403,10 @@ async fn a_forward_auth_logout_flash_does_not_leak_onto_other_pages() {
         "GET",
         "/projects/new",
         Some("alice"),
-        Some(&format!("{cookie}; pingward_flash=forward_auth_logout")),
+        Some(&format!(
+            "{cookie}; {}",
+            common::signed_flash_cookie("forward_auth_logout")
+        )),
         Body::empty(),
     )
     .await;

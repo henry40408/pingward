@@ -184,8 +184,11 @@ async fn demoting_self_is_refused_with_flash_even_with_a_second_admin() {
     );
     let flash = res.maybe_cookie("pingward_flash");
     assert_eq!(
-        flash.map(|c| c.value().to_string()),
-        Some("users_blocked".to_string())
+        flash
+            .as_ref()
+            .and_then(|c| common::flash_payload(c.value())),
+        Some("users_blocked".to_string()),
+        "the flash must carry a signed users_blocked payload: {flash:?}"
     );
 
     let body = server.get("/admin").await.text();
@@ -325,12 +328,17 @@ async fn password_reset_flashes_a_warning_when_target_has_api_keys() {
     let flash = res.maybe_cookie("pingward_flash");
     let flash_value = flash.map(|c| c.value().to_string());
     // The `:` separators come back percent-encoded (`%3A`) on the wire, same
-    // as the other flash surfaces' cookie values.
+    // as the other flash surfaces' cookie values — decode them before checking
+    // the signature, which is taken over the decoded payload.
+    let payload = flash_value
+        .as_deref()
+        .map(|v| v.replace("%3A", ":"))
+        .and_then(|v| common::flash_payload(&v));
     assert!(
-        flash_value
+        payload
             .as_deref()
-            .is_some_and(|v| v.starts_with("password_reset_keys%3A")),
-        "{flash_value:?}"
+            .is_some_and(|p| p.starts_with("password_reset_keys:")),
+        "the flash must carry a signed password_reset_keys payload: {flash_value:?}"
     );
 
     let body = server.get("/admin").await.text();
@@ -590,5 +598,43 @@ async fn cannot_disable_self() {
             .unwrap()
             .unwrap()
             .disabled
+    );
+}
+
+/// A flash cookie this origin never signed must not render. Under plain HTTP
+/// the `__Host-` prefix is unavailable, so a response from a sibling subdomain
+/// can still *write* `pingward_flash` — the signature is what stops the
+/// planted value from being read back as a message the server never sent, here
+/// a fabricated "99 API keys still work" count on the admin's own page.
+#[tokio::test]
+async fn a_planted_unsigned_flash_does_not_render() {
+    let (mut server, _store, _admin) = admin_server().await;
+    server.add_cookie(axum_extra::extract::cookie::Cookie::new(
+        "pingward_flash",
+        "password_reset_keys:1:99",
+    ));
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        !body.contains("data-testid=\"password-reset-flash\""),
+        "an unsigned flash must not render: {body}"
+    );
+    assert!(!body.contains("99 API keys"), "{body}");
+}
+
+/// The same for a fixed-surface flash: `users_blocked` renders a refusal
+/// notice that a planted cookie must not be able to fabricate.
+#[tokio::test]
+async fn a_planted_unsigned_surface_flash_does_not_render() {
+    let (mut server, _store, _admin) = admin_server().await;
+    server.add_cookie(axum_extra::extract::cookie::Cookie::new(
+        "pingward_flash",
+        "users_blocked",
+    ));
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        !body.contains("data-testid=\"users-flash\""),
+        "an unsigned flash must not render: {body}"
     );
 }

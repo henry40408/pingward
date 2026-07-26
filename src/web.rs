@@ -2026,17 +2026,34 @@ async fn check_create(
 }
 
 /// Name of the one-shot flash cookie set after a redirect (e.g. saving a
-/// check's notify channels) and cleared on the next render.
+/// check's notify channels) and cleared on the next render, when the cookie
+/// carries no `Secure` attribute.
+const FLASH_COOKIE_BASE: &str = "pingward_flash";
+
+/// `__Host-`-prefixed name of the flash cookie, used when
+/// `PINGWARD_COOKIE_SECURE` is on. Same pairing as the session cookie (see
+/// [`crate::auth::session_cookie_name`]) and legal for the same reasons: the
+/// cookie is `Secure`, path-scoped to `/`, and carries no `Domain`.
+const FLASH_COOKIE_HOST_PREFIXED: &str = "__Host-pingward_flash";
+
+/// The flash cookie's name for this deployment.
 ///
-/// Deliberately never `__Host-` prefixed, unlike the session cookie: it
-/// carries no authority — its value is either a fixed key mapped to a fixed
-/// message, or (for `password_reset_keys:<revoked>:<keys>`) a pair of
-/// `u64`-parsed counts that Askama escapes on render, so a planted cookie can
-/// neither elevate nor inject markup. The residual cost of leaving it
-/// unprefixed: a response from a sibling subdomain can still plant a
-/// misleading count into the admin's residual-API-key warning banner, which
-/// is judged not worth doubling the change surface to close.
-const FLASH_COOKIE: &str = "pingward_flash";
+/// The cookie carries no authority — [`take_flash`] maps only known keys to a
+/// fixed message and the password-reset variant `u64`-parses its counts, so a
+/// forged value can neither elevate nor inject markup. What the `__Host-`
+/// prefix and the signature ([`secret::sign_flash`]) close is *provenance*: a
+/// response from a sibling subdomain could otherwise plant a flash this origin
+/// never set, showing the user — including an admin reading a residual-API-key
+/// count — a message the server never sent. The prefix stops a sibling writing
+/// the cookie at all under HTTPS; the signature covers the plain-HTTP
+/// deployment, where no prefix is available.
+fn flash_cookie_name(config: &crate::config::Config) -> &'static str {
+    if config.cookie_secure {
+        FLASH_COOKIE_HOST_PREFIXED
+    } else {
+        FLASH_COOKIE_BASE
+    }
+}
 
 /// Read and clear the one-shot flash cookie **if** it was set for `surface`,
 /// mapping it to that surface's fixed message. The cookie is path-scoped to
@@ -2050,10 +2067,10 @@ fn take_flash(
     jar: CookieJar,
     surface: &str,
 ) -> (CookieJar, Option<String>) {
-    let Some(cookie) = jar.get(FLASH_COOKIE) else {
+    let Some(value) = flash_payload(config, &jar) else {
         return (jar, None);
     };
-    if cookie.value() != surface {
+    if value != surface {
         return (jar, None);
     }
     let message = match surface {
@@ -2073,12 +2090,33 @@ fn take_flash(
     )
 }
 
+/// The verified flash payload carried by `jar`, if any: the cookie's value
+/// with its signature stripped, or `None` when the cookie is absent,
+/// malformed, or was not signed by this process's secret. Rotating
+/// `PINGWARD_SECRET` therefore discards any in-flight flash, exactly as it
+/// discards sessions.
+fn flash_payload(config: &crate::config::Config, jar: &CookieJar) -> Option<String> {
+    let cookie = jar.get(flash_cookie_name(config))?;
+    secret::verify_flash(&config.secret, cookie.value())
+}
+
 /// Build a one-shot flash cookie carrying `value`, path-scoped to `/` so any
 /// page can consume it via [`take_flash`]. Shared by [`flash_cookie`] (a
 /// fixed surface key) and [`password_reset_keys_flash`] (a value with counts
 /// baked in) so their cookie attributes cannot drift apart.
+///
+/// The stored value is `<payload>.<hmac>` — see [`flash_cookie_name`] for why
+/// a cookie that carries no authority is signed anyway.
 fn flash_cookie_value(config: &crate::config::Config, value: String) -> Cookie<'static> {
-    Cookie::build((FLASH_COOKIE, value))
+    flash_cookie_raw(config, secret::sign_flash(&config.secret, &value))
+}
+
+/// The flash cookie's attributes in one place, over an already-final cookie
+/// value. Both the signed setter ([`flash_cookie_value`]) and the empty-valued
+/// remover ([`flash_removal_cookie`]) go through here so the attributes cannot
+/// drift apart — see `session_removal_cookie` for why that matters.
+fn flash_cookie_raw(config: &crate::config::Config, raw: String) -> Cookie<'static> {
+    Cookie::build((flash_cookie_name(config), raw))
         .http_only(true)
         .same_site(SameSite::Lax)
         .path("/")
@@ -2100,8 +2138,13 @@ fn flash_cookie(config: &crate::config::Config, surface: &'static str) -> Cookie
 /// The empty-valued cookie used to clear the flash cookie; attributes are
 /// aligned with `flash_cookie` (see `session_removal_cookie` for why this
 /// matters).
+///
+/// The value is left empty rather than signed: removal is carried by the
+/// attributes, and an unsigned value is rejected by [`flash_payload`] on read
+/// anyway, so signing one would only make the cleared cookie harder to read
+/// in a trace.
 fn flash_removal_cookie(config: &crate::config::Config) -> Cookie<'static> {
-    flash_cookie(config, "")
+    flash_cookie_raw(config, String::new())
 }
 
 /// Set the `users_blocked` flash cookie and redirect to `/admin`. Used by the
@@ -2148,10 +2191,10 @@ fn take_password_reset_keys_flash(
     config: &crate::config::Config,
     jar: CookieJar,
 ) -> (CookieJar, Option<String>) {
-    let Some(cookie) = jar.get(FLASH_COOKIE) else {
+    let Some(value) = flash_payload(config, &jar) else {
         return (jar, None);
     };
-    let Some(rest) = cookie.value().strip_prefix(PASSWORD_RESET_KEYS_PREFIX) else {
+    let Some(rest) = value.strip_prefix(PASSWORD_RESET_KEYS_PREFIX) else {
         return (jar, None);
     };
     let Some((revoked, keys)) = rest.split_once(':') else {
@@ -3694,6 +3737,14 @@ async fn render_account(
     let current_handle =
         secret::session_id_from_jar(jar, &state.config.secret, session_cookie_name(state))
             .map(|id| crate::apikey::hash_api_key(&id));
+    // Reap this user's past-the-absolute-cap rows before listing. They are
+    // already inert, but leaving them in the table until the next prune pass
+    // means the owner can neither see nor revoke them; deleting them here is
+    // what makes "not listed" mean "gone".
+    state
+        .store
+        .delete_capped_sessions_for_user(user.id, now)
+        .await?;
     let mut sessions: Vec<SessionRow> = state
         .store
         .list_sessions_for_user(user.id, now)
@@ -4768,18 +4819,25 @@ mod tests {
         assert_eq!(readable_setting_duration("abc".into()), "abc");
     }
 
+    /// A jar carrying the flash cookie exactly as a handler would set it —
+    /// through the production builder, so the name and the signature are the
+    /// real ones rather than a copy that can drift.
+    fn flash_jar(config: &crate::config::Config, value: &str) -> CookieJar {
+        CookieJar::new().add(flash_cookie_value(config, value.to_string()))
+    }
+
     #[test]
     fn take_flash_maps_each_surface_to_its_own_message() {
         let config = test_config();
-        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "settings"));
+        let jar = flash_jar(&config, "settings");
         let (_, msg) = take_flash(&config, jar, "settings");
         assert_eq!(msg.as_deref(), Some("Settings saved."));
 
-        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "channels"));
+        let jar = flash_jar(&config, "channels");
         let (_, msg) = take_flash(&config, jar, "channels");
         assert_eq!(msg.as_deref(), Some("Notify channels saved."));
 
-        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "users_blocked"));
+        let jar = flash_jar(&config, "users_blocked");
         let (_, msg) = take_flash(&config, jar, "users_blocked");
         assert_eq!(
             msg.as_deref(),
@@ -4788,7 +4846,7 @@ mod tests {
             )
         );
 
-        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "forward_auth_logout"));
+        let jar = flash_jar(&config, "forward_auth_logout");
         let (_, msg) = take_flash(&config, jar, "forward_auth_logout");
         assert_eq!(
             msg.as_deref(),
@@ -4804,7 +4862,7 @@ mod tests {
         // check-page flash. It must neither render nor consume it — the page it
         // was set for still gets it.
         let config = test_config();
-        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "channels"));
+        let jar = flash_jar(&config, "channels");
         let (jar, msg) = take_flash(&config, jar, "settings");
         assert_eq!(msg, None);
         let (_, msg) = take_flash(&config, jar, "channels");
@@ -4821,9 +4879,59 @@ mod tests {
     fn take_flash_never_renders_an_unknown_cookie_value() {
         // Even when the surface matches, an unknown key maps to no message, so a
         // user-supplied cookie value can never render as arbitrary text.
-        let jar = CookieJar::new().add(Cookie::new(FLASH_COOKIE, "<script>"));
-        let (_, msg) = take_flash(&test_config(), jar, "<script>");
+        let config = test_config();
+        let jar = flash_jar(&config, "<script>");
+        let (_, msg) = take_flash(&config, jar, "<script>");
         assert_eq!(msg, None);
+    }
+
+    /// A flash this origin never signed — what a sibling subdomain can write
+    /// under plain HTTP, where no `__Host-` prefix is available — is ignored,
+    /// for both the fixed-surface and the counts-carrying reader.
+    #[test]
+    fn an_unsigned_flash_cookie_is_ignored() {
+        let config = test_config();
+        let name = flash_cookie_name(&config);
+
+        let jar = CookieJar::new().add(Cookie::new(name, "settings"));
+        let (_, msg) = take_flash(&config, jar, "settings");
+        assert_eq!(msg, None);
+
+        let jar = CookieJar::new().add(Cookie::new(name, "password_reset_keys:1:99"));
+        let (_, msg) = take_password_reset_keys_flash(&config, jar);
+        assert_eq!(msg, None);
+
+        // Signed under a different secret: same rejection.
+        let other = crate::config::Config::from_map(|k| {
+            (k == "PINGWARD_SECRET").then(|| "another-test-secret-32-bytes-x".into())
+        });
+        let jar = CookieJar::new().add(flash_cookie_value(&other, "settings".into()));
+        let (_, msg) = take_flash(&config, jar, "settings");
+        assert_eq!(msg, None);
+    }
+
+    /// The `__Host-` prefix is legal only on a `Secure`, `Path=/`,
+    /// `Domain`-less cookie — assert the builder actually meets that contract
+    /// wherever it uses the prefixed name.
+    #[test]
+    fn a_secure_flash_cookie_is_host_prefixed_and_prefix_legal() {
+        let secure = crate::config::Config::from_map(|k| {
+            (k == "PINGWARD_COOKIE_SECURE").then(|| "true".into())
+        });
+        let cookie = flash_cookie_value(&secure, "settings".into());
+        assert_eq!(cookie.name(), FLASH_COOKIE_HOST_PREFIXED);
+        assert_eq!(cookie.secure(), Some(true));
+        assert_eq!(cookie.path(), Some("/"));
+        assert_eq!(cookie.domain(), None);
+
+        // …and the unprefixed name when it is not Secure, or the browser
+        // would reject the cookie outright.
+        let plain = test_config();
+        assert!(!plain.cookie_secure);
+        assert_eq!(
+            flash_cookie_value(&plain, "settings".into()).name(),
+            FLASH_COOKIE_BASE
+        );
     }
 
     #[test]
