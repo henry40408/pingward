@@ -56,8 +56,11 @@ When(
 Given(
   "a webhook channel named {string} targeting the mock server",
   async ({ page, world, mockWebhook }, name) => {
+    // Recorded so the edit-form scenarios can assert the stored URL is NOT
+    // rendered back into the page.
+    world.webhookUrl = `${mockWebhook.url}/hook`;
     await createChannel(page, world.projectUrl, "webhook", name, {
-      url: `${mockWebhook.url}/hook`,
+      url: world.webhookUrl,
     });
   }
 );
@@ -106,6 +109,62 @@ Then("the project shows no channels", async ({ page }) => {
   const banner = page.getByTestId("project-channels-empty");
   await expect(banner).toBeVisible();
   await expect(banner).toContainText("nobody is notified");
+});
+
+// --- editing a channel -----------------------------------------------------
+//
+// Each channel row on the project page carries a lowercase `edit` link
+// (data-testid="channel-edit-{id}") to /channels/{id}/edit. Scoped to `.chk`,
+// which on the project page is a channel row.
+When(
+  "I open the edit form for the channel {string}",
+  async ({ page }, name) => {
+    const row = page.locator(".chk", { hasText: name });
+    await Promise.all([
+      page.waitForURL(/\/channels\/\d+\/edit$/),
+      row.getByRole("link", { name: "edit" }).click(),
+    ]);
+  }
+);
+
+// The whole point of the edit form: a stored secret is replaced by a blank
+// "unchanged" input plus a configured pill. Asserted with a non-vacuity guard —
+// a page that failed to render this channel would satisfy every "absent"
+// assertion on its own.
+Then("the edit form hides the stored webhook URL", async ({ page, world }) => {
+  await expect(page.getByTestId("channel-kind-static")).toHaveText("webhook");
+  const input = page.locator("#webhook_url");
+  await expect(input).toHaveValue("");
+  await expect(input).toHaveAttribute("placeholder", "unchanged");
+  await expect(page.locator(".pill.ok")).toHaveText("configured");
+  await expect(page.locator("body")).not.toContainText(world.webhookUrl);
+});
+
+When("I rename the channel to {string}", async ({ page }, name) => {
+  await page.locator("#name").fill(name);
+  await Promise.all([
+    page.waitForURL(/\/projects\/\d+$/),
+    page.getByRole("button", { name: "Save changes" }).click(),
+  ]);
+});
+
+When(
+  "I change the channel's webhook URL to the mock server",
+  async ({ page, world, mockWebhook }) => {
+    world.webhookUrl = `${mockWebhook.url}/hook`;
+    await page.locator("#webhook_url").fill(world.webhookUrl);
+    await Promise.all([
+      page.waitForURL(/\/projects\/\d+$/),
+      page.getByRole("button", { name: "Save changes" }).click(),
+    ]);
+  }
+);
+
+// The kind is immutable on edit, so it renders as static text and the create
+// form's <select> is absent entirely.
+Then("the kind is shown as static text {string}", async ({ page }, kind) => {
+  await expect(page.getByTestId("channel-kind-static")).toHaveText(kind);
+  await expect(page.locator("#kind")).toHaveCount(0);
 });
 
 // On the check page, the notify-channels form lists each project channel as a

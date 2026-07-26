@@ -61,6 +61,8 @@ pub fn routes() -> Router<AppState> {
         .route("/checks/{id}/delete", post(check_delete))
         .route("/projects/{pid}/channels/new", get(channel_new))
         .route("/projects/{pid}/channels", post(channel_create))
+        .route("/channels/{id}/edit", get(channel_edit))
+        .route("/channels/{id}", post(channel_update))
         .route("/channels/{id}/delete", post(channel_delete))
         .route("/channels/{id}/test", post(channel_test))
         .route("/checks/{id}/channels", post(check_set_channels))
@@ -110,6 +112,8 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/checks/{id}/delete", post(admin_check_delete))
         .route("/admin/projects/{pid}/channels/new", get(admin_channel_new))
         .route("/admin/projects/{pid}/channels", post(admin_channel_create))
+        .route("/admin/channels/{id}/edit", get(admin_channel_edit))
+        .route("/admin/channels/{id}", post(admin_channel_update))
         .route("/admin/channels/{id}/delete", post(admin_channel_delete))
         .route("/admin/channels/{id}/test", post(admin_channel_test))
         .route(
@@ -2808,11 +2812,82 @@ struct ChannelFormTemplate {
     project_id: i64,
     error: Option<String>,
     smtp_available: bool,
+    /// `Some` when editing an existing channel rather than creating one —
+    /// drives the heading, the form action, the static (immutable) kind, and
+    /// which config block is rendered.
+    edit: Option<ChannelEditView>,
+}
+
+/// The non-secret half of a stored channel config, plus a `configured` flag per
+/// secret field. Constructing this is the **only** way the edit template sees a
+/// stored config, so a delivery secret cannot reach the rendered page even by
+/// accident — non-leakage is a property of the type rather than of template
+/// discipline (`ChannelDto` keeps the same invariant for the API; see
+/// `src/api/dto.rs`).
+///
+/// Which fields count as secret is a judgement call, not a mechanical one: a
+/// webhook or Slack URL *is* the capability to post to that room, so it is
+/// treated as a secret even though it reads like an address. A telegram chat
+/// id, an ntfy server/topic, and an email recipient are identifiers and are
+/// safe to pre-fill.
+struct ChannelEditView {
+    id: i64,
+    kind: &'static str,
+    name: String,
+    // -- pre-filled, non-secret --
+    telegram_chat_id: String,
+    ntfy_base_url: String,
+    ntfy_topic: String,
+    email_to: String,
+    // -- rendered as a configured/not-set pill, never as a value. Webhook and
+    //    Slack both store their URL under `url`, and every bot/app token under
+    //    `token`; only the block for `kind` is ever rendered, so the flags do
+    //    not collide in the page.
+    has_webhook_url: bool,
+    has_slack_url: bool,
+    has_telegram_token: bool,
+    has_ntfy_token: bool,
+    has_pushover_token: bool,
+    has_pushover_user: bool,
+}
+
+impl ChannelEditView {
+    fn new(ch: &Channel) -> Self {
+        let cfg: serde_json::Value =
+            serde_json::from_str(&ch.config_json).unwrap_or(serde_json::Value::Null);
+        let value = |key: &str| -> String {
+            cfg.get(key)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let is_set = |key: &str| -> bool { !value(key).is_empty() };
+        Self {
+            id: ch.id,
+            kind: ch.kind.as_str(),
+            name: ch.name.clone(),
+            telegram_chat_id: value("chat_id"),
+            ntfy_base_url: value("base_url"),
+            ntfy_topic: value("topic"),
+            email_to: value("to"),
+            has_webhook_url: is_set("url"),
+            has_slack_url: is_set("url"),
+            has_telegram_token: is_set("token"),
+            has_ntfy_token: is_set("token"),
+            has_pushover_token: is_set("token"),
+            has_pushover_user: is_set("user"),
+        }
+    }
 }
 
 #[derive(Deserialize)]
 pub(crate) struct ChannelForm {
+    /// Blank keeps the stored name when editing; required when creating.
+    #[serde(default)]
     pub(crate) name: String,
+    /// Ignored when editing — a channel's kind is immutable, see
+    /// [`crate::store::Store::update_channel`].
+    #[serde(default)]
     pub(crate) kind: String,
     #[serde(default)]
     pub(crate) webhook_url: String,
@@ -2828,6 +2903,11 @@ pub(crate) struct ChannelForm {
     pub(crate) ntfy_topic: String,
     #[serde(default)]
     pub(crate) ntfy_token: String, // optional
+    /// Explicit clear for the one *optional* secret. Blank-means-unchanged (see
+    /// [`validate_channel_update`]) would otherwise make a stored ntfy token
+    /// impossible to remove through the edit form.
+    #[serde(default)]
+    pub(crate) ntfy_token_clear: bool,
     #[serde(default)]
     pub(crate) pushover_token: String, // application token
     #[serde(default)]
@@ -2842,45 +2922,105 @@ pub(crate) struct ChannelForm {
 pub(crate) fn validate_channel(
     form: &ChannelForm,
 ) -> Result<(ChannelKind, String, String), String> {
-    let name = form.name.trim();
-    if name.is_empty() {
-        return Err("a channel name is required".into());
-    }
-    let kind =
-        ChannelKind::from_str(&form.kind).map_err(|_e| "unknown channel kind".to_string())?;
+    validate_channel_update(form, None)
+}
+
+/// [`validate_channel`] generalized over an optional `existing` channel the
+/// form is editing.
+///
+/// One rule governs every field: **a blank submission keeps the stored value.**
+/// That is what lets the edit form render each secret as an empty
+/// `placeholder="unchanged"` input instead of printing the stored one back into
+/// the page (see [`ChannelEditView`]), while still reusing the exact same
+/// per-kind required-field checks as create — a required secret that is blank
+/// *and* unset is still an error. The one escape hatch is
+/// `ChannelForm::ntfy_token_clear`, for the single optional secret.
+///
+/// `existing.kind` always wins over the submitted `kind`: the kind is immutable
+/// once created (the edit form renders it as static text) because a stored
+/// config only has meaning for the kind that wrote it.
+pub(crate) fn validate_channel_update(
+    form: &ChannelForm,
+    existing: Option<&Channel>,
+) -> Result<(ChannelKind, String, String), String> {
+    // A config that fails to parse is treated as "nothing stored", so a
+    // corrupt row degrades to the create rules (every required field must be
+    // submitted) rather than failing the edit outright.
+    let stored: Option<serde_json::Value> =
+        existing.and_then(|c| serde_json::from_str(&c.config_json).ok());
+    let stored_str = |key: &str| -> String {
+        stored
+            .as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    // `submitted` blank ⇒ whatever is stored under `key` (empty when creating).
+    let merged = |submitted: &str, key: &str| -> String {
+        let s = submitted.trim();
+        if s.is_empty() {
+            stored_str(key)
+        } else {
+            s.to_string()
+        }
+    };
+
+    let name = match (form.name.trim(), existing) {
+        ("", None) => return Err("a channel name is required".into()),
+        ("", Some(c)) => c.name.clone(),
+        (n, _) => n.to_string(),
+    };
+    let kind = if let Some(c) = existing {
+        c.kind
+    } else {
+        let k = form.kind.trim();
+        if k.is_empty() {
+            return Err("a channel kind is required".into());
+        }
+        ChannelKind::from_str(k).map_err(|_e| "unknown channel kind".to_string())?
+    };
     let config = match kind {
         ChannelKind::Webhook => {
-            let url = form.webhook_url.trim();
+            let url = merged(&form.webhook_url, "url");
             if url.is_empty() {
                 return Err("a webhook URL is required".into());
             }
             serde_json::json!({ "url": url }).to_string()
         }
         ChannelKind::Slack => {
-            let url = form.slack_url.trim();
+            let url = merged(&form.slack_url, "url");
             if url.is_empty() {
                 return Err("a Slack incoming-webhook URL is required".into());
             }
             serde_json::json!({ "url": url }).to_string()
         }
         ChannelKind::Telegram => {
-            let token = form.telegram_token.trim();
-            let chat_id = form.telegram_chat_id.trim();
+            let token = merged(&form.telegram_token, "token");
+            let chat_id = merged(&form.telegram_chat_id, "chat_id");
             if token.is_empty() || chat_id.is_empty() {
                 return Err("Telegram requires both a bot token and a chat id".into());
             }
             serde_json::json!({ "token": token, "chat_id": chat_id }).to_string()
         }
         ChannelKind::Ntfy => {
-            let topic = form.ntfy_topic.trim();
+            let topic = merged(&form.ntfy_topic, "topic");
             if topic.is_empty() {
                 return Err("ntfy requires a topic".into());
             }
             let base_url = {
-                let b = form.ntfy_base_url.trim();
-                if b.is_empty() { "https://ntfy.sh" } else { b }
+                let b = merged(&form.ntfy_base_url, "base_url");
+                if b.is_empty() {
+                    "https://ntfy.sh".to_string()
+                } else {
+                    b
+                }
             };
-            let token = form.ntfy_token.trim();
+            let token = if form.ntfy_token_clear {
+                String::new()
+            } else {
+                merged(&form.ntfy_token, "token")
+            };
             serde_json::json!({
                 "base_url": base_url,
                 "topic": topic,
@@ -2889,28 +3029,52 @@ pub(crate) fn validate_channel(
             .to_string()
         }
         ChannelKind::Pushover => {
-            let token = form.pushover_token.trim();
-            let user = form.pushover_user.trim();
+            let token = merged(&form.pushover_token, "token");
+            let user = merged(&form.pushover_user, "user");
             if token.is_empty() || user.is_empty() {
                 return Err("Pushover requires both an application token and a user key".into());
             }
             serde_json::json!({ "token": token, "user": user }).to_string()
         }
         ChannelKind::Email => {
-            let to = form.email_to.trim();
+            let to = merged(&form.email_to, "to");
             if to.is_empty() {
                 return Err("an email recipient address is required".into());
             }
             serde_json::json!({ "to": to }).to_string()
         }
     };
-    Ok((kind, name.to_string(), config))
+    Ok((kind, name, config))
 }
 
 #[derive(Deserialize)]
 struct BindForm {
     #[serde(default)]
     channel_ids: Vec<i64>,
+}
+
+/// Build the create/edit channel form. `edit` is `None` for a create, `Some`
+/// for an edit — the only difference between the two surfaces, so both go
+/// through here and a new template field is wired up once.
+fn channel_form_template(
+    state: &AppState,
+    project_id: i64,
+    admin: bool,
+    is_admin: bool,
+    csrf: String,
+    error: Option<String>,
+    edit: Option<ChannelEditView>,
+) -> ChannelFormTemplate {
+    ChannelFormTemplate {
+        show_nav: true,
+        csrf,
+        is_admin,
+        admin,
+        project_id,
+        error,
+        smtp_available: state.config.smtp.is_some(),
+        edit,
+    }
 }
 
 async fn channel_new(
@@ -2920,15 +3084,16 @@ async fn channel_new(
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
-    Ok(render(&ChannelFormTemplate {
-        show_nav: true,
-        csrf: current_csrf(&state, &jar),
-        is_admin: user.is_admin,
-        admin: false,
-        project_id: pid,
-        error: None,
-        smtp_available: state.config.smtp.is_some(),
-    })?
+    let csrf = current_csrf(&state, &jar);
+    Ok(render(&channel_form_template(
+        &state,
+        pid,
+        false,
+        user.is_admin,
+        csrf,
+        None,
+        None,
+    ))?
     .into_response())
 }
 
@@ -2946,27 +3111,66 @@ async fn channel_create_core(
 ) -> Result<Response, AppError> {
     let base = admin_prefix(admin);
 
-    let err = |msg: &str| -> Result<Response, AppError> {
-        Ok(render(&ChannelFormTemplate {
-            show_nav: true,
-            csrf: csrf.clone(),
-            is_admin,
-            admin,
-            project_id: pid,
-            error: Some(msg.to_string()),
-            smtp_available: state.config.smtp.is_some(),
-        })?
-        .into_response())
-    };
-
     let (kind, name, config) = match validate_channel(&form) {
         Ok(v) => v,
-        Err(msg) => return err(&msg),
+        Err(msg) => {
+            return Ok(render(&channel_form_template(
+                state,
+                pid,
+                admin,
+                is_admin,
+                csrf,
+                Some(msg),
+                None,
+            ))?
+            .into_response());
+        }
     };
 
     state
         .store
         .create_channel(pid, kind, &name, &config, Utc::now())
+        .await?;
+    Ok(Redirect::to(&format!("{base}/projects/{pid}")).into_response())
+}
+
+/// Shared edit-channel core: merge the submitted form over the stored config
+/// (a blank field keeps its stored value, see [`validate_channel_update`]),
+/// re-render the form on a validation error, else update and redirect to the
+/// project page. The channel's kind is not touched.
+async fn channel_update_core(
+    state: &AppState,
+    channel: &Channel,
+    form: ChannelForm,
+    admin: bool,
+    is_admin: bool,
+    csrf: String,
+) -> Result<Response, AppError> {
+    let base = admin_prefix(admin);
+    let pid = channel.project_id;
+
+    let (_kind, name, config) = match validate_channel_update(&form, Some(channel)) {
+        Ok(v) => v,
+        Err(msg) => {
+            // Re-render from the *stored* channel, not from the rejected
+            // submission: the secrets the user typed are deliberately not
+            // echoed back into the page.
+            return Ok(render(&channel_form_template(
+                state,
+                pid,
+                admin,
+                is_admin,
+                csrf,
+                Some(msg),
+                Some(ChannelEditView::new(channel)),
+            ))?
+            .into_response());
+        }
+    };
+
+    state
+        .store
+        .update_channel(channel.id, &name, &config)
         .await?;
     Ok(Redirect::to(&format!("{base}/projects/{pid}")).into_response())
 }
@@ -2983,19 +3187,59 @@ async fn channel_create(
     channel_create_core(&state, pid, form, false, user.is_admin, csrf).await
 }
 
+/// Resolve a channel the signed-in user owns (ownership derived from its
+/// project), 404 for anyone else's — same existence-hiding rule as
+/// [`owned_project`] / [`owned_check`].
+async fn owned_channel(
+    store: &crate::store::Store,
+    id: i64,
+    user_id: i64,
+) -> Result<Channel, AppError> {
+    let channel = store.find_channel(id).await?.ok_or(AppError::NotFound)?;
+    owned_project(store, channel.project_id, user_id).await?;
+    Ok(channel)
+}
+
+async fn channel_edit(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let channel = owned_channel(&state.store, id, user.id).await?;
+    let csrf = current_csrf(&state, &jar);
+    Ok(render(&channel_form_template(
+        &state,
+        channel.project_id,
+        false,
+        user.is_admin,
+        csrf,
+        None,
+        Some(ChannelEditView::new(&channel)),
+    ))?
+    .into_response())
+}
+
+async fn channel_update(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i64>,
+    Form(form): Form<ChannelForm>,
+) -> Result<Response, AppError> {
+    let channel = owned_channel(&state.store, id, user.id).await?;
+    let csrf = current_csrf(&state, &jar);
+    channel_update_core(&state, &channel, form, false, user.is_admin, csrf).await
+}
+
 async fn channel_delete(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let channel = state
-        .store
-        .find_channel(id)
-        .await?
-        .ok_or(AppError::NotFound)?;
-    let project = owned_project(&state.store, channel.project_id, user.id).await?;
+    let channel = owned_channel(&state.store, id, user.id).await?;
     state.store.delete_channel(id).await?;
-    Ok(Redirect::to(&format!("/projects/{}", project.id)).into_response())
+    Ok(Redirect::to(&format!("/projects/{}", channel.project_id)).into_response())
 }
 
 /// Send a one-off test notification to a single channel. Sends once (no retry)
@@ -4478,16 +4722,47 @@ async fn admin_channel_new(
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
-    Ok(render(&ChannelFormTemplate {
-        show_nav: true,
-        csrf: current_csrf(&state, &jar),
-        is_admin: true,
-        admin: true,
-        project_id: pid,
-        error: None,
-        smtp_available: state.config.smtp.is_some(),
-    })?
+    let csrf = current_csrf(&state, &jar);
+    Ok(render(&channel_form_template(
+        &state, pid, true, true, csrf, None, None,
+    ))?
     .into_response())
+}
+
+async fn admin_channel_edit(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+) -> Result<Response, AppError> {
+    let channel = admin_channel(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let csrf = current_csrf(&state, &jar);
+    Ok(render(&channel_form_template(
+        &state,
+        channel.project_id,
+        true,
+        true,
+        csrf,
+        None,
+        Some(ChannelEditView::new(&channel)),
+    ))?
+    .into_response())
+}
+
+async fn admin_channel_update(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    AdminUser(admin): AdminUser,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(id): Path<i64>,
+    Form(form): Form<ChannelForm>,
+) -> Result<Response, AppError> {
+    let channel = admin_channel(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let csrf = current_csrf(&state, &jar);
+    channel_update_core(&state, &channel, form, true, true, csrf).await
 }
 
 async fn admin_channel_create(

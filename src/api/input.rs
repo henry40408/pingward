@@ -140,13 +140,25 @@ impl From<CheckInput> for CheckForm {
     }
 }
 
-/// Create body for a notification channel. The kind-specific credential fields
-/// are flat and optional; `validate_channel` enforces exactly which are
+/// Create/patch body for a notification channel. The kind-specific credential
+/// fields are flat and optional; `validate_channel` enforces exactly which are
 /// required for the chosen `kind`.
+///
+/// On `PATCH` this is a **merge**, not a replacement (unlike [`ProjectInput`] /
+/// [`CheckInput`]): an omitted or blank field keeps the channel's stored value,
+/// which is what makes it possible to rename a channel or rotate one credential
+/// without re-sending the others — the API never hands a stored secret back
+/// (`ChannelDto` omits `config_json`), so a client cannot echo one it does not
+/// have. `kind` is ignored on `PATCH`: a channel's kind is immutable.
 #[derive(Debug, Default, Deserialize, ToSchema)]
 pub struct ChannelInput {
+    /// Required when creating; omit or leave blank on `PATCH` to keep the
+    /// stored name.
+    #[serde(default)]
     pub name: String,
     /// One of `webhook`, `slack`, `telegram`, `ntfy`, `pushover`, `email`.
+    /// Required when creating, ignored when patching.
+    #[serde(default)]
     pub kind: String,
     #[serde(default)]
     pub webhook_url: String,
@@ -163,6 +175,11 @@ pub struct ChannelInput {
     pub ntfy_topic: String,
     #[serde(default)]
     pub ntfy_token: String,
+    /// Send `true` on `PATCH` to remove a stored ntfy token. Needed because a
+    /// blank `ntfy_token` means "keep", so the only optional secret would
+    /// otherwise be impossible to clear.
+    #[serde(default)]
+    pub ntfy_token_clear: bool,
     #[serde(default)]
     pub pushover_token: String,
     #[serde(default)]
@@ -183,6 +200,7 @@ impl From<ChannelInput> for ChannelForm {
             ntfy_base_url: i.ntfy_base_url,
             ntfy_topic: i.ntfy_topic,
             ntfy_token: i.ntfy_token,
+            ntfy_token_clear: i.ntfy_token_clear,
             pushover_token: i.pushover_token,
             pushover_user: i.pushover_user,
             email_to: i.email_to,

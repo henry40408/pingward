@@ -720,6 +720,39 @@ which rows to mark with a "no channel" chip, and the project page's
 empty-channels state is a warning naming the consequence instead of a neutral
 note.
 
+### Editing a channel without leaking its secrets
+
+`channels.config_json` is a single plaintext JSON blob holding delivery
+credentials, and until channel editing existed nothing ever read it back out to
+a user-visible surface (`ChannelDto` omits it outright — see `src/api/dto.rs`).
+The edit form is the first surface that could break that, so the whole design is
+built around **never re-rendering a stored secret**:
+
+- One merge rule, in `web::validate_channel_update(form, Option<&Channel>)`: a
+  blank submitted field keeps the stored value. `validate_channel` is now just
+  that function with `None`, so create and edit share one set of per-kind
+  required-field checks — blanking a *required* credential that isn't stored is
+  still an error.
+- Secrets render as empty inputs with `placeholder="unchanged"` plus a
+  `configured` / `not set` pill (the same treatment as `/admin`'s Environment
+  card). The template only ever sees `web::ChannelEditView`, which carries the
+  non-secret values plus `has_*: bool` flags — non-leakage is a property of the
+  type, not of template discipline.
+- What counts as secret is a judgement call: a webhook or Slack **URL** is the
+  capability to post, so it is hidden; a telegram chat id, ntfy server/topic,
+  and email recipient are identifiers and are pre-filled.
+- `ntfy_token_clear` is the one escape hatch — blank-means-unchanged would
+  otherwise make the single *optional* secret impossible to remove.
+- **`kind` is immutable** (rendered as static text, and a submitted `kind` is
+  ignored): a stored config only has meaning for the kind that wrote it, so
+  there is no right answer for carrying it across. `Store::update_channel`
+  takes no `kind` parameter at all.
+- `PATCH /api/v1/channels/{id}` shares the validator and is therefore a *merge*,
+  not a replacement like `PATCH` on projects/checks — a client cannot re-send
+  credentials it was never given.
+
+At-rest encryption of `config_json` was considered and deliberately deferred.
+
 ## Templates & assets
 
 Askama compiles `templates/*.html` into the binary at build time — **`cargo

@@ -27,7 +27,9 @@ OS preference and the layout adapts to phones.
   run so an overrun can be detected.
 - **Six notification channels** — webhook, Telegram, Slack, ntfy, Pushover, and
   email (SMTP). Delivery is fire-and-forget with a retry policy, so a ping
-  response is never blocked on notification I/O.
+  response is never blocked on notification I/O. Channels can be renamed and
+  their credentials rotated later; the edit form never prints a stored
+  credential back into the page — leave a field blank to keep it.
 - **REST API** — a bearer-authenticated `/api/v1` for projects, checks,
   channels, and ping/notification history: read them, create/update/delete them,
   and drive the check actions (pause, resume, acknowledge, regenerate ping URL,

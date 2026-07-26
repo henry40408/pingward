@@ -234,6 +234,11 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
             ("POST", "/projects/{pid}/channels"),
             Some(channel_form.clone()),
         ),
+        (("GET", "/channels/{id}/edit"), None),
+        // An edit merges over the stored config, so an empty form is a valid
+        // (no-op) submission — every `ChannelForm` field is
+        // `#[serde(default)]` and a blank one keeps its stored value.
+        (("POST", "/channels/{id}"), Some(vec![("_", "")])),
         (("POST", "/channels/{id}/delete"), None),
         (("POST", "/channels/{id}/test"), None),
         (("POST", "/checks/{id}/channels"), Some(bind_form.clone())),
