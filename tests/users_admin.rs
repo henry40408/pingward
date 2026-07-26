@@ -373,6 +373,87 @@ async fn password_reset_has_no_warning_when_target_has_no_api_keys() {
     );
 }
 
+/// An expired key is already dead — `Store::validate_api_key` refuses it —
+/// so it must not inflate the flash's count of keys that "continue to work".
+/// The target here has one expired key and one live one; the flash must
+/// report only the live one.
+#[tokio::test]
+async fn password_reset_flash_excludes_expired_api_keys_from_the_count() {
+    let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("original").unwrap();
+    let dave_id = store
+        .create_user("dave", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let (_full, prefix, hash) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(
+            dave_id,
+            "expired",
+            &hash,
+            &prefix,
+            Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    let (_full2, prefix2, hash2) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(dave_id, "live", &hash2, &prefix2, None, chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let res = server
+        .post(&format!("/admin/users/{dave_id}/password"))
+        .form(&[("password", "brandnew1")])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        body.contains("data-testid=\"password-reset-flash\""),
+        "{body}"
+    );
+    assert!(body.contains("1 API key that continues"), "{body}");
+}
+
+/// The mirror case: when the target's *only* key is already expired, the
+/// live count is zero and the flash must not appear at all.
+#[tokio::test]
+async fn password_reset_has_no_warning_when_only_key_is_expired() {
+    let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("original").unwrap();
+    let dave_id = store
+        .create_user("dave", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let (_full, prefix, hash) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(
+            dave_id,
+            "expired",
+            &hash,
+            &prefix,
+            Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let res = server
+        .post(&format!("/admin/users/{dave_id}/password"))
+        .form(&[("password", "brandnew1")])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(res.maybe_cookie("pingward_flash").is_none());
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        !body.contains("data-testid=\"password-reset-flash\""),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn disable_and_enable_member() {
     let (server, store, _admin) = admin_server().await;

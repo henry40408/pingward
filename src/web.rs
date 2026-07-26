@@ -2117,11 +2117,12 @@ const PASSWORD_RESET_KEYS_PREFIX: &str = "password_reset_keys:";
 
 /// Set the `password_reset_keys` flash cookie and redirect to `/admin`.
 /// Called by `users_set_password` only when the target still has at least
-/// one API key after the reset, to surface the gap its doc comment already
-/// notes: the reset revokes sessions but never API keys. `revoked` and `keys`
-/// are always server-computed (a `DELETE`'s row count and
-/// `Store::list_api_keys_for_user`'s length), never user input, so baking
-/// them into the cookie value carries no injection risk.
+/// one still-usable API key after the reset, to surface the gap its doc
+/// comment already notes: the reset revokes sessions but never API keys.
+/// `revoked` and `keys` are always server-computed (a `DELETE`'s row count
+/// and a count of `Store::list_api_keys_for_user`'s rows filtered to those
+/// not yet expired), never user input, so baking them into the cookie value
+/// carries no injection risk.
 fn password_reset_keys_flash(
     config: &crate::config::Config,
     jar: CookieJar,
@@ -2155,18 +2156,20 @@ fn take_password_reset_keys_flash(
         return (jar, None);
     };
     let sessions_word = if revoked == 1 { "session" } else { "sessions" };
-    let (keys_word, keys_verb, keys_pronoun) = if keys == 1 {
-        ("key", "continues", "It")
+    let (keys_word, keys_verb) = if keys == 1 {
+        ("key", "continues")
     } else {
-        ("keys", "continue", "They")
+        ("keys", "continue")
     };
-    // The pronoun clause names the account holder deliberately: an admin
-    // resetting *someone else's* password cannot reach that user's keys from
-    // their own /account page, so "revoke them from /account" would send them
-    // somewhere the control they need does not exist. Disabling the account is
-    // the lever an admin actually holds.
+    // Covers both a self-targeted and an other-targeted reset, since
+    // `users_set_password` allows both. Only the key's owner can revoke it,
+    // from their own /account page — true whether that owner is the acting
+    // admin or someone else. Disabling is offered as the admin's lever for
+    // *another* user's account only: `users_set_disabled` unconditionally
+    // refuses a self-targeted disable, so naming that option on a self-reset
+    // would point at a control the admin cannot actually use.
     let message = format!(
-        "Password reset revoked {revoked} {sessions_word}, but this user still has {keys} API {keys_word} that {keys_verb} to work. {keys_pronoun} can only be revoked from that user's own /account page — disable the account to cut off access immediately."
+        "Password reset revoked {revoked} {sessions_word}, but this account still has {keys} API {keys_word} that {keys_verb} to work. An API key can only be revoked from its owner's own /account page — to cut off another user's access immediately, disable their account instead."
     );
     (jar.remove(flash_removal_cookie(config)), Some(message))
 }
@@ -3441,7 +3444,17 @@ async fn users_set_password(
     // indefinitely. Surface that gap instead of leaving it silent: if the
     // target still has at least one key, flash a warning naming the residual
     // access and where to close it.
-    let key_count = state.store.list_api_keys_for_user(id).await?.len() as u64;
+    // Count only keys that still resolve: `validate_api_key` already refuses
+    // an expired key, so including one here would claim residual access that
+    // does not exist.
+    let now = Utc::now();
+    let key_count = state
+        .store
+        .list_api_keys_for_user(id)
+        .await?
+        .iter()
+        .filter(|k| k.expires_at.is_none_or(|e| e > now))
+        .count() as u64;
     if key_count > 0 {
         return Ok(password_reset_keys_flash(
             &state.config,
