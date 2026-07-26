@@ -23,6 +23,30 @@ pub fn test_config() -> pingward::config::Config {
     pingward::config::Config::from_map(|k| (k == "PINGWARD_SECRET").then(|| TEST_SECRET.into()))
 }
 
+/// The one-shot flash cookie (`name=value`) exactly as a server built with
+/// [`test_config`] would set it: signed under [`TEST_SECRET`], with the
+/// unprefixed name such a server uses (`cookie_secure` is false without a
+/// `https://` `PINGWARD_BASE_URL`).
+///
+/// Tests must go through this rather than writing `pingward_flash=<surface>`:
+/// an unsigned value is exactly what a sibling subdomain plants, so the server
+/// now ignores it — an assertion built on one would pass without exercising
+/// anything.
+#[allow(dead_code)]
+pub fn signed_flash_cookie(value: &str) -> String {
+    format!(
+        "pingward_flash={}",
+        pingward::secret::sign_flash(TEST_SECRET.as_bytes(), value)
+    )
+}
+
+/// The payload a `Set-Cookie` flash value carries, verified under
+/// [`TEST_SECRET`]. `raw` is the cookie's value, signature included.
+#[allow(dead_code)]
+pub fn flash_payload(raw: &str) -> Option<String> {
+    pingward::secret::verify_flash(TEST_SECRET.as_bytes(), raw)
+}
+
 /// The CSRF token for the newest session row in `pool`, derived exactly as a
 /// server built with [`test_config`] derives it.
 ///

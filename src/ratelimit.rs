@@ -26,6 +26,13 @@
 //!    already throttled a way to reset their own budget by spraying fresh
 //!    keys. Fixed by pruning expired windows and otherwise leaving existing
 //!    counters alone.
+//!
+//! A fourth defect was inherited by the first fix of (3) and is closed here:
+//! at capacity, an address with no bucket of its own used to be waved through
+//! unmetered, so whoever could hold [`MAX_ENTRIES`] live windows bought
+//! themselves an *unlimited* guessing budget from every further address. Such
+//! a caller is now charged to a single shared overflow bucket
+//! ([`Buckets::overflow`]) — still fail-open, but finitely so.
 
 use axum::http::HeaderMap;
 use std::collections::HashMap;
@@ -44,9 +51,49 @@ pub const WINDOW_SECS: u64 = 60;
 /// from many source addresses cannot grow it without bound.
 const MAX_ENTRIES: usize = 10_000;
 
+/// Size of the shared overflow bucket, as a multiple of `max_attempts`.
+///
+/// Only reachable once [`MAX_ENTRIES`] distinct addresses hold a live window
+/// at the same time — a state no ordinary deployment enters, and one that
+/// already means the caller commands thousands of addresses. The multiple is
+/// the trade-off dial between the two failure modes at that point: charge too
+/// little and a legitimate sign-in during a spray is refused; charge nothing
+/// (the previous behaviour) and the spray buys unlimited guesses. Ten times
+/// one address's budget keeps a handful of real users working while still
+/// bounding the total.
+const OVERFLOW_FACTOR: u32 = 10;
+
+/// Everything the limiter mutates, behind one lock.
+///
+/// The overflow counter lives here rather than in its own `Mutex` so a request
+/// that finds the map full and charges the shared bucket does both under a
+/// single acquisition — splitting them would reintroduce defect 2 (see the
+/// module doc) on exactly the path that is under attack.
+struct Buckets {
+    per_ip: HashMap<IpAddr, (u32, Instant)>,
+    /// `(attempts, window start)` shared by every address that arrives while
+    /// `per_ip` is full of live windows.
+    overflow: (u32, Instant),
+}
+
+/// Charge one attempt to a `(count, window start)` counter, returning whether
+/// it may proceed. Shared by the per-IP buckets and the overflow bucket so the
+/// two cannot drift in how a window rolls over.
+fn charge(counter: &mut (u32, Instant), max: u32, window_secs: u64) -> bool {
+    if counter.1.elapsed().as_secs() >= window_secs {
+        *counter = (1, Instant::now());
+        return true;
+    }
+    if counter.0 >= max {
+        return false;
+    }
+    counter.0 += 1;
+    true
+}
+
 /// Per-client-IP fixed-window limiter for login attempts.
 pub struct RateLimiter {
-    attempts: Mutex<HashMap<IpAddr, (u32, Instant)>>,
+    buckets: Mutex<Buckets>,
     max_attempts: u32,
     window_secs: u64,
     /// Kept as a field (rather than the [`MAX_ENTRIES`] constant) purely so
@@ -59,7 +106,13 @@ impl RateLimiter {
     /// Create a limiter allowing `max_attempts` within `window_secs`.
     pub fn new(max_attempts: u32, window_secs: u64) -> Self {
         Self {
-            attempts: Mutex::new(HashMap::new()),
+            buckets: Mutex::new(Buckets {
+                per_ip: HashMap::new(),
+                // Starting at zero attempts means the first overflow caller
+                // rolls the window over rather than inheriting boot time as a
+                // window start.
+                overflow: (0, Instant::now()),
+            }),
             max_attempts,
             window_secs,
             max_entries: MAX_ENTRIES,
@@ -82,35 +135,34 @@ impl RateLimiter {
         // panicking request under this lock can't turn `POST /login` into a
         // permanently broken endpoint for everyone after it; clippy pedantic
         // also flags a bare `unwrap()` here.
-        let mut map = self
-            .attempts
+        let mut buckets = self
+            .buckets
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if map.len() >= self.max_entries && !map.contains_key(&ip) {
+        if buckets.per_ip.len() >= self.max_entries && !buckets.per_ip.contains_key(&ip) {
             let window_secs = self.window_secs;
-            map.retain(|_, (_, started)| started.elapsed().as_secs() < window_secs);
-            if map.len() >= self.max_entries {
+            buckets
+                .per_ip
+                .retain(|_, (_, started)| started.elapsed().as_secs() < window_secs);
+            if buckets.per_ip.len() >= self.max_entries {
                 // Every entry is still live: a spray from more distinct
-                // sources than the cap. Leave the existing counters alone and
-                // let this untracked source through. Clearing the map instead
-                // would hand anyone already throttled a way to reset their own
-                // budget (defect 3, see the module doc); refusing would turn
-                // the same spray into a global login lockout. Whoever can
-                // hold this many live buckets already commands more addresses
-                // than the limit meaningfully bounds.
-                return true;
+                // sources than the cap. Existing counters are left alone —
+                // clearing the map would hand anyone already throttled a way
+                // to reset their own budget (defect 3, see the module doc) —
+                // and this untracked source is charged to the shared overflow
+                // bucket instead of being waved through. Admitting it
+                // unmetered (the previous behaviour) made the cap itself the
+                // bypass: hold `max_entries` live windows and every further
+                // address guesses without limit. Refusing outright would
+                // instead turn the same spray into a global login lockout, so
+                // the bucket is deliberately generous — see
+                // [`OVERFLOW_FACTOR`].
+                let max = self.max_attempts.saturating_mul(OVERFLOW_FACTOR);
+                return charge(&mut buckets.overflow, max, window_secs);
             }
         }
-        let entry = map.entry(ip).or_insert((0, Instant::now()));
-        if entry.1.elapsed().as_secs() >= self.window_secs {
-            *entry = (1, Instant::now());
-            return true;
-        }
-        if entry.0 >= self.max_attempts {
-            return false;
-        }
-        entry.0 += 1;
-        true
+        let entry = buckets.per_ip.entry(ip).or_insert((0, Instant::now()));
+        charge(entry, self.max_attempts, self.window_secs)
     }
 
     /// Hand back the attempt reserved by [`try_acquire`](Self::try_acquire).
@@ -121,16 +173,24 @@ impl RateLimiter {
     /// an attacker's every attempt is a failure, so their budget is
     /// unchanged.
     pub fn release(&self, ip: IpAddr) {
-        let mut map = self
-            .attempts
+        let mut buckets = self
+            .buckets
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(entry) = map.get_mut(&ip) {
+        if let Some(entry) = buckets.per_ip.get_mut(&ip) {
             entry.0 = entry.0.saturating_sub(1);
             if entry.0 == 0 {
-                map.remove(&ip);
+                buckets.per_ip.remove(&ip);
             }
+            return;
         }
+        // No bucket of its own: the attempt was charged to the shared overflow
+        // bucket (the map was full), so that is what gets the refund —
+        // otherwise a successful sign-in during a spray would still burn the
+        // shared budget. A window that rolled over between the two calls can
+        // over-refund by one attempt, which costs nothing: the counter is
+        // already saturating at zero.
+        buckets.overflow.0 = buckets.overflow.0.saturating_sub(1);
     }
 }
 
@@ -241,9 +301,10 @@ mod tests {
         }
         assert!(
             limiter
-                .attempts
+                .buckets
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .per_ip
                 .is_empty()
         );
     }
@@ -257,9 +318,10 @@ mod tests {
         }
         assert!(
             limiter
-                .attempts
+                .buckets
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .per_ip
                 .len()
                 <= 4
         );
@@ -281,9 +343,10 @@ mod tests {
         assert_eq!(
             4,
             limiter
-                .attempts
+                .buckets
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .per_ip
                 .len()
         );
 
@@ -291,9 +354,10 @@ mod tests {
         // elapsed. A fresh key must trigger a real prune.
         assert!(limiter.try_acquire(ip(99)));
         let len = limiter
-            .attempts
+            .buckets
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .per_ip
             .len();
         assert!(len < 4, "map was not pruned: len = {len}");
     }
@@ -341,6 +405,74 @@ mod tests {
             .filter(|allowed| *allowed)
             .count();
         assert_eq!(5, allowed, "concurrent requests overran the limit");
+    }
+
+    /// The capacity path used to admit an untracked address unmetered, so
+    /// holding `max_entries` live windows bought unlimited guesses from every
+    /// further address. It is now charged to a shared bucket of
+    /// `max_attempts * OVERFLOW_FACTOR`, which must eventually refuse.
+    #[test]
+    fn the_overflow_bucket_is_finite() {
+        const MAX: u32 = 2;
+        let mut limiter = RateLimiter::new(MAX, 60);
+        limiter.max_entries = 4;
+        // Fill the map with live windows so every further address overflows.
+        for last in 0..4u8 {
+            assert!(limiter.try_acquire(ip(last)));
+        }
+        let budget = MAX * OVERFLOW_FACTOR;
+        for n in 0..budget {
+            assert!(
+                limiter.try_acquire(ip(100 + u8::try_from(n).unwrap())),
+                "attempt {n} is inside the shared budget"
+            );
+        }
+        assert!(
+            !limiter.try_acquire(ip(200)),
+            "the shared overflow budget must run out"
+        );
+        // Still not a global lockout: an address that owns a bucket with room
+        // left is unaffected by the exhausted shared one.
+        limiter.release(ip(0));
+        assert!(limiter.try_acquire(ip(0)));
+    }
+
+    /// A window rollover refills the shared bucket, exactly as it refills a
+    /// per-IP one — otherwise a single spray would refuse every untracked
+    /// address forever.
+    #[test]
+    fn the_overflow_bucket_refills_with_its_window() {
+        let mut limiter = RateLimiter::new(1, 0); // zero-second window
+        limiter.max_entries = 0; // every address overflows
+        for _ in 0..(OVERFLOW_FACTOR * 3) {
+            assert!(limiter.try_acquire(ip(1)));
+        }
+    }
+
+    /// A successful sign-in charged to the shared bucket hands its attempt
+    /// back, so a legitimate user does not permanently consume the budget the
+    /// spray is competing for.
+    #[test]
+    fn release_refunds_the_overflow_bucket() {
+        let mut limiter = RateLimiter::new(1, 60);
+        limiter.max_entries = 4;
+        for last in 0..4u8 {
+            assert!(limiter.try_acquire(ip(last)));
+        }
+        let addr = ip(150);
+        for _ in 0..(OVERFLOW_FACTOR * 3) {
+            assert!(limiter.try_acquire(addr));
+            limiter.release(addr);
+        }
+        assert_eq!(
+            0,
+            limiter
+                .buckets
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .overflow
+                .0
+        );
     }
 
     fn trusted(patterns: &[&str]) -> Vec<String> {

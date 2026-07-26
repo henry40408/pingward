@@ -29,6 +29,8 @@ type HmacSha256 = Hmac<Sha256>;
 const SESSION_DOMAIN: &[u8] = b"session:";
 /// Domain-separation prefix for the CSRF synchronizer token.
 const CSRF_DOMAIN: &[u8] = b"csrf:";
+/// Domain-separation prefix for the one-shot flash cookie's signature.
+const FLASH_DOMAIN: &[u8] = b"flash:";
 
 /// Separates the session id from its signature in the cookie value. Session ids
 /// are hyphenated UUIDs, which never contain it, so `rsplit_once` cannot cut
@@ -77,12 +79,28 @@ fn generate() -> Vec<u8> {
     buf
 }
 
-/// Keyed MAC over `domain ++ session_id`, ready to finalize or verify.
-fn mac(secret: &[u8], domain: &[u8], session_id: &str) -> HmacSha256 {
+/// Keyed MAC over `domain ++ message`, ready to finalize or verify.
+fn mac(secret: &[u8], domain: &[u8], message: &str) -> HmacSha256 {
     let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts a key of any length");
     mac.update(domain);
-    mac.update(session_id.as_bytes());
+    mac.update(message.as_bytes());
     mac
+}
+
+/// Attach a signature to `value`, in the same `<payload>.<hmac>` shape as
+/// [`sign_session`] but under its own domain.
+fn sign(secret: &[u8], domain: &[u8], value: &str) -> String {
+    let sig = hex_encode(&mac(secret, domain, value).finalize().into_bytes());
+    format!("{value}{SIG_SEPARATOR}{sig}")
+}
+
+/// Recover the payload from a `<payload>.<hmac>` value, or `None` when it is
+/// malformed or the signature does not verify.
+fn verify(secret: &[u8], domain: &[u8], signed: &str) -> Option<String> {
+    let (value, sig) = signed.rsplit_once(SIG_SEPARATOR)?;
+    let sig = hex_decode(sig)?;
+    mac(secret, domain, value).verify_slice(&sig).ok()?;
+    Some(value.to_string())
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -113,24 +131,34 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 
 /// Build the cookie value for `session_id`: the id plus its signature.
 pub fn sign_session(secret: &[u8], session_id: &str) -> String {
-    let sig = hex_encode(
-        &mac(secret, SESSION_DOMAIN, session_id)
-            .finalize()
-            .into_bytes(),
-    );
-    format!("{session_id}{SIG_SEPARATOR}{sig}")
+    sign(secret, SESSION_DOMAIN, session_id)
 }
 
 /// Recover the session id from a cookie value, or `None` when the value is
 /// malformed or the signature does not verify. Callers must use this rather
 /// than the raw cookie value — the value is no longer the id.
 pub fn verify_session(secret: &[u8], cookie_value: &str) -> Option<String> {
-    let (session_id, sig) = cookie_value.rsplit_once(SIG_SEPARATOR)?;
-    let sig = hex_decode(sig)?;
-    mac(secret, SESSION_DOMAIN, session_id)
-        .verify_slice(&sig)
-        .ok()?;
-    Some(session_id.to_string())
+    verify(secret, SESSION_DOMAIN, cookie_value)
+}
+
+/// Build the one-shot flash cookie's value: the payload plus its signature.
+///
+/// The flash cookie carries no authority, so this is not what stops a forged
+/// value being *acted on* — `web::take_flash` maps only known keys to a fixed
+/// message, and the password-reset variant `u64`-parses its counts. What the
+/// signature adds is provenance: without it a response from a sibling
+/// subdomain can plant a flash this origin never set, and the user reads a
+/// message the server never sent (a fabricated "N API keys still work"
+/// count). Payloads never contain [`SIG_SEPARATOR`], so `rsplit_once` cannot
+/// cut into one.
+pub fn sign_flash(secret: &[u8], value: &str) -> String {
+    sign(secret, FLASH_DOMAIN, value)
+}
+
+/// Recover a flash payload from a cookie value, or `None` when it is malformed
+/// or was not signed by this process's secret.
+pub fn verify_flash(secret: &[u8], cookie_value: &str) -> Option<String> {
+    verify(secret, FLASH_DOMAIN, cookie_value)
 }
 
 /// The CSRF synchronizer token for a session, embedded in rendered forms as
@@ -219,6 +247,33 @@ mod tests {
         let cookie = sign_session(SECRET, ID);
         let (_, sig) = cookie.rsplit_once(SIG_SEPARATOR).unwrap();
         assert_ne!(sig, derive_csrf(SECRET, ID));
+    }
+
+    #[test]
+    fn flash_value_round_trips() {
+        let signed = sign_flash(SECRET, "settings");
+        assert!(signed.starts_with("settings."));
+        assert_eq!(verify_flash(SECRET, &signed).as_deref(), Some("settings"));
+    }
+
+    #[test]
+    fn an_unsigned_or_tampered_flash_is_rejected() {
+        // The pre-signing format — what a sibling subdomain would plant.
+        assert!(verify_flash(SECRET, "settings").is_none());
+        assert!(verify_flash(SECRET, "password_reset_keys:1:9").is_none());
+        let signed = sign_flash(SECRET, "password_reset_keys:1:2");
+        let (_, sig) = signed.rsplit_once(SIG_SEPARATOR).unwrap();
+        // The counts are what a planted cookie would want to change.
+        assert!(verify_flash(SECRET, &format!("password_reset_keys:1:9.{sig}")).is_none());
+        assert!(verify_flash(b"another-secret-16-plus", &signed).is_none());
+    }
+
+    /// Domain separation: a value signed for one purpose must not verify as
+    /// another, or a captured session cookie could be replayed as a flash.
+    #[test]
+    fn flash_and_session_signatures_do_not_cross_verify() {
+        assert!(verify_flash(SECRET, &sign_session(SECRET, ID)).is_none());
+        assert!(verify_session(SECRET, &sign_flash(SECRET, ID)).is_none());
     }
 
     #[test]

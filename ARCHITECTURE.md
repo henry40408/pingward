@@ -230,8 +230,8 @@ app on the domain too. The session cookie itself is already ended by the
 removal `Set-Cookie`, which *is* origin- and path-scoped, so nothing is lost
 by leaving "cookies" out. The flash exit omits the header entirely: it is not
 a credential teardown at all (the gateway re-mints the session on the very
-next request regardless), and its whole purpose is to carry the
-`pingward_flash` cookie to `/`. `"storage"` is never sent on any exit — it
+next request regardless), and its whole purpose is to carry the flash cookie
+(`web::flash_cookie_name`) to `/`. `"storage"` is never sent on any exit — it
 would wipe the `pw-theme` localStorage preference (`templates/base.html`) for
 no security benefit, since pingward keeps nothing secret in localStorage.
 Browsers only honour `Clear-Site-Data` on a trustworthy origin, so on a
@@ -251,6 +251,7 @@ Both browser credentials are keyed off one process secret (`src/secret.rs`,
 ```
 session cookie = <session_id>.<HMAC-SHA256(secret, "session:" ++ session_id)>
 CSRF token     =                HMAC-SHA256(secret, "csrf:"    ++ session_id)
+flash cookie   = <payload>.<HMAC-SHA256(secret, "flash:"   ++ payload)>
 ```
 
 The domain-separation prefixes are load-bearing: without them the two values
@@ -309,14 +310,21 @@ mint and removal paths:
   downgraded to plain HTTP. It is applied conditionally, never
   unconditionally: on a plaintext deployment a browser would refuse a
   `__Host-` cookie outright, turning login into a silent failure. The flash
-  cookie is deliberately exempt — it carries no authority: its value is
-  either a fixed key mapped to a fixed message, or (for
-  `password_reset_keys:<revoked>:<keys>`) a pair of `u64`-parsed counts that
-  Askama escapes on render, so a planted cookie can neither elevate nor
-  inject markup. Leaving it unprefixed is not free, though: without
-  `__Host-`, a response from a sibling subdomain could still plant a
-  misleading count into the admin's residual-API-key warning banner — a
-  cosmetic risk judged not worth doubling the change surface for. Every read
+  cookie follows the same conditional pairing (`web::flash_cookie_name`:
+  `__Host-pingward_flash` / `pingward_flash`) **and** carries an HMAC over
+  its payload (`secret::sign_flash`, verified by `web::flash_payload`). The
+  cookie holds no authority — its value is either a fixed key mapped to a
+  fixed message, or (for `password_reset_keys:<revoked>:<keys>`) a pair of
+  `u64`-parsed counts that Askama escapes on render, so a forged value can
+  neither elevate nor inject markup — but authority is not the only thing
+  worth protecting: without these two, a response from a sibling subdomain
+  could plant a flash this origin never set, and the reader would see a
+  message the server never sent (a fabricated "N API keys still work" count
+  on an admin's own page). The prefix stops a sibling writing the cookie at
+  all under HTTPS; the signature covers the plain-HTTP deployment, where no
+  prefix is available. The removal cookie's value is left empty and unsigned
+  on purpose — removal rides on the attributes, and an unsigned value fails
+  verification on read anyway. Every read
   of the session cookie goes through
   `secret::session_id_from_jar(jar, secret, cookie_name)`, which now takes
   the resolved name as a parameter rather than a hardcoded constant, so the
@@ -399,7 +407,14 @@ Session expiry is two independent layers, not one:
   so a session already refused by `find_session_user` never appears on
   `/account`, and in `delete_expired_sessions` (an extra `OR` clause,
   excluding `created_at = ''` explicitly) so prune reclaims rows that die from
-  either layer. `expires_at`'s write is throttled to firing only once past the
+  either layer. Hiding such a row is not the same as removing it, though — an
+  owner could see neither it nor a revoke button for it until the next prune
+  pass — so `render_account` first calls
+  `Store::delete_capped_sessions_for_user` (scoped to the caller, same
+  `created_at <> ''` exclusion): opening `/account` reaps the caller's own
+  past-cap rows, which is what makes "not listed" mean "gone" rather than
+  "withheld". The Rust filter stays as a belt-and-braces guard for the other
+  callers. `expires_at`'s write is throttled to firing only once past the
   half-life of the idle window (`refreshed_expiry`'s guard), so a hot session
   costs roughly one write per 36 hours rather than one per request;
   `last_seen_at` keeps its separate 60-second throttle (see below) since
@@ -455,6 +470,19 @@ state is in-process only: a multi-replica deployment counts each replica
 separately (effective budget is `5 × replicas`), and a restart resets every
 counter to zero.
 
+The tracked-address map is capped (`MAX_ENTRIES`, 10 000). On reaching it the
+limiter first prunes windows that have already elapsed; if every entry is
+still live — a spray from more distinct sources than the cap — an address with
+no bucket of its own is charged to a single **shared overflow bucket**
+(`max_attempts × OVERFLOW_FACTOR`, i.e. 50 attempts per window) rather than
+admitted unmetered. That closes a bypass in which the cap itself was the
+attack: hold 10 000 live windows and every further address guessed without
+limit. It stays deliberately fail-open-ish — refusing outright would turn the
+same spray into a global login lockout, and an address that still owns a
+bucket with room left is unaffected either way. Existing counters are never
+cleared to make room (that would let anyone already throttled reset their own
+budget), and a successful login refunds whichever bucket paid for it.
+
 `ping::ClientIp` and `ratelimit::rate_limit_key` resolve the client address
 differently on purpose, and the two must never be merged. `ClientIp` wraps
 `auth::client_ip`'s **leftmost** hop and exists for *attribution* —
@@ -487,7 +515,14 @@ Fields:
   distinguished by `sso`) — `handle`, `user_id`, `sso`, `ip`, `user_agent`,
   `expires_at`.
 - `session.renewed` (`Store::find_session_user`, the slide branch) — `handle`,
-  `user_id`, `ip`, `user_agent`, `expires_at`.
+  `user_id`, `ip`, `user_agent`, `expires_at`, `renewal`. That last field is
+  `auth::RenewalKind`: `slid` for the ordinary forward move (including one
+  truncated by the absolute cap) and `clamped` when the stored window was
+  *longer* than the current policy grants and was pulled back. The two mean
+  different things operationally — a clamp is only produced by a stale writer
+  (a rolling deploy, a second instance on one `DATABASE_URL`) or by a build
+  that lowered `SESSION_IDLE_TTL_HOURS`, so a burst of them is a deployment
+  signal rather than user activity.
 - `session.destroyed` — one per teardown path, each tagged with a `reason`:
   `logout`, `revoked` (self-service, `handle`/`user_id`/`is_current`),
   `revoke_others` (`user_id`/`count`), `password_reset`

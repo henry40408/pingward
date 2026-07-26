@@ -57,7 +57,61 @@ pub fn is_past_absolute_cap(created_at: Option<DateTime<Utc>>, now: DateTime<Utc
     created_at.is_some_and(|c| now >= c + Duration::days(SESSION_ABSOLUTE_MAX_DAYS))
 }
 
-/// The new `expires_at` when the session should slide, else `None`.
+/// Which direction a renewal moved a session's `expires_at`.
+///
+/// The two cases are operationally different and a `session.renewed` log line
+/// that cannot tell them apart is misleading: [`RenewalKind::Slid`] is the
+/// ordinary "this session is in use" heartbeat, whereas
+/// [`RenewalKind::Clamped`] means the stored window was *longer* than the
+/// current policy would ever grant and was pulled back — which only happens
+/// when a row was written by another process running older code, or by a
+/// build with a longer `SESSION_IDLE_TTL_HOURS` than this one. A burst of
+/// clamps is therefore a deployment signal, not user activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenewalKind {
+    /// The window moved forward (or stayed put and was re-anchored to the
+    /// absolute cap): ordinary activity.
+    Slid,
+    /// The window moved *backwards*, because the stored `expires_at` exceeded
+    /// what the current policy grants.
+    Clamped,
+}
+
+impl RenewalKind {
+    /// Log-field spelling, used as `renewal` on the `session.renewed` event.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Slid => "slid",
+            Self::Clamped => "clamped",
+        }
+    }
+}
+
+/// A renewal decision: the `expires_at` to write, plus which direction it
+/// moved (see [`RenewalKind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionRenewal {
+    pub expires_at: DateTime<Utc>,
+    pub kind: RenewalKind,
+}
+
+impl SessionRenewal {
+    fn slid(expires_at: DateTime<Utc>) -> Self {
+        Self {
+            expires_at,
+            kind: RenewalKind::Slid,
+        }
+    }
+
+    fn clamped(expires_at: DateTime<Utc>) -> Self {
+        Self {
+            expires_at,
+            kind: RenewalKind::Clamped,
+        }
+    }
+}
+
+/// The renewal to apply when the session should slide, else `None`.
 ///
 /// Already at/past the absolute cap → `None`. Otherwise, if the stored
 /// `expires_at` already carries a longer window than the idle policy would
@@ -79,7 +133,7 @@ pub fn refreshed_expiry(
     created_at: Option<DateTime<Utc>>,
     expires_at: DateTime<Utc>,
     now: DateTime<Utc>,
-) -> Option<DateTime<Utc>> {
+) -> Option<SessionRenewal> {
     let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
     let cap = created_at.map(|c| c + Duration::days(SESSION_ABSOLUTE_MAX_DAYS));
     if cap.is_some_and(|cap| expires_at >= cap) {
@@ -95,12 +149,12 @@ pub fn refreshed_expiry(
         // whenever `SESSION_IDLE_TTL_HOURS` is lowered — one minted under the
         // previous, longer window: pulled *down* to the current policy rather
         // than trusted as-is.
-        return Some(next);
+        return Some(SessionRenewal::clamped(next));
     }
     if expires_at - now >= idle / 2 {
         return None;
     }
-    Some(next)
+    Some(SessionRenewal::slid(next))
 }
 
 pub fn new_session_token() -> String {
@@ -580,7 +634,7 @@ mod tests {
         let stale_expiry = now + idle / 2 - Duration::hours(1);
         assert_eq!(
             refreshed_expiry(created, stale_expiry, now),
-            Some(now + idle)
+            Some(SessionRenewal::slid(now + idle))
         );
     }
 
@@ -592,8 +646,11 @@ mod tests {
         let cap = created + Duration::days(SESSION_ABSOLUTE_MAX_DAYS);
         let stale_expiry = now; // definitely under half the idle window
         let result = refreshed_expiry(Some(created), stale_expiry, now).unwrap();
-        assert_eq!(result, cap);
-        assert!(result <= cap);
+        assert_eq!(result.expires_at, cap);
+        assert!(result.expires_at <= cap);
+        // Truncated by the cap, but still a *forward* move from the stored
+        // value — the clamp label is reserved for a window that shrinks.
+        assert_eq!(result.kind, RenewalKind::Slid);
     }
 
     #[test]
@@ -614,7 +671,10 @@ mod tests {
         let now = ts(2026, 1, 1);
         let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
         let stale_expiry = now + Duration::hours(1);
-        assert_eq!(refreshed_expiry(None, stale_expiry, now), Some(now + idle));
+        assert_eq!(
+            refreshed_expiry(None, stale_expiry, now),
+            Some(SessionRenewal::slid(now + idle))
+        );
     }
 
     #[test]
@@ -635,7 +695,7 @@ mod tests {
         let legacy_expiry = cap - Duration::seconds(1);
         assert_eq!(
             refreshed_expiry(Some(created), legacy_expiry, now),
-            Some(now + idle)
+            Some(SessionRenewal::clamped(now + idle))
         );
     }
 

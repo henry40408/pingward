@@ -943,23 +943,28 @@ impl Store {
         let expires = parse_ts(row.get("session_expires_at"))
             .ok_or_else(|| decode_err("sessions.expires_at is not RFC3339"))?;
         match (stale, crate::auth::refreshed_expiry(created, expires, now)) {
-            (_, Some(next)) => {
+            (_, Some(renewal)) => {
                 sqlx::query("UPDATE sessions SET last_seen_at = $1, expires_at = $2 WHERE id = $3")
                     .bind(now.to_rfc3339())
-                    .bind(next.to_rfc3339())
+                    .bind(renewal.expires_at.to_rfc3339())
                     .bind(session_id)
                     .execute(&self.pool)
                     .await?;
                 let user_id: i64 = row.get("id");
                 let ip: Option<String> = row.get("session_ip");
                 let user_agent: Option<String> = row.get("session_user_agent");
+                // `renewal` separates the ordinary forward slide from a
+                // window pulled *backwards* to the current policy; without it
+                // a clamp — which only a stale writer or a policy change can
+                // produce — is indistinguishable from routine activity.
                 tracing::info!(
                     target: "pingward::session",
                     handle = %crate::auth::session_log_handle(session_id),
                     user_id,
                     ip = ip.as_deref(),
                     user_agent = user_agent.as_deref(),
-                    expires_at = %next.to_rfc3339(),
+                    expires_at = %renewal.expires_at.to_rfc3339(),
+                    renewal = renewal.kind.as_str(),
                     "session.renewed"
                 );
             }
@@ -999,11 +1004,45 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         let sessions: Vec<Session> = rows.iter().map(row_to_session).collect::<Result<_, _>>()?;
-        // `find_session_user` already refuses these; /account must not list them.
+        // `find_session_user` already refuses these; /account must not list
+        // them. Rows normally never reach this filter — `/account` reaps them
+        // first via [`Store::delete_capped_sessions_for_user`] — so it is a
+        // belt-and-braces guard for the other callers (the revoke handlers).
         Ok(sessions
             .into_iter()
             .filter(|s| !crate::auth::is_past_absolute_cap(s.created_at, now))
             .collect())
+    }
+
+    /// Delete `user_id`'s sessions that have passed the absolute cap
+    /// (`created_at + SESSION_ABSOLUTE_MAX_DAYS`), returning how many were
+    /// removed.
+    ///
+    /// Such a row is already inert — `find_session_user` refuses it and
+    /// `list_sessions_for_user` hides it — but *hidden* is not *gone*: until
+    /// the next prune pass (hourly by default) the owner could neither see it
+    /// on `/account` nor revoke it. Reaping the caller's own rows when they
+    /// open that page makes the list truthful by construction: what it does
+    /// not show no longer exists.
+    ///
+    /// `created_at <> ''` excludes pre-`0010` rows, which would otherwise look
+    /// infinitely old — the same exclusion
+    /// [`Store::delete_expired_sessions`] makes.
+    pub async fn delete_capped_sessions_for_user(
+        &self,
+        user_id: i64,
+        now: DateTime<Utc>,
+    ) -> Result<u64, sqlx::Error> {
+        let cap_before =
+            (now - chrono::Duration::days(crate::auth::SESSION_ABSOLUTE_MAX_DAYS)).to_rfc3339();
+        let res = sqlx::query(
+            "DELETE FROM sessions WHERE user_id = $1 AND created_at <> '' AND created_at <= $2",
+        )
+        .bind(user_id)
+        .bind(cap_before)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
     }
 
     /// Delete a session, scoped to its owner. Returns `true` if a row was

@@ -74,9 +74,12 @@ one `AppState`:
 - `assets::routes()` + `/healthz`.
 
 **Session & CSRF secret** (`src/secret.rs`): one process secret
-(`PINGWARD_SECRET`) keys both browser credentials, domain-separated —
-`cookie = <session_id>.HMAC(secret, "session:" ++ id)` and
-`csrf = HMAC(secret, "csrf:" ++ id)`. The prefixes are load-bearing: without
+(`PINGWARD_SECRET`) keys every browser credential, domain-separated —
+`cookie = <session_id>.HMAC(secret, "session:" ++ id)`,
+`csrf = HMAC(secret, "csrf:" ++ id)`, and the one-shot flash cookie
+`<payload>.HMAC(secret, "flash:" ++ payload)` (`web::flash_payload` verifies
+it, so a value planted by a sibling subdomain never renders; the flash cookie
+is `__Host-`-prefixed under `PINGWARD_COOKIE_SECURE` like the session one). The prefixes are load-bearing: without
 them the two values are equal and every rendered form would print the cookie's
 signature. Because the CSRF token is *derived*, `sessions` has no `csrf_token`
 column and neither rendering nor checking a token costs a query — and a session
