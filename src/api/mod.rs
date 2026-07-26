@@ -7,7 +7,12 @@
 //! cookie. The `/api/docs` and `/api/openapi.json` routes do read the session
 //! cookie ([`CurrentUser`]), but they are read-only `GET`s that render a schema
 //! and change no state, so there is still no ambient authority for a cross-site
-//! request to abuse.
+//! request to abuse. Because they read the session cookie, they are also
+//! session-authenticated responses in the caching sense, so this router
+//! layers [`crate::web::no_store`] around just those two routes — scoped
+//! narrowly rather than applied to the whole router, since `/api/v1` is
+//! bearer-only and changing its response headers would affect API consumers
+//! for no benefit. See [`crate::web::no_store`]'s doc comment.
 
 pub mod dto;
 pub mod error;
@@ -115,6 +120,18 @@ async fn scalar_docs(_user: CurrentUser) -> Html<String> {
     Html(Scalar::new(ApiDoc::openapi()).to_html())
 }
 
+/// The `/api/docs` and `/api/openapi.json` routes, split into their own
+/// sub-router so `no_store` can be layered around just these two —
+/// session-authenticated (`CurrentUser`) responses, unlike the bearer-only
+/// `/api/v1` surface — without touching `/api/v1`'s headers. Paths are
+/// unchanged; this is purely a layering seam.
+fn docs_routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/openapi.json", get(openapi_json))
+        .route("/api/docs", get(scalar_docs))
+        .layer(axum::middleware::from_fn(crate::web::no_store))
+}
+
 /// The API router: the read-only `/api/v1` endpoints (bearer auth) plus the
 /// `OpenAPI` document and Scalar docs UI (gated behind a logged-in web session).
 pub fn routes() -> Router<AppState> {
@@ -158,6 +175,5 @@ pub fn routes() -> Router<AppState> {
             get(v1::get_channel).delete(v1::delete_channel),
         )
         .route("/api/v1/keys", get(v1::list_keys))
-        .route("/api/openapi.json", get(openapi_json))
-        .route("/api/docs", get(scalar_docs))
+        .merge(docs_routes())
 }

@@ -298,6 +298,194 @@ async fn admin_resets_own_password_keeps_current_session() {
     relogged.get("/account").await.assert_status_ok();
 }
 
+/// Password reset revokes sessions but not API keys (see
+/// `users_set_password`'s doc comment) — an intruder who minted a `pw_…` key
+/// from a stolen session survives the reset indefinitely. When the target
+/// still has at least one key afterward, the admin page must flash a warning
+/// naming that residual access instead of leaving the gap silent.
+#[tokio::test]
+async fn password_reset_flashes_a_warning_when_target_has_api_keys() {
+    let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("original").unwrap();
+    let dave_id = store
+        .create_user("dave", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let (_full, prefix, hash) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(dave_id, "ci", &hash, &prefix, None, chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let res = server
+        .post(&format!("/admin/users/{dave_id}/password"))
+        .form(&[("password", "brandnew1")])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    let flash = res.maybe_cookie("pingward_flash");
+    let flash_value = flash.map(|c| c.value().to_string());
+    // The `:` separators come back percent-encoded (`%3A`) on the wire, same
+    // as the other flash surfaces' cookie values.
+    assert!(
+        flash_value
+            .as_deref()
+            .is_some_and(|v| v.starts_with("password_reset_keys%3A")),
+        "{flash_value:?}"
+    );
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        body.contains("data-testid=\"password-reset-flash\""),
+        "{body}"
+    );
+    assert!(body.contains("1 API key"), "{body}");
+
+    // One-shot: a second render must not repeat it.
+    let body2 = server.get("/admin").await.text();
+    assert!(
+        !body2.contains("data-testid=\"password-reset-flash\""),
+        "flash should render once: {body2}"
+    );
+}
+
+/// The mirror case: a target with no API keys gets no warning at all, so the
+/// ordinary success path stays quiet as before.
+#[tokio::test]
+async fn password_reset_has_no_warning_when_target_has_no_api_keys() {
+    let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("original").unwrap();
+    let dave_id = store
+        .create_user("dave", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let res = server
+        .post(&format!("/admin/users/{dave_id}/password"))
+        .form(&[("password", "brandnew1")])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(res.maybe_cookie("pingward_flash").is_none());
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        !body.contains("data-testid=\"password-reset-flash\""),
+        "{body}"
+    );
+}
+
+/// An expired key is already dead — `Store::validate_api_key` refuses it —
+/// so it must not inflate the flash's count of keys that "continue to work".
+/// The target here has one expired key and one live one; the flash must
+/// report only the live one.
+#[tokio::test]
+async fn password_reset_flash_excludes_expired_api_keys_from_the_count() {
+    let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("original").unwrap();
+    let dave_id = store
+        .create_user("dave", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let (_full, prefix, hash) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(
+            dave_id,
+            "expired",
+            &hash,
+            &prefix,
+            Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    let (_full2, prefix2, hash2) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(dave_id, "live", &hash2, &prefix2, None, chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let res = server
+        .post(&format!("/admin/users/{dave_id}/password"))
+        .form(&[("password", "brandnew1")])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        body.contains("data-testid=\"password-reset-flash\""),
+        "{body}"
+    );
+    assert!(body.contains("1 API key that continues"), "{body}");
+}
+
+/// The mirror case: when the target's *only* key is already expired, the
+/// live count is zero and the flash must not appear at all.
+#[tokio::test]
+async fn password_reset_has_no_warning_when_only_key_is_expired() {
+    let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("original").unwrap();
+    let dave_id = store
+        .create_user("dave", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let (_full, prefix, hash) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(
+            dave_id,
+            "expired",
+            &hash,
+            &prefix,
+            Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let res = server
+        .post(&format!("/admin/users/{dave_id}/password"))
+        .form(&[("password", "brandnew1")])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(res.maybe_cookie("pingward_flash").is_none());
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        !body.contains("data-testid=\"password-reset-flash\""),
+        "{body}"
+    );
+}
+
+/// A disabled target's keys are already inert — `api::extract::ApiUser`
+/// re-checks `disabled` on every request — so the flash must not claim
+/// residual access, even though the key itself is still live (not expired).
+#[tokio::test]
+async fn password_reset_has_no_warning_when_target_is_disabled() {
+    let (server, store, _admin) = admin_server().await;
+    let phc = pingward::auth::hash_password("original").unwrap();
+    let dave_id = store
+        .create_user("dave", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let (_full, prefix, hash) = pingward::apikey::generate_api_key();
+    store
+        .insert_api_key(dave_id, "ci", &hash, &prefix, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    store.set_user_disabled(dave_id, true).await.unwrap();
+
+    let res = server
+        .post(&format!("/admin/users/{dave_id}/password"))
+        .form(&[("password", "brandnew1")])
+        .await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(res.maybe_cookie("pingward_flash").is_none());
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        !body.contains("data-testid=\"password-reset-flash\""),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn disable_and_enable_member() {
     let (server, store, _admin) = admin_server().await;

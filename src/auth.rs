@@ -49,8 +49,9 @@ pub const SESSION_ABSOLUTE_MAX_DAYS: i64 = 30;
 ///
 /// A `None` `created_at` (a pre-`0010` row, whose `created_at = ''` yields
 /// `None` from `parse_ts`) is treated as *not* past the cap — only the idle
-/// window governs it. `0012_session_secret.sql` already ran `DELETE FROM
-/// sessions`, so no such row can exist in a migrated database; this branch is
+/// window governs it. `0012_session_secret.sql` and
+/// `0015_invalidate_legacy_sessions.sql` already ran `DELETE FROM sessions`,
+/// so no such row can exist in a migrated database; this branch is
 /// defensive.
 pub fn is_past_absolute_cap(created_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
     created_at.is_some_and(|c| now >= c + Duration::days(SESSION_ABSOLUTE_MAX_DAYS))
@@ -60,14 +61,20 @@ pub fn is_past_absolute_cap(created_at: Option<DateTime<Utc>>, now: DateTime<Utc
 ///
 /// Already at/past the absolute cap → `None`. Otherwise, if the stored
 /// `expires_at` already carries a longer window than the idle policy would
-/// ever grant — only possible for a row created before this policy existed,
-/// since a row this branch writes never exceeds `now + idle` (see doc below)
-/// — it is clamped *down* to `min(now + idle, created_at + absolute)`
-/// immediately, bypassing the write throttle below: such a row must not keep
-/// sailing on its old fixed-length expiry until it happens to fall within the
-/// throttle's window. Otherwise, more than half the idle window still
-/// remaining → `None` (this is the write throttle); otherwise
-/// `min(now + idle, created_at + absolute)`.
+/// ever grant — which could previously happen for a row created before this
+/// policy existed, since a row this branch writes never exceeds `now + idle`
+/// (see doc below) — it is clamped *down* to
+/// `min(now + idle, created_at + absolute)` immediately, bypassing the write
+/// throttle below. `0015_invalidate_legacy_sessions.sql` deletes every such
+/// pre-policy row on upgrade, so this clamp is no longer the mechanism
+/// operators depend on for *that* case. It stays because two others remain:
+/// a rolling deploy or a second instance on the same `DATABASE_URL` can
+/// still write a pre-policy row after the migration has run, and any future
+/// build that *lowers* `SESSION_IDLE_TTL_HOURS` leaves every live row
+/// carrying a window the new policy would never grant.
+/// Otherwise, more than half the idle window still remaining → `None` (this
+/// is the write throttle); otherwise `min(now + idle, created_at +
+/// absolute)`.
 pub fn refreshed_expiry(
     created_at: Option<DateTime<Utc>>,
     expires_at: DateTime<Utc>,
@@ -80,11 +87,14 @@ pub fn refreshed_expiry(
     }
     let next = cap.map_or(now + idle, |cap| (now + idle).min(cap));
     if expires_at > next {
-        // A row carrying a longer window than the idle policy allows — a
-        // pre-upgrade row with its fixed 30-day expiry — is pulled *down* to
-        // the idle window on first sight, so the invariant documented above
-        // holds for legacy rows too instead of only for rows this branch
-        // created.
+        // A row carrying a longer window than the idle policy allows would,
+        // before `0015_invalidate_legacy_sessions.sql`, have been a
+        // pre-upgrade row with its fixed 30-day expiry; that migration now
+        // deletes those on upgrade. What is left for this branch to catch is
+        // a row written by another process still running the old code, or —
+        // whenever `SESSION_IDLE_TTL_HOURS` is lowered — one minted under the
+        // previous, longer window: pulled *down* to the current policy rather
+        // than trusted as-is.
         return Some(next);
     }
     if expires_at - now >= idle / 2 {
@@ -610,11 +620,14 @@ mod tests {
     #[test]
     fn refreshed_expiry_shortens_a_legacy_row_immediately() {
         // A pre-branch row: created 1 day ago, but still carrying its old
-        // single-layer 30-day expiry (a hair under the cap, matching what the
-        // real upgrade produces — see the doc comment above). Far more than
-        // half the idle window "remains" on the stored value, so the ordinary
-        // throttle alone would leave it untouched for weeks; the clamp must
-        // pull it down to the idle window on this very first sight instead.
+        // single-layer 30-day expiry (a hair under the cap, matching what a
+        // pre-`0015` upgrade would have produced before that migration
+        // started deleting such rows outright — see the doc comment above).
+        // Far more than half the idle window "remains" on the stored value,
+        // so the ordinary throttle alone would leave it untouched for weeks;
+        // the clamp must pull it down to the idle window on this very first
+        // sight instead. The function's contract is exercised here
+        // regardless of whether such a row can occur post-`0015`.
         let now = ts(2026, 1, 1);
         let created = now - Duration::days(1);
         let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
