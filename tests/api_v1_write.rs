@@ -456,6 +456,65 @@ async fn patch_check_replaces_schedule() {
     assert_eq!(body["ping_uuid"], "uuid-x");
 }
 
+/// The per-check overrides (`scan_interval_secs`, `max_runtime_secs`,
+/// `nag_interval_secs`) are accepted on write **and** returned on read. They
+/// used to be write-only: `CheckCreate`/`CheckUpdate` took them and the store
+/// persisted them, but `CheckDto` omitted them, so a client could never read
+/// back what it had set — making read-modify-write impossible. Asserted on all
+/// three of POST, GET and PATCH, since the DTO is what each of them renders.
+#[tokio::test]
+async fn check_override_fields_round_trip() {
+    let (server, store) = test_app().await;
+    let (uid, token) = user_with_key(&store, "alice", false).await;
+    let pid = store
+        .create_project(uid, "p", "", None, None, Utc::now())
+        .await
+        .unwrap();
+
+    let created = server
+        .post(&format!("/api/v1/projects/{pid}/checks"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({
+            "name": "job",
+            "period_secs": "1h",
+            "scan_interval_secs": "30s",
+            "max_runtime_secs": "10m",
+            "nag_interval_secs": "2h",
+        }))
+        .await;
+    created.assert_status(StatusCode::CREATED);
+    let body = created.json::<Value>();
+    assert_eq!(body["scan_interval_secs"], 30);
+    assert_eq!(body["max_runtime_secs"], 600);
+    assert_eq!(body["nag_interval_secs"], 7200);
+    let cid = body["id"].as_i64().unwrap();
+
+    // Read back: the same values must survive a round-trip through the store.
+    let fetched = server
+        .get(&format!("/api/v1/checks/{cid}"))
+        .add_header("authorization", bearer(&token))
+        .await;
+    fetched.assert_status_ok();
+    let body = fetched.json::<Value>();
+    assert_eq!(body["scan_interval_secs"], 30);
+    assert_eq!(body["max_runtime_secs"], 600);
+    assert_eq!(body["nag_interval_secs"], 7200);
+
+    // PATCH replaces the whole check (see `patch_project_replaces_fields`), so
+    // an override left out of the body comes back null rather than retained —
+    // which is only observable now that the DTO renders these at all.
+    let patched = server
+        .patch(&format!("/api/v1/checks/{cid}"))
+        .add_header("authorization", bearer(&token))
+        .json(&json!({ "name": "job", "period_secs": 60, "max_runtime_secs": 120 }))
+        .await;
+    patched.assert_status_ok();
+    let body = patched.json::<Value>();
+    assert_eq!(body["max_runtime_secs"], 120);
+    assert!(body["scan_interval_secs"].is_null());
+    assert!(body["nag_interval_secs"].is_null());
+}
+
 #[tokio::test]
 async fn set_check_channels_honors_only_same_project_channels() {
     let (server, store) = test_app().await;

@@ -309,3 +309,53 @@ async fn project_and_check_descriptions_render_on_project_page() {
         "check row description must have its markdown markers stripped: {body}"
     );
 }
+
+/// The channel list renders a channel's name and kind but never its stored
+/// `config_json`, which holds delivery secrets.
+///
+/// The real guarantee is structural: the template is handed
+/// `web::ProjectChannelRow` (id/name/kind), so the secret is not in the render
+/// context and no template edit can print it. This test cannot observe that
+/// from outside — it pins the rendered output instead, asserting both the
+/// non-secret parts present and the secret absent, so the day someone hands
+/// this page a whole `Channel` again the negative half is already here to
+/// catch what they then print.
+#[tokio::test]
+async fn project_page_lists_channels_without_their_secrets() {
+    let (server, store, pid) = server_with_project().await;
+    let secret = "https://hooks.example.com/SECRET-TOKEN";
+    let cid = store
+        .create_channel(
+            pid,
+            pingward::models::ChannelKind::Webhook,
+            "on-call hook",
+            &format!("{{\"url\":\"{secret}\"}}"),
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let res = server.get(&format!("/projects/{pid}")).await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(
+        body.contains("on-call hook"),
+        "channel name missing from project page: {body}"
+    );
+    assert!(
+        body.contains("class=\"kind\">webhook</span>"),
+        "channel kind missing from project page: {body}"
+    );
+    assert!(
+        body.contains(&format!("data-testid=\"channel-edit-{cid}\"")),
+        "channel edit link missing from project page: {body}"
+    );
+    assert!(
+        !body.contains(secret),
+        "channel secret must never reach the project page: {body}"
+    );
+    assert!(
+        !body.contains("config_json"),
+        "channel config must never reach the project page: {body}"
+    );
+}

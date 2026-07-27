@@ -750,6 +750,11 @@ built around **never re-rendering a stored secret**:
 - `PATCH /api/v1/channels/{id}` shares the validator and is therefore a *merge*,
   not a replacement like `PATCH` on projects/checks — a client cannot re-send
   credentials it was never given.
+- The same projection rule applies to every other surface that lists channels:
+  the project page renders through `web::ProjectChannelRow` (id/name/kind), not
+  a whole `Channel`. Handing a template the model would put `config_json` in the
+  render context of a page that has no use for it — nothing prints it today, but
+  the guarantee should hold by construction rather than by review.
 
 At-rest encryption of `config_json` was considered and deliberately deferred.
 

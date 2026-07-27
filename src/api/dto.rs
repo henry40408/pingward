@@ -72,6 +72,13 @@ pub struct CheckDto {
     pub cron_expr: Option<String>,
     /// IANA timezone the schedule is evaluated in.
     pub timezone: String,
+    /// Per-check scan-interval override in seconds, if set.
+    pub scan_interval_secs: Option<i64>,
+    /// Expected maximum runtime in seconds, if set — the budget a `start` ping
+    /// opens against, and the ceiling the heartbeat strip scales bars to.
+    pub max_runtime_secs: Option<i64>,
+    /// Per-check nag-interval override in seconds, if set.
+    pub nag_interval_secs: Option<i64>,
     pub last_ping_at: Option<DateTime<Utc>>,
     pub last_start_at: Option<DateTime<Utc>>,
     pub next_due_at: Option<DateTime<Utc>>,
@@ -94,6 +101,9 @@ impl From<Check> for CheckDto {
             grace_secs: c.grace_secs,
             cron_expr: c.cron_expr,
             timezone: c.timezone,
+            scan_interval_secs: c.scan_interval_secs,
+            max_runtime_secs: c.max_runtime_secs,
+            nag_interval_secs: c.nag_interval_secs,
             last_ping_at: c.last_ping_at,
             last_start_at: c.last_start_at,
             next_due_at: c.next_due_at,
