@@ -1133,7 +1133,7 @@ struct ProjectTemplate {
     project: Project,
     description_html: String,
     checks: Vec<ProjectCheckRow>,
-    channels: Vec<Channel>,
+    channels: Vec<ProjectChannelRow>,
     test_result: Option<TestResult>,
 }
 
@@ -1150,6 +1150,20 @@ struct ProjectCheckRow {
     /// a "no channel" chip so a check nobody would be alerted for is visible
     /// at a glance rather than silent.
     no_channel: bool,
+}
+
+/// Project page's per-channel row. Same reason [`ChannelEditView`] exists: a
+/// stored [`Channel`] carries `config_json`, which holds delivery secrets
+/// (webhook/Slack URLs, bot tokens, SMTP credentials). This page renders only a
+/// channel's name and kind, so handing the template the whole model would put
+/// those secrets in the render context of a page that has no use for them — one
+/// stray `{{ ch.config_json }}` away from a leak. Projecting to the three fields
+/// the template actually reads makes that impossible by construction rather than
+/// by review.
+struct ProjectChannelRow {
+    id: i64,
+    name: String,
+    kind: &'static str,
 }
 
 struct TestResult {
@@ -1458,7 +1472,16 @@ async fn render_project_page(
             name: c.name,
         })
         .collect();
-    let channels = store.list_channels_for_project(project.id).await?;
+    let channels: Vec<ProjectChannelRow> = store
+        .list_channels_for_project(project.id)
+        .await?
+        .into_iter()
+        .map(|c| ProjectChannelRow {
+            id: c.id,
+            name: c.name,
+            kind: c.kind.as_str(),
+        })
+        .collect();
     let description_html = crate::markdown::render(&project.description);
     Ok(render(&ProjectTemplate {
         show_nav: true,
