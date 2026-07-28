@@ -10,6 +10,10 @@ use pingward::{
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Base URL the tests run the scheduler with; notifications render check links
+/// against it.
+const TEST_BASE_URL: &str = "https://pingward.test";
+
 async fn empty_store() -> Store {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -78,7 +82,7 @@ async fn store_with_up_check_at(
 async fn overdue_check_transitions_to_down_and_emits_event() {
     // period 60 + grace 30 = 90s; last ping 200s ago → overdue
     let (store, id) = store_with_up_check(60, 30, 200).await;
-    let events = scan_once(&store, Utc::now()).await.unwrap();
+    let events = scan_once(&store, Utc::now(), TEST_BASE_URL).await.unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(
         store
@@ -96,7 +100,7 @@ async fn overdue_check_transitions_to_down_and_emits_event() {
 async fn healthy_check_is_not_downed() {
     // last ping 10s ago, window 90s → healthy
     let (store, _) = store_with_up_check(60, 30, 10).await;
-    let events = scan_once(&store, Utc::now()).await.unwrap();
+    let events = scan_once(&store, Utc::now(), TEST_BASE_URL).await.unwrap();
     assert!(events.is_empty());
     assert_eq!(
         store
@@ -116,7 +120,7 @@ async fn scan_once_is_idempotent() {
     let now = Utc::now();
 
     // First scan: transitions the check to Down and emits exactly one event.
-    let events = scan_once(&store, now).await.unwrap();
+    let events = scan_once(&store, now, TEST_BASE_URL).await.unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(
         store
@@ -130,7 +134,7 @@ async fn scan_once_is_idempotent() {
 
     // Second scan with the same (or later) `now`: the check is already Down,
     // so it's excluded from list_active_checks and must not be re-emitted.
-    let events = scan_once(&store, now).await.unwrap();
+    let events = scan_once(&store, now, TEST_BASE_URL).await.unwrap();
     assert!(events.is_empty());
     assert_eq!(
         store
@@ -151,7 +155,7 @@ async fn scan_once_downs_check_exactly_at_due_boundary() {
     let (store, _id) = store_with_up_check_at(60, 30, t0).await;
 
     // now == due exactly: the comparison is `>=`, so this must down the check.
-    let events = scan_once(&store, due).await.unwrap();
+    let events = scan_once(&store, due, TEST_BASE_URL).await.unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(
         store
@@ -172,7 +176,9 @@ async fn scan_once_does_not_down_check_one_second_before_due() {
     let (store, _id) = store_with_up_check_at(60, 30, t0).await;
 
     // now == due - 1s: still not due yet, must not emit or down the check.
-    let events = scan_once(&store, due - Duration::seconds(1)).await.unwrap();
+    let events = scan_once(&store, due - Duration::seconds(1), TEST_BASE_URL)
+        .await
+        .unwrap();
     assert!(events.is_empty());
     assert_eq!(
         store
@@ -209,7 +215,7 @@ async fn overdue_downs_and_delivers_to_bound_channel() {
         .unwrap();
     store.bind_channel(id, cid).await.unwrap();
 
-    let events = scan_once(&store, now).await.unwrap();
+    let events = scan_once(&store, now, TEST_BASE_URL).await.unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].check_id, id);
     for ev in &events {
@@ -239,7 +245,14 @@ async fn run_scan_loop_publishes_down_transition_to_live_tail() {
     // Hold `shutdown_tx` for the duration: dropping it is itself a shutdown
     // request (see `shutdown::channel`), which would end the loop early.
     let (_shutdown_tx, shutdown) = shutdown::channel();
-    let handle = tokio::spawn(run_scan_loop(store.clone(), 1, None, tx, shutdown));
+    let handle = tokio::spawn(run_scan_loop(
+        store.clone(),
+        1,
+        None,
+        TEST_BASE_URL.to_string(),
+        tx,
+        shutdown,
+    ));
 
     let received = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
         .await
@@ -262,7 +275,14 @@ async fn run_scan_loop_returns_on_shutdown() {
     let (store, _id) = store_with_up_check(60, 30, 200).await;
     let (tx, _rx) = tokio::sync::broadcast::channel(16);
     let (shutdown_tx, shutdown) = shutdown::channel();
-    let handle = tokio::spawn(run_scan_loop(store.clone(), 3600, None, tx, shutdown));
+    let handle = tokio::spawn(run_scan_loop(
+        store.clone(),
+        3600,
+        None,
+        TEST_BASE_URL.to_string(),
+        tx,
+        shutdown,
+    ));
 
     shutdown_tx.trigger();
 

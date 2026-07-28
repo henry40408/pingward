@@ -84,6 +84,7 @@ async fn main() {
     let scan_interval_secs = config.scan_interval_secs;
     let prune_interval_secs = config.prune_interval_secs;
     let smtp = config.smtp.clone();
+    let base_url = config.base_url.clone();
 
     let pool = db::connect(&config.database_url)
         .await
@@ -113,6 +114,7 @@ async fn main() {
         store.clone(),
         scan_interval_secs,
         smtp,
+        base_url,
         state.events.clone(),
         shutdown.clone(),
     ));

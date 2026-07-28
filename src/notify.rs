@@ -1,3 +1,4 @@
+use crate::duration::fmt_duration;
 use chrono::{DateTime, Utc};
 use std::future::Future;
 use std::pin::Pin;
@@ -34,6 +35,77 @@ impl std::str::FromStr for EventKind {
     }
 }
 
+/// Why a check went down. Carried on the event so a `DOWN` message can say
+/// what actually happened: "nothing pinged" and "the job reported failure"
+/// send the reader to very different places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownCause {
+    /// No ping arrived before period/cron + grace elapsed.
+    Overdue,
+    /// A `start` ping was never followed by a completion within
+    /// `max_runtime_secs`.
+    Overrun {
+        max_runtime_secs: i64,
+        started_at: DateTime<Utc>,
+    },
+    /// An explicit `/fail` ping, or `/{code}` with a non-zero code.
+    Failed { exit_code: Option<i64> },
+}
+
+impl DownCause {
+    /// Stable machine name, used by the webhook payload.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DownCause::Overdue => "overdue",
+            DownCause::Overrun { .. } => "overrun",
+            DownCause::Failed { .. } => "failed",
+        }
+    }
+}
+
+/// Context rendered alongside the state change. Every field is optional: a
+/// notification must still go out when a lookup fails, and
+/// `EventDetail::default()` reproduces the original bare "<name> is DOWN".
+///
+/// It is built at the *call site*, from the check snapshot as it was when the
+/// event fired, rather than re-read during delivery — for an `Up` event
+/// `last_ping_at` is the ping *before* the recovery, which a re-read would
+/// have already overwritten.
+#[derive(Debug, Clone, Default)]
+pub struct EventDetail {
+    pub project_name: Option<String>,
+    /// Absolute URL of the check page, derived from `PINGWARD_BASE_URL`.
+    pub url: Option<String>,
+    /// Human schedule summary, e.g. `every 5m (grace 1m)`.
+    pub schedule: Option<String>,
+    /// The check's last completion before this event.
+    pub last_ping_at: Option<DateTime<Utc>>,
+    /// The check's timezone; timestamps render in it, falling back to UTC.
+    pub timezone: Option<String>,
+    /// Set on `Down` only — `Reminder` fires long after the transition and
+    /// `Up` has no cause to report.
+    pub cause: Option<DownCause>,
+}
+
+impl EventDetail {
+    /// Build from the check snapshot as it was when the event fired.
+    pub fn from_check(check: &Check, project_name: Option<String>, base_url: &str) -> Self {
+        Self {
+            project_name,
+            url: check_url(base_url, check.id),
+            schedule: Some(schedule_summary(check)),
+            last_ping_at: check.last_ping_at,
+            timezone: Some(check.timezone.clone()),
+            cause: None,
+        }
+    }
+
+    pub fn with_cause(mut self, cause: DownCause) -> Self {
+        self.cause = Some(cause);
+        self
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NotificationEvent {
     pub check_id: i64,
@@ -41,6 +113,7 @@ pub struct NotificationEvent {
     pub event: EventKind,
     pub at: DateTime<Utc>,
     pub project_id: i64,
+    pub detail: EventDetail,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -84,33 +157,160 @@ fn http_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// One-line human summary of a state transition, reused by text-oriented
-/// channels (Telegram, Slack, and the ntfy body).
-fn event_text(ev: &NotificationEvent) -> String {
-    let at = ev.at.to_rfc3339();
-    let name = &ev.check_name;
-    match ev.event {
-        EventKind::Test => {
-            format!("\u{1F514} pingward test notification for \"{name}\" (as of {at})")
-        }
-        EventKind::Down => format!("\u{1F534} {name} is DOWN (as of {at})"),
-        EventKind::Up => format!("\u{1F7E2} {name} is UP (as of {at})"),
-        EventKind::Reminder => format!("\u{1F534} {name} is STILL DOWN (as of {at})"),
+/// Absolute URL of a check's page. `None` when no base URL is configured, so
+/// the message simply omits the link instead of rendering `/checks/7`.
+fn check_url(base_url: &str, check_id: i64) -> Option<String> {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{base}/checks/{check_id}"))
+}
+
+/// One-line schedule summary — what the reader needs to judge how alarming a
+/// missed check-in is. Reuses `duration::fmt_duration`, the same rendering the
+/// edit forms use, so `300` reads as `5m` in both places.
+fn schedule_summary(check: &Check) -> String {
+    let grace = if check.grace_secs > 0 {
+        format!(" (grace {})", fmt_duration(check.grace_secs))
+    } else {
+        String::new()
+    };
+    match check.schedule_kind {
+        ScheduleKind::Period => match check.period_secs {
+            Some(p) => format!("every {}{grace}", fmt_duration(p)),
+            None => format!("no period set{grace}"),
+        },
+        ScheduleKind::Cron => match &check.cron_expr {
+            Some(e) => format!("cron \"{e}\" {}{grace}", check.timezone),
+            None => format!("no cron expression set{grace}"),
+        },
     }
 }
 
-/// Short title for channels with a separate title field (ntfy).
-fn event_title(ev: &NotificationEvent) -> String {
-    // This is used as the ntfy `Title` HTTP header value. A user-supplied
-    // check name containing control characters (e.g. a newline) would make
-    // `HeaderValue` construction fail and abort the send, so replace any
-    // control character with a space.
-    let name: String = ev
-        .check_name
-        .chars()
+/// Render an instant in the check's timezone (UTC when unset or unparseable),
+/// e.g. `2026-07-29 17:03 CST`. A notification is read away from the web UI,
+/// where nothing localises the timestamp for the reader.
+fn fmt_at(at: DateTime<Utc>, tz: Option<&str>) -> String {
+    let zone: chrono_tz::Tz = tz.and_then(|t| t.parse().ok()).unwrap_or(chrono_tz::UTC);
+    at.with_timezone(&zone)
+        .format("%Y-%m-%d %H:%M %Z")
+        .to_string()
+}
+
+/// `fmt_at` plus how long ago it was, when that is in the past.
+fn fmt_at_rel(at: DateTime<Utc>, now: DateTime<Utc>, tz: Option<&str>) -> String {
+    let secs = (now - at).num_seconds();
+    if secs > 0 {
+        format!("{} ({} ago)", fmt_at(at, tz), fmt_duration(secs))
+    } else {
+        fmt_at(at, tz)
+    }
+}
+
+/// Replace control characters with spaces. Both the ntfy `Title` header and
+/// the email `Subject` are single-line fields: a check or project name holding
+/// a newline would make `HeaderValue` construction fail and abort the send.
+fn single_line(s: &str) -> String {
+    s.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    format!("pingward: {} {}", name, ev.event.as_str())
+        .collect()
+}
+
+/// `Project: infra · every 5m (grace 1m)` — omitted entirely when neither
+/// half is known.
+fn context_line(d: &EventDetail) -> Option<String> {
+    match (&d.project_name, &d.schedule) {
+        (Some(p), Some(s)) => Some(format!("Project: {p} · {s}")),
+        (Some(p), None) => Some(format!("Project: {p}")),
+        (None, Some(s)) => Some(format!("Schedule: {s}")),
+        (None, None) => None,
+    }
+}
+
+/// The one line that says what actually happened. `Reminder` deliberately
+/// reports "Last ping" rather than "No ping since": it carries no `cause`, and
+/// a check downed by a `fail` ping *did* ping.
+fn reason_line(ev: &NotificationEvent) -> String {
+    let d = &ev.detail;
+    let tz = d.timezone.as_deref();
+    match ev.event {
+        EventKind::Up => match d.last_ping_at {
+            Some(prev) => format!("Recovered; previous ping {}", fmt_at_rel(prev, ev.at, tz)),
+            None => "Recovered".to_string(),
+        },
+        EventKind::Reminder => match d.last_ping_at {
+            Some(prev) => format!("Last ping {}", fmt_at_rel(prev, ev.at, tz)),
+            None => "Never pinged".to_string(),
+        },
+        _ => match d.cause {
+            Some(DownCause::Overrun {
+                max_runtime_secs,
+                started_at,
+            }) => format!(
+                "Run started {} and exceeded its {} max runtime",
+                fmt_at_rel(started_at, ev.at, tz),
+                fmt_duration(max_runtime_secs)
+            ),
+            Some(DownCause::Failed { exit_code }) => match exit_code {
+                Some(c) => format!("Fail ping received (exit code {c})"),
+                None => "Fail ping received".to_string(),
+            },
+            _ => match d.last_ping_at {
+                Some(prev) => format!("No ping since {}", fmt_at_rel(prev, ev.at, tz)),
+                None => "No ping received yet".to_string(),
+            },
+        },
+    }
+}
+
+/// Human summary of a state transition, reused by text-oriented channels
+/// (Telegram, Slack, the ntfy body and the email body).
+///
+/// Deliberately capped at four short lines — headline, context, reason, link.
+/// Everything past that is on the linked page, which is the point of the link.
+fn event_text(ev: &NotificationEvent) -> String {
+    let d = &ev.detail;
+    let tz = d.timezone.as_deref();
+    let mut lines: Vec<String> = Vec::new();
+    match ev.event {
+        EventKind::Test => {
+            lines.push("\u{1F514} pingward test notification".to_string());
+            lines.push(match &d.project_name {
+                Some(p) => format!("Channel \"{}\" · project {p}", ev.check_name),
+                None => format!("Channel \"{}\"", ev.check_name),
+            });
+            lines.push(fmt_at(ev.at, tz));
+            return lines.join("\n");
+        }
+        EventKind::Down => lines.push(format!("\u{1F534} DOWN — {}", ev.check_name)),
+        EventKind::Reminder => lines.push(format!("\u{1F534} STILL DOWN — {}", ev.check_name)),
+        EventKind::Up => lines.push(format!("\u{1F7E2} UP — {}", ev.check_name)),
+    }
+    if let Some(ctx) = context_line(d) {
+        lines.push(ctx);
+    }
+    lines.push(reason_line(ev));
+    if let Some(url) = &d.url {
+        lines.push(url.clone());
+    }
+    lines.join("\n")
+}
+
+/// Short title for channels with a separate title field (ntfy, Pushover, and
+/// the email subject).
+fn event_title(ev: &NotificationEvent) -> String {
+    let name = single_line(&ev.check_name);
+    let subject = match &ev.detail.project_name {
+        Some(p) => format!("{}/{name}", single_line(p)),
+        None => name,
+    };
+    match ev.event {
+        EventKind::Test => format!("pingward: test notification for \"{subject}\""),
+        EventKind::Down => format!("pingward: {subject} is DOWN"),
+        EventKind::Up => format!("pingward: {subject} is UP"),
+        EventKind::Reminder => format!("pingward: {subject} is STILL DOWN"),
+    }
 }
 
 pub struct WebhookNotifier {
@@ -133,11 +333,27 @@ impl Notifier for WebhookNotifier {
         ev: &'a NotificationEvent,
     ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
         Box::pin(async move {
+            // The original four keys are kept verbatim; everything else is
+            // additive, so an existing consumer keeps parsing what it parsed.
+            let d = &ev.detail;
+            let exit_code = match d.cause {
+                Some(DownCause::Failed { exit_code }) => exit_code,
+                _ => None,
+            };
             let body = serde_json::json!({
                 "check": ev.check_name,
                 "event": ev.event.as_str(),
                 "at": ev.at.to_rfc3339(),
                 "project_id": ev.project_id,
+                "check_id": ev.check_id,
+                "project": d.project_name,
+                "url": d.url,
+                "schedule": d.schedule,
+                "timezone": d.timezone,
+                "last_ping_at": d.last_ping_at.map(|t| t.to_rfc3339()),
+                "cause": d.cause.map(|c| c.as_str()),
+                "exit_code": exit_code,
+                "text": event_text(ev),
             });
             let resp = self
                 .client
@@ -285,6 +501,15 @@ impl Notifier for NtfyNotifier {
                 .header("Priority", priority)
                 .header("Tags", tags)
                 .body(event_text(ev));
+            // `Click` makes tapping the notification open the check page.
+            // Guarded on the URL being header-safe: a base URL carrying a
+            // control character would otherwise fail `HeaderValue`
+            // construction and abort the whole send.
+            if let Some(u) = ev.detail.url.as_ref().filter(|u| {
+                !u.is_empty() && !u.chars().any(|c| c.is_control() || c.is_whitespace())
+            }) {
+                req = req.header("Click", u);
+            }
             if let Some(t) = &self.token {
                 req = req.bearer_auth(t);
             }
@@ -337,16 +562,23 @@ impl Notifier for PushoverNotifier {
             };
             let title = event_title(ev);
             let message = event_text(ev);
+            let mut form = vec![
+                ("token", self.token.as_str()),
+                ("user", self.user.as_str()),
+                ("title", title.as_str()),
+                ("message", message.as_str()),
+                ("priority", priority),
+            ];
+            // Pushover renders `url`/`url_title` as a tappable action, so the
+            // link does not have to be re-read out of the message body.
+            if let Some(u) = ev.detail.url.as_deref().filter(|u| !u.is_empty()) {
+                form.push(("url", u));
+                form.push(("url_title", "Open in pingward"));
+            }
             let resp = self
                 .client
                 .post(&url)
-                .form(&[
-                    ("token", self.token.as_str()),
-                    ("user", self.user.as_str()),
-                    ("title", title.as_str()),
-                    ("message", message.as_str()),
-                    ("priority", priority),
-                ])
+                .form(&form)
                 .send()
                 .await
                 .map_err(|e| transport_err(&e))?;
@@ -361,7 +593,7 @@ impl Notifier for PushoverNotifier {
 
 use crate::config::SmtpConfig;
 use crate::config::SmtpTls;
-use crate::models::{Channel, ChannelKind, NotifyStatus};
+use crate::models::{Channel, ChannelKind, Check, NotifyStatus, ScheduleKind};
 use crate::store::Store;
 use lettre::message::Message;
 use lettre::transport::smtp::AsyncSmtpTransport;
@@ -596,7 +828,7 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
     use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -619,6 +851,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         n.send(&ev).await.unwrap();
         // wiremock verifies expect(1) on drop
@@ -638,6 +871,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         assert!(n.send(&ev).await.is_err());
     }
@@ -659,6 +893,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         n.send(&ev).await.unwrap();
         // wiremock verifies expect(1) on drop
@@ -684,6 +919,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
 
         let start = std::time::Instant::now();
@@ -716,6 +952,7 @@ mod tests {
             event: EventKind::Up,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         n.send(&ev).await.unwrap();
     }
@@ -734,6 +971,7 @@ mod tests {
             event: EventKind::Up,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         assert!(n.send(&ev).await.is_err());
     }
@@ -758,6 +996,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         n.send(&ev).await.unwrap();
     }
@@ -776,6 +1015,7 @@ mod tests {
             event: EventKind::Up,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         assert!(n.send(&ev).await.is_err());
     }
@@ -797,6 +1037,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         let err = n.send(&ev).await.unwrap_err();
         assert!(
@@ -815,6 +1056,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         let title = event_title(&ev);
         assert!(!title.chars().any(char::is_control));
@@ -839,6 +1081,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         n.send(&ev).await.unwrap();
     }
@@ -863,6 +1106,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         n.send(&ev).await.unwrap();
     }
@@ -881,6 +1125,7 @@ mod tests {
             event: EventKind::Up,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         assert!(n.send(&ev).await.is_err());
     }
@@ -1027,6 +1272,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         deliver_event(&store, &ev, RetryPolicy::default(), Utc::now(), None).await;
 
@@ -1049,6 +1295,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         // fast policy so the test does not sleep for seconds
         let policy = RetryPolicy {
@@ -1071,6 +1318,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         let msg = build_email("alerts@example.com", "ops@example.com", &ev).unwrap();
         let raw = String::from_utf8(msg.formatted()).unwrap();
@@ -1090,6 +1338,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         assert!(build_email("not-an-address", "ops@example.com", &ev).is_err());
     }
@@ -1106,6 +1355,7 @@ mod tests {
             event: EventKind::Down,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         let err = n.send(&ev).await.unwrap_err();
         assert!(
@@ -1139,10 +1389,11 @@ mod tests {
             event: EventKind::Reminder,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         let text = event_text(&ev);
         assert!(text.contains("STILL DOWN"), "got: {text}");
-        assert_eq!(event_title(&ev), "pingward: backup reminder");
+        assert_eq!(event_title(&ev), "pingward: backup is STILL DOWN");
     }
 
     #[test]
@@ -1155,10 +1406,244 @@ mod tests {
             event: EventKind::Test,
             at: Utc::now(),
             project_id: 1,
+            detail: EventDetail::default(),
         };
         let text = event_text(&ev);
         assert!(text.contains("test notification"), "got: {text}");
         assert!(text.contains("my-slack"), "got: {text}");
-        assert_eq!(event_title(&ev), "pingward: my-slack test");
+        assert_eq!(
+            event_title(&ev),
+            "pingward: test notification for \"my-slack\""
+        );
+    }
+
+    // --- message content -------------------------------------------------
+
+    fn detail_check() -> Check {
+        Check {
+            id: 42,
+            project_id: 1,
+            name: "nightly-backup".into(),
+            description: String::new(),
+            ping_uuid: "u".into(),
+            schedule_kind: ScheduleKind::Period,
+            period_secs: Some(300),
+            grace_secs: 60,
+            cron_expr: None,
+            timezone: "Asia/Taipei".into(),
+            status: crate::models::CheckStatus::Up,
+            last_ping_at: Some(Utc.with_ymd_and_hms(2026, 7, 29, 9, 3, 0).unwrap()),
+            last_start_at: None,
+            next_due_at: None,
+            scan_interval_secs: None,
+            max_runtime_secs: None,
+            nag_interval_secs: None,
+            last_alert_at: None,
+            acknowledged: false,
+            created_at: Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        }
+    }
+
+    fn detailed_event(event: EventKind, cause: Option<DownCause>) -> NotificationEvent {
+        let check = detail_check();
+        let mut detail = EventDetail::from_check(
+            &check,
+            Some("infra".into()),
+            "https://pingward.example.com/",
+        );
+        detail.cause = cause;
+        NotificationEvent {
+            check_id: check.id,
+            check_name: check.name.clone(),
+            event,
+            at: Utc.with_ymd_and_hms(2026, 7, 29, 10, 8, 0).unwrap(),
+            project_id: check.project_id,
+            detail,
+        }
+    }
+
+    #[test]
+    fn down_text_names_project_schedule_reason_and_link() {
+        let text = event_text(&detailed_event(EventKind::Down, Some(DownCause::Overdue)));
+        assert_eq!(
+            text,
+            "\u{1F534} DOWN — nightly-backup\n\
+             Project: infra · every 5m (grace 1m)\n\
+             No ping since 2026-07-29 17:03 CST (1h5m ago)\n\
+             https://pingward.example.com/checks/42"
+        );
+    }
+
+    #[test]
+    fn down_text_distinguishes_fail_ping_from_a_missed_check_in() {
+        let text = event_text(&detailed_event(
+            EventKind::Down,
+            Some(DownCause::Failed { exit_code: Some(1) }),
+        ));
+        assert!(
+            text.contains("Fail ping received (exit code 1)"),
+            "got: {text}"
+        );
+        assert!(!text.contains("No ping since"), "got: {text}");
+    }
+
+    #[test]
+    fn down_text_reports_an_overrun_run_with_its_budget() {
+        let text = event_text(&detailed_event(
+            EventKind::Down,
+            Some(DownCause::Overrun {
+                max_runtime_secs: 600,
+                started_at: Utc.with_ymd_and_hms(2026, 7, 29, 9, 50, 0).unwrap(),
+            }),
+        ));
+        assert!(
+            text.contains(
+                "Run started 2026-07-29 17:50 CST (18m ago) and exceeded its 10m max runtime"
+            ),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn up_text_reports_the_previous_ping_not_a_cause() {
+        let text = event_text(&detailed_event(EventKind::Up, None));
+        assert!(
+            text.starts_with("\u{1F7E2} UP — nightly-backup"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("Recovered; previous ping 2026-07-29 17:03 CST (1h5m ago)"),
+            "got: {text}"
+        );
+    }
+
+    /// A reminder carries no cause, and a check downed by a `fail` ping *did*
+    /// ping — so it says "Last ping", never "No ping since".
+    #[test]
+    fn reminder_text_reports_the_last_ping_neutrally() {
+        let text = event_text(&detailed_event(EventKind::Reminder, None));
+        assert!(
+            text.starts_with("\u{1F534} STILL DOWN — nightly-backup"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("Last ping 2026-07-29 17:03 CST"),
+            "got: {text}"
+        );
+        assert!(!text.contains("No ping since"), "got: {text}");
+    }
+
+    /// The whole point of the extra context is that it degrades: with nothing
+    /// resolved the message is still the original one-liner plus a reason.
+    #[test]
+    fn text_degrades_to_headline_and_reason_without_detail() {
+        let ev = NotificationEvent {
+            check_id: 1,
+            check_name: "backup".into(),
+            event: EventKind::Down,
+            at: Utc::now(),
+            project_id: 1,
+            detail: EventDetail::default(),
+        };
+        assert_eq!(
+            event_text(&ev),
+            "\u{1F534} DOWN — backup\nNo ping received yet"
+        );
+        assert_eq!(event_title(&ev), "pingward: backup is DOWN");
+    }
+
+    #[test]
+    fn title_includes_the_project_and_stays_single_line() {
+        let mut ev = detailed_event(EventKind::Down, Some(DownCause::Overdue));
+        ev.check_name = "nightly\nbackup".into();
+        ev.detail.project_name = Some("in\tfra".into());
+        let title = event_title(&ev);
+        assert_eq!(title, "pingward: in fra/nightly backup is DOWN");
+        assert!(!title.chars().any(char::is_control));
+    }
+
+    #[test]
+    fn no_base_url_means_no_link() {
+        let check = detail_check();
+        let detail = EventDetail::from_check(&check, None, "");
+        assert_eq!(detail.url, None);
+        assert_eq!(
+            EventDetail::from_check(&check, None, "https://x.test")
+                .url
+                .as_deref(),
+            Some("https://x.test/checks/42")
+        );
+    }
+
+    #[test]
+    fn schedule_summary_renders_both_kinds() {
+        let mut check = detail_check();
+        assert_eq!(schedule_summary(&check), "every 5m (grace 1m)");
+        check.grace_secs = 0;
+        assert_eq!(schedule_summary(&check), "every 5m");
+        check.schedule_kind = ScheduleKind::Cron;
+        check.cron_expr = Some("0 0 * * * *".into());
+        assert_eq!(schedule_summary(&check), "cron \"0 0 * * * *\" Asia/Taipei");
+    }
+
+    /// The webhook payload's original four keys are load-bearing for existing
+    /// consumers; everything richer is additive.
+    #[tokio::test]
+    async fn webhook_payload_keeps_old_keys_and_adds_context() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("\"check\":\"nightly-backup\""))
+            .and(body_string_contains("\"event\":\"down\""))
+            .and(body_string_contains("\"project_id\":1"))
+            .and(body_string_contains("\"project\":\"infra\""))
+            .and(body_string_contains(
+                "\"url\":\"https://pingward.example.com/checks/42\"",
+            ))
+            .and(body_string_contains("\"cause\":\"failed\""))
+            .and(body_string_contains("\"exit_code\":2"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let n = WebhookNotifier::new(server.uri());
+        n.send(&detailed_event(
+            EventKind::Down,
+            Some(DownCause::Failed { exit_code: Some(2) }),
+        ))
+        .await
+        .unwrap();
+    }
+
+    /// Tapping an ntfy notification should land on the check page.
+    #[tokio::test]
+    async fn ntfy_sets_click_header_to_the_check_url() {
+        use wiremock::matchers::header;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("click", "https://pingward.example.com/checks/42"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"id\":\"x\"}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let n = NtfyNotifier::new(server.uri(), "topic".into(), None);
+        n.send(&detailed_event(EventKind::Down, Some(DownCause::Overdue)))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pushover_sends_the_check_url_as_a_supplementary_action() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_string_contains("url_title=Open+in+pingward"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"status\":1}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let n = PushoverNotifier::with_base_url("t".into(), "u".into(), server.uri());
+        n.send(&detailed_event(EventKind::Down, Some(DownCause::Overdue)))
+            .await
+            .unwrap();
     }
 }

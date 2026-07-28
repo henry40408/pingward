@@ -231,6 +231,29 @@ Then(
   }
 );
 
+// The enriched payload is only assertable end-to-end: the project name comes
+// from a DB lookup, the link from PINGWARD_BASE_URL (which the harness sets to
+// the spawned server), and `cause` from whichever code path fired the event —
+// none of which a unit test on `event_text` can prove reach the wire.
+Then(
+  "the {string} notification payload names project {string}, links the check, and blames {string}",
+  async ({ mockWebhook, serverUrl }, event, project, cause) => {
+    const req = await mockWebhook.waitForRequest((r) => {
+      try {
+        return JSON.parse(r.body).event === event;
+      } catch {
+        return false;
+      }
+    });
+    const body = JSON.parse(req.body);
+    expect(body.project).toBe(project);
+    expect(body.cause).toBe(cause);
+    expect(body.url).toMatch(new RegExp(`^${serverUrl}/checks/\\d+$`));
+    expect(body.schedule).toBe("every 1h (grace 5m)");
+    expect(body.text).toContain(body.url);
+  }
+);
+
 // When the check's project has no channels, the Notify channels card shows an
 // empty state (with a link to create one) instead of the bind form.
 Then("the check's notify channels show an empty state", async ({ page }) => {

@@ -486,7 +486,9 @@ async fn postgres_full_round_trip() {
     let t0 = now;
     store.begin_down_alert(cid, t0).await.unwrap();
     let due = t0 + chrono::Duration::seconds(90);
-    let evs = pingward::scheduler::nag_once(&store, due).await.unwrap();
+    let evs = pingward::scheduler::nag_once(&store, due, "https://pingward.test")
+        .await
+        .unwrap();
     assert!(
         evs.iter()
             .any(|e| e.check_id == cid && e.event == pingward::notify::EventKind::Reminder)
@@ -495,11 +497,15 @@ async fn postgres_full_round_trip() {
     assert!(store.find_check(cid).await.unwrap().unwrap().acknowledged);
     // acknowledged → no further reminders
     assert!(
-        pingward::scheduler::nag_once(&store, due + chrono::Duration::seconds(300))
-            .await
-            .unwrap()
-            .into_iter()
-            .all(|e| e.check_id != cid)
+        pingward::scheduler::nag_once(
+            &store,
+            due + chrono::Duration::seconds(300),
+            "https://pingward.test"
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .all(|e| e.check_id != cid)
     );
     store.clear_nag(cid).await.unwrap();
     assert_eq!(

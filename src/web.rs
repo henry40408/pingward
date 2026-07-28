@@ -6,7 +6,7 @@ use crate::error::AppError;
 use crate::models::{
     Channel, ChannelKind, Check, CheckStatus, Notification, Project, ScheduleKind, User,
 };
-use crate::notify::{EventKind, NotificationEvent, notifier_for};
+use crate::notify::{EventDetail, EventKind, NotificationEvent, notifier_for};
 use crate::secret;
 use crate::state::AppState;
 use crate::store::{AuditFilter, NotifFilter, PageCursor, PingFilter, Store};
@@ -3380,12 +3380,25 @@ async fn channel_delete(
 /// Send a one-off test notification to a single channel. Sends once (no retry)
 /// and does not record the attempt in the notification history.
 async fn run_channel_test(state: &AppState, channel: &Channel) -> TestResult {
+    // A test names the channel, not a check, so the only context worth
+    // carrying is the project it belongs to.
+    let project_name = state
+        .store
+        .find_project(channel.project_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.name);
     let ev = NotificationEvent {
         check_id: 0,
         check_name: channel.name.clone(),
         event: EventKind::Test,
         at: Utc::now(),
         project_id: channel.project_id,
+        detail: EventDetail {
+            project_name,
+            ..Default::default()
+        },
     };
     match notifier_for(channel, state.config.smtp.as_ref()) {
         None => TestResult {
