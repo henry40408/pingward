@@ -842,6 +842,7 @@ async fn admin_sets_global_scan_interval() {
             ("nag_interval", ""),
             ("pings_retention_days", ""),
             ("notifications_retention_days", ""),
+            ("audit_retention_days", ""),
         ])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
@@ -862,6 +863,7 @@ async fn admin_sets_retention_days() {
             ("nag_interval", ""),
             ("pings_retention_days", "30"),
             ("notifications_retention_days", "90"),
+            ("audit_retention_days", "365"),
         ])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
@@ -872,6 +874,14 @@ async fn admin_sets_retention_days() {
             .unwrap()
             .as_deref(),
         Some("30")
+    );
+    assert_eq!(
+        store
+            .get_setting("audit_retention_days")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("365")
     );
     assert_eq!(
         store

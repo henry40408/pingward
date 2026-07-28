@@ -68,8 +68,12 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
 - `src/scheduler.rs` — `due_time`/`overrun_time` computation, `scan_once`
   (marks overdue/overrun checks down and emits events), `nag_once` (repeat
   reminders), and `run_scan_loop`, the background task `main.rs` spawns.
-- `src/prune.rs` — `prune_once` (deletes old pings/notifications per
-  retention setting, plus expired sessions) and `run_prune_loop`.
+- `src/prune.rs` — `prune_once` (deletes old pings/notifications/audit rows
+  per retention setting, plus expired sessions; returns a named
+  `PruneCounts`) and `run_prune_loop`. All three retention settings default
+  to off; `audit_retention_days` stays off deliberately, since a default that
+  began deleting the audit trail on upgrade would destroy exactly the record
+  it exists to keep.
 - `src/shutdown.rs` — the cooperative shutdown flag (`channel()` →
   `ShutdownTx`/`Shutdown`) and `os_signal()`, the SIGTERM/SIGINT listener that
   raises it.
@@ -615,8 +619,9 @@ and `/account/*` (owner-scoped by a different mechanism entirely).
   scans active checks, transitions any overdue-or-overrun check to `down`,
   and fans out `NotificationEvent`s via `notify::deliver_event`.
 - `prune::run_prune_loop` — every `PINGWARD_PRUNE_INTERVAL_SECS` (default
-  1h), deletes pings/notifications past their retention window and any
-  already-expired session rows.
+  1h), deletes pings/notifications/audit rows past their retention window and
+  any already-expired session rows. Each retention window is an independent
+  global setting and each defaults to off.
 
 Scan and nag (repeat-reminder) intervals resolve through a
 check → project → global-setting → env-default cascade

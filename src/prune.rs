@@ -32,6 +32,7 @@ fn retention_cutoff(now: DateTime<Utc>, setting: Option<String>) -> Option<Strin
 enum PruneTable {
     Pings,
     Notifications,
+    Audit,
 }
 
 impl PruneTable {
@@ -39,6 +40,7 @@ impl PruneTable {
         match self {
             PruneTable::Pings => "pings_retention_days",
             PruneTable::Notifications => "notifications_retention_days",
+            PruneTable::Audit => "audit_retention_days",
         }
     }
 }
@@ -56,22 +58,46 @@ async fn prune_table(
     match table {
         PruneTable::Pings => store.delete_pings_before(&cutoff).await,
         PruneTable::Notifications => store.delete_notifications_before(&cutoff).await,
+        PruneTable::Audit => store.delete_audit_before(&cutoff).await,
     }
 }
 
-/// Delete `pings` and `notifications` older than their configured retention,
-/// plus any `sessions` row that has already expired. The pings/notifications
-/// counts are each an independent global retention setting; a table with
-/// retention off is skipped (its count is 0). Expired-session cleanup is
-/// unconditional — it does not participate in retention settings, since an
-/// expired session is already unusable regardless of how long it's kept
-/// around. Returns `(pings_deleted, notifications_deleted, sessions_deleted)`.
-/// `now` is injected for determinism.
-pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<(u64, u64, u64), sqlx::Error> {
-    let pings_deleted = prune_table(store, now, PruneTable::Pings).await?;
-    let notifications_deleted = prune_table(store, now, PruneTable::Notifications).await?;
-    let sessions_deleted = store.delete_expired_sessions(now).await?;
-    Ok((pings_deleted, notifications_deleted, sessions_deleted))
+/// What one prune pass removed. A named struct rather than a tuple: with four
+/// counts, `(a, b, c, d)` at the call sites stops saying which is which.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PruneCounts {
+    pub pings: u64,
+    pub notifications: u64,
+    pub audit: u64,
+    pub sessions: u64,
+}
+
+impl PruneCounts {
+    /// Nothing was removed this pass — used to keep the loop quiet.
+    fn is_empty(self) -> bool {
+        self == Self::default()
+    }
+}
+
+/// Delete `pings`, `notifications` and `audit_log` rows older than their
+/// configured retention, plus any `sessions` row that has already expired.
+///
+/// The three retention counts are each an independent global setting; a table
+/// whose retention is off is skipped (its count is 0). **All three default to
+/// off**, `audit_log` included — a default that started deleting a compliance
+/// record on upgrade would be exactly the wrong surprise, so the settings form
+/// says plainly that an unset field means "never pruned" instead.
+///
+/// Expired-session cleanup is unconditional — it does not participate in
+/// retention settings, since an expired session is already unusable regardless
+/// of how long its row is kept. `now` is injected for determinism.
+pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<PruneCounts, sqlx::Error> {
+    Ok(PruneCounts {
+        pings: prune_table(store, now, PruneTable::Pings).await?,
+        notifications: prune_table(store, now, PruneTable::Notifications).await?,
+        audit: prune_table(store, now, PruneTable::Audit).await?,
+        sessions: store.delete_expired_sessions(now).await?,
+    })
 }
 
 /// Run the prune task until shutdown: prune once immediately, then every
@@ -84,11 +110,17 @@ pub async fn run_prune_loop(store: Store, interval_secs: u64, shutdown: Shutdown
     let interval = TokioDuration::from_secs(interval_secs.max(1));
     loop {
         match prune_once(&store, Utc::now()).await {
-            Ok((p, n, s)) => {
-                if p > 0 || n > 0 || s > 0 {
-                    tracing::info!("pruned {p} pings, {n} notifications, {s} sessions");
+            Ok(c) => {
+                if !c.is_empty() {
+                    tracing::info!(
+                        "pruned {} pings, {} notifications, {} audit entries, {} sessions",
+                        c.pings,
+                        c.notifications,
+                        c.audit,
+                        c.sessions
+                    );
                 }
-                if s > 0 {
+                if c.sessions > 0 {
                     // `delete_expired_sessions` returns only a row count, not
                     // the ids of the sessions it removed, so this is one
                     // aggregate `session.destroyed` event per prune pass
@@ -97,7 +129,7 @@ pub async fn run_prune_loop(store: Store, interval_secs: u64, shutdown: Shutdown
                     tracing::info!(
                         target: "pingward::session",
                         reason = "expired",
-                        count = s,
+                        count = c.sessions,
                         "session.destroyed"
                     );
                 }
@@ -222,9 +254,67 @@ mod tests {
             .await
             .unwrap();
 
-        let (p, n, s) = prune_once(&store, now).await.unwrap();
-        assert_eq!((p, n, s), (1, 1, 0));
+        let c = prune_once(&store, now).await.unwrap();
+        assert_eq!(
+            c,
+            PruneCounts {
+                pings: 1,
+                notifications: 1,
+                ..Default::default()
+            }
+        );
         assert_eq!(store.list_recent_pings(cid, 10).await.unwrap().len(), 1);
+    }
+
+    /// The audit trail is pruned by the same cascade as pings/notifications,
+    /// but only once someone sets a retention — the default is off, since a
+    /// default that silently started deleting a compliance record on upgrade
+    /// would be exactly the wrong surprise.
+    #[tokio::test]
+    async fn prune_once_audit_retention_is_off_by_default_and_deletes_when_set() {
+        let (store, _cid, _chan) = store_with_check_and_channel().await;
+        let now = Utc.with_ymd_and_hms(2026, 7, 13, 12, 0, 0).unwrap();
+        let uid = store
+            .create_user("adm", Some("phc"), true, now)
+            .await
+            .unwrap();
+        for (n, at) in [("old", now - Duration::days(100)), ("recent", now)] {
+            store
+                .record_audit(
+                    &crate::store::NewAudit {
+                        actor_user_id: uid,
+                        actor_username: "adm",
+                        action: "admin.access",
+                        detail: Some(n),
+                        ..Default::default()
+                    },
+                    at,
+                )
+                .await
+                .unwrap();
+        }
+
+        // Unset → nothing is touched, however old the entry is.
+        assert_eq!(prune_once(&store, now).await.unwrap().audit, 0);
+        assert_eq!(store.list_audit(10).await.unwrap().len(), 2);
+
+        // Explicit 0 is "off" too, matching the other retention settings.
+        store
+            .set_setting("audit_retention_days", "0")
+            .await
+            .unwrap();
+        assert_eq!(prune_once(&store, now).await.unwrap().audit, 0);
+        assert_eq!(store.list_audit(10).await.unwrap().len(), 2);
+
+        // Set → only the entry older than the cutoff goes.
+        store
+            .set_setting("audit_retention_days", "30")
+            .await
+            .unwrap();
+        assert_eq!(prune_once(&store, now).await.unwrap().audit, 1);
+        let left = store.list_audit(10).await.unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].detail.as_deref(), Some("recent"));
     }
 
     #[tokio::test]
@@ -255,13 +345,13 @@ mod tests {
             .unwrap();
 
         // unset → off
-        assert_eq!(prune_once(&store, now).await.unwrap(), (0, 0, 0));
+        assert!(prune_once(&store, now).await.unwrap().is_empty());
         // explicit 0 → off
         store
             .set_setting("pings_retention_days", "0")
             .await
             .unwrap();
-        assert_eq!(prune_once(&store, now).await.unwrap(), (0, 0, 0));
+        assert!(prune_once(&store, now).await.unwrap().is_empty());
         assert_eq!(store.list_recent_pings(cid, 10).await.unwrap().len(), 1);
     }
 
@@ -332,8 +422,14 @@ mod tests {
             .await
             .unwrap();
 
-        let (p, n, s) = prune_once(&store, now).await.unwrap();
-        assert_eq!((p, n, s), (0, 0, 1));
+        let c = prune_once(&store, now).await.unwrap();
+        assert_eq!(
+            c,
+            PruneCounts {
+                sessions: 1,
+                ..Default::default()
+            }
+        );
 
         let remaining = store.list_sessions_for_user(user_id, now).await.unwrap();
         assert_eq!(remaining.len(), 1);

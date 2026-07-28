@@ -431,3 +431,109 @@ async fn admin_audit_pager_href_carries_the_active_filter() {
         "pager href dropped the filter: {body}"
     );
 }
+
+// --- settings saves are audited ---------------------------------------------
+
+/// Changing global settings is an admin action on the whole instance and had
+/// been going unrecorded. It matters most for `audit_retention_days`:
+/// shortening that window is how an admin would erase their own trail, so the
+/// change itself has to leave a mark.
+#[tokio::test]
+async fn settings_save_is_audited_with_the_changed_keys() {
+    let (server, store, _admin_id) = admin_server().await;
+    server
+        .post("/admin/settings")
+        .form(&[
+            ("scan_interval", ""),
+            ("nag_interval", ""),
+            ("pings_retention_days", ""),
+            ("notifications_retention_days", ""),
+            ("audit_retention_days", "7"),
+        ])
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+
+    let audit = store.list_audit(10).await.unwrap();
+    let entry = audit
+        .iter()
+        .find(|a| a.action == "settings.update")
+        .expect("the settings save should be audited");
+    assert_eq!(entry.actor_username, "admin");
+    assert_eq!(entry.path.as_deref(), Some("/admin/settings"));
+    let detail = entry.detail.as_deref().unwrap_or_default();
+    assert!(
+        detail.contains("audit_retention_days=7"),
+        "the changed key and its new value should be recorded: {detail}"
+    );
+    // Only what actually changed — the four untouched fields were already
+    // blank, so naming them would bury the one edit that matters.
+    assert!(
+        !detail.contains("scan_interval"),
+        "unchanged keys should not be listed: {detail}"
+    );
+}
+
+/// A save that changes nothing writes no audit row — otherwise every visit to
+/// the settings form that ends in "Save" would pad the trail.
+#[tokio::test]
+async fn settings_save_with_no_changes_writes_no_audit() {
+    let (server, store, _admin_id) = admin_server().await;
+    let blank = [
+        ("scan_interval", ""),
+        ("nag_interval", ""),
+        ("pings_retention_days", ""),
+        ("notifications_retention_days", ""),
+        ("audit_retention_days", ""),
+    ];
+    server
+        .post("/admin/settings")
+        .form(&blank)
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(
+        store
+            .list_audit(10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|a| a.action != "settings.update"),
+        "a no-op save should not be audited"
+    );
+}
+
+/// Clearing a setting is as much a change as setting one, and reads as
+/// `key=unset` rather than an empty right-hand side.
+#[tokio::test]
+async fn settings_save_records_a_cleared_value_as_unset() {
+    let (server, store, _admin_id) = admin_server().await;
+    store
+        .set_setting("audit_retention_days", "30")
+        .await
+        .unwrap();
+    server
+        .post("/admin/settings")
+        .form(&[
+            ("scan_interval", ""),
+            ("nag_interval", ""),
+            ("pings_retention_days", ""),
+            ("notifications_retention_days", ""),
+            ("audit_retention_days", ""),
+        ])
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+
+    let audit = store.list_audit(10).await.unwrap();
+    let entry = audit
+        .iter()
+        .find(|a| a.action == "settings.update")
+        .expect("clearing a setting is a change");
+    assert!(
+        entry
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("audit_retention_days=unset"),
+        "detail: {:?}",
+        entry.detail
+    );
+}

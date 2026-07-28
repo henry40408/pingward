@@ -156,6 +156,13 @@
           <div class="help">Leave blank to keep forever.</div>
         </div>
       </div>
+      <div class="two">
+        <div class="field">
+          <label for="audit_retention_days">Audit trail retention (days)</label>
+          <input id="audit_retention_days" name="audit_retention_days" value="{{ audit_retention_days }}" data-testid="audit-retention-input">
+          <div class="help">Blank keeps every entry forever &mdash; nothing else trims this table, so it grows for the life of the instance. Shortening it deletes history from the audit trail below, and the change is itself recorded there.</div>
+        </div>
+      </div>
       <div class="btnrow">
         <button class="btn primary" type="submit">Save changes</button>
       </div>

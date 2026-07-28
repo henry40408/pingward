@@ -206,9 +206,16 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   list, so a new `record_audit` call site appears in them by itself.
   `method`/`path`/`detail`/`target_owner_id` live in an expandable row behind
   the caret, mirroring the ping table's captured-output row, so no column of
-  `models::AuditLog` is written-but-unreadable. **Nothing prunes `audit_log`**
-  — unlike pings/notifications/sessions it has no retention pass, which is why
-  `0016_audit_filter_indexes` indexes the two filtered columns.
+  `models::AuditLog` is written-but-unreadable.
+  `audit_retention_days` prunes the table through the same
+  `prune::PruneTable` cascade as pings/notifications, and like them **defaults
+  to off** — a default that started deleting a compliance record on upgrade
+  would be the wrong surprise, so the settings field says so instead of
+  guessing. Because shortening that window is precisely how an admin would
+  erase their own trail, `settings_save` records a `settings.update` audit
+  entry naming the changed keys (a no-op save writes nothing); that is the
+  only mitigation available, since anyone able to set an env var or reach the
+  database could tamper regardless.
   An admin can never delete, disable, or demote their own account — the "All
   users" row renders those controls inert (delete/toggle-admin/toggle-disabled
   become a `<span class="btn disabled">`; reset password stays live) and the

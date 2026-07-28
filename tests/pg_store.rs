@@ -568,7 +568,8 @@ async fn postgres_full_round_trip() {
         .await
         .unwrap();
 
-    let (pd, nd, sd) = pingward::prune::prune_once(&store, now).await.unwrap();
+    let counts = pingward::prune::prune_once(&store, now).await.unwrap();
+    let (pd, nd, sd) = (counts.pings, counts.notifications, counts.sessions);
     // Exactly the one 30-day-old ping, one 30-day-old notification, and one
     // expired session are pruned; every other row in this test was inserted
     // at `now`/future. The exact counts guard against an over-deleting
