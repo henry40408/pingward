@@ -91,6 +91,33 @@ pub struct Ping {
     pub created_at: DateTime<Utc>,
 }
 
+/// The subset of a [`Ping`] the heartbeat strip and run-duration pairing
+/// actually read.
+///
+/// The dashboard loads a 40-row window per check purely to draw those strips;
+/// selecting whole rows meant decoding every captured POST body (up to
+/// `ping::MAX_BODY`, 10 KiB each) only to drop it. At 50 checks that is ~20 MB
+/// of body text materialised per render in the worst case, and measurably most
+/// of the page's time — see `Store::list_recent_ping_summaries_for_checks`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PingSummary {
+    pub id: i64,
+    pub check_id: i64,
+    pub kind: PingKind,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<&Ping> for PingSummary {
+    fn from(p: &Ping) -> Self {
+        Self {
+            id: p.id,
+            check_id: p.check_id,
+            kind: p.kind,
+            created_at: p.created_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub id: i64,

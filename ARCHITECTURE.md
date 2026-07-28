@@ -371,9 +371,21 @@ there.
 A page that renders a list of lists must **batch its child loads** rather than
 querying once per parent. `Store` exposes a batched sibling next to the
 per-parent query for each such case — `list_checks_for_projects` beside
-`list_checks_for_project`, `list_recent_pings_for_checks` beside
-`list_recent_pings` — each building an `IN ($1,…,$N)` list and returning a
-`HashMap` keyed by the parent id (parents with no children are simply absent).
+`list_checks_for_project`, `list_recent_ping_summaries_for_checks` beside
+`list_recent_ping_summaries` — each building an `IN ($1,…,$N)` list and
+returning a `HashMap` keyed by the parent id (parents with no children are
+simply absent).
+
+The heartbeat pair is also **narrowed**, not just batched: it selects
+`id, check_id, kind, created_at` into a `models::PingSummary` instead of whole
+`Ping` rows. `view::heartbeat` and `view::run_durations` read nothing else, so
+the wide form spent the dashboard's time decoding captured POST bodies (up to
+`ping::MAX_BODY`, 10 KiB per row, 40 rows per check) that were dropped on the
+next line. #116 has the measurement that motivated it — `GET /` was 24-74%
+slower with the wide form across check counts and body sizes, and the
+per-row decode alone (four columns rather than seven, no `String` for
+body/source_ip) accounts for the low end, so the win is not confined to
+instances that capture large bodies.
 The dashboard uses both, plus `checks_with_channels` (same `IN ($1,…,$N)`
 shape, but returning a flat `HashSet<i64>` of the check ids that have at least
 one bound channel rather than a per-parent map, since the caller only needs

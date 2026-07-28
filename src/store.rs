@@ -1,7 +1,7 @@
 use crate::db::Pool;
 use crate::models::{
     ApiKey, AuditLog, Channel, ChannelKind, Check, CheckStatus, Notification, NotifyStatus, Ping,
-    PingKind, Project, ScheduleKind, Session, User,
+    PingKind, PingSummary, Project, ScheduleKind, Session, User,
 };
 use crate::notify::EventKind;
 use chrono::{DateTime, Utc};
@@ -373,6 +373,22 @@ fn row_to_ping(row: &sqlx::any::AnyRow) -> Result<Ping, sqlx::Error> {
         exit_code: row.get("exit_code"),
         body: row.get("body"),
         source_ip: row.get("source_ip"),
+        created_at: parse_ts(row.get("created_at"))
+            .ok_or_else(|| decode_err("pings.created_at must be RFC3339"))?,
+    })
+}
+
+/// Narrow counterpart of [`row_to_ping`] for the heartbeat projection: the
+/// four columns `view::heartbeat`/`view::run_durations` read, and nothing
+/// else. Kept beside it so the two stay in step if `pings` gains a column.
+fn row_to_ping_summary(row: &sqlx::any::AnyRow) -> Result<PingSummary, sqlx::Error> {
+    let kind_raw: String = row.get("kind");
+    let kind = PingKind::from_str(&kind_raw)
+        .map_err(|e| decode_err(format!("invalid ping kind {kind_raw:?}: {e}")))?;
+    Ok(PingSummary {
+        id: row.get("id"),
+        check_id: row.get("check_id"),
+        kind,
         created_at: parse_ts(row.get("created_at"))
             .ok_or_else(|| decode_err("pings.created_at must be RFC3339"))?,
     })
@@ -1535,6 +1551,82 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
         rows.iter().map(row_to_ping).collect()
+    }
+
+    /// The heartbeat window for one check: the newest `limit` pings, narrowed
+    /// to the columns the strip and its duration pairing read. See
+    /// [`Store::list_recent_ping_summaries_for_checks`] for why the body is
+    /// left in the database.
+    pub async fn list_recent_ping_summaries(
+        &self,
+        check_id: i64,
+        limit: i64,
+    ) -> Result<Vec<PingSummary>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, check_id, kind, created_at FROM pings \
+             WHERE check_id = $1 ORDER BY id DESC LIMIT $2",
+        )
+        .bind(check_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(row_to_ping_summary).collect()
+    }
+
+    /// Batched heartbeat windows: the newest `per_check_limit` pings for each
+    /// of `check_ids` in one round-trip, narrowed to the four columns the
+    /// strip needs.
+    ///
+    /// This is the dashboard's hot query — one window per check on every
+    /// render. Selecting whole rows made it decode every captured POST body
+    /// (up to `ping::MAX_BODY`, 10 KiB) only for `view::heartbeat` to ignore
+    /// it. Measured on `SQLite` with a 40-row window (#116), the projection is
+    /// worth roughly a quarter to two-thirds of the whole dashboard render,
+    /// and the gap widens with both check count and body size:
+    ///
+    /// | checks | body/ping | wide  | narrow | `GET /` before |
+    /// |-------:|----------:|------:|-------:|---------------:|
+    /// |     50 |       0 B | 7.7ms |  5.5ms |          9.0ms |
+    /// |     50 |     1 KiB |15.3ms |  7.2ms |         14.3ms |
+    /// |     50 |    10 KiB |48.7ms | 13.9ms |         48.1ms |
+    /// |    200 |     1 KiB |64.4ms | 25.7ms |         57.3ms |
+    ///
+    /// Checks with no pings are simply absent from the map. Uses a
+    /// `ROW_NUMBER()` window (`SQLite` >= 3.25 / `PostgreSQL`).
+    pub async fn list_recent_ping_summaries_for_checks(
+        &self,
+        check_ids: &[i64],
+        per_check_limit: i64,
+    ) -> Result<HashMap<i64, Vec<PingSummary>>, sqlx::Error> {
+        if check_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = (1..=check_ids.len())
+            .map(|i| format!("${i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, check_id, kind, created_at FROM ( \
+               SELECT p.id, p.check_id, p.kind, p.created_at, \
+                      ROW_NUMBER() OVER (PARTITION BY p.check_id ORDER BY p.id DESC) AS rn \
+               FROM pings p WHERE p.check_id IN ({placeholders}) \
+             ) sub WHERE rn <= ${} ORDER BY check_id, id DESC",
+            check_ids.len() + 1
+        );
+        // Safe: `sql` interpolates only self-generated `$N` placeholders and a
+        // count — every value is bound below, so there is no injection surface.
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for id in check_ids {
+            q = q.bind(*id);
+        }
+        q = q.bind(per_check_limit);
+        let rows = q.fetch_all(&self.pool).await?;
+        let mut map: HashMap<i64, Vec<PingSummary>> = HashMap::new();
+        for row in &rows {
+            let p = row_to_ping_summary(row)?;
+            map.entry(p.check_id).or_default().push(p);
+        }
+        Ok(map)
     }
 
     /// Batched form of [`list_recent_pings`]: fetch the most recent
@@ -3679,6 +3771,87 @@ mod tests {
         assert!(
             store
                 .list_recent_pings_for_checks(&[], 3)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// The heartbeat projection must select the same rows in the same order as
+    /// the wide query it replaced — it is narrower, not different. A drift here
+    /// would silently redraw every heartbeat strip.
+    #[tokio::test]
+    async fn ping_summaries_match_the_wide_query_row_for_row() {
+        let store = seeded().await;
+        let base = Utc.with_ymd_and_hms(2026, 7, 14, 8, 0, 0).unwrap();
+        let mut ids = Vec::new();
+        for n in 0..3 {
+            let cid = store
+                .create_check(&NewCheck {
+                    project_id: 1,
+                    name: &format!("c{n}"),
+                    ping_uuid: &format!("u{n}"),
+                    kind: ScheduleKind::Period,
+                    period_secs: Some(60),
+                    grace_secs: 10,
+                    timezone: "UTC",
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            ids.push(cid);
+            for i in 0..5 {
+                store
+                    .insert_ping(
+                        cid,
+                        if i % 2 == 0 {
+                            PingKind::Success
+                        } else {
+                            PingKind::Start
+                        },
+                        Some(0),
+                        // A body big enough that selecting it would be visible.
+                        &"x".repeat(4096),
+                        Some("10.0.0.1"),
+                        base + chrono::Duration::seconds(i),
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+
+        // Batched: same keys, same ids, same kinds, same timestamps.
+        let wide = store.list_recent_pings_for_checks(&ids, 3).await.unwrap();
+        let narrow = store
+            .list_recent_ping_summaries_for_checks(&ids, 3)
+            .await
+            .unwrap();
+        assert_eq!(wide.len(), narrow.len());
+        for cid in &ids {
+            let w = wide.get(cid).unwrap();
+            let n = narrow.get(cid).unwrap();
+            assert_eq!(w.len(), 3, "per-check limit honored");
+            let w_proj: Vec<PingSummary> = w.iter().map(Into::into).collect();
+            assert_eq!(&w_proj, n, "check {cid}");
+        }
+
+        // Single-check form, against the same window.
+        for cid in &ids {
+            let w: Vec<PingSummary> = store
+                .list_recent_pings(*cid, 3)
+                .await
+                .unwrap()
+                .iter()
+                .map(Into::into)
+                .collect();
+            let n = store.list_recent_ping_summaries(*cid, 3).await.unwrap();
+            assert_eq!(w, n, "check {cid}");
+        }
+
+        // Empty input short-circuits, like the wide batch does.
+        assert!(
+            store
+                .list_recent_ping_summaries_for_checks(&[], 3)
                 .await
                 .unwrap()
                 .is_empty()

@@ -668,7 +668,7 @@ async fn dashboard(
     }
     let pings_by_check = state
         .store
-        .list_recent_pings_for_checks(&check_ids, 40)
+        .list_recent_ping_summaries_for_checks(&check_ids, 40)
         .await?;
     let with_channels = state.store.checks_with_channels(&check_ids).await?;
     for (project, checks) in project_checks {
@@ -2318,7 +2318,10 @@ async fn render_check_page(
         .collect();
     // The heartbeat/bars strip always shows the latest 40 pings, independent
     // of the table's paging below — a paged (older) result must never feed it.
-    let recent = state.store.list_recent_pings(id, 40).await?;
+    // Narrowed to the four columns the strip and the duration pairing read, so
+    // this window never materialises the captured bodies (see #116); the
+    // table's own rows come from `list_pings_page` and are still full pings.
+    let recent = state.store.list_recent_ping_summaries(id, 40).await?;
     let bars = crate::view::heartbeat(
         &recent,
         check.max_runtime_secs,
@@ -2374,7 +2377,7 @@ async fn build_pings_partial(
     check_id: i64,
     base: &str,
     page: &CheckPageQuery,
-    recent: Option<&[crate::models::Ping]>,
+    recent: Option<&[crate::models::PingSummary]>,
 ) -> Result<CheckPingsTemplate, AppError> {
     let filter = PingFilter {
         kinds: parse_filter_enum(page.pk.as_deref()),
@@ -2399,11 +2402,16 @@ async fn build_pings_partial(
         if let Some(r) = recent {
             crate::view::run_durations(r)
         } else {
-            let r = state.store.list_recent_pings(check_id, 40).await?;
+            let r = state.store.list_recent_ping_summaries(check_id, 40).await?;
             crate::view::run_durations(&r)
         }
     } else {
-        crate::view::run_durations(&ping_page.items)
+        // A filtered or paged view pairs within its own slice, which is made
+        // of full rows — project them down to what the pairing reads (four
+        // `Copy` fields; no body clone).
+        let summaries: Vec<crate::models::PingSummary> =
+            ping_page.items.iter().map(Into::into).collect();
+        crate::view::run_durations(&summaries)
     };
 
     let rows: Vec<PingRow> = ping_page
