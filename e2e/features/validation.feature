@@ -30,3 +30,17 @@ Feature: Server-side form validation
     And I fill the check max runtime with "abc"
     And I submit the check form
     Then the check form shows the error "max runtime must be a positive duration (e.g. 30, 5m, 1h30m)"
+
+  Scenario: An unknown check timezone is rejected
+    Given a project named "Nightly jobs"
+    And I open the new check form
+    When I fill the check name with "backup"
+    And I fill the check period with 60
+    And I fill the check timezone with "Asia/Taipeh"
+    And I submit the check form
+    Then the check form shows the error "unknown timezone \"Asia/Taipeh\" — use an IANA name such as UTC or Asia/Taipei"
+
+  Scenario: The timezone field offers every IANA zone
+    Given a project named "Nightly jobs"
+    And I open the new check form
+    Then the timezone field offers a list of zones

@@ -1274,6 +1274,20 @@ impl Store {
             .collect())
     }
 
+    /// The instance-wide display timezone for notification timestamps, or
+    /// `None` when unset (blank included). A read failure is reported as unset
+    /// rather than propagated: a settings query going wrong must not stop a
+    /// down alert from going out — the worst case is a timestamp in the
+    /// check's own zone.
+    pub async fn display_timezone(&self) -> Option<String> {
+        self.get_setting("display_timezone")
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
     /// Every project's name, keyed by id. The scan/nag loops name the project
     /// in each notification; one map per pass keeps that a fixed query count
     /// no matter how many checks transition.

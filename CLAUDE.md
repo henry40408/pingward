@@ -328,7 +328,18 @@ have already overwritten. `DownCause` is likewise the caller's to set —
 `Failed { exit_code }`, and `nag_once` sets none, which is why a reminder says
 "Last ping …" instead of claiming "No ping since …" for a check downed by a
 `/fail` ping. Timestamps render in the *check's* timezone (`notify::fmt_at`)
-with a `duration::fmt_duration` relative suffix. Webhook payload additions are
+with a `duration::fmt_duration` relative suffix — unless the instance-wide
+`display_timezone` setting is set on `/admin`, which wins
+(`EventDetail::with_display_timezone`). That setting exists because a
+notification is the one surface with no browser to localise it; the web UI
+renders every absolute time in the *viewer's* zone via the `.localtime[data-ts]`
+spans in `templates/base.html`. A check's own `timezone` is otherwise used only
+to pick the wall clock a **cron** schedule fires on (period schedules ignore it),
+and it is validated on save (`web::validate_timezone`, reused by
+`validate_opt_timezone` for the instance setting) — an unparseable name used to
+be stored verbatim and then silently ignored, leaving the schedule on UTC. Both
+timezone fields render a `<datalist>` of every IANA zone from
+`view::timezones()`. Webhook payload additions are
 strictly additive — its original `check`/`event`/`at`/`project_id` keys are
 untouched. See ARCHITECTURE.md's "What a notification says".
 

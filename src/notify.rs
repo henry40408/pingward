@@ -104,6 +104,21 @@ impl EventDetail {
         self.cause = Some(cause);
         self
     }
+
+    /// Override the rendering zone with the instance-wide display timezone
+    /// when one is configured (`display_timezone`, set on `/admin`).
+    ///
+    /// A notification is the one surface with no browser to localise it — the
+    /// web UI renders every absolute time in the *viewer's* zone — so an
+    /// operator who reads alerts in one place can pin every timestamp to it.
+    /// Blank keeps the check's own zone, which is what a cron schedule is
+    /// written against.
+    pub fn with_display_timezone(mut self, tz: Option<&str>) -> Self {
+        if let Some(t) = tz.map(str::trim).filter(|t| !t.is_empty()) {
+            self.timezone = Some(t.to_string());
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1560,6 +1575,32 @@ mod tests {
         let title = event_title(&ev);
         assert_eq!(title, "pingward: in fra/nightly backup is DOWN");
         assert!(!title.chars().any(char::is_control));
+    }
+
+    /// The instance display timezone is what an operator who reads alerts in
+    /// one place sets; it beats the check's own zone, which is written for the
+    /// cron schedule rather than for the reader.
+    #[test]
+    fn display_timezone_overrides_the_checks_own_zone() {
+        let mut ev = detailed_event(EventKind::Down, Some(DownCause::Overdue));
+        assert!(event_text(&ev).contains("17:03 CST"));
+
+        ev.detail = ev
+            .detail
+            .clone()
+            .with_display_timezone(Some("Europe/Berlin"));
+        let text = event_text(&ev);
+        assert!(text.contains("11:03 CEST"), "got: {text}");
+        assert!(!text.contains("CST"), "got: {text}");
+    }
+
+    #[test]
+    fn a_blank_display_timezone_keeps_the_checks_zone() {
+        let ev = detailed_event(EventKind::Down, Some(DownCause::Overdue));
+        for blank in [None, Some(""), Some("   ")] {
+            let detail = ev.detail.clone().with_display_timezone(blank);
+            assert_eq!(detail.timezone.as_deref(), Some("Asia/Taipei"));
+        }
     }
 
     #[test]

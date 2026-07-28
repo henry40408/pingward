@@ -74,6 +74,7 @@ pub async fn scan_once(
     base_url: &str,
 ) -> Result<Vec<NotificationEvent>, sqlx::Error> {
     let project_names = store.all_project_names().await?;
+    let display_tz = store.display_timezone().await;
     let mut events = Vec::new();
     for check in store.list_active_checks().await? {
         let overdue = due_time(&check).is_some_and(|due| now >= due);
@@ -109,6 +110,7 @@ pub async fn scan_once(
                 project_names.get(&check.project_id).cloned(),
                 base_url,
             )
+            .with_display_timezone(display_tz.as_deref())
             .with_cause(cause),
         });
     }
@@ -126,6 +128,7 @@ pub async fn nag_once(
 ) -> Result<Vec<NotificationEvent>, sqlx::Error> {
     let project_nags = store.all_project_nag_intervals().await?;
     let project_names = store.all_project_names().await?;
+    let display_tz = store.display_timezone().await;
     let global_nag = store
         .get_setting("nag_interval")
         .await?
@@ -161,7 +164,8 @@ pub async fn nag_once(
                 &check,
                 project_names.get(&check.project_id).cloned(),
                 base_url,
-            ),
+            )
+            .with_display_timezone(display_tz.as_deref()),
         });
     }
     Ok(events)

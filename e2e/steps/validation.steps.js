@@ -37,3 +37,21 @@ Then("the project name field shows {string}", async ({ page }, name) => {
 When("I fill the check max runtime with {string}", async ({ page }, value) => {
   await page.locator("#max_runtime_secs").fill(value);
 });
+
+// timezone has no data-testid either; it is a text input with a <datalist>,
+// so fill() works exactly as it would for a plain field.
+When("I fill the check timezone with {string}", async ({ page }, value) => {
+  await page.locator("#timezone").fill(value);
+});
+
+// Non-vacuity guard for the datalist: an empty <datalist> would satisfy any
+// "the field accepts a zone" assertion on its own.
+Then("the timezone field offers a list of zones", async ({ page }) => {
+  const input = page.locator("#timezone");
+  await expect(input).toHaveAttribute("list", "tz-list");
+  const count = await page.locator("#tz-list option").count();
+  expect(count).toBeGreaterThan(100);
+  await expect(page.locator('#tz-list option[value="Asia/Taipei"]')).toHaveCount(
+    1
+  );
+});

@@ -299,7 +299,9 @@ fn spawn_delivery(
             .ok()
             .flatten()
             .map(|p| p.name);
-        let mut detail = EventDetail::from_check(&snapshot, project_name, &base_url);
+        let display_tz = store.display_timezone().await;
+        let mut detail = EventDetail::from_check(&snapshot, project_name, &base_url)
+            .with_display_timezone(display_tz.as_deref());
         detail.cause = cause;
         let ev = NotificationEvent {
             check_id: snapshot.id,

@@ -1946,9 +1946,31 @@ pub(crate) struct ValidatedCheck {
     pub(crate) period_secs: Option<i64>,
     pub(crate) grace: i64,
     pub(crate) cron_expr: Option<String>,
+    pub(crate) timezone: String,
     pub(crate) scan_interval_secs: Option<i64>,
     pub(crate) max_runtime_secs: Option<i64>,
     pub(crate) nag_interval_secs: Option<i64>,
+}
+
+/// Validate the check's IANA timezone. Blank means UTC — both the column
+/// default and the API's `default_timezone` already say so, and a form posted
+/// without the field should land on the same value rather than an error.
+///
+/// A typo used to be stored verbatim and then silently ignored: `due_time`
+/// falls back to UTC (with a `tracing::warn!` nobody reads) and the check's
+/// cron simply fires on the wrong wall clock. Rejecting it here is the only
+/// place the operator finds out, so it returns the offending value.
+fn validate_timezone(raw: &str) -> Result<String, String> {
+    let tz = raw.trim();
+    if tz.is_empty() {
+        return Ok("UTC".to_string());
+    }
+    match tz.parse::<chrono_tz::Tz>() {
+        Ok(parsed) => Ok(parsed.name().to_string()),
+        Err(_) => Err(format!(
+            "unknown timezone \"{tz}\" — use an IANA name such as UTC or Asia/Taipei"
+        )),
+    }
 }
 
 /// Validate a check form into a `ValidatedCheck` (schedule + grace + the three
@@ -1989,6 +2011,7 @@ pub(crate) fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String>
             (None, Some(expr.to_string()))
         }
     };
+    let timezone = validate_timezone(&form.timezone)?;
     let scan_interval_secs =
         parse_opt_positive_duration(&form.scan_interval_secs, "scan interval")?;
     let max_runtime_secs = parse_opt_positive_duration(&form.max_runtime_secs, "max runtime")?;
@@ -2000,6 +2023,7 @@ pub(crate) fn validate_check(form: &CheckForm) -> Result<ValidatedCheck, String>
         period_secs,
         grace,
         cron_expr,
+        timezone,
         scan_interval_secs,
         max_runtime_secs,
         nag_interval_secs,
@@ -2071,7 +2095,7 @@ async fn check_create_core(
             period_secs: v.period_secs,
             grace_secs: v.grace,
             cron_expr: v.cron_expr.as_deref(),
-            timezone: &form.timezone,
+            timezone: &v.timezone,
             scan_interval_secs: v.scan_interval_secs,
             max_runtime_secs: v.max_runtime_secs,
             nag_interval_secs: v.nag_interval_secs,
@@ -2861,7 +2885,7 @@ async fn check_update_core(
                 period_secs: v.period_secs,
                 grace_secs: v.grace,
                 cron_expr: v.cron_expr.as_deref(),
-                timezone: &form.timezone,
+                timezone: &v.timezone,
                 scan_interval_secs: v.scan_interval_secs,
                 max_runtime_secs: v.max_runtime_secs,
                 nag_interval_secs: v.nag_interval_secs,
@@ -3398,7 +3422,8 @@ async fn run_channel_test(state: &AppState, channel: &Channel) -> TestResult {
         detail: EventDetail {
             project_name,
             ..Default::default()
-        },
+        }
+        .with_display_timezone(state.store.display_timezone().await.as_deref()),
     };
     match notifier_for(channel, state.config.smtp.as_ref()) {
         None => TestResult {
@@ -3505,6 +3530,36 @@ struct SettingsForm {
     pings_retention_days: String,
     notifications_retention_days: String,
     audit_retention_days: String,
+    #[serde(default)]
+    display_timezone: String,
+}
+
+/// How a settings field is validated. The settings table stores strings, so
+/// each variant only decides what a *valid* value looks like before it is
+/// written back as one.
+#[derive(Clone, Copy)]
+enum SettingKind {
+    /// Raw seconds or a human duration (`5m`, `1h30m`).
+    Duration,
+    /// A plain positive integer count of days.
+    Days,
+    /// An IANA timezone name.
+    Timezone,
+}
+
+/// Render a validated optional number as its stored form — blank clears the
+/// setting, which is how every numeric setting spells "unset".
+fn fmt_opt_setting(v: Option<i64>) -> String {
+    v.map(|n| n.to_string()).unwrap_or_default()
+}
+
+/// Instance-wide display timezone: blank means unset (fall back to the check's
+/// own timezone), unlike a check's own field where blank means UTC.
+fn validate_opt_timezone(raw: &str) -> Result<String, String> {
+    if raw.trim().is_empty() {
+        return Ok(String::new());
+    }
+    validate_timezone(raw)
 }
 
 #[derive(Deserialize)]
@@ -3560,9 +3615,15 @@ async fn load_settings_fields(state: &AppState) -> Result<SettingsFields, AppErr
         .get_setting("audit_retention_days")
         .await?
         .unwrap_or_default();
+    let display_timezone = state
+        .store
+        .get_setting("display_timezone")
+        .await?
+        .unwrap_or_default();
     Ok(SettingsFields {
         scan_interval: readable_setting_duration(scan_interval),
         nag_interval: readable_setting_duration(nag_interval),
+        display_timezone,
         pings_retention_days,
         notifications_retention_days,
         audit_retention_days,
@@ -3578,6 +3639,7 @@ struct SettingsFields {
     pings_retention_days: String,
     notifications_retention_days: String,
     audit_retention_days: String,
+    display_timezone: String,
 }
 
 /// The re-render inputs `render_admin` needs beyond the data it always
@@ -3636,44 +3698,52 @@ async fn settings_save(
             "scan_interval",
             form.scan_interval.as_str(),
             "Global scan interval",
-            true,
+            SettingKind::Duration,
         ),
         (
             "nag_interval",
             form.nag_interval.as_str(),
             "Global nag interval",
-            true,
+            SettingKind::Duration,
         ),
         (
             "pings_retention_days",
             form.pings_retention_days.as_str(),
             "Pings retention",
-            false,
+            SettingKind::Days,
         ),
         (
             "notifications_retention_days",
             form.notifications_retention_days.as_str(),
             "Notifications retention",
-            false,
+            SettingKind::Days,
         ),
         (
             "audit_retention_days",
             form.audit_retention_days.as_str(),
             "Audit trail retention",
-            false,
+            SettingKind::Days,
+        ),
+        (
+            "display_timezone",
+            form.display_timezone.as_str(),
+            "Notification timezone",
+            SettingKind::Timezone,
         ),
     ];
-    // Atomic: validate every field before writing any. Blank clears to the
-    // default (`Ok(None)`); scan/nag intervals accept a duration (raw seconds
-    // or e.g. `5m`), the two retention fields are plain positive integers
-    // (days); any non-blank invalid value aborts the whole save and
-    // re-renders with the submitted values.
-    let mut parsed: Vec<(&str, Option<i64>)> = Vec::with_capacity(fields.len());
-    for (key, raw, label, is_duration) in fields {
-        let result = if is_duration {
-            parse_opt_positive_duration(raw, label)
-        } else {
-            parse_opt_positive(raw, label)
+    // Atomic: validate every field before writing any. Blank clears the
+    // setting; scan/nag intervals accept a duration (raw seconds or e.g.
+    // `5m`), the retention fields are plain positive integers (days), and the
+    // display timezone is an IANA name. Any non-blank invalid value aborts the
+    // whole save and re-renders with the submitted values. Each field is
+    // reduced to the string that will be stored, so the change-detection and
+    // write passes below stay type-agnostic.
+    let mut parsed: Vec<(&str, String)> = Vec::with_capacity(fields.len());
+    for (key, raw, label, kind) in fields {
+        let result = match kind {
+            SettingKind::Duration => parse_opt_positive_duration(raw, label).map(fmt_opt_setting),
+            SettingKind::Days => parse_opt_positive(raw, label).map(fmt_opt_setting),
+            SettingKind::Timezone => validate_opt_timezone(raw),
         };
         match result {
             Ok(v) => parsed.push((key, v)),
@@ -3689,6 +3759,7 @@ async fn settings_save(
                             pings_retention_days: form.pings_retention_days.clone(),
                             notifications_retention_days: form.notifications_retention_days.clone(),
                             audit_retention_days: form.audit_retention_days.clone(),
+                            display_timezone: form.display_timezone.clone(),
                         },
                         settings_error: Some(msg),
                         settings_flash: None,
@@ -3709,16 +3780,14 @@ async fn settings_save(
     // names the fields the operator actually touched rather than re-reading
     // them back afterwards.
     let mut changed: Vec<String> = Vec::new();
-    for (key, v) in &parsed {
-        let value = v.map(|n| n.to_string()).unwrap_or_default();
+    for (key, value) in &parsed {
         let previous = state.store.get_setting(key).await?.unwrap_or_default();
-        if previous != value {
-            let shown = if value.is_empty() { "unset" } else { &value };
+        if &previous != value {
+            let shown = if value.is_empty() { "unset" } else { value };
             changed.push(format!("{key}={shown}"));
         }
     }
-    for (key, v) in parsed {
-        let value = v.map(|n| n.to_string()).unwrap_or_default();
+    for (key, value) in parsed {
         state.store.set_setting(key, &value).await?;
     }
     // A settings save is an admin action on the whole instance and had been
@@ -4655,6 +4724,7 @@ struct AdminTemplate {
     pings_retention_days: String,
     notifications_retention_days: String,
     audit_retention_days: String,
+    display_timezone: String,
     settings_error: Option<String>,
     settings_flash: Option<String>,
     // users
@@ -4732,6 +4802,7 @@ async fn render_admin(
         pings_retention_days: r.settings.pings_retention_days,
         notifications_retention_days: r.settings.notifications_retention_days,
         audit_retention_days: r.settings.audit_retention_days,
+        display_timezone: r.settings.display_timezone,
         settings_error: r.settings_error,
         settings_flash: r.settings_flash,
         users: state
@@ -5343,6 +5414,47 @@ mod tests {
     #[test]
     fn validate_check_accepts_a_valid_period_form() {
         assert!(validate_check(&base_check_form()).is_ok());
+    }
+
+    /// A typo used to be stored verbatim and then silently ignored — the cron
+    /// simply fired on UTC's wall clock. The rejection is the only place the
+    /// operator ever finds out.
+    #[test]
+    fn validate_check_rejects_an_unknown_timezone() {
+        let mut form = base_check_form();
+        form.timezone = "Asia/Taipeh".into();
+        let err = validate_check(&form).unwrap_err();
+        assert!(err.contains("Asia/Taipeh"), "got: {err}");
+        assert!(err.contains("IANA"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_check_carries_the_validated_timezone() {
+        let mut form = base_check_form();
+        form.timezone = "  Asia/Taipei  ".into();
+        assert_eq!(validate_check(&form).unwrap().timezone, "Asia/Taipei");
+    }
+
+    /// Blank means UTC, matching both the column default and the API's
+    /// `default_timezone` — a form posted without the field must not error.
+    #[test]
+    fn validate_timezone_treats_blank_as_utc_and_canonicalizes() {
+        assert_eq!(validate_timezone("").unwrap(), "UTC");
+        assert_eq!(validate_timezone("   ").unwrap(), "UTC");
+        assert_eq!(validate_timezone("Europe/Berlin").unwrap(), "Europe/Berlin");
+        assert!(validate_timezone("Mars/Olympus").is_err());
+    }
+
+    /// The instance setting means something different by blank: unset, so the
+    /// check's own zone still applies.
+    #[test]
+    fn validate_opt_timezone_treats_blank_as_unset() {
+        assert_eq!(validate_opt_timezone("").unwrap(), "");
+        assert_eq!(
+            validate_opt_timezone(" Europe/Berlin ").unwrap(),
+            "Europe/Berlin"
+        );
+        assert!(validate_opt_timezone("nonsense").is_err());
     }
 
     #[test]

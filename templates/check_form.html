@@ -44,7 +44,14 @@
         </div>
         <div class="field">
           <label for="timezone">Timezone</label>
-          <input id="timezone" name="timezone" value="{{ timezone }}" required>
+          {# A datalist, not a <select>: it keeps the field type-to-filter for
+             600-odd zones while still accepting a pasted name, and the server
+             validates it either way (web::validate_timezone). #}
+          <input id="timezone" name="timezone" value="{{ timezone }}" list="tz-list" autocomplete="off" required>
+          <datalist id="tz-list">
+            {% for tz in crate::view::timezones() %}<option value="{{ tz }}">{% endfor %}
+          </datalist>
+          <div class="help">IANA name. Only cron schedules use it to pick the firing wall clock.</div>
         </div>
       </div>
       <div class="field">

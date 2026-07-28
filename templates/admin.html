@@ -162,6 +162,14 @@
           <input id="audit_retention_days" name="audit_retention_days" value="{{ audit_retention_days }}" data-testid="audit-retention-input">
           <div class="help">Blank keeps every entry forever &mdash; nothing else trims this table, so it grows for the life of the instance. Shortening it deletes history from the audit trail below, and the change is itself recorded there.</div>
         </div>
+        <div class="field">
+          <label for="display_timezone">Notification timezone</label>
+          <input id="display_timezone" name="display_timezone" value="{{ display_timezone }}" list="tz-list" autocomplete="off" data-testid="display-timezone-input">
+          <datalist id="tz-list">
+            {% for tz in crate::view::timezones() %}<option value="{{ tz }}">{% endfor %}
+          </datalist>
+          <div class="help">Timestamps in delivered notifications render in this zone. Blank uses each check's own timezone (itself UTC unless set). Pages in this UI always follow your browser instead.</div>
+        </div>
       </div>
       <div class="btnrow">
         <button class="btn primary" type="submit">Save changes</button>
