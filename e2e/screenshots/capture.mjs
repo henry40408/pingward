@@ -11,6 +11,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { ApiHelper } from "../support/api.js";
 import { ADMIN_PASSWORD, ADMIN_USERNAME, generateSeedSql } from "./seed.mjs";
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -230,15 +231,13 @@ async function main() {
   const base = `http://127.0.0.1:${port}`;
 
   // Phase 1 — migrate, then create the first admin through the product's own
-  // one-time setup form so the password hash is a real argon2 one.
+  // one-time setup form so the password hash is a real argon2 one. `/setup` is
+  // CSRF-protected like every other POST (`csrf_guard` has no path
+  // exemptions), so this goes through the same GET-then-submit helper the E2E
+  // fixtures use rather than posting the form fields bare.
   let server = await startPingward(port);
   try {
-    const res = await fetch(`${base}/setup`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD }),
-    });
-    if (!res.ok) throw new Error(`POST /setup failed: HTTP ${res.status}`);
+    await new ApiHelper(base).bootstrapAdmin(ADMIN_USERNAME, ADMIN_PASSWORD);
   } finally {
     await stopPingward(server);
   }

@@ -94,7 +94,14 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
   not yet followed by a finish) beats `Late` because a long-running job
   naturally drifts past its expected time while legitimately still
   executing, and is itself beaten by `Down`/`Paused` so an in-flight run
-  never masks an alert.
+  never masks an alert. `next_due` renders the check header's countdown to
+  the next deadline, and derives it from `scheduler::due_time` rather than
+  the stored `checks.next_due_at` column — that column is only ever stamped
+  by `ping::apply`, so it is `NULL` for a check that has never pinged and for
+  one downed by a `fail` ping, while `due_time` is what `scan_once` itself
+  evaluates to decide a check is overdue. The deadline includes grace, hence
+  "due" rather than "expected"; a paused check is excluded from monitoring
+  and so shows no deadline at all.
 - `src/assets.rs` — serves `assets/app.css`, the embedded webfonts, and the
   app icons (`/favicon.svg`, `/apple-touch-icon.png`), each content-addressed
   by a hash of what it serves.

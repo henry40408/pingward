@@ -197,3 +197,125 @@ async fn check_description_markdown_renders_on_check_page() {
         "check description markdown not rendered: {body}"
     );
 }
+
+/// A period check that has just pinged counts down to its next deadline, and
+/// carries the exact instant in the element's tooltip.
+#[tokio::test]
+async fn check_detail_shows_when_the_next_ping_is_due() {
+    let (server, store, pid) = server_with_project().await;
+    let cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: "cu-due",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let check = store.find_check(cid).await.unwrap().unwrap();
+    server
+        .post(&format!("/ping/{}", check.ping_uuid))
+        .await
+        .assert_status_ok();
+
+    let res = server.get(&format!("/checks/{cid}")).await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(
+        body.contains("data-testid=\"check-next-due\""),
+        "next-due element missing: {body}"
+    );
+    // 1h period + 5m grace, pinged just now.
+    assert!(
+        body.contains("due in 1h"),
+        "next deadline not counted down: {body}"
+    );
+    assert!(
+        body.contains("check-next-due\" title=\""),
+        "next-due tooltip carrying the absolute instant missing: {body}"
+    );
+}
+
+/// A check that has never pinged still has a real deadline — `scan_once` will
+/// down it — but the label must not read as a report about a run that happened.
+#[tokio::test]
+async fn check_detail_next_due_names_the_first_ping_when_none_has_arrived() {
+    let (server, store, pid) = server_with_project().await;
+    let cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: "cu-due-new",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // Precondition: nothing has stamped `next_due_at`, so the page cannot be
+    // reading the stored column here.
+    assert!(
+        store
+            .find_check(cid)
+            .await
+            .unwrap()
+            .unwrap()
+            .next_due_at
+            .is_none()
+    );
+
+    let res = server.get(&format!("/checks/{cid}")).await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(
+        body.contains("first ping due in 1h"),
+        "never-pinged check should name the first ping: {body}"
+    );
+}
+
+/// A paused check is excluded from monitoring, so no deadline is enforced and
+/// none may be shown.
+#[tokio::test]
+async fn check_detail_paused_shows_no_deadline() {
+    let (server, store, pid) = server_with_project().await;
+    let cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: "cu-due-paused",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let check = store.find_check(cid).await.unwrap().unwrap();
+    server
+        .post(&format!("/ping/{}", check.ping_uuid))
+        .await
+        .assert_status_ok();
+    store
+        .set_status(cid, pingward::models::CheckStatus::Paused)
+        .await
+        .unwrap();
+
+    let res = server.get(&format!("/checks/{cid}")).await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(
+        body.contains("not scheduled while paused"),
+        "paused check should name the state: {body}"
+    );
+    assert!(
+        !body.contains("due in"),
+        "paused check must not count down to a deadline nothing enforces: {body}"
+    );
+}

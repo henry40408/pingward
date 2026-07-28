@@ -11,7 +11,10 @@
   <span class="status-dot {{ status }}"></span>
   <h1>{{ check.name }}</h1>
   <span class="badge {{ status }}" data-testid="check-status">{{ status }}</span>
-  <span class="since {{ status }}">{{ since }}</span>
+  <span class="cmeta">
+    <span class="since {{ status }}">{{ since }}</span>
+    <span class="due" data-testid="check-next-due"{% if let Some(iso) = next_due.iso %} title="{{ iso }}"{% endif %}>{{ next_due.label }}</span>
+  </span>
 </div>
 <div class="crumb tight">{{ schedule }}</div>
 {% if !description_html.is_empty() %}<div class="desc" data-testid="check-description">{{ description_html|safe }}</div>{% endif %}

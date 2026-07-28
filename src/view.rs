@@ -232,6 +232,77 @@ pub fn fmt_relative(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
+/// Forward-looking mirror of [`fmt_relative`]: how far `then` still is from
+/// `now`, at the same granularity ("in 45s", "in 12m", "in 3h", "in 2d").
+pub fn fmt_until(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let s = (then - now).num_seconds().max(0);
+    if s < 60 {
+        format!("in {s}s")
+    } else if s < 3600 {
+        format!("in {}m", s / 60)
+    } else if s < 86400 {
+        format!("in {}h", s / 3600)
+    } else {
+        format!("in {}d", s / 86400)
+    }
+}
+
+/// The "when is the next ping expected" line on the check page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NextDue {
+    /// Visible text, e.g. `due in 57m`, `overdue by 12m`.
+    pub label: String,
+    /// The deadline as RFC 3339, carried in the element's `title` so the exact
+    /// instant is one hover away. `None` whenever `label` names a state rather
+    /// than an instant (paused, unschedulable), so the template renders no
+    /// tooltip instead of an empty one.
+    pub iso: Option<String>,
+}
+
+/// Describe a check's next deadline for display.
+///
+/// The source is [`crate::scheduler::due_time`], **not** the stored
+/// `checks.next_due_at` column. The column is only ever stamped by
+/// `ping::apply`, so it is `NULL` for a check that has never pinged and for
+/// one downed by a `fail` ping — precisely the cases this line most needs to
+/// answer. `due_time` is what `scheduler::scan_once` itself evaluates to
+/// decide a check is overdue, so the rendered deadline is a truthful
+/// prediction of when the check will be marked down, and for an up check it
+/// equals the stored column (`ping::apply` stamps that same function's
+/// output).
+///
+/// The deadline includes grace (see [`display_status`]); the expected run time
+/// is `grace_secs` earlier, which is why this says "due" rather than
+/// "expected" — the schedule line under the header carries the grace.
+pub fn next_due(check: &Check, now: DateTime<Utc>) -> NextDue {
+    let unlabelled = |label: &str| NextDue {
+        label: label.into(),
+        iso: None,
+    };
+    // A paused check is excluded from monitoring entirely (spec §6): no scan
+    // will down it, so any countdown here would be a deadline nothing enforces.
+    if check.status == CheckStatus::Paused {
+        return unlabelled("not scheduled while paused");
+    }
+    let Some(due) = crate::scheduler::due_time(check) else {
+        // Period check with no period, or an uninterpretable cron expression.
+        return unlabelled("next due unknown");
+    };
+    let label = if now >= due {
+        format!("overdue by {}", fmt_secs((now - due).num_seconds()))
+    } else if check.last_ping_at.is_none() {
+        // Never pinged: the deadline is anchored on creation, and naming that
+        // keeps "due in 1h" from reading as a report about a run that happened.
+        format!("first ping due {}", fmt_until(due, now))
+    } else {
+        format!("due {}", fmt_until(due, now))
+    };
+    NextDue {
+        label,
+        iso: Some(due.to_rfc3339()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +492,75 @@ mod tests {
         let bars = heartbeat(&[], None, true, 6);
         assert_eq!(bars.len(), 6);
         assert!(bars.iter().all(|b| b.class == "pausedbar"));
+    }
+
+    #[test]
+    fn next_due_counts_down_from_the_last_ping() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 14, 12, 0, 0).unwrap();
+        let mut c = base_check();
+        // 1h period + 5m grace, pinged 30m ago → 35m left on the deadline.
+        c.last_ping_at = Some(now - Duration::minutes(30));
+        let d = next_due(&c, now);
+        assert_eq!(d.label, "due in 35m");
+        assert_eq!(
+            d.iso,
+            Some((now + Duration::minutes(35)).to_rfc3339()),
+            "the tooltip carries the exact deadline"
+        );
+    }
+
+    #[test]
+    fn next_due_names_the_first_ping_when_none_has_arrived() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 14, 12, 0, 0).unwrap();
+        let mut c = base_check();
+        c.status = CheckStatus::New;
+        c.last_ping_at = None;
+        c.created_at = now - Duration::minutes(5);
+        // Anchored on creation, so the deadline is real (scan_once will down
+        // it) — but it is not a statement about any run that happened.
+        assert_eq!(next_due(&c, now).label, "first ping due in 1h");
+    }
+
+    #[test]
+    fn next_due_reports_how_far_past_the_deadline_a_check_is() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 14, 12, 0, 0).unwrap();
+        let mut c = base_check();
+        c.status = CheckStatus::Down;
+        c.last_ping_at = Some(now - Duration::minutes(75)); // deadline was 10m ago
+        let d = next_due(&c, now);
+        assert_eq!(d.label, "overdue by 10m 00s");
+        assert!(d.iso.is_some());
+    }
+
+    #[test]
+    fn next_due_on_a_paused_check_names_the_state_and_offers_no_tooltip() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 14, 12, 0, 0).unwrap();
+        let mut c = base_check();
+        c.status = CheckStatus::Paused;
+        c.last_ping_at = Some(now - Duration::hours(9)); // long overdue, if it counted
+        let d = next_due(&c, now);
+        assert_eq!(d.label, "not scheduled while paused");
+        assert_eq!(d.iso, None);
+    }
+
+    #[test]
+    fn next_due_is_unknown_when_the_schedule_cannot_be_evaluated() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 14, 12, 0, 0).unwrap();
+        let mut c = base_check();
+        c.schedule_kind = ScheduleKind::Cron;
+        c.cron_expr = Some("not a cron".into());
+        let d = next_due(&c, now);
+        assert_eq!(d.label, "next due unknown");
+        assert_eq!(d.iso, None);
+    }
+
+    #[test]
+    fn fmt_until_mirrors_fmt_relative_granularity_and_floors_at_zero() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 14, 12, 0, 0).unwrap();
+        assert_eq!(fmt_until(now + Duration::seconds(45), now), "in 45s");
+        assert_eq!(fmt_until(now + Duration::seconds(750), now), "in 12m");
+        assert_eq!(fmt_until(now + Duration::hours(3), now), "in 3h");
+        assert_eq!(fmt_until(now + Duration::days(2), now), "in 2d");
+        assert_eq!(fmt_until(now - Duration::hours(1), now), "in 0s");
     }
 }
