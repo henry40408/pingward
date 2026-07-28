@@ -1,4 +1,4 @@
-use crate::models::{Check, CheckStatus, Ping, PingKind};
+use crate::models::{Check, CheckStatus, PingKind, PingSummary};
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 
@@ -87,8 +87,8 @@ fn is_finish(k: PingKind) -> bool {
 
 /// Pair each finish (success/fail) ping with the most recent preceding `start`.
 /// Input may be newest- or oldest-first; normalized to chronological internally.
-pub fn run_durations(pings: &[Ping]) -> HashMap<i64, i64> {
-    let mut ordered: Vec<&Ping> = pings.iter().collect();
+pub fn run_durations(pings: &[PingSummary]) -> HashMap<i64, i64> {
+    let mut ordered: Vec<&PingSummary> = pings.iter().collect();
     ordered.sort_by_key(|p| (p.created_at, p.id));
     let mut out = HashMap::new();
     let mut pending_start: Option<DateTime<Utc>> = None;
@@ -128,7 +128,7 @@ const HOT_FRACTION: f64 = 0.80;
     reason = "`frac` is clamped to [0.0, 1.0] and MAX_H > 0, so the scaled height is non-negative"
 )]
 pub fn heartbeat(
-    pings: &[Ping],
+    pings: &[PingSummary],
     max_runtime_secs: Option<i64>,
     paused: bool,
     n: usize,
@@ -144,7 +144,7 @@ pub fn heartbeat(
     }
     let durations = run_durations(pings);
     // chronological runs = finish pings, oldest→newest, keep last n
-    let mut runs: Vec<&Ping> = pings.iter().filter(|p| is_finish(p.kind)).collect();
+    let mut runs: Vec<&PingSummary> = pings.iter().filter(|p| is_finish(p.kind)).collect();
     runs.sort_by_key(|p| (p.created_at, p.id));
     let start = runs.len().saturating_sub(n);
     let runs = &runs[start..];
@@ -306,7 +306,7 @@ pub fn next_due(check: &Check, now: DateTime<Utc>) -> NextDue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Check, CheckStatus, Ping, PingKind, ScheduleKind};
+    use crate::models::{Check, CheckStatus, PingKind, PingSummary, ScheduleKind};
     use chrono::{Duration, TimeZone, Utc};
 
     fn base_check() -> Check {
@@ -333,14 +333,11 @@ mod tests {
             created_at: Utc::now(),
         }
     }
-    fn ping(id: i64, kind: PingKind, at: chrono::DateTime<Utc>) -> Ping {
-        Ping {
+    fn ping(id: i64, kind: PingKind, at: chrono::DateTime<Utc>) -> PingSummary {
+        PingSummary {
             id,
             check_id: 1,
             kind,
-            exit_code: None,
-            body: String::new(),
-            source_ip: None,
             created_at: at,
         }
     }

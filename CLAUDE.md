@@ -237,10 +237,16 @@ last_start_at)`, so an in-flight `Start` counts — newest first, never-pinged
 last, ties broken by id. Both the text (`q`) and status filters run in Rust over
 the loaded rows (see `matches_term`), and filtering preserves the sort order.
 Loads are **batched, not per-group**: one `list_checks_for_projects` for every
-project's checks, one `list_recent_pings_for_checks` for the heartbeat strips,
+project's checks, one `list_recent_ping_summaries_for_checks` for the heartbeat strips,
 and one `checks_with_channels` to know which rows get the "no channel" chip
 (§ Notifications), so a request is a fixed number of queries regardless of how
-many projects or checks a user owns.
+many projects or checks a user owns. The heartbeat window is deliberately a
+**narrow projection** (`id, check_id, kind, created_at` → `models::PingSummary`)
+rather than whole ping rows: `view::heartbeat` reads nothing else, and
+selecting `body` meant decoding every captured POST output — up to
+`ping::MAX_BODY` (10 KiB) per row, 40 rows per check — only to drop it. That
+was most of the dashboard's render time (measured in #116, which records the
+before/after).
 
 **Display status** (`src/view.rs::display_status`/`DisplayStatus`): a
 display-only status layered on top of the stored `CheckStatus`
