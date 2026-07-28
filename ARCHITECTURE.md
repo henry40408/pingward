@@ -765,6 +765,36 @@ built around **never re-rendering a stored secret**:
 
 At-rest encryption of `config_json` was considered and deliberately deferred.
 
+## Swappable history sections
+
+Three tables page and filter the same way: the check page's recent pings and
+recent notifications, and `/admin`'s audit trail. Each is one template
+(`check_pings.html`, `check_notifs.html`, `admin_audit.html`) holding filter
+controls + table + a `Newer`/`Older` keyset pager, rendered on two surfaces —
+inlined into the full page by the handler and served standalone by a fragment
+endpoint (`GET /checks/{id}/pings`, `…/notifications`, `GET /admin/audit`) —
+so the markup has one source and a partial refresh cannot drift from a full
+load.
+
+The client half is `pw.wireSection` in `base.html`: it delegates clicks inside
+the section, turning a pager/Clear link or the Filter button into a `fetch` of
+the fragment endpoint whose response replaces the section body, then re-runs
+timestamp localization, the expandable-row bindings and the `datetime-local`
+fill against the swapped-in markup. It lives in `base.html` (a head script, so
+it is defined before the per-page scripts inside the `body` block that call
+it) rather than in any one page, which is what lets the admin audit card reuse
+the check page's behaviour instead of copying it.
+
+The server half is `store::keyset_page`: one query builder shared by all three
+tables, paging by `id` (monotonic and index-backed, so it does not drift under
+concurrent inserts the way an offset would) with a limit+1 fetch to decide
+`has_newer`/`has_older`. `pings`/`notifications` pass a scope of
+`("check_id", id)`; `audit_log` belongs to the instance rather than to any
+row, so it passes `None` and the `WHERE` clause is assembled conditionally —
+an unscoped, unfiltered page has no predicates at all. Filter values are
+always bound; only self-generated literals (table, column, operator,
+placeholder) are interpolated into the SQL text.
+
 ## Templates & assets
 
 Askama compiles `templates/*.html` into the binary at build time — **`cargo

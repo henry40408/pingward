@@ -158,3 +158,75 @@ Then("the Environment card shows the SMTP password as configured", async ({ page
 Then("the page does not contain the SMTP secret", async ({ page }) => {
   await expect(page.locator("body")).not.toContainText("e2e-secret-password");
 });
+
+// --- audit trail -----------------------------------------------------------
+//
+// The audit card is a swappable history section (`pw.wireSection` in
+// base.html): its Filter button and pager links fetch `/admin/audit` and
+// replace the card body in place, so every assertion below auto-waits for the
+// swap rather than a navigation.
+
+Then("the audit trail has at least {int} row", async ({ page }, n) => {
+  await expect(page.getByTestId("audit-row").nth(n - 1)).toBeVisible();
+});
+
+Then("the audit trail shows an {string} entry", async ({ page }, action) => {
+  await expect(
+    page.getByTestId("audit-row").filter({ hasText: action }).first()
+  ).toBeVisible();
+});
+
+// Each row with a request behind it is a `tr.toggle` followed by a `tr.exp`
+// that gets `.open` on click — the ping table's captured-output pattern.
+When("I expand the first audit row", async ({ page }) => {
+  await page.getByTestId("audit-row").first().click();
+});
+
+Then("the audit detail shows the request path", async ({ page }) => {
+  await expect(page.locator("#audit-section tr.exp.open").first()).toContainText(
+    "/admin/"
+  );
+});
+
+When("I filter the audit trail by action {string}", async ({ page }, action) => {
+  await page.getByTestId("audit-action").selectOption(action);
+  await page.getByTestId("audit-apply").click();
+  // The Clear link is rendered only in a filtered response, so waiting for it
+  // is what makes the following row assertions read the swapped-in table
+  // rather than racing the still-present pre-filter rows.
+  await expect(page.getByTestId("audit-clear")).toBeVisible();
+});
+
+When("I filter the audit trail by actor {string}", async ({ page }, actor) => {
+  // An actor nobody matches is not in the select (it is built from the data),
+  // so drive the endpoint the Filter button would call.
+  await page.goto(`${page.url().split("?")[0]}?aactor=${actor}`);
+});
+
+Then("every audit row shows the action {string}", async ({ page }, action) => {
+  const rows = page.getByTestId("audit-row");
+  await expect(rows.first()).toBeVisible();
+  for (const row of await rows.all()) {
+    await expect(row).toContainText(action);
+  }
+});
+
+Then("the audit clear filter link is visible", async ({ page }) => {
+  await expect(page.getByTestId("audit-clear")).toBeVisible();
+});
+
+Then("the audit clear filter link is not visible", async ({ page }) => {
+  await expect(page.getByTestId("audit-clear")).toHaveCount(0);
+});
+
+When("I clear the audit filter", async ({ page }) => {
+  await page.getByTestId("audit-clear").click();
+  // Mirror of the filter step: the Clear link disappearing is the swap signal.
+  await expect(page.getByTestId("audit-clear")).toHaveCount(0);
+});
+
+Then("the audit trail is empty with a filtered message", async ({ page }) => {
+  await expect(page.getByTestId("audit-empty")).toContainText(
+    "No audit entries match the filter."
+  );
+});
