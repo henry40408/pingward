@@ -119,65 +119,11 @@ mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
       });
     });
 
-    // Localize any absolute timestamps within `root` to the viewer's zone,
-    // falling back to the server-rendered UTC text (mirrors base.html, re-run
-    // per fragment after a partial swap).
-    function localize(root){
-      root.querySelectorAll('.localtime[data-ts]').forEach(function(el){
-        var d = new Date(el.getAttribute('data-ts'));
-        if (!isNaN(d.getTime())) { el.textContent = d.toLocaleString(undefined,{hour12:false}); el.title = el.getAttribute('data-ts'); }
-      });
-    }
-    // Expand/collapse ping output rows within `root`.
-    function bindToggles(root){
-      root.querySelectorAll('tr.toggle').forEach(function(r){
-        r.addEventListener('click', function(){
-          var n = r.nextElementSibling;
-          if (n && n.classList.contains('exp')) { n.classList.toggle('open'); r.querySelector('.caret').classList.toggle('open'); }
-        });
-      });
-    }
-    var pad = function(n){ return String(n).padStart(2,'0'); };
-    // Fill each datetime-local from its data-utc (UTC instant) in local time.
-    // Minute precision matches the inputs (no step=1 seconds sub-field, whose
-    // being-left-blank would otherwise make .value empty on submit).
-    function fillDates(root){
-      root.querySelectorAll('input[type=datetime-local][data-utc]').forEach(function(el){
-        var v = el.getAttribute('data-utc'); if (!v) return;
-        var d = new Date(v); if (isNaN(d.getTime())) return;
-        el.value = d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
-      });
-    }
-    // A datetime-local value (local wall clock) -> UTC RFC3339 (Z), '' if blank.
-    function toUtc(val){
-      if (!val) return '';
-      var d = new Date(val); if (isNaN(d.getTime())) return '';
-      return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-    }
-    function initSection(section){ localize(section); bindToggles(section); fillDates(section); }
+    // Section wiring (fetch-and-swap, timestamp localization, expandable rows,
+    // date-field conversion) is shared with /admin's audit trail and lives in
+    // base.html's `pw` helper.
+    var toUtc = pw.toUtc, param = pw.param, wireSection = pw.wireSection;
 
-    // Wire a swappable history section: its pager/Clear links and Filter button
-    // fetch the fragment endpoint and replace the section's contents in place.
-    function wireSection(id, buildQuery){
-      var section = document.getElementById(id);
-      if (!section) return null;
-      var endpoint = section.getAttribute('data-endpoint');
-      function load(url){
-        fetch(url, {headers:{'X-Requested-With':'fetch'}})
-          .then(function(r){ return r.text(); })
-          .then(function(html){ section.innerHTML = html; initSection(section); });
-      }
-      section.addEventListener('click', function(e){
-        var a = e.target.closest('a.btn');
-        if (a && section.contains(a)) { e.preventDefault(); load(a.getAttribute('href')); return; }
-        var b = e.target.closest('button[data-apply]');
-        if (b && section.contains(b)) { e.preventDefault(); load(endpoint + buildQuery(section)); }
-      });
-      initSection(section);
-      return load;
-    }
-
-    function param(qs, key, val){ if (val) qs.push(key+'='+encodeURIComponent(val)); }
     var loadPings = wireSection('pings-section', function(s){
       var qs = [];
       var kind = s.querySelector('[data-testid=pings-kind]');

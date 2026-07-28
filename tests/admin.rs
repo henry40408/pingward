@@ -260,3 +260,174 @@ async fn admin_keeps_nav_link_on_owner_form_validation_error() {
     res.assert_status_ok();
     assert!(res.text().contains("href=\"/admin\""));
 }
+
+// --- audit trail on /admin -------------------------------------------------
+
+/// Record `n` audit rows directly, one second apart, alternating action so the
+/// filter has something to narrow. Returns the seeded rows' actions in order.
+async fn seed_audit(store: &Store, actor_id: i64, n: i64) {
+    let base = chrono::Utc::now() - chrono::Duration::hours(1);
+    for i in 0..n {
+        store
+            .record_audit(
+                &pingward::store::NewAudit {
+                    actor_user_id: actor_id,
+                    actor_username: "admin",
+                    action: if i % 2 == 0 {
+                        "admin.access"
+                    } else {
+                        "user.create"
+                    },
+                    target_type: Some("project"),
+                    target_id: Some(i),
+                    target_owner_id: Some(9),
+                    method: Some("GET"),
+                    path: Some("/admin/projects/1"),
+                    detail: Some(format!("row {i}")).as_deref(),
+                },
+                base + chrono::Duration::seconds(i),
+            )
+            .await
+            .unwrap();
+    }
+}
+
+/// The trail is readable from `/admin` itself, and every column of
+/// `models::AuditLog` reaches the page — including the `method`/`path`/
+/// `detail`/`target_owner_id` carried in the expandable row.
+#[tokio::test]
+async fn admin_page_shows_the_audit_trail() {
+    let (server, store, admin_id) = admin_server().await;
+    seed_audit(&store, admin_id, 3).await;
+
+    let res = server.get("/admin").await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(
+        body.contains("Audit trail"),
+        "audit card heading missing: {body}"
+    );
+    assert!(
+        body.contains("data-testid=\"audit-row\""),
+        "no audit rows rendered: {body}"
+    );
+    assert!(body.contains("admin.access"), "action missing: {body}");
+    assert!(
+        body.contains("project #1"),
+        "target type/id column missing: {body}"
+    );
+    // The rest of AuditLog, in the expandable row.
+    assert!(
+        body.contains("GET /admin/projects/1"),
+        "method/path missing: {body}"
+    );
+    assert!(body.contains("row 1"), "detail missing: {body}");
+    assert!(body.contains("user #9"), "target_owner_id missing: {body}");
+}
+
+/// An admin with an empty trail gets the empty state, not a broken table.
+#[tokio::test]
+async fn admin_audit_empty_state() {
+    let (server, _store, _admin_id) = admin_server().await;
+    let res = server.get("/admin").await;
+    res.assert_status_ok();
+    assert!(
+        res.text().contains("No audit entries yet."),
+        "empty state missing: {}",
+        res.text()
+    );
+}
+
+/// The fragment endpoint serves the same table on its own, and honours the
+/// action filter. The card body and the fragment are one template, so this
+/// also pins what `/admin` inlines.
+#[tokio::test]
+async fn admin_audit_fragment_filters_by_action() {
+    let (server, store, admin_id) = admin_server().await;
+    seed_audit(&store, admin_id, 6).await;
+
+    let res = server.get("/admin/audit?aaction=user.create").await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert_eq!(
+        body.matches("data-testid=\"audit-row\"").count(),
+        3,
+        "expected the 3 user.create rows: {body}"
+    );
+    // Only the rows are filtered — the Action select still has to offer every
+    // action present in the trail, so assert on the cell, not the page.
+    assert!(
+        !body.contains("<td class=\"mono\">admin.access</td>"),
+        "filtered-out action still present as a row: {body}"
+    );
+    // A filter in force offers a way out of it.
+    assert!(
+        body.contains("data-testid=\"audit-clear\""),
+        "Clear link missing while filtered: {body}"
+    );
+}
+
+/// A filter that matches nothing says so rather than reading as "no audit
+/// entries exist".
+#[tokio::test]
+async fn admin_audit_fragment_filtered_empty_state_differs() {
+    let (server, store, admin_id) = admin_server().await;
+    seed_audit(&store, admin_id, 2).await;
+
+    let res = server.get("/admin/audit?aactor=nobody").await;
+    res.assert_status_ok();
+    assert!(
+        res.text().contains("No audit entries match the filter."),
+        "filtered empty state missing: {}",
+        res.text()
+    );
+}
+
+/// Keyset paging over the fragment: the Older link carries a `ab=` cursor plus
+/// the active filter, and following it yields strictly older rows.
+#[tokio::test]
+async fn admin_audit_pages_and_carries_the_filter() {
+    let (server, store, admin_id) = admin_server().await;
+    // 20 rows per page, so 24 rows means a second page exists.
+    seed_audit(&store, admin_id, 24).await;
+
+    let res = server.get("/admin/audit?aaction=admin.access").await;
+    res.assert_status_ok();
+    let body = res.text();
+    // 12 of the 24 rows are admin.access — one page's worth, no Older link.
+    assert_eq!(body.matches("data-testid=\"audit-row\"").count(), 12);
+
+    // Unfiltered, 24 rows page at 20.
+    let res = server.get("/admin/audit").await;
+    let body = res.text();
+    assert_eq!(body.matches("data-testid=\"audit-row\"").count(), 20);
+    let older = body
+        .split("data-testid=\"audit-older\"")
+        .next()
+        .and_then(|s| s.rfind("href=\"").map(|i| (s, i)))
+        .map(|(s, i)| {
+            let rest = &s[i + 6..];
+            rest[..rest.find('"').unwrap()].to_string()
+        })
+        .expect("an Older link with 24 rows");
+    assert!(older.starts_with("/admin/audit?ab="), "unexpected: {older}");
+
+    let res = server.get(&older).await;
+    res.assert_status_ok();
+    assert_eq!(res.text().matches("data-testid=\"audit-row\"").count(), 4);
+}
+
+/// Paging preserves an active filter rather than silently widening it.
+#[tokio::test]
+async fn admin_audit_pager_href_carries_the_active_filter() {
+    let (server, store, admin_id) = admin_server().await;
+    // 48 rows: 24 of each action, so a filtered view still has two pages.
+    seed_audit(&store, admin_id, 48).await;
+
+    let res = server.get("/admin/audit?aaction=admin.access").await;
+    let body = res.text();
+    assert!(
+        body.contains("aaction=admin.access") && body.contains("/admin/audit?ab="),
+        "pager href dropped the filter: {body}"
+    );
+}

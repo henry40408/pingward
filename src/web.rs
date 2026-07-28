@@ -9,7 +9,7 @@ use crate::models::{
 use crate::notify::{EventKind, NotificationEvent, notifier_for};
 use crate::secret;
 use crate::state::AppState;
-use crate::store::{NotifFilter, PageCursor, PingFilter, Store};
+use crate::store::{AuditFilter, NotifFilter, PageCursor, PingFilter, Store};
 use askama::Template;
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
@@ -77,6 +77,7 @@ pub fn routes() -> Router<AppState> {
         // --- admin cross-user route group (every handler guarded by
         // AdminUser, no exceptions) ---
         .route("/admin", get(admin_page))
+        .route("/admin/audit", get(admin_audit_fragment))
         .route("/admin/settings", post(settings_save))
         .route("/admin/users", post(users_create))
         .route("/admin/users/{id}/delete", post(users_delete))
@@ -1796,6 +1797,16 @@ fn parse_filter_enum<T: FromStr>(v: Option<&str>) -> Vec<T> {
         .collect()
 }
 
+/// Parse a free-text filter param: trimmed, with blank treated as "no
+/// constraint". The audit filter's actor/action are stored tokens matched
+/// exactly, so unlike [`parse_filter_enum`] there is no enum to validate
+/// against — a value that matches nothing simply returns an empty page.
+fn parse_filter_text(v: Option<&str>) -> Option<String> {
+    v.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+}
+
 /// Parse a date-bound filter param into a UTC instant. Accepts full RFC3339
 /// (what the JS sends after localizing the `datetime-local` control) and the
 /// bare `YYYY-MM-DDTHH:MM[:SS]` a JS-off submit would produce, treated as UTC.
@@ -1821,19 +1832,15 @@ fn date_bound_token(dt: Option<DateTime<Utc>>) -> String {
         .unwrap_or_default()
 }
 
-/// Build a history-fragment href (`{base}/checks/{id}/{seg}?…`) for a keyset
-/// pager link. `cursor` is this table's new position; `carry` re-attaches the
-/// currently-active filter tokens so paging preserves the filter. Values are
-/// ids, enum tokens, or `Z`-form datetimes — all query-safe, so no encoding.
-fn history_href(
-    base: &str,
-    id: i64,
-    seg: &str,
-    cursor: (&str, i64),
-    carry: &[(&str, &str)],
-) -> String {
+/// Build a history-fragment href for a keyset pager link. `path` is the
+/// fragment endpoint the link re-fetches (`{base}/checks/{id}/pings`,
+/// `/admin/audit`, …), `cursor` is this table's new position, and `carry`
+/// re-attaches the currently-active filter tokens so paging preserves the
+/// filter. Values are ids, enum tokens, or `Z`-form datetimes — all
+/// query-safe, so no encoding.
+fn history_href(path: &str, cursor: (&str, i64), carry: &[(&str, &str)]) -> String {
     use std::fmt::Write as _;
-    let mut href = format!("{base}/checks/{id}/{seg}?{}={}", cursor.0, cursor.1);
+    let mut href = format!("{path}?{}={}", cursor.0, cursor.1);
     for (k, v) in carry {
         if !v.is_empty() {
             let _ = write!(href, "&{k}={v}");
@@ -2430,16 +2437,17 @@ async fn build_pings_partial(
         ("pfrom", f_from.as_str()),
         ("pto", f_to.as_str()),
     ];
+    let endpoint = format!("{base}/checks/{check_id}/pings");
     let older = ping_page
         .has_older
         .then(|| ping_page.items.last())
         .flatten()
-        .map(|p| history_href(base, check_id, "pings", ("pb", p.id), &carry));
+        .map(|p| history_href(&endpoint, ("pb", p.id), &carry));
     let newer = ping_page
         .has_newer
         .then(|| ping_page.items.first())
         .flatten()
-        .map(|p| history_href(base, check_id, "pings", ("pa", p.id), &carry));
+        .map(|p| history_href(&endpoint, ("pa", p.id), &carry));
 
     Ok(CheckPingsTemplate {
         base: base.to_string(),
@@ -2515,16 +2523,17 @@ async fn build_notifs_partial(
         ("nfrom", f_from.as_str()),
         ("nto", f_to.as_str()),
     ];
+    let endpoint = format!("{base}/checks/{check_id}/notifications");
     let older = notif_page
         .has_older
         .then(|| notif_page.items.last())
         .flatten()
-        .map(|n| history_href(base, check_id, "notifications", ("nb", n.id), &carry));
+        .map(|n| history_href(&endpoint, ("nb", n.id), &carry));
     let newer = notif_page
         .has_newer
         .then(|| notif_page.items.first())
         .flatten()
-        .map(|n| history_href(base, check_id, "notifications", ("na", n.id), &carry));
+        .map(|n| history_href(&endpoint, ("na", n.id), &carry));
 
     Ok(CheckNotifsTemplate {
         base: base.to_string(),
@@ -3470,6 +3479,7 @@ async fn admin_page(
     State(state): State<AppState>,
     jar: CookieJar,
     AdminUser(admin): AdminUser,
+    Query(audit): Query<AdminAuditQuery>,
 ) -> Result<Response, AppError> {
     let (scan_interval, nag_interval, pings_retention_days, notifications_retention_days) =
         load_settings_fields(&state).await?;
@@ -3497,6 +3507,7 @@ async fn admin_page(
             password_reset_flash,
             user_error: None,
         },
+        &audit,
     )
     .await?;
     Ok((jar, resp).into_response())
@@ -3566,6 +3577,9 @@ async fn settings_save(
                         password_reset_flash: None,
                         user_error: None,
                     },
+                    // A rejected settings save re-renders the page; the audit
+                    // card just comes back on its default latest page.
+                    &AdminAuditQuery::default(),
                 )
                 .await?;
                 return Ok(resp);
@@ -3606,6 +3620,7 @@ async fn users_create(
                 password_reset_flash: None,
                 user_error: Some("username and password are required".into()),
             },
+            &AdminAuditQuery::default(),
         )
         .await?;
         return Ok(resp);
@@ -4402,12 +4417,79 @@ fn redact_db_url(url: &str) -> String {
 /// don't collide; collisions get a section prefix (`settings_*`, `user_*`,
 /// and the overview's scale counters `user_count`/`project_count` to leave
 /// `users`/`projects` for the user-management and all-projects lists below).
+/// Cursor + filter params for the `/admin` audit table. Prefixed `a*` so they
+/// share the page's query string without colliding with anything else, and
+/// every field is optional — an unknown or malformed value falls back to the
+/// unfiltered latest page rather than 400ing the whole admin page. Accepted
+/// both on `GET /admin` (full page) and `GET /admin/audit` (fragment).
+#[derive(Deserialize, Default)]
+struct AdminAuditQuery {
+    #[serde(default)]
+    ab: Option<i64>,
+    #[serde(default)]
+    aa: Option<i64>,
+    #[serde(default)]
+    aactor: Option<String>,
+    #[serde(default)]
+    aaction: Option<String>,
+    #[serde(default)]
+    afrom: Option<String>,
+    #[serde(default)]
+    ato: Option<String>,
+}
+
+/// The audit-trail fragment: filter controls + table + keyset pager. Served
+/// standalone by `GET /admin/audit` (JS swaps it into `#audit-section`) and
+/// inlined into the merged `/admin` page — the same two-surface arrangement
+/// the check page's pings/notifications fragments use.
+#[derive(Template)]
+#[template(path = "admin_audit.html")]
+struct AdminAuditTemplate {
+    rows: Vec<AuditRow>,
+    empty: bool,
+    /// Every actor/action present in the trail, for the two filter selects.
+    actors: Vec<String>,
+    actions: Vec<String>,
+    /// Selected filter values (`""` = all), echoed back into the controls.
+    f_actor: String,
+    f_action: String,
+    f_from: String,
+    f_to: String,
+    /// Any filter is active — switches the empty state's wording and shows
+    /// the Clear link.
+    filtered: bool,
+    newer: Option<String>,
+    older: Option<String>,
+}
+
+/// One rendered audit row. The four columns are the "who did what to what,
+/// when" summary; `method_path`, `detail` and `target_owner` are the rest of
+/// `models::AuditLog`, carried in an expandable row (the ping table's
+/// captured-output pattern) so nothing written to the table is unreachable.
+struct AuditRow {
+    time: String,
+    iso: String,
+    actor: String,
+    action: String,
+    target: String,
+    method_path: String,
+    detail: String,
+    target_owner: String,
+    /// This row has something behind the caret. False only when `method`,
+    /// `path`, `detail` and `target_owner_id` are all unset, which would
+    /// otherwise render a caret opening onto an empty box.
+    expandable: bool,
+}
+
 #[derive(Template)]
 #[template(path = "admin.html")]
 struct AdminTemplate {
     show_nav: bool,
     csrf: String,
     is_admin: bool,
+    /// The audit card body, from [`AdminAuditTemplate`]. Injected with `|safe`
+    /// exactly like the check page's history fragments.
+    audit_partial: String,
     // overview
     user_count: i64,
     project_count: i64,
@@ -4474,13 +4556,18 @@ async fn render_admin(
     jar: &CookieJar,
     admin_id: i64,
     r: AdminRender,
+    audit: &AdminAuditQuery,
 ) -> Result<Response, AppError> {
     let day_ago = Utc::now() - Duration::days(1);
+    // Rendered here rather than in the template so the inline card body and
+    // the `/admin/audit` fragment endpoint emit byte-identical markup.
+    let audit_partial = render(&build_audit_partial(state, audit).await?)?.0;
     let (notif_ok, notif_err) = state.store.notification_counts_since(day_ago).await?;
     Ok(render(&AdminTemplate {
         show_nav: true,
         csrf: current_csrf(state, jar),
         is_admin: true,
+        audit_partial,
         user_count: state.store.count_users().await?,
         project_count: state.store.count_projects().await?,
         checks: state.store.count_checks().await?,
@@ -4513,6 +4600,108 @@ async fn render_admin(
         env_rows: env_settings(&state.config),
     })?
     .into_response())
+}
+
+/// Build the audit-trail fragment, honoring the `a*` filter and cursor params.
+/// Mirrors [`build_pings_partial`]: parse filters, take one keyset page, render
+/// rows, then build the two pager hrefs with the active filter carried along so
+/// paging does not silently drop it.
+async fn build_audit_partial(
+    state: &AppState,
+    q: &AdminAuditQuery,
+) -> Result<AdminAuditTemplate, AppError> {
+    let filter = AuditFilter {
+        actor: parse_filter_text(q.aactor.as_deref()),
+        action: parse_filter_text(q.aaction.as_deref()),
+        from: parse_date_bound(q.afrom.as_deref()),
+        to: parse_date_bound(q.ato.as_deref()),
+    };
+    let cursor = match (q.ab, q.aa) {
+        (Some(b), _) => PageCursor::Before(b),
+        (None, Some(a)) => PageCursor::After(a),
+        (None, None) => PageCursor::Latest,
+    };
+    let page = state.store.list_audit_page(cursor, 20, &filter).await?;
+    let (actors, actions) = state.store.audit_filter_options().await?;
+
+    let rows: Vec<AuditRow> = page
+        .items
+        .iter()
+        .map(|a| {
+            let target = match (a.target_type.as_deref(), a.target_id) {
+                (Some(t), Some(id)) => format!("{t} #{id}"),
+                (Some(t), None) => t.to_string(),
+                _ => "—".into(),
+            };
+            let method_path = match (a.method.as_deref(), a.path.as_deref()) {
+                (Some(m), Some(p)) => format!("{m} {p}"),
+                (Some(m), None) => m.to_string(),
+                (None, Some(p)) => p.to_string(),
+                (None, None) => "—".into(),
+            };
+            AuditRow {
+                time: a.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+                iso: a.created_at.to_rfc3339(),
+                actor: a.actor_username.clone(),
+                action: a.action.clone(),
+                target,
+                method_path,
+                detail: a.detail.clone().unwrap_or_default(),
+                target_owner: a
+                    .target_owner_id
+                    .map_or_else(|| "—".into(), |id| format!("user #{id}")),
+                expandable: a.method.is_some()
+                    || a.path.is_some()
+                    || a.detail.is_some()
+                    || a.target_owner_id.is_some(),
+            }
+        })
+        .collect();
+
+    let f_actor = filter.actor.clone().unwrap_or_default();
+    let f_action = filter.action.clone().unwrap_or_default();
+    let f_from = date_bound_token(filter.from);
+    let f_to = date_bound_token(filter.to);
+    let carry = [
+        ("aactor", f_actor.as_str()),
+        ("aaction", f_action.as_str()),
+        ("afrom", f_from.as_str()),
+        ("ato", f_to.as_str()),
+    ];
+    let older = page
+        .has_older
+        .then(|| page.items.last())
+        .flatten()
+        .map(|a| history_href("/admin/audit", ("ab", a.id), &carry));
+    let newer = page
+        .has_newer
+        .then(|| page.items.first())
+        .flatten()
+        .map(|a| history_href("/admin/audit", ("aa", a.id), &carry));
+
+    Ok(AdminAuditTemplate {
+        empty: rows.is_empty(),
+        rows,
+        actors,
+        actions,
+        f_actor,
+        f_action,
+        f_from,
+        f_to,
+        filtered: !filter.is_empty(),
+        newer,
+        older,
+    })
+}
+
+/// `GET /admin/audit` — the audit fragment on its own, for the in-place
+/// filter/pager swap. `AdminUser` guards it like every other `/admin` route.
+async fn admin_audit_fragment(
+    State(state): State<AppState>,
+    AdminUser(_admin): AdminUser,
+    Query(q): Query<AdminAuditQuery>,
+) -> Result<Response, AppError> {
+    Ok(render(&build_audit_partial(&state, &q).await?)?.into_response())
 }
 
 // -- projects --

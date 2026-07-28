@@ -274,7 +274,7 @@
     <span class="count">{{ projects.len() }} total</span>
     <span class="line"></span>
   </div>
-  <p class="note mb-12">Every project across all users. Opening one is audited.</p>
+  <p class="note mb-12">Every project across all users. Opening one is audited &mdash; see the audit trail below.</p>
   <div class="list">
     {% if projects.is_empty() %}
     <p class="empty">No projects yet.</p>
@@ -285,6 +285,15 @@
       <a class="rowedit" href="/admin/projects/{{ p.0.id }}" onclick="event.stopPropagation()">manage →</a>
     </div>
     {% endfor %}
+  </div>
+</div>
+
+{# Rendered from admin_audit.html by the handler, so this card body and the
+   GET /admin/audit fragment endpoint emit the same markup. #}
+<div class="card">
+  <div class="ch"><h2>Audit trail</h2></div>
+  <div class="cb" id="audit-section" data-endpoint="/admin/audit">
+    {{ audit_partial|safe }}
   </div>
 </div>
 
@@ -312,5 +321,20 @@
     tick();
     setInterval(tick, 1000);
   })();
+
+  // The audit trail is a swappable history section like the check page's
+  // pings/notifications tables — same helper, same fragment contract.
+  pw.wireSection('audit-section', function (s) {
+    var qs = [];
+    var actor = s.querySelector("[data-testid=audit-actor]");
+    var action = s.querySelector("[data-testid=audit-action]");
+    var from = s.querySelector("[data-testid=audit-from]");
+    var to = s.querySelector("[data-testid=audit-to]");
+    pw.param(qs, "aactor", actor && actor.value);
+    pw.param(qs, "aaction", action && action.value);
+    pw.param(qs, "afrom", pw.toUtc(from && from.value));
+    pw.param(qs, "ato", pw.toUtc(to && to.value));
+    return qs.length ? "?" + qs.join("&") : "";
+  });
 </script>
 {% endblock %}
