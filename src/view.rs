@@ -208,6 +208,14 @@ pub fn heartbeat(
         .collect()
 }
 
+/// Every IANA timezone, for the `<datalist>` behind the check form's and
+/// `/admin`'s timezone fields. Called straight from the templates (like
+/// [`version`]) so neither template struct has to carry a 597-entry constant
+/// through every place it is built.
+pub fn timezones() -> &'static [chrono_tz::Tz] {
+    &chrono_tz::TZ_VARIANTS
+}
+
 pub fn fmt_secs(secs: i64) -> String {
     let s = secs.max(0);
     if s < 60 {

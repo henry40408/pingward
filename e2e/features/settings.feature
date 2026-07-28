@@ -56,3 +56,20 @@ Feature: Settings
     And I fill the settings field "pings_retention_days" with "5m"
     And I save the settings form
     Then the settings form shows the error "Pings retention must be a positive integer"
+
+  Scenario: The notification timezone is saved and can be cleared
+    When I visit "/admin"
+    And I fill the settings field "display_timezone" with "Europe/Berlin"
+    And I save the settings form
+    Then the settings field "display_timezone" shows "Europe/Berlin"
+    When I fill the settings field "display_timezone" with ""
+    And I save the settings form
+    Then the settings field "display_timezone" shows ""
+
+  Scenario: An unknown notification timezone is rejected and not persisted
+    When I visit "/admin"
+    And I fill the settings field "display_timezone" with "Mars/Olympus"
+    And I save the settings form
+    Then the settings form shows the error "unknown timezone \"Mars/Olympus\" — use an IANA name such as UTC or Asia/Taipei"
+    When I visit "/admin"
+    Then the settings field "display_timezone" shows ""

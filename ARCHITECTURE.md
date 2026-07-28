@@ -805,11 +805,24 @@ Two things decide where that struct is built:
   ping …" rather than claiming "No ping since …" for a check that ended up down
   by pinging `/fail`.
 
-Timestamps render in the **check's** timezone via `fmt_at` (`%Y-%m-%d %H:%M
-%Z`, UTC when unset or unparseable) with a relative suffix from
-`duration::fmt_duration` — the same rendering the edit forms use, so `300`
-reads as `5m` in both places. A notification is read away from the web UI,
-where nothing localises a bare RFC 3339 string for the reader.
+Timestamps render via `fmt_at` (`%Y-%m-%d %H:%M %Z`) with a relative suffix
+from `duration::fmt_duration` — the same rendering the edit forms use, so `300`
+reads as `5m` in both places. Which zone is a two-step fallback: the
+instance-wide `display_timezone` setting if an admin set one
+(`EventDetail::with_display_timezone`, read through `Store::display_timezone`),
+otherwise the **check's** own zone, otherwise UTC.
+
+That setting exists because of an asymmetry worth naming: the web UI renders
+every absolute time in the *viewer's* zone (the `.localtime[data-ts]` spans
+localized by `pw.localize` in `base.html`), and a notification has no browser to
+do that. Without the setting the same instant reads as one time in the UI and
+another in ops chat. The check's own zone is the fallback rather than the
+default-winner because it is written for the **cron** schedule — the wall clock
+the expression fires on — not for whoever reads the alert.
+
+A settings read failure degrades to `None` rather than propagating:
+`Store::display_timezone` swallows the error, because a settings query going
+wrong must not stop a down alert from going out.
 
 Per-channel affordances hang off the same struct: ntfy gets a `Click` header
 (guarded on the URL being header-safe, since an invalid `HeaderValue` would
