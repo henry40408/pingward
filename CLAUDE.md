@@ -185,8 +185,9 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   `tests/ping_source_ip.rs`, which drives the router with `oneshot` and
   injects `ConnectInfo` itself.
 - `/admin` is the single merged admin page (each handler guarded by
-  `AdminUser`): site-wide overview, global settings, user management, and
-  every project across all users, stacked as ordinary cards top to bottom —
+  `AdminUser`): site-wide overview, global settings, user management, every
+  project across all users, and the audit trail, stacked as ordinary cards top
+  to bottom —
   no tabs, no sub-nav, mirroring how `/account` merges its sections. Former
   `/settings` and `/users` POST routes moved under `/admin/…`
   (`/admin/settings`, `/admin/users`, `/admin/users/{id}/…`) so path grouping
@@ -195,6 +196,19 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   etc. — those handlers **reuse the owner templates** by passing an
   `is_admin`/base-prefix flag, so `data-testid`s and most step definitions
   are shared with the owner flow.
+  The audit card is the read side of what every `record_audit` call site
+  writes: a keyset-paged, filterable table served both inline and by
+  `GET /admin/audit`, the same two-surface fragment arrangement the check
+  page's pings/notifications tables use (`templates/admin_audit.html`,
+  `web::build_audit_partial`, `Store::list_audit_page`). Filters are actor,
+  action and a date range; the two selects are built from
+  `Store::audit_filter_options` (`SELECT DISTINCT`) rather than a hardcoded
+  list, so a new `record_audit` call site appears in them by itself.
+  `method`/`path`/`detail`/`target_owner_id` live in an expandable row behind
+  the caret, mirroring the ping table's captured-output row, so no column of
+  `models::AuditLog` is written-but-unreadable. **Nothing prunes `audit_log`**
+  — unlike pings/notifications/sessions it has no retention pass, which is why
+  `0016_audit_filter_indexes` indexes the two filtered columns.
   An admin can never delete, disable, or demote their own account — the "All
   users" row renders those controls inert (delete/toggle-admin/toggle-disabled
   become a `<span class="btn disabled">`; reset password stays live) and the

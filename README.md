@@ -61,6 +61,8 @@ override), and the layout adapts to phones.
 
 ![Admin — site-wide totals, check and notification health, and the scheduler heartbeat](docs/screenshots/admin-dark.png)
 
+![The admin audit trail — who reached across to whose data, filterable by actor and action, with the request behind an entry expanded](docs/screenshots/admin-audit-dark.png)
+
 <table>
   <tr>
     <td width="60%"><img src="docs/screenshots/dashboard-light.png" alt="The dashboard in the light theme"></td>

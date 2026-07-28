@@ -1,0 +1,47 @@
+{# Audit-trail fragment: filter controls + table + keyset pager. Served
+   standalone by GET /admin/audit (JS swaps it into #audit-section) and inlined
+   into admin.html. Rendered content is escaped here; the parent injects it with
+   |safe. Mirrors check_pings.html. #}
+<form class="filters" data-testid="audit-filters" onsubmit="return false">
+  <label class="fld">From <input type="datetime-local" data-testid="audit-from" data-utc="{{ f_from }}"></label>
+  <label class="fld">To <input type="datetime-local" data-testid="audit-to" data-utc="{{ f_to }}"></label>
+  <label class="fld">Actor
+    <select data-testid="audit-actor">
+      <option value=""{% if f_actor == "" %} selected{% endif %}>All</option>
+      {% for a in actors %}<option value="{{ a }}"{% if f_actor == a.as_str() %} selected{% endif %}>{{ a }}</option>{% endfor %}
+    </select>
+  </label>
+  <label class="fld">Action
+    <select data-testid="audit-action">
+      <option value=""{% if f_action == "" %} selected{% endif %}>All</option>
+      {% for a in actions %}<option value="{{ a }}"{% if f_action == a.as_str() %} selected{% endif %}>{{ a }}</option>{% endfor %}
+    </select>
+  </label>
+  <button class="btn" type="button" data-apply data-testid="audit-apply">Filter</button>
+  {% if filtered %}<a class="btn ghost" href="/admin/audit" data-testid="audit-clear">Clear</a>{% endif %}
+</form>
+{% if empty %}
+<p class="empty" data-testid="audit-empty">{% if filtered %}No audit entries match the filter.{% else %}No audit entries yet.{% endif %}</p>
+{% else %}
+<div class="tscroll">
+<table>
+  <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th></tr></thead>
+  <tbody>
+    {% for r in rows %}
+    {% if r.expandable %}
+    <tr class="toggle" data-testid="audit-row"><td class="mono"><span class="caret">&#9656;</span><span class="localtime" data-ts="{{ r.iso }}">{{ r.time }}</span></td><td>{{ r.actor }}</td><td class="mono">{{ r.action }}</td><td class="mono">{{ r.target }}</td></tr>
+    <tr class="exp"><td colspan="4"><div class="out log"><span class="tag">request &middot; detail</span>{{ r.method_path }}
+target owner: {{ r.target_owner }}{% if !r.detail.is_empty() %}
+{{ r.detail }}{% endif %}</div></td></tr>
+    {% else %}
+    <tr data-testid="audit-row"><td class="mono"><span class="caret blank">&#9656;</span><span class="localtime" data-ts="{{ r.iso }}">{{ r.time }}</span></td><td>{{ r.actor }}</td><td class="mono">{{ r.action }}</td><td class="mono">{{ r.target }}</td></tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<div class="pager" data-testid="audit-pager">
+  {% if let Some(href) = newer %}<a class="btn" href="{{ href }}" data-testid="audit-newer">&larr; Newer</a>{% else %}<span class="btn disabled" aria-disabled="true" data-testid="audit-newer">&larr; Newer</span>{% endif %}
+  {% if let Some(href) = older %}<a class="btn" href="{{ href }}" data-testid="audit-older">Older &rarr;</a>{% else %}<span class="btn disabled" aria-disabled="true" data-testid="audit-older">Older &rarr;</span>{% endif %}
+</div>
+{% endif %}

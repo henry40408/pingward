@@ -83,3 +83,33 @@ Feature: Admin cross-user management
     Given I open the member's project in the admin area
     When I delete the member's project
     Then the admin projects list has no projects
+
+  # The audit trail is the read side of what every /admin/* access above
+  # writes. Its filter/pager swap the card in place through the same fragment
+  # helper the check page's history tables use.
+  Scenario: The audit trail lists what the admin did to another user's data
+    Given I open the member's check in the admin area
+    When I open the admin dashboard
+    Then the audit trail has at least 1 row
+    And the audit trail shows an "admin.access" entry
+
+  Scenario: Expanding an audit row reveals the request behind it
+    Given I open the member's check in the admin area
+    When I open the admin dashboard
+    And I expand the first audit row
+    Then the audit detail shows the request path
+
+  Scenario: Filtering the audit trail by action refreshes the table in place
+    Given I open the member's check in the admin area
+    When I open the admin dashboard
+    And I filter the audit trail by action "user.create"
+    Then every audit row shows the action "user.create"
+    And the audit clear filter link is visible
+    When I clear the audit filter
+    Then the audit trail shows an "admin.access" entry
+    And the audit clear filter link is not visible
+
+  Scenario: An audit filter matching nothing says so
+    When I open the admin dashboard
+    And I filter the audit trail by actor "nobody"
+    Then the audit trail is empty with a filtered message

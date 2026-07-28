@@ -531,6 +531,31 @@ export function generateSeedSql(nowMs) {
     );
   }
 
+  // ---- audit trail -------------------------------------------------------
+  // What the /admin audit card reads back. Mirrors the shape `record_audit`
+  // writes at its real call sites (a cross-user page open, and the user
+  // management mutations), so the screenshot shows the card doing its job
+  // rather than its empty state.
+  // Oldest first: the table pages by `id` (monotonic, index-backed), which
+  // only reads as newest-first because real inserts arrive in time order.
+  // Seeding out of order would put the ids and the timestamps at odds.
+  const AUDITS = [
+    ["demo", "user.create", "user", 3, "POST", "/admin/users", "username=sam is_admin=false", 30 * DAY],
+    ["demo", "user.set_admin", "user", 2, "POST", "/admin/users/2/admin", "is_admin=true", 26 * DAY],
+    ["maya", "user.password_reset", "user", 3, "POST", "/admin/users/3/password", null, 6 * DAY],
+    ["maya", "admin.access", "project", 1, "GET", "/admin/projects/1", null, 2.5 * HOUR],
+    ["maya", "admin.access", "check", 3, "GET", "/admin/checks/3", null, 2.4 * HOUR],
+  ];
+  for (const [actor, action, ttype, tid, method, path, detail, agoSecs] of AUDITS) {
+    stmts.push(
+      `INSERT INTO audit_log (actor_user_id, actor_username, action, target_type, target_id,
+                              target_owner_id, method, path, detail, created_at)
+         VALUES ((SELECT id FROM users WHERE username = ${q(actor)}), ${q(actor)},
+                 ${q(action)}, ${q(ttype)}, ${tid}, ${tid},
+                 ${q(method)}, ${q(path)}, ${q(detail)}, ${q(iso(nowMs - agoSecs * 1000))});`
+    );
+  }
+
   // ---- global settings ---------------------------------------------------
   // Retention comfortably exceeds the backdated history: `prune_once` runs a
   // pass the moment the server boots.

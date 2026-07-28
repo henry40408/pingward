@@ -139,6 +139,42 @@ impl NotifFilter {
     }
 }
 
+/// Filters for the `/admin` audit-log table. `actor` and `action` are exact
+/// matches on the stored token (the UI offers them as selects built from the
+/// values actually present, so there is nothing to fuzzy-match); `None` or an
+/// empty string means "no constraint". Date bounds behave as in [`PingFilter`].
+#[derive(Debug, Clone, Default)]
+pub struct AuditFilter {
+    pub actor: Option<String>,
+    pub action: Option<String>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+}
+
+impl AuditFilter {
+    /// True when no constraint is set — the default (unfiltered) page.
+    pub fn is_empty(&self) -> bool {
+        self.actor.is_none() && self.action.is_none() && self.from.is_none() && self.to.is_none()
+    }
+
+    fn predicates(&self) -> Vec<Predicate> {
+        let mut p = Vec::new();
+        if let Some(a) = &self.actor {
+            p.push(Predicate::TextCmp("actor_username", "=", a.clone()));
+        }
+        if let Some(a) = &self.action {
+            p.push(Predicate::TextCmp("action", "=", a.clone()));
+        }
+        if let Some(f) = self.from {
+            p.push(Predicate::TextCmp("created_at", ">=", f.to_rfc3339()));
+        }
+        if let Some(t) = self.to {
+            p.push(Predicate::TextCmp("created_at", "<=", t.to_rfc3339()));
+        }
+        p
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NewAudit<'a> {
     pub actor_user_id: i64,
@@ -397,13 +433,19 @@ enum Predicate {
     TextIn(&'static str, Vec<String>),
 }
 
-/// Shared keyset-pagination core for `pings`/`notifications`: both tables are
-/// paged the same way (by `id`, scoped to `check_id`), so the SQL shape and
+/// Shared keyset-pagination core for `pings`/`notifications`/`audit_log`: all
+/// are paged the same way (by `id`), so the SQL shape and
 /// `has_newer/has_older` bookkeeping live here once. `table` and every predicate
 /// column/operator are fixed caller literals (never user input); all values —
 /// including filter values — are bound, so interpolating the assembled clause
 /// into the query text is safe. Uses a limit+1 fetch to detect another page in
 /// the queried direction rather than a separate `COUNT(*)`.
+///
+/// `scope` is the owning-row constraint the table is partitioned by
+/// (`("check_id", id)` for pings/notifications). `audit_log` belongs to the
+/// instance rather than to any one row, so it passes `None` and the query is
+/// unscoped — which is also why the `WHERE` clause is assembled conditionally:
+/// an unscoped, unfiltered page has no predicates at all.
 #[allow(
     clippy::cast_sign_loss,
     reason = "`limit` is a small positive page size supplied by callers, never negative"
@@ -411,7 +453,7 @@ enum Predicate {
 async fn keyset_page<T>(
     pool: &crate::db::Pool,
     table: &'static str,
-    check_id: i64,
+    scope: Option<(&'static str, i64)>,
     cursor: PageCursor,
     limit: i64,
     filters: &[Predicate],
@@ -421,9 +463,10 @@ async fn keyset_page<T>(
     let mut conds: Vec<String> = Vec::new();
     let mut binds: Vec<QueryBind> = Vec::new();
 
-    // $1 is always the check scope.
-    conds.push("check_id = $1".to_string());
-    binds.push(QueryBind::Int(check_id));
+    if let Some((col, id)) = scope {
+        binds.push(QueryBind::Int(id));
+        conds.push(format!("{col} = ${}", binds.len()));
+    }
 
     // Filter predicates, each allocating fresh placeholders in bind order.
     for f in filters {
@@ -461,9 +504,13 @@ async fn keyset_page<T>(
     };
 
     binds.push(QueryBind::Int(fetch_limit));
+    let where_clause = if conds.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", conds.join(" AND "))
+    };
     let sql = format!(
-        "SELECT * FROM {table} WHERE {} ORDER BY id {order} LIMIT ${}",
-        conds.join(" AND "),
+        "SELECT * FROM {table}{where_clause} ORDER BY id {order} LIMIT ${}",
         binds.len()
     );
     // Safe: `table`, every column, operator, and placeholder are self-generated
@@ -1545,7 +1592,7 @@ impl Store {
         keyset_page(
             &self.pool,
             "pings",
-            check_id,
+            Some(("check_id", check_id)),
             cursor,
             limit,
             &filter.predicates(),
@@ -1567,7 +1614,7 @@ impl Store {
         keyset_page(
             &self.pool,
             "notifications",
-            check_id,
+            Some(("check_id", check_id)),
             cursor,
             limit,
             &filter.predicates(),
@@ -1705,12 +1752,52 @@ impl Store {
         Ok(row.get::<i64, _>("id"))
     }
 
+    /// The newest `limit` audit rows, unfiltered and unpaged. The `/admin`
+    /// table goes through [`Store::list_audit_page`]; this stays as the
+    /// straight-line accessor assertions read the trail with.
     pub async fn list_audit(&self, limit: i64) -> Result<Vec<AuditLog>, sqlx::Error> {
         let rows = sqlx::query("SELECT * FROM audit_log ORDER BY id DESC LIMIT $1")
             .bind(limit)
             .fetch_all(&self.pool)
             .await?;
         rows.iter().map(row_to_audit).collect()
+    }
+
+    /// Keyset-paginated page of the audit trail for the `/admin` table
+    /// (newest-first), narrowed by `filter`. Unlike the ping/notification
+    /// pages there is no owning row to scope to — the trail is instance-wide,
+    /// so the scope is `None`. See [`PageCursor`]/[`Page`]/[`AuditFilter`].
+    pub async fn list_audit_page(
+        &self,
+        cursor: PageCursor,
+        limit: i64,
+        filter: &AuditFilter,
+    ) -> Result<Page<AuditLog>, sqlx::Error> {
+        keyset_page(
+            &self.pool,
+            "audit_log",
+            None,
+            cursor,
+            limit,
+            &filter.predicates(),
+            row_to_audit,
+        )
+        .await
+    }
+
+    /// The distinct actors and actions present in the trail, each sorted, for
+    /// the audit filter's two selects. Built from the data rather than from a
+    /// hardcoded list so a new `record_audit` call site shows up in the filter
+    /// without anyone remembering to register it. Both are index-backed
+    /// (`idx_audit_actor`, `idx_audit_action`).
+    pub async fn audit_filter_options(&self) -> Result<(Vec<String>, Vec<String>), sqlx::Error> {
+        let actors = sqlx::query_scalar("SELECT DISTINCT actor_username FROM audit_log ORDER BY 1")
+            .fetch_all(&self.pool)
+            .await?;
+        let actions = sqlx::query_scalar("SELECT DISTINCT action FROM audit_log ORDER BY 1")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok((actors, actions))
     }
 
     // --- admin dashboard aggregates ---
@@ -2978,6 +3065,168 @@ mod tests {
         assert_eq!(rows[0].action, "admin.access");
         assert_eq!(rows[0].target_owner_id, Some(42));
         assert_eq!(rows[0].actor_username, "adm");
+    }
+
+    /// Seed `n` audit rows alternating actor and action, one second apart, and
+    /// return the store. Row `i` is `(actor{i%2}, action{i%2})`.
+    async fn seeded_audit(n: i64) -> Store {
+        let store = seeded().await;
+        let base = Utc.with_ymd_and_hms(2026, 7, 14, 8, 0, 0).unwrap();
+        for i in 0..n {
+            let which = i % 2;
+            store
+                .record_audit(
+                    &NewAudit {
+                        actor_user_id: which + 1,
+                        actor_username: if which == 0 { "alice" } else { "bob" },
+                        action: if which == 0 {
+                            "admin.access"
+                        } else {
+                            "user.create"
+                        },
+                        target_type: Some("project"),
+                        target_id: Some(i),
+                        ..Default::default()
+                    },
+                    base + Duration::seconds(i),
+                )
+                .await
+                .unwrap();
+        }
+        store
+    }
+
+    /// The audit trail pages by id like pings/notifications do, even though it
+    /// is the first table to use `keyset_page` with no owning-row scope.
+    #[tokio::test]
+    async fn list_audit_page_keyset_pagination() {
+        let store = seeded_audit(25).await;
+        let f = AuditFilter::default();
+
+        let first = store
+            .list_audit_page(PageCursor::Latest, 10, &f)
+            .await
+            .unwrap();
+        assert_eq!(first.items.len(), 10);
+        assert!(!first.has_newer, "the latest page has nothing newer");
+        assert!(first.has_older);
+        // Newest-first.
+        assert!(first.items[0].id > first.items[9].id);
+
+        let older = store
+            .list_audit_page(PageCursor::Before(first.items[9].id), 10, &f)
+            .await
+            .unwrap();
+        assert_eq!(older.items.len(), 10);
+        assert!(older.has_newer && older.has_older);
+        assert!(older.items[0].id < first.items[9].id);
+
+        let last = store
+            .list_audit_page(PageCursor::Before(older.items[9].id), 10, &f)
+            .await
+            .unwrap();
+        assert_eq!(last.items.len(), 5, "25 rows = 10 + 10 + 5");
+        assert!(!last.has_older, "nothing older than the first row");
+
+        // Paging back lands on the page we came from, still newest-first.
+        let back = store
+            .list_audit_page(PageCursor::After(older.items[0].id), 10, &f)
+            .await
+            .unwrap();
+        let back_ids: Vec<i64> = back.items.iter().map(|a| a.id).collect();
+        let first_ids: Vec<i64> = first.items.iter().map(|a| a.id).collect();
+        assert_eq!(back_ids, first_ids);
+    }
+
+    #[tokio::test]
+    async fn list_audit_page_filters_by_actor_action_and_date() {
+        let store = seeded_audit(10).await;
+        let base = Utc.with_ymd_and_hms(2026, 7, 14, 8, 0, 0).unwrap();
+
+        let by_actor = store
+            .list_audit_page(
+                PageCursor::Latest,
+                50,
+                &AuditFilter {
+                    actor: Some("bob".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(by_actor.items.len(), 5);
+        assert!(by_actor.items.iter().all(|a| a.actor_username == "bob"));
+
+        let by_action = store
+            .list_audit_page(
+                PageCursor::Latest,
+                50,
+                &AuditFilter {
+                    action: Some("admin.access".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(by_action.items.len(), 5);
+        assert!(by_action.items.iter().all(|a| a.action == "admin.access"));
+
+        // Both at once, and both are AND-ed: alice never performs user.create.
+        let contradictory = store
+            .list_audit_page(
+                PageCursor::Latest,
+                50,
+                &AuditFilter {
+                    actor: Some("alice".into()),
+                    action: Some("user.create".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(contradictory.items.is_empty());
+
+        // Date bounds are inclusive on both ends: rows 2..=4 of 10.
+        let windowed = store
+            .list_audit_page(
+                PageCursor::Latest,
+                50,
+                &AuditFilter {
+                    from: Some(base + Duration::seconds(2)),
+                    to: Some(base + Duration::seconds(4)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(windowed.items.len(), 3);
+
+        // An actor nobody matches is an empty page, not an error.
+        let nobody = store
+            .list_audit_page(
+                PageCursor::Latest,
+                50,
+                &AuditFilter {
+                    actor: Some("nobody".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(nobody.items.is_empty() && !nobody.has_older);
+    }
+
+    /// The filter selects are built from the data, so a new `record_audit`
+    /// call site appears in them without anyone registering it.
+    #[tokio::test]
+    async fn audit_filter_options_are_distinct_and_sorted() {
+        let store = seeded_audit(6).await;
+        let (actors, actions) = store.audit_filter_options().await.unwrap();
+        assert_eq!(actors, vec!["alice".to_string(), "bob".to_string()]);
+        assert_eq!(
+            actions,
+            vec!["admin.access".to_string(), "user.create".to_string()]
+        );
     }
 
     #[tokio::test]

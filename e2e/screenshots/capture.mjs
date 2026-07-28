@@ -131,6 +131,8 @@ const lastCard = (page) => page.locator(".card").last();
 const channelsCard = (page) =>
   page.locator(".card").filter({ has: page.getByText("Notify channels") });
 const nthCheckRow = (n) => (page) => page.getByTestId("dashboard-check-row").nth(n);
+const auditCard = (page) =>
+  page.locator(".card").filter({ has: page.locator("#audit-section") });
 
 async function openDownCheck(page) {
   await page.getByText("home-nas-snapshot", { exact: true }).click();
@@ -191,6 +193,20 @@ const SHOTS = [
     goto: "/admin",
     settle: (page) => page.getByTestId("admin-scale").waitFor(),
     clip: downTo(schedulerCard),
+  },
+  {
+    file: "admin-audit-dark.png",
+    scheme: "dark",
+    ...DESKTOP,
+    goto: "/admin",
+    settle: async (page) => {
+      await page.getByTestId("audit-row").first().waitFor();
+      // Expand the newest entry so the request and detail behind it — the
+      // half of `audit_log` that lives in the collapsed row — are in the shot.
+      await page.locator("#audit-section tr.toggle").first().click();
+      await page.locator("#audit-section tr.exp .out").first().waitFor();
+    },
+    clip: band(auditCard, auditCard),
   },
   {
     file: "dashboard-light.png",
