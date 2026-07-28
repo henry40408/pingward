@@ -770,6 +770,59 @@ which rows to mark with a "no channel" chip, and the project page's
 empty-channels state is a warning naming the consequence instead of a neutral
 note.
 
+### What a notification says
+
+Every text-oriented channel renders the same `notify::event_text`, capped at
+**four short lines** — headline, context, reason, link:
+
+```
+🔴 DOWN — nightly-backup
+Project: infra · every 5m (grace 1m)
+No ping since 2026-07-29 17:03 CST (1h5m ago)
+https://pingward.example.com/checks/42
+```
+
+The cap is the design: anything past those four lines lives on the linked
+page, which is what the link is for. `event_title` (ntfy/Pushover title, email
+subject) stays one line: `pingward: infra/nightly-backup is DOWN`.
+
+Everything but the headline comes from `notify::EventDetail`, and every field
+on it is `Option` — a failed lookup or an unset `PINGWARD_BASE_URL` drops a
+line instead of the notification. `EventDetail::default()` renders the original
+bare one-liner, which is what the channel-test path uses.
+
+Two things decide where that struct is built:
+
+- **It is built at the call site, not during delivery.** For an `Up` event
+  `last_ping_at` must be the ping *before* the recovery; `ping::apply` has that
+  snapshot in hand (`resolve` loaded it before `mark_ping` overwrote the row),
+  and a re-read inside `deliver_event` would report the recovery ping itself.
+- **Only the caller knows why a check went down.** `DownCause` is set by
+  `scan_once` (`Overdue`, or `Overrun` when an in-flight run blew
+  `max_runtime_secs` — reported in preference to overdue, being the more
+  specific story) and by `ping::apply` (`Failed { exit_code }`). `nag_once`
+  sets none: a reminder fires long after the transition, so it reports "Last
+  ping …" rather than claiming "No ping since …" for a check that ended up down
+  by pinging `/fail`.
+
+Timestamps render in the **check's** timezone via `fmt_at` (`%Y-%m-%d %H:%M
+%Z`, UTC when unset or unparseable) with a relative suffix from
+`duration::fmt_duration` — the same rendering the edit forms use, so `300`
+reads as `5m` in both places. A notification is read away from the web UI,
+where nothing localises a bare RFC 3339 string for the reader.
+
+Per-channel affordances hang off the same struct: ntfy gets a `Click` header
+(guarded on the URL being header-safe, since an invalid `HeaderValue` would
+abort the whole send), Pushover an `url`/`url_title` pair, and the webhook
+payload gains `check_id`/`project`/`url`/`schedule`/`timezone`/`last_ping_at`/
+`cause`/`exit_code`/`text` **additively** — its original four keys (`check`,
+`event`, `at`, `project_id`) are unchanged, so an existing consumer keeps
+parsing what it parsed.
+
+The project name costs one query per notification: batched as
+`Store::all_project_names()` once per scan/nag pass, and inside the spawned
+delivery task in `ping::apply` so it never lands on the ping response path.
+
 ### Editing a channel without leaking its secrets
 
 `channels.config_json` is a single plaintext JSON blob holding delivery

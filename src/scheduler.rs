@@ -1,6 +1,8 @@
 use crate::config::{SmtpConfig, effective_nag_interval, effective_scan_interval};
 use crate::models::{Check, CheckStatus, ScheduleKind};
-use crate::notify::{EventKind, NotificationEvent, RetryPolicy, deliver_event};
+use crate::notify::{
+    DownCause, EventDetail, EventKind, NotificationEvent, RetryPolicy, deliver_event,
+};
 use crate::shutdown::Shutdown;
 use crate::store::Store;
 use chrono::{DateTime, Duration, Utc};
@@ -69,7 +71,9 @@ pub fn overrun_time(check: &Check) -> Option<DateTime<Utc>> {
 pub async fn scan_once(
     store: &Store,
     now: DateTime<Utc>,
+    base_url: &str,
 ) -> Result<Vec<NotificationEvent>, sqlx::Error> {
+    let project_names = store.all_project_names().await?;
     let mut events = Vec::new();
     for check in store.list_active_checks().await? {
         let overdue = due_time(&check).is_some_and(|due| now >= due);
@@ -84,12 +88,28 @@ pub async fn scan_once(
         if let Err(e) = store.begin_down_alert(check.id, now).await {
             tracing::error!("failed to set alert baseline for {}: {e}", check.id);
         }
+        // Overrun is reported in preference to overdue: an in-flight run that
+        // blew its budget is the more specific story, and a long-running job
+        // is overdue almost by definition once it does.
+        let cause = match (overrun, check.max_runtime_secs, check.last_start_at) {
+            (true, Some(max), Some(started_at)) => DownCause::Overrun {
+                max_runtime_secs: max,
+                started_at,
+            },
+            _ => DownCause::Overdue,
+        };
         events.push(NotificationEvent {
             check_id: check.id,
             check_name: check.name.clone(),
             event: EventKind::Down,
             at: now,
             project_id: check.project_id,
+            detail: EventDetail::from_check(
+                &check,
+                project_names.get(&check.project_id).cloned(),
+                base_url,
+            )
+            .with_cause(cause),
         });
     }
     Ok(events)
@@ -102,8 +122,10 @@ pub async fn scan_once(
 pub async fn nag_once(
     store: &Store,
     now: DateTime<Utc>,
+    base_url: &str,
 ) -> Result<Vec<NotificationEvent>, sqlx::Error> {
     let project_nags = store.all_project_nag_intervals().await?;
+    let project_names = store.all_project_names().await?;
     let global_nag = store
         .get_setting("nag_interval")
         .await?
@@ -135,6 +157,11 @@ pub async fn nag_once(
             event: EventKind::Reminder,
             at: now,
             project_id: check.project_id,
+            detail: EventDetail::from_check(
+                &check,
+                project_names.get(&check.project_id).cloned(),
+                base_url,
+            ),
         });
     }
     Ok(events)
@@ -177,12 +204,13 @@ pub async fn run_scan_loop(
     store: Store,
     env_default_secs: u64,
     smtp: Option<SmtpConfig>,
+    base_url: String,
     live_tx: broadcast::Sender<i64>,
     shutdown: Shutdown,
 ) {
     loop {
         let now = Utc::now();
-        match scan_once(&store, now).await {
+        match scan_once(&store, now, &base_url).await {
             Ok(events) => {
                 for ev in &events {
                     if live_tx.receiver_count() > 0 {
@@ -210,7 +238,7 @@ pub async fn run_scan_loop(
         // Heartbeat: record the last successful scan pass for the admin dashboard.
         let _ = store.set_setting("last_scan_at", &now.to_rfc3339()).await;
 
-        match nag_once(&store, Utc::now()).await {
+        match nag_once(&store, Utc::now(), &base_url).await {
             Ok(events) => {
                 for ev in events {
                     let store = store.clone();
@@ -253,6 +281,9 @@ pub async fn run_scan_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Base URL the scheduler tests render check links against.
+    const TEST_BASE_URL: &str = "https://pingward.test";
     use crate::models::{Check, CheckStatus, ScheduleKind};
     use crate::store::{NewCheck, UpdateCheck};
     use chrono::{TimeZone, Utc};
@@ -502,7 +533,7 @@ mod tests {
 
         // now = start + 61s → past the 60s max runtime
         let now = start + Duration::seconds(61);
-        let events = scan_once(&store, now).await.unwrap();
+        let events = scan_once(&store, now, TEST_BASE_URL).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event, EventKind::Down);
         assert_eq!(
@@ -568,18 +599,20 @@ mod tests {
 
         // not yet due
         assert!(
-            nag_once(&store, t0 + Duration::seconds(59))
+            nag_once(&store, t0 + Duration::seconds(59), TEST_BASE_URL)
                 .await
                 .unwrap()
                 .is_empty()
         );
         // due
-        let evs = nag_once(&store, t0 + Duration::seconds(60)).await.unwrap();
+        let evs = nag_once(&store, t0 + Duration::seconds(60), TEST_BASE_URL)
+            .await
+            .unwrap();
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].event, EventKind::Reminder);
         // baseline advanced, so immediately after it is not due again
         assert!(
-            nag_once(&store, t0 + Duration::seconds(61))
+            nag_once(&store, t0 + Duration::seconds(61), TEST_BASE_URL)
                 .await
                 .unwrap()
                 .is_empty()
@@ -594,7 +627,7 @@ mod tests {
         // no nag interval configured anywhere → off
         store.begin_down_alert(id, t0).await.unwrap();
         assert!(
-            nag_once(&store, t0 + Duration::seconds(3600))
+            nag_once(&store, t0 + Duration::seconds(3600), TEST_BASE_URL)
                 .await
                 .unwrap()
                 .is_empty()
@@ -621,7 +654,7 @@ mod tests {
             .unwrap();
         store.acknowledge(id).await.unwrap();
         assert!(
-            nag_once(&store, t0 + Duration::seconds(3600))
+            nag_once(&store, t0 + Duration::seconds(3600), TEST_BASE_URL)
                 .await
                 .unwrap()
                 .is_empty()

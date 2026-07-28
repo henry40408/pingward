@@ -1,7 +1,9 @@
-use crate::config::{Config, SmtpConfig};
+use crate::config::Config;
 use crate::error::AppError;
-use crate::models::{CheckStatus, PingKind};
-use crate::notify::{EventKind, NotificationEvent, RetryPolicy, deliver_event};
+use crate::models::{Check, CheckStatus, PingKind};
+use crate::notify::{
+    DownCause, EventDetail, EventKind, NotificationEvent, RetryPolicy, deliver_event,
+};
 use crate::scheduler::due_time;
 use crate::state::AppState;
 use crate::store::Store;
@@ -97,7 +99,7 @@ async fn success(
         None,
         &body,
         conn,
-        config.smtp.clone(),
+        &config,
         &events,
     )
     .await
@@ -117,7 +119,7 @@ async fn fail(
         None,
         &body,
         conn,
-        config.smtp.clone(),
+        &config,
         &events,
     )
     .await
@@ -137,7 +139,7 @@ async fn start(
         None,
         &body,
         conn,
-        config.smtp.clone(),
+        &config,
         &events,
     )
     .await
@@ -157,7 +159,7 @@ async fn log(
         None,
         &body,
         conn,
-        config.smtp.clone(),
+        &config,
         &events,
     )
     .await
@@ -182,7 +184,7 @@ async fn exitcode(
         Some(code),
         &body,
         conn,
-        config.smtp.clone(),
+        &config,
         &events,
     )
     .await
@@ -199,7 +201,7 @@ async fn apply(
     exit_code: Option<i64>,
     body: &Bytes,
     conn: ClientIp,
-    smtp: Option<SmtpConfig>,
+    config: &Config,
     events: &broadcast::Sender<i64>,
 ) -> Result<StatusCode, AppError> {
     let check = resolve(store, uuid).await?;
@@ -241,15 +243,7 @@ async fn apply(
                 .await?;
             if prev_status == CheckStatus::Down {
                 store.clear_nag(check.id).await?;
-                spawn_delivery(
-                    store.clone(),
-                    check.id,
-                    check.name.clone(),
-                    check.project_id,
-                    EventKind::Up,
-                    now,
-                    smtp.clone(),
-                );
+                spawn_delivery(store.clone(), &check, EventKind::Up, now, None, config);
             }
         }
         PingKind::Fail => {
@@ -260,12 +254,11 @@ async fn apply(
                 store.begin_down_alert(check.id, now).await?;
                 spawn_delivery(
                     store.clone(),
-                    check.id,
-                    check.name.clone(),
-                    check.project_id,
+                    &check,
                     EventKind::Down,
                     now,
-                    smtp.clone(),
+                    Some(DownCause::Failed { exit_code }),
+                    config,
                 );
             }
         }
@@ -282,22 +275,39 @@ async fn apply(
 
 /// Spawn a fire-and-forget delivery so the ping response is not blocked by
 /// notification I/O. `store` is cheap to clone (holds an `Arc` pool).
+///
+/// `check` is the snapshot from *before* this ping was applied, which is what
+/// makes `EventDetail::last_ping_at` the previous ping — on an `Up` event that
+/// is exactly the "previous ping" the message reports. Resolving the project
+/// name happens inside the spawned task, so the extra query stays off the ping
+/// response path.
 fn spawn_delivery(
     store: Store,
-    check_id: i64,
-    check_name: String,
-    project_id: i64,
+    check: &Check,
     event: EventKind,
     now: chrono::DateTime<chrono::Utc>,
-    smtp: Option<SmtpConfig>,
+    cause: Option<DownCause>,
+    config: &Config,
 ) {
+    let snapshot = check.clone();
+    let base_url = config.base_url.clone();
+    let smtp = config.smtp.clone();
     tokio::spawn(async move {
+        let project_name = store
+            .find_project(snapshot.project_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|p| p.name);
+        let mut detail = EventDetail::from_check(&snapshot, project_name, &base_url);
+        detail.cause = cause;
         let ev = NotificationEvent {
-            check_id,
-            check_name,
+            check_id: snapshot.id,
+            check_name: snapshot.name.clone(),
             event,
             at: now,
-            project_id,
+            project_id: snapshot.project_id,
+            detail,
         };
         deliver_event(&store, &ev, RetryPolicy::default(), now, smtp.as_ref()).await;
     });

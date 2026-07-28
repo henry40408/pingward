@@ -111,6 +111,7 @@ Feature: Notification channels
     And I bind the channel "hook1" to the check
     When I send a "fail" ping
     Then the mock server receives a "down" notification
+    And the "down" notification payload names project "Notify", links the check, and blames "failed"
     When I send a "success" ping
     Then the mock server receives a "up" notification
     And the check's recent notifications show a delivery to "hook1"

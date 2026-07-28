@@ -1274,6 +1274,19 @@ impl Store {
             .collect())
     }
 
+    /// Every project's name, keyed by id. The scan/nag loops name the project
+    /// in each notification; one map per pass keeps that a fixed query count
+    /// no matter how many checks transition.
+    pub async fn all_project_names(&self) -> Result<HashMap<i64, String>, sqlx::Error> {
+        let rows = sqlx::query("SELECT id, name FROM projects")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get::<i64, _>("id"), r.get::<String, _>("name")))
+            .collect())
+    }
+
     // --- channels ---
     pub async fn create_channel(
         &self,
