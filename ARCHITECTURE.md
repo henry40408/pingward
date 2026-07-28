@@ -591,6 +591,32 @@ invariant the same source-parsing way, reusing
 (`CurrentUser`) rather than bearer-gated and so sit outside this invariant —
 the `/api/v1` prefix filter excludes them automatically.
 
+### Reading vs. disclosing under `/admin`
+
+An admin browsing another user's data reads names, schedules and history —
+none of it a credential — and auditing every page open buried the entries
+that mattered under browsing noise. `web::audits_as_mutation` therefore gates
+the three cross-user resolvers on the request method. That gate lives in the
+resolvers rather than at each call site for a specific reason: they are the
+choke point for reads *and* writes, so removing the read audit anywhere else
+would have silently taken every admin pause/resume/delete/regenerate with it.
+
+The exception is the one read that hands over a credential. A check's ping URL
+is a bearer token — anyone holding it can mark that check up or down — so the
+admin check page withholds it behind `POST /admin/checks/{id}/ping-url`, which
+records `admin.ping_url_reveal`. It is a POST rather than a `?reveal=1` so the
+disclosure cannot happen without passing through the handler that writes it
+down, and the usage help (which prints the URL five more times) is withheld
+with it. `web::CheckPageViewer` carries the decision; it replaced a separate
+`admin: bool` parameter so the action-URL prefix and the credential's
+visibility cannot be passed contradicting each other. An admin viewing a check
+they own themselves is not gated — `viewer_id == owner_id` — since nothing is
+disclosed to anyone.
+
+The REST API needs no equivalent: `CheckDto` carries `ping_uuid`, so a
+cross-user read there *is* a disclosure, and `admin.api.access` already
+records it.
+
 Once past that auth check, owner scoping for `/api/v1` goes through
 `resolve_project`/`resolve_check`/`resolve_channel` in `src/api/v1.rs`: owner
 first, else an audited admin cross-user access, else `404` (not `403`) — the

@@ -38,7 +38,16 @@ Feature: Admin cross-user management
     When I open the member's check in the admin area
     Then I am viewing the check "member-backup"
     And the check status is "new"
-    And the ping URL is shown
+    And the ping URL is withheld
+
+  # The ping URL is a bearer credential: holding it is enough to mark the
+  # check up or down. An admin gets it only by asking, and asking is recorded.
+  Scenario: Revealing another user's ping URL is an explicit, audited step
+    Given I open the member's check in the admin area
+    When I reveal the ping URL
+    Then the ping URL is shown
+    When I open the admin dashboard
+    Then the audit trail shows an "admin.ping_url_reveal" entry
 
   Scenario: The admin can pause and resume another user's check
     Given I open the member's check in the admin area
@@ -49,6 +58,7 @@ Feature: Admin cross-user management
 
   Scenario: The admin can acknowledge another user's down check
     Given I open the member's check in the admin area
+    And I reveal the ping URL
     And I send a "fail" ping
     And I reload the check page
     When I acknowledge the check
@@ -56,6 +66,7 @@ Feature: Admin cross-user management
 
   Scenario: The admin can regenerate another user's ping URL
     Given I open the member's check in the admin area
+    And I reveal the ping URL
     When I regenerate the ping URL
     Then the ping URL is different from before
 
@@ -84,23 +95,27 @@ Feature: Admin cross-user management
     When I delete the member's project
     Then the admin projects list has no projects
 
-  # The audit trail is the read side of what every /admin/* access above
-  # writes. Its filter/pager swap the card in place through the same fragment
-  # helper the check page's history tables use.
+  # The audit trail is the read side of what /admin/* mutations and credential
+  # disclosures write — plain reads no longer land here. Its filter/pager swap
+  # the card in place through the same fragment helper the check page's
+  # history tables use.
   Scenario: The audit trail lists what the admin did to another user's data
     Given I open the member's check in the admin area
+    And I pause the check
     When I open the admin dashboard
     Then the audit trail has at least 1 row
     And the audit trail shows an "admin.access" entry
 
   Scenario: Expanding an audit row reveals the request behind it
     Given I open the member's check in the admin area
+    And I pause the check
     When I open the admin dashboard
     And I expand the first audit row
     Then the audit detail shows the request path
 
   Scenario: Filtering the audit trail by action refreshes the table in place
     Given I open the member's check in the admin area
+    And I pause the check
     When I open the admin dashboard
     And I filter the audit trail by action "user.create"
     Then every audit row shows the action "user.create"

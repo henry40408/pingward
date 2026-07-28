@@ -19,3 +19,15 @@ export async function signIn(page, serverUrl, username, password) {
   await page.getByTestId("password-input").fill(password);
   await page.getByTestId("login-submit").click();
 }
+
+// An admin looking at someone else's check gets the ping URL only after an
+// explicit, audited reveal (see `CheckPageViewer` in src/web.rs). Steps that
+// merely *need* the URL — rather than asserting on the gate itself — go
+// through this, so they read the same on the owner and admin routes.
+export async function revealPingUrlIfWithheld(page) {
+  const button = page.getByTestId("reveal-ping-url");
+  if (await button.count()) {
+    await button.click();
+    await page.getByTestId("ping-url").waitFor();
+  }
+}

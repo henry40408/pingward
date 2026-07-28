@@ -230,3 +230,19 @@ Then("the audit trail is empty with a filtered message", async ({ page }) => {
     "No audit entries match the filter."
   );
 });
+
+// --- ping URL disclosure ----------------------------------------------------
+
+Then("the ping URL is withheld", async ({ page }) => {
+  await expect(page.getByTestId("ping-url-withheld")).toBeVisible();
+  await expect(page.getByTestId("ping-url")).toHaveCount(0);
+  // The usage help spells the URL out several more times, so it is gone too.
+  await expect(page.getByTestId("ping-help")).toHaveCount(0);
+});
+
+// A POST that re-renders the page with the URL in place; the assertion that
+// follows auto-waits for the navigation.
+When("I reveal the ping URL", async ({ page }) => {
+  await page.getByTestId("reveal-ping-url").click();
+  await expect(page.getByTestId("ping-url")).toBeVisible();
+});

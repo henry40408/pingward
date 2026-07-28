@@ -196,6 +196,19 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   etc. — those handlers **reuse the owner templates** by passing an
   `is_admin`/base-prefix flag, so `data-testid`s and most step definitions
   are shared with the owner flow.
+  **Reads under `/admin` are not audited; disclosures and mutations are.**
+  `web::audits_as_mutation` gates the three cross-user resolvers
+  (`admin_project`/`admin_check`/`admin_channel`) on the request method —
+  those resolvers are the choke point for reads *and* writes, so the gate has
+  to live there or dropping the read audit would silently take every admin
+  pause/resume/delete/regenerate with it. The one read that still audits is
+  `POST /admin/checks/{id}/ping-url`: the ping URL is a bearer credential, so
+  an admin looking at someone else's check sees a "Reveal ping URL" control
+  instead of the URL (and no usage help, which spells it out five more times),
+  and asking writes `admin.ping_url_reveal`. `web::CheckPageViewer` carries
+  that decision — it replaced a separate `admin: bool` so the route prefix and
+  the URL's visibility cannot be passed contradicting each other; an admin
+  viewing a check they own is not gated (`viewer_id == owner_id`).
   The audit card is the read side of what every `record_audit` call site
   writes: a keyset-paged, filterable table served both inline and by
   `GET /admin/audit`, the same two-surface fragment arrangement the check

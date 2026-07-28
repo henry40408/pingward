@@ -1547,6 +1547,19 @@ tr.exp > td {
 .crumb.tight + .desc {
   margin-top: 12px;
 }
+/* The ping-URL row when an admin has not revealed it: the credential's slot
+   is held by the explanation plus the reveal control, so the card does not
+   reflow when it is disclosed. */
+.urlrow.withheld {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.urlrow.withheld .note {
+  margin: 0;
+}
+
 /* A read-only channel row (no pointer affordance). */
 .chk.readonly {
   cursor: default;

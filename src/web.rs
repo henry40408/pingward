@@ -96,6 +96,10 @@ pub fn routes() -> Router<AppState> {
             "/admin/checks/{id}",
             get(admin_check_show).post(admin_check_update),
         )
+        .route(
+            "/admin/checks/{id}/ping-url",
+            post(admin_check_reveal_ping_url),
+        )
         .route("/admin/checks/{id}/pings", get(admin_check_pings))
         .route("/admin/checks/{id}/events", get(admin_check_events))
         .route(
@@ -1243,8 +1247,26 @@ async fn owned_project(store: &Store, id: i64, user_id: i64) -> Result<Project, 
     Ok(p)
 }
 
-/// Resolve any project by id (no owner filter) and record an admin-access
-/// audit entry. The single choke point for #1 cross-user reads and writes.
+/// Whether a cross-user admin request should be audited on its own.
+///
+/// A `GET` through `/admin/*` is a read: it renders names, schedules and
+/// history, none of which is a credential, and auditing every page open
+/// buried the entries that matter under browsing noise. Mutations still write
+/// an entry, and so does the one read that *does* hand over a credential —
+/// revealing a check's ping URL, which has its own explicit action
+/// (`admin.ping_url_reveal`) rather than riding on the resolver.
+///
+/// The resolvers below are the choke point for both reads and writes, so this
+/// gate lives here rather than at each call site: without it, dropping the
+/// read audit would silently take every admin pause/resume/delete/regenerate
+/// with it.
+fn audits_as_mutation(method: &str) -> bool {
+    !method.eq_ignore_ascii_case("GET")
+}
+
+/// Resolve any project by id (no owner filter), auditing the request when it
+/// mutates (see [`audits_as_mutation`]). The single choke point for cross-user
+/// project reads and writes.
 async fn admin_project(
     state: &AppState,
     id: i64,
@@ -1257,23 +1279,25 @@ async fn admin_project(
         .find_project(id)
         .await?
         .ok_or(AppError::NotFound)?;
-    state
-        .store
-        .record_audit(
-            &crate::store::NewAudit {
-                actor_user_id: admin.id,
-                actor_username: &admin.username,
-                action: "admin.access",
-                target_type: Some("project"),
-                target_id: Some(p.id),
-                target_owner_id: Some(p.user_id),
-                method: Some(method),
-                path: Some(path),
-                detail: None,
-            },
-            Utc::now(),
-        )
-        .await?;
+    if audits_as_mutation(method) {
+        state
+            .store
+            .record_audit(
+                &crate::store::NewAudit {
+                    actor_user_id: admin.id,
+                    actor_username: &admin.username,
+                    action: "admin.access",
+                    target_type: Some("project"),
+                    target_id: Some(p.id),
+                    target_owner_id: Some(p.user_id),
+                    method: Some(method),
+                    path: Some(path),
+                    detail: None,
+                },
+                Utc::now(),
+            )
+            .await?;
+    }
     Ok(p)
 }
 
@@ -1294,23 +1318,25 @@ async fn admin_check(
         .find_project(c.project_id)
         .await?
         .map(|p| p.user_id);
-    state
-        .store
-        .record_audit(
-            &crate::store::NewAudit {
-                actor_user_id: admin.id,
-                actor_username: &admin.username,
-                action: "admin.access",
-                target_type: Some("check"),
-                target_id: Some(c.id),
-                target_owner_id: owner,
-                method: Some(method),
-                path: Some(path),
-                detail: None,
-            },
-            Utc::now(),
-        )
-        .await?;
+    if audits_as_mutation(method) {
+        state
+            .store
+            .record_audit(
+                &crate::store::NewAudit {
+                    actor_user_id: admin.id,
+                    actor_username: &admin.username,
+                    action: "admin.access",
+                    target_type: Some("check"),
+                    target_id: Some(c.id),
+                    target_owner_id: owner,
+                    method: Some(method),
+                    path: Some(path),
+                    detail: None,
+                },
+                Utc::now(),
+            )
+            .await?;
+    }
     Ok(c)
 }
 
@@ -1331,23 +1357,25 @@ async fn admin_channel(
         .find_project(ch.project_id)
         .await?
         .map(|p| p.user_id);
-    state
-        .store
-        .record_audit(
-            &crate::store::NewAudit {
-                actor_user_id: admin.id,
-                actor_username: &admin.username,
-                action: "admin.access",
-                target_type: Some("channel"),
-                target_id: Some(ch.id),
-                target_owner_id: owner,
-                method: Some(method),
-                path: Some(path),
-                detail: None,
-            },
-            Utc::now(),
-        )
-        .await?;
+    if audits_as_mutation(method) {
+        state
+            .store
+            .record_audit(
+                &crate::store::NewAudit {
+                    actor_user_id: admin.id,
+                    actor_username: &admin.username,
+                    action: "admin.access",
+                    target_type: Some("channel"),
+                    target_id: Some(ch.id),
+                    target_owner_id: owner,
+                    method: Some(method),
+                    path: Some(path),
+                    detail: None,
+                },
+                Utc::now(),
+            )
+            .await?;
+    }
     Ok(ch)
 }
 
@@ -1699,6 +1727,10 @@ struct CheckTemplate {
     next_due: crate::view::NextDue,
     schedule: String,
     ping_url: String,
+    /// The ping URL is withheld pending an audited reveal — see
+    /// [`CheckPageViewer`]. The template renders the reveal control instead of
+    /// the URL and its usage help, both of which spell the credential out.
+    ping_url_hidden: bool,
     bars: Vec<crate::view::Bar>,
     channel_boxes: Vec<ChannelBox>,
     /// The "recent pings" card body — filter controls, table, pager — rendered
@@ -2268,8 +2300,55 @@ async fn check_show(
     let check = owned_check(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
     let (jar, flash) = take_flash(&state.config, jar, "channels");
-    let resp = render_check_page(&state, check, false, user.is_admin, csrf, flash, page).await?;
+    let resp = render_check_page(
+        &state,
+        check,
+        user.is_admin,
+        csrf,
+        flash,
+        page,
+        CheckPageViewer::Owner,
+    )
+    .await?;
     Ok((jar, resp).into_response())
+}
+
+/// Who is looking at a check page. Decides both the action-URL prefix and
+/// whether the ping URL may be printed, which is why it replaced the separate
+/// `admin: bool` — the two could otherwise be passed contradicting each other.
+///
+/// The ping URL is a bearer credential — holding it is enough to mark the
+/// check up or down — so it is shown freely to the owner and withheld from an
+/// admin looking at someone else's check until they ask, which is audited
+/// (`admin.ping_url_reveal`). An admin viewing a check they own themselves is
+/// not gated: it is their own credential, and `viewer_id == owner_id` is what
+/// distinguishes that from a cross-user view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckPageViewer {
+    /// An owner-route render: the URL is the page's whole point.
+    Owner,
+    /// An `/admin`-route render.
+    Admin {
+        viewer_id: i64,
+        ping_url_revealed: bool,
+    },
+}
+
+impl CheckPageViewer {
+    /// True for an `/admin`-route render, which prefixes every action URL.
+    fn is_admin_route(self) -> bool {
+        matches!(self, Self::Admin { .. })
+    }
+
+    fn shows_url(self, owner_id: i64) -> bool {
+        match self {
+            Self::Owner => true,
+            Self::Admin {
+                viewer_id,
+                ping_url_revealed,
+            } => ping_url_revealed || viewer_id == owner_id,
+        }
+    }
 }
 
 /// Render the check detail page. `admin` renders `/admin`-prefixed action URLs;
@@ -2279,13 +2358,14 @@ async fn check_show(
 async fn render_check_page(
     state: &AppState,
     check: Check,
-    admin: bool,
     is_admin: bool,
     csrf: String,
     flash: Option<String>,
     page: CheckPageQuery,
+    viewer: CheckPageViewer,
 ) -> Result<Response, AppError> {
     let id = check.id;
+    let admin = viewer.is_admin_route();
     let base = admin_prefix(admin);
     let project = state
         .store
@@ -2293,11 +2373,21 @@ async fn render_check_page(
         .await?
         .ok_or(AppError::NotFound)?;
     let now = Utc::now();
-    let ping_url = format!(
-        "{}/ping/{}",
-        state.config.base_url.trim_end_matches('/'),
-        check.ping_uuid
-    );
+    // The ping URL is a bearer credential: anyone holding it can mark the
+    // check up or down. On the owner's own page that is the whole point of
+    // the page, but an admin opening someone else's check gets it behind an
+    // explicit, audited reveal — otherwise "just looking" silently hands over
+    // a way to falsify that check's status with nothing recorded anywhere.
+    let show_ping_url = viewer.shows_url(project.user_id);
+    let ping_url = if show_ping_url {
+        format!(
+            "{}/ping/{}",
+            state.config.base_url.trim_end_matches('/'),
+            check.ping_uuid
+        )
+    } else {
+        String::new()
+    };
     let bound = state.store.bound_channel_ids(id).await?;
     let project_channels = state
         .store
@@ -2358,6 +2448,7 @@ async fn render_check_page(
         next_due,
         schedule,
         ping_url,
+        ping_url_hidden: !show_ping_url,
         bars,
         channel_boxes,
         pings_partial,
@@ -4853,6 +4944,71 @@ async fn admin_check_create(
     check_create_core(&state, pid, form, true, true, csrf).await
 }
 
+/// `POST /admin/checks/{id}/ping-url` — disclose a check's ping URL to an
+/// admin who does not own it, and record that disclosure.
+///
+/// This is the one *read* under `/admin` that still audits, because it is the
+/// one that hands over a credential rather than a description. It is a POST
+/// rather than a query parameter on the page precisely so the disclosure
+/// cannot happen without passing through here: a `?reveal=1` would be a way
+/// to see the URL with nothing written down.
+///
+/// Re-submitting records the disclosure again, which is correct — it happened
+/// again.
+async fn admin_check_reveal_ping_url(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    AdminUser(admin): AdminUser,
+    Path(id): Path<i64>,
+    Query(page): Query<CheckPageQuery>,
+) -> Result<Response, AppError> {
+    let check = state
+        .store
+        .find_check(id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let owner = state
+        .store
+        .find_project(check.project_id)
+        .await?
+        .map(|p| p.user_id);
+    // An admin revealing their own check's URL discloses nothing to anyone —
+    // same condition that leaves the control unrendered in the first place.
+    if owner != Some(admin.id) {
+        state
+            .store
+            .record_audit(
+                &crate::store::NewAudit {
+                    actor_user_id: admin.id,
+                    actor_username: &admin.username,
+                    action: "admin.ping_url_reveal",
+                    target_type: Some("check"),
+                    target_id: Some(check.id),
+                    target_owner_id: owner,
+                    method: Some("POST"),
+                    path: Some(&format!("/admin/checks/{id}/ping-url")),
+                    detail: None,
+                },
+                Utc::now(),
+            )
+            .await?;
+    }
+    let csrf = current_csrf(&state, &jar);
+    render_check_page(
+        &state,
+        check,
+        true,
+        csrf,
+        None,
+        page,
+        CheckPageViewer::Admin {
+            viewer_id: admin.id,
+            ping_url_revealed: true,
+        },
+    )
+    .await
+}
+
 async fn admin_check_show(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -4865,7 +5021,19 @@ async fn admin_check_show(
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
     let csrf = current_csrf(&state, &jar);
     let (jar, flash) = take_flash(&state.config, jar, "channels");
-    let resp = render_check_page(&state, check, true, true, csrf, flash, page).await?;
+    let resp = render_check_page(
+        &state,
+        check,
+        true,
+        csrf,
+        flash,
+        page,
+        CheckPageViewer::Admin {
+            viewer_id: admin.id,
+            ping_url_revealed: false,
+        },
+    )
+    .await?;
     Ok((jar, resp).into_response())
 }
 

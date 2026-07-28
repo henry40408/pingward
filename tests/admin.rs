@@ -139,10 +139,13 @@ async fn admin_sees_admin_nav_link_on_dashboard() {
     );
 }
 
+/// An admin can reach another user's project, and reading it is *not*
+/// audited: a page of names and schedules is not a credential, and recording
+/// every page open buried the entries that matter under browsing noise. The
+/// mutation tests below are the other half of this — writes still audit.
 #[tokio::test]
-async fn admin_views_other_users_project_and_audits() {
+async fn admin_reading_another_users_project_is_not_audited() {
     let (server, store, _admin_id) = admin_server().await;
-    // A separate user owns a project + check.
     let owner = store
         .create_user("owner", Some("phc"), false, chrono::Utc::now())
         .await
@@ -157,11 +160,10 @@ async fn admin_views_other_users_project_and_audits() {
         .get(&format!("/admin/projects/{pid}"))
         .await
         .assert_status_ok();
-    let audit = store.list_audit(10).await.unwrap();
-    assert!(audit.iter().any(|a| a.action == "admin.access"
-        && a.target_type.as_deref() == Some("project")
-        && a.target_id == Some(pid)
-        && a.target_owner_id == Some(owner)));
+    assert!(
+        store.list_audit(10).await.unwrap().is_empty(),
+        "a cross-user read should leave the trail empty"
+    );
 }
 
 /// Deleting another user's project sends the admin back to `/admin`. The
@@ -536,4 +538,148 @@ async fn settings_save_records_a_cleared_value_as_unset() {
         "detail: {:?}",
         entry.detail
     );
+}
+
+// --- the ping URL is disclosed, not just displayed ---------------------------
+
+/// Seed a project + check owned by someone other than the signed-in admin,
+/// returning `(owner_id, check_id)`.
+async fn other_users_check(store: &Store, name: &str) -> (i64, i64) {
+    let owner = store
+        .create_user(name, Some("phc"), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let pid = store
+        .create_project(owner, "theirs", "", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    let cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: &format!("uuid-{name}"),
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    (owner, cid)
+}
+
+/// Opening another user's check does not print its ping URL. The URL is a
+/// bearer credential — holding it is enough to mark the check up or down — so
+/// "just looking" must not hand it over.
+#[tokio::test]
+async fn admin_check_page_withholds_another_users_ping_url() {
+    let (server, store, _admin_id) = admin_server().await;
+    let (_owner, cid) = other_users_check(&store, "owner-a").await;
+
+    let res = server.get(&format!("/admin/checks/{cid}")).await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(
+        !body.contains("uuid-owner-a"),
+        "the ping token leaked into the page: {body}"
+    );
+    assert!(
+        body.contains("data-testid=\"reveal-ping-url\""),
+        "no reveal control offered: {body}"
+    );
+    // The usage help spells the URL out five more times, so it goes too.
+    assert!(
+        !body.contains("data-testid=\"ping-help\""),
+        "the ping help block still prints the URL: {body}"
+    );
+    assert!(
+        store.list_audit(10).await.unwrap().is_empty(),
+        "withholding it means there is nothing to record yet"
+    );
+}
+
+/// Asking for it hands it over and writes that down — the one read under
+/// `/admin` that still audits, because it is the one that discloses a
+/// credential rather than a description.
+#[tokio::test]
+async fn admin_revealing_another_users_ping_url_is_audited() {
+    let (server, store, admin_id) = admin_server().await;
+    let (owner, cid) = other_users_check(&store, "owner-b").await;
+
+    let res = server.post(&format!("/admin/checks/{cid}/ping-url")).await;
+    res.assert_status_ok();
+    assert!(
+        res.text().contains("uuid-owner-b"),
+        "the reveal did not actually disclose the URL"
+    );
+
+    let audit = store.list_audit(10).await.unwrap();
+    let entry = audit
+        .iter()
+        .find(|a| a.action == "admin.ping_url_reveal")
+        .expect("the disclosure should be recorded");
+    assert_eq!(entry.actor_user_id, admin_id);
+    assert_eq!(entry.target_type.as_deref(), Some("check"));
+    assert_eq!(entry.target_id, Some(cid));
+    assert_eq!(
+        entry.target_owner_id,
+        Some(owner),
+        "the entry should name whose credential was disclosed"
+    );
+}
+
+/// The gate is about crossing a user boundary, not about the `/admin` route:
+/// an admin looking at their own check through `/admin` sees its URL without
+/// asking, and nothing is recorded, because nothing was disclosed to anyone.
+#[tokio::test]
+async fn admin_sees_their_own_ping_url_without_revealing() {
+    let (server, store, admin_id) = admin_server().await;
+    let pid = store
+        .create_project(admin_id, "mine", "", None, None, chrono::Utc::now())
+        .await
+        .unwrap();
+    let cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "backup",
+            ping_uuid: "uuid-mine",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let res = server.get(&format!("/admin/checks/{cid}")).await;
+    res.assert_status_ok();
+    let body = res.text();
+    assert!(body.contains("uuid-mine"), "own ping URL withheld: {body}");
+    assert!(!body.contains("data-testid=\"reveal-ping-url\""));
+    assert!(store.list_audit(10).await.unwrap().is_empty());
+}
+
+/// The regression this whole change could have caused: reads and writes go
+/// through the same resolver, so dropping the read audit must not take the
+/// write audit with it.
+#[tokio::test]
+async fn admin_mutating_another_users_check_is_still_audited() {
+    let (server, store, _admin_id) = admin_server().await;
+    let (owner, cid) = other_users_check(&store, "owner-c").await;
+
+    server
+        .post(&format!("/admin/checks/{cid}/pause"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+
+    let audit = store.list_audit(10).await.unwrap();
+    let entry = audit
+        .iter()
+        .find(|a| a.action == "admin.access" && a.target_type.as_deref() == Some("check"))
+        .expect("a cross-user mutation must still be audited");
+    assert_eq!(entry.target_id, Some(cid));
+    assert_eq!(entry.target_owner_id, Some(owner));
+    assert_eq!(entry.method.as_deref(), Some("POST"));
 }
