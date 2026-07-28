@@ -240,6 +240,13 @@ clear it, and `Option`'s ordering (`Some(_) > None`, not `None > None`) covers
 "started and never finished" with no extra `is_some()` check. `Running` beats
 `Late` (a long-running job legitimately drifts past its expected time) but is
 itself beaten by `Down`/`Paused`, so an in-flight run never masks an alert.
+`view::next_due` renders the check header's countdown to the next deadline
+(`templates/check.html`'s `.chead`) and derives it from
+`scheduler::due_time`, **not** the stored `checks.next_due_at` — that column
+is only ever stamped by `ping::apply`, so it is NULL for a never-pinged check
+and for one downed by a `fail` ping, while `due_time` is what `scan_once`
+itself evaluates. The deadline includes grace, hence "due" not "expected"; a
+paused check shows no deadline.
 
 **Notifications** (`src/notify.rs`): a `Notifier` trait with six implementations
 (`webhook`, `telegram`, `slack`, `ntfy`, `pushover`, `email`/SMTP). `notifier_for`

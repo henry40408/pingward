@@ -1694,6 +1694,8 @@ struct CheckTemplate {
     project_name: String,
     status: &'static str,
     since: String,
+    /// When the next ping is expected — see [`crate::view::next_due`].
+    next_due: crate::view::NextDue,
     schedule: String,
     ping_url: String,
     bars: Vec<crate::view::Bar>,
@@ -2319,6 +2321,7 @@ async fn render_check_page(
 
     let status = crate::view::display_status(&check, now).as_str();
     let since = status_since_label(&check, now);
+    let next_due = crate::view::next_due(&check, now);
     let schedule = schedule_label(&check);
     let description_html = crate::markdown::render(&check.description);
 
@@ -2342,6 +2345,7 @@ async fn render_check_page(
         project_name: project.name,
         status,
         since,
+        next_due,
         schedule,
         ping_url,
         bars,

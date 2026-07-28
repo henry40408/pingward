@@ -874,8 +874,17 @@ nav.links a:hover {
   letter-spacing: -0.02em;
   margin: 0;
 }
-.chead .since {
+/* "updated 3m ago · due in 1h" — the two status facts, held in one group so a
+   narrow viewport wraps them together instead of stranding the deadline (and
+   its leading separator) on a line of its own. The group carries the
+   `margin-left: auto` that used to sit on `.since`. */
+.chead .cmeta {
   margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+.chead .since {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
     monospace;
   font-size: 12.5px;
@@ -886,6 +895,37 @@ nav.links a:hover {
 }
 .chead .since.late {
   color: var(--late);
+}
+/* Next deadline, trailing `.since` inside `.cmeta`. The dot separator is drawn
+   here rather than typed into the label so the rendered text stays exactly what
+   `view::next_due` produced. */
+.chead .due {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.chead .due::before {
+  content: "\00b7";
+  color: var(--faint);
+  margin-right: 9px;
+}
+/* Too narrow to hold both facts side by side: two flex columns each wrap
+   internally and shred into ragged half-lines. Stack them instead — and with
+   the deadline starting a line of its own, its separator would lead nothing,
+   so drop it. */
+@media (max-width: 560px) {
+  .chead .cmeta {
+    display: block;
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+  .chead .due {
+    display: block;
+  }
+  .chead .due::before {
+    content: none;
+  }
 }
 
 /* Larger status dot used in .chead overrides the dashboard 10px dot */
