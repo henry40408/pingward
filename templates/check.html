@@ -37,6 +37,19 @@
 
 <div class="card">
   <div class="cb">
+    {% if ping_url_hidden %}
+    {# A cross-user admin view. The URL is a bearer credential, so it is not
+       printed until it is asked for — and the usage help below spells it out
+       five more times, so that goes with it. #}
+    <div class="urlrow withheld" data-testid="ping-url-withheld">
+      <span class="note">Ping URL hidden. It is a credential &mdash; anyone holding it can mark this check up or down.</span>
+      <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/ping-url">
+        <input type="hidden" name="_csrf" value="{{ csrf }}">
+        <button class="btn" type="submit" data-testid="reveal-ping-url">Reveal ping URL</button>
+      </form>
+    </div>
+    <p class="note" data-testid="ping-url-reveal-note">Revealing it is recorded in the audit trail, with your username and this check.</p>
+    {% else %}
     <div class="urlrow"><code data-testid="ping-url">{{ ping_url }}</code><button class="copy" type="button" data-copy="{{ ping_url }}">Copy</button></div>
     <details class="pinghelp" data-testid="ping-help">
       <summary>How do I ping this check?</summary>
@@ -66,6 +79,7 @@ curl -fsS {{ ping_url }}/$?
 mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
       </div>
     </details>
+    {% endif %}
     <div class="beat" title="last 30 runs">
       {% for b in bars %}<i class="{{ b.class }}" style="height:{{ b.height }}px" title="{{ b.title }}"></i>{% endfor %}
     </div>

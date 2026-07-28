@@ -1,5 +1,6 @@
 import { createBdd } from "playwright-bdd";
 import { test, expect } from "../support/fixtures.js";
+import { revealPingUrlIfWithheld } from "../support/actions.js";
 
 const { Given, When, Then } = createBdd(test);
 
@@ -112,8 +113,13 @@ When("I resume the check", async ({ page }) => {
 // and confirm it changed.
 When("I regenerate the ping URL", async ({ page }) => {
   page.on("dialog", (d) => d.accept());
+  await revealPingUrlIfWithheld(page);
   const before = (await page.getByTestId("ping-url").textContent()).trim();
   await page.getByTestId("regenerate-button").click();
+  // Regenerating mints a *new* credential, and the redirect back lands on a
+  // fresh render — so on the admin route it is withheld again until asked
+  // for, which is the point: taking the new URL is its own disclosure.
+  await revealPingUrlIfWithheld(page);
   await expect(page.getByTestId("ping-url")).not.toHaveText(before);
 });
 
