@@ -1765,6 +1765,21 @@ impl Store {
         Ok(r.rows_affected())
     }
 
+    /// Delete audit-log rows older than `cutoff` (an RFC3339 timestamp).
+    /// Returns the number of rows removed.
+    ///
+    /// Unlike pings and notifications, this deletes a record of who did what —
+    /// so the retention behind it defaults to off, and the settings save that
+    /// changes it is itself audited (`settings.update`), leaving a trace when
+    /// someone shortens the window.
+    pub async fn delete_audit_before(&self, cutoff: &str) -> Result<u64, sqlx::Error> {
+        let r = sqlx::query("DELETE FROM audit_log WHERE created_at < $1")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await?;
+        Ok(r.rows_affected())
+    }
+
     /// Delete notifications older than `cutoff` (an RFC3339 timestamp). Returns
     /// the number of rows removed.
     pub async fn delete_notifications_before(&self, cutoff: &str) -> Result<u64, sqlx::Error> {

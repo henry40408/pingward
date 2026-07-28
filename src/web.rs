@@ -3400,6 +3400,7 @@ struct SettingsForm {
     nag_interval: String,
     pings_retention_days: String,
     notifications_retention_days: String,
+    audit_retention_days: String,
 }
 
 #[derive(Deserialize)]
@@ -3429,9 +3430,7 @@ fn readable_setting_duration(raw: String) -> String {
 /// readable (duration-string) form. Shared by `render_admin`'s default path
 /// and by `users_create`'s error re-render, which needs the same fields but
 /// isn't otherwise touching settings.
-async fn load_settings_fields(
-    state: &AppState,
-) -> Result<(String, String, String, String), AppError> {
+async fn load_settings_fields(state: &AppState) -> Result<SettingsFields, AppError> {
     let scan_interval = state
         .store
         .get_setting("scan_interval")
@@ -3452,12 +3451,18 @@ async fn load_settings_fields(
         .get_setting("notifications_retention_days")
         .await?
         .unwrap_or_default();
-    Ok((
-        readable_setting_duration(scan_interval),
-        readable_setting_duration(nag_interval),
+    let audit_retention_days = state
+        .store
+        .get_setting("audit_retention_days")
+        .await?
+        .unwrap_or_default();
+    Ok(SettingsFields {
+        scan_interval: readable_setting_duration(scan_interval),
+        nag_interval: readable_setting_duration(nag_interval),
         pings_retention_days,
         notifications_retention_days,
-    ))
+        audit_retention_days,
+    })
 }
 
 /// The settings-form fields to render on the merged `/admin` page: either the
@@ -3468,6 +3473,7 @@ struct SettingsFields {
     nag_interval: String,
     pings_retention_days: String,
     notifications_retention_days: String,
+    audit_retention_days: String,
 }
 
 /// The re-render inputs `render_admin` needs beyond the data it always
@@ -3489,8 +3495,7 @@ async fn admin_page(
     AdminUser(admin): AdminUser,
     Query(audit): Query<AdminAuditQuery>,
 ) -> Result<Response, AppError> {
-    let (scan_interval, nag_interval, pings_retention_days, notifications_retention_days) =
-        load_settings_fields(&state).await?;
+    let settings = load_settings_fields(&state).await?;
     // Chain every surface through the same jar: the cookie is path-scoped to
     // "/", so each `take_flash`/`take_password_reset_keys_flash` call only
     // consumes it if the value matches its own surface, leaving it for the
@@ -3503,12 +3508,7 @@ async fn admin_page(
         &jar,
         admin.id,
         AdminRender {
-            settings: SettingsFields {
-                scan_interval,
-                nag_interval,
-                pings_retention_days,
-                notifications_retention_days,
-            },
+            settings,
             settings_error: None,
             settings_flash,
             user_flash,
@@ -3552,6 +3552,12 @@ async fn settings_save(
             "Notifications retention",
             false,
         ),
+        (
+            "audit_retention_days",
+            form.audit_retention_days.as_str(),
+            "Audit trail retention",
+            false,
+        ),
     ];
     // Atomic: validate every field before writing any. Blank clears to the
     // default (`Ok(None)`); scan/nag intervals accept a duration (raw seconds
@@ -3578,6 +3584,7 @@ async fn settings_save(
                             nag_interval: form.nag_interval.clone(),
                             pings_retention_days: form.pings_retention_days.clone(),
                             notifications_retention_days: form.notifications_retention_days.clone(),
+                            audit_retention_days: form.audit_retention_days.clone(),
                         },
                         settings_error: Some(msg),
                         settings_flash: None,
@@ -3594,9 +3601,42 @@ async fn settings_save(
             }
         }
     }
+    // Record what the save is about to change *before* writing, so `detail`
+    // names the fields the operator actually touched rather than re-reading
+    // them back afterwards.
+    let mut changed: Vec<String> = Vec::new();
+    for (key, v) in &parsed {
+        let value = v.map(|n| n.to_string()).unwrap_or_default();
+        let previous = state.store.get_setting(key).await?.unwrap_or_default();
+        if previous != value {
+            let shown = if value.is_empty() { "unset" } else { &value };
+            changed.push(format!("{key}={shown}"));
+        }
+    }
     for (key, v) in parsed {
         let value = v.map(|n| n.to_string()).unwrap_or_default();
         state.store.set_setting(key, &value).await?;
+    }
+    // A settings save is an admin action on the whole instance and had been
+    // going unrecorded. It matters most for `audit_retention_days`: shortening
+    // the window is how an admin would erase their own trail, and this is what
+    // leaves a mark when they do. A no-op save writes nothing.
+    if !changed.is_empty() {
+        state
+            .store
+            .record_audit(
+                &crate::store::NewAudit {
+                    actor_user_id: admin.id,
+                    actor_username: &admin.username,
+                    action: "settings.update",
+                    method: Some("POST"),
+                    path: Some("/admin/settings"),
+                    detail: Some(&changed.join(" ")),
+                    ..Default::default()
+                },
+                Utc::now(),
+            )
+            .await?;
     }
     let jar = jar.add(flash_cookie(&state.config, "settings"));
     Ok((jar, Redirect::to("/admin")).into_response())
@@ -3609,19 +3649,13 @@ async fn users_create(
     Form(form): Form<NewUserForm>,
 ) -> Result<Response, AppError> {
     if form.username.trim().is_empty() || form.password.is_empty() {
-        let (scan_interval, nag_interval, pings_retention_days, notifications_retention_days) =
-            load_settings_fields(&state).await?;
+        let settings = load_settings_fields(&state).await?;
         let resp = render_admin(
             &state,
             &jar,
             admin.id,
             AdminRender {
-                settings: SettingsFields {
-                    scan_interval,
-                    nag_interval,
-                    pings_retention_days,
-                    notifications_retention_days,
-                },
+                settings,
                 settings_error: None,
                 settings_flash: None,
                 user_flash: None,
@@ -4516,6 +4550,7 @@ struct AdminTemplate {
     nag_interval: String,
     pings_retention_days: String,
     notifications_retention_days: String,
+    audit_retention_days: String,
     settings_error: Option<String>,
     settings_flash: Option<String>,
     // users
@@ -4592,6 +4627,7 @@ async fn render_admin(
         nag_interval: r.settings.nag_interval,
         pings_retention_days: r.settings.pings_retention_days,
         notifications_retention_days: r.settings.notifications_retention_days,
+        audit_retention_days: r.settings.audit_retention_days,
         settings_error: r.settings_error,
         settings_flash: r.settings_flash,
         users: state
