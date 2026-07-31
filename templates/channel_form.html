@@ -130,20 +130,4 @@
     </form>
   </div>
 </div>
-<script>
-  (function () {
-    var sel = document.getElementById('kind');
-    // Absent on the edit form — the kind is immutable there, so the single
-    // relevant config block is already the only one rendered.
-    if (!sel) return;
-    function sync() {
-      var k = sel.value;
-      document.querySelectorAll('.cfg').forEach(function (d) {
-        d.style.display = d.getAttribute('data-kind') === k ? '' : 'none';
-      });
-    }
-    sel.addEventListener('change', sync);
-    sync();
-  })();
-</script>
 {% endblock %}

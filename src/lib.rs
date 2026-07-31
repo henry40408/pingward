@@ -54,7 +54,11 @@ pub fn app(state: AppState) -> Router {
             state.clone(),
             web::forward_auth_session,
         ))
-        .layer(axum::middleware::from_fn(web::no_store));
+        .layer(axum::middleware::from_fn(web::no_store))
+        // Web-scoped for the same reason `no_store` is: the CSP describes
+        // pages this app renders. `/api/docs` is a sibling router and stays
+        // outside it — see `web::content_security_policy`.
+        .layer(axum::middleware::from_fn(web::content_security_policy));
     // `web::hsts` is layered here, outside every `.merge(...)`, rather than
     // inside the `web` router the way `no_store` is layered above. `no_store`
     // is a browser-page-caching concern scoped to the `web` router; HSTS tells
@@ -78,5 +82,11 @@ pub fn app(state: AppState) -> Router {
             state.clone(),
             web::hsts,
         ))
+        // App-wide like `hsts`, and for the same reason: nosniff, framing and
+        // referrer rules are statements about the whole origin, so they must
+        // also cover `/api/*` (including the CDN-loading `/api/docs`),
+        // `/ping/*`, `/healthz` and static assets — the routers the CSP above
+        // deliberately skips.
+        .layer(axum::middleware::from_fn(web::security_headers))
         .with_state(state)
 }

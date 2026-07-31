@@ -212,6 +212,20 @@ hold a cookie under the old name, which the server no longer reads. This is
 the same one-time inconvenience a `PINGWARD_SECRET` rotation or restart (with
 no `PINGWARD_SECRET` set) already causes; just sign in again.
 
+#### Security headers
+
+Sent on every response, no configuration needed: `X-Content-Type-Options:
+nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin` and an empty
+`Permissions-Policy` allowlist. The web UI additionally carries a
+Content-Security-Policy whose `script-src` is `'self'` — no inline script, no
+nonce — because every script it runs is a file under `/assets`. If you put
+pingward behind a proxy that adds its own copies of these, they win: the app
+only fills in a header the response does not already carry.
+
+The one page outside that CSP is `/api/docs`, whose Scalar reference loads its
+bundle from `cdn.jsdelivr.net`. If your deployment must not reach a CDN at all,
+use `/api/openapi.json` with a local viewer instead.
+
 #### HSTS (Strict-Transport-Security)
 
 pingward does not terminate TLS, so it does not send

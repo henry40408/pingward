@@ -1082,6 +1082,95 @@ pub async fn no_store(req: Request, next: Next) -> Response {
     resp
 }
 
+/// The Content-Security-Policy served with every browser page.
+///
+/// `script-src 'self'` with no `'unsafe-inline'` and no nonce is the point of
+/// the whole arrangement: every script the UI runs is a file under `/assets`
+/// (see `assets/app.js`) and no template carries an `onclick=`/`onsubmit=`
+/// attribute, so an injected `<script>` — or an injected event attribute — has
+/// no way to execute. A policy that kept `'unsafe-inline'` would not stop the
+/// injection it exists to stop, and a nonce would have to be threaded through
+/// every template struct for the same result.
+///
+/// `style-src` still allows inline styles: the heartbeat strips size each bar
+/// with `style="height:Npx"`, computed per ping. That is a `style` attribute
+/// rather than a `<style>` block, and CSS injection is a far weaker primitive
+/// than script injection, so it is the one concession here.
+///
+/// `frame-ancestors 'none'` (clickjacking), `form-action 'self'` (a POST's
+/// destination cannot be rewritten to an attacker's host) and `base-uri
+/// 'none'` (a `<base>` tag cannot re-point every relative URL on the page) are
+/// the directives that carry weight even on a page with no injection at all.
+/// `connect-src` must stay `'self'`: the live tail's `EventSource` is
+/// same-origin.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
+     script-src 'self'; \
+     style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data:; \
+     font-src 'self'; \
+     connect-src 'self'; \
+     object-src 'none'; \
+     base-uri 'none'; \
+     form-action 'self'; \
+     frame-ancestors 'none'";
+
+/// CSP for the browser UI. Scoped to `web::routes()` for the same reason
+/// [`no_store`] is: it is a statement about pages this app renders. `/api/docs`
+/// is deliberately outside it — the Scalar reference loads its bundle from
+/// `cdn.jsdelivr.net`, so `script-src 'self'` would leave that page blank, and
+/// widening the policy app-wide to admit one CDN would cost every other page
+/// the guarantee above. It is still covered by [`security_headers`] below,
+/// including `X-Frame-Options`.
+///
+/// Only filled in when the response does not already carry one, so a handler
+/// can still override.
+pub async fn content_security_policy(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    if !resp.headers().contains_key(header::CONTENT_SECURITY_POLICY) {
+        resp.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+        );
+    }
+    resp
+}
+
+/// The response headers that are safe to send from every route, browser page
+/// or not — layered app-wide in `crate::app` alongside [`hsts`].
+///
+/// - `X-Content-Type-Options: nosniff` — stops a browser second-guessing a
+///   declared `Content-Type`. It matters most where the body is attacker-ish
+///   text served as JSON (`/api/v1`) or as `text/plain` (a captured ping body),
+///   which is exactly the part of the app the CSP does not cover.
+/// - `X-Frame-Options: DENY` — the CSP's `frame-ancestors` says this for the
+///   browser UI already; this repeats it for the routers the CSP skips,
+///   `/api/docs` above all.
+/// - `Referrer-Policy: same-origin` — a check page's URL identifies a check;
+///   an outbound link should not hand that path to whatever it points at.
+/// - `Permissions-Policy` — pingward asks for none of these APIs, so the
+///   honest value is an empty allowlist for each.
+const STATIC_SECURITY_HEADERS: &[(&str, &str)] = &[
+    ("x-content-type-options", "nosniff"),
+    ("x-frame-options", "DENY"),
+    ("referrer-policy", "same-origin"),
+    (
+        "permissions-policy",
+        "geolocation=(), camera=(), microphone=(), payment=(), usb=()",
+    ),
+];
+
+pub async fn security_headers(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    for (name, value) in STATIC_SECURITY_HEADERS {
+        let name = HeaderName::from_static(name);
+        if !headers.contains_key(&name) {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+    }
+    resp
+}
+
 /// Adds `Strict-Transport-Security` when `PINGWARD_HSTS_MAX_AGE` is
 /// configured. A zero-cost no-op by default: pingward does not terminate TLS,
 /// so sending HSTS unconditionally would tell browsers "HTTPS only" on a

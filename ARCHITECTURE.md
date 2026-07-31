@@ -124,11 +124,13 @@ Router::new()
         .layer(csrf_guard)          // innermost
         .layer(anonymous_session)
         .layer(forward_auth_session)
-        .layer(no_store))               // outermost of the `web` layers
+        .layer(no_store)
+        .layer(content_security_policy)) // outermost of the `web` layers
     .merge(ping::routes())
     .merge(api::routes())
     .merge(assets::routes())
-    .layer(hsts)                        // outermost overall — app-wide, not `web`-only
+    .layer(hsts)                        // app-wide, not `web`-only
+    .layer(security_headers)            // outermost overall
     .with_state(state)
 ```
 
@@ -160,6 +162,35 @@ responses and need the same protection. `/api/v1` stays exempt on purpose: it
 is bearer-authenticated, was never going to carry a browser-cacheable session
 in the first place, and adding response headers there would affect API
 consumers for no benefit.
+
+`content_security_policy` is `web`-scoped for the same reason `no_store` is:
+it describes pages this app renders. Its `script-src` is `'self'` alone — no
+`'unsafe-inline'`, no nonce — and that is only true because **every script the
+UI runs is a file under `/assets`** (`assets/app.js`, plus the tiny
+render-blocking `assets/theme-init.js` that resolves the theme before first
+paint) and **no template carries an `onclick=`/`onsubmit=` attribute**. Row
+navigation (`data-href`), confirmation prompts (`data-confirm`) and the
+non-submitting filter forms (`data-nosubmit`) go through delegated handlers in
+`app.js` instead, which also means they keep working on markup inserted by a
+fragment swap. Reintroducing one inline handler means either weakening the
+policy for the whole UI or minting a nonce per response, so don't: put the
+behaviour in `app.js` behind a `data-` attribute. `style-src` does keep
+`'unsafe-inline'` — the heartbeat bars carry a computed
+`style="height:Npx"` — which is a deliberate, much narrower concession.
+
+`/api/docs` is deliberately outside this layer: the Scalar reference loads its
+bundle from `cdn.jsdelivr.net`, so `script-src 'self'` would render it blank,
+and widening the policy app-wide to admit one CDN would cost every other page
+the guarantee above. It is still covered by `security_headers` below.
+
+`security_headers` is app-wide (`X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, an empty
+`Permissions-Policy` allowlist). Unlike the CSP these say nothing about
+rendered markup, so they belong on the routers the CSP skips too: nosniff
+matters most for `/api/v1`'s JSON and a captured ping body served as
+`text/plain`, and `X-Frame-Options` is what keeps `/api/docs` unframable
+without a CSP. Each header is only filled in when the response does not
+already carry it, so a handler can still override.
 
 `hsts` (`web::hsts`, gated by `PINGWARD_HSTS_MAX_AGE`) is layered outside
 every `.merge(...)` in the block above, not inside the `web` router the way

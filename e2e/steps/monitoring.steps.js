@@ -176,6 +176,30 @@ When("I clear the dashboard filter", async ({ page }) => {
   await expect(page).toHaveURL(/\/$/);
 });
 
+// The row carries `data-href` and is navigated by the delegated handler in
+// app.js — clicking its text (not a nested control) is what must move.
+When("I click the dashboard row for {string}", async ({ page, serverUrl }, name) => {
+  await page.goto(`${serverUrl}/`);
+  await page
+    .getByTestId("dashboard-check-row")
+    .filter({ hasText: name })
+    .getByText(name, { exact: true })
+    .click();
+});
+
+When("I click the row's edit link for {string}", async ({ page }, name) => {
+  await page
+    .locator(".check")
+    .filter({ hasText: name })
+    .getByRole("link", { name: "edit" })
+    .click();
+});
+
+Then("I am on the check edit form", async ({ page }) => {
+  await expect(page).toHaveURL(/\/checks\/\d+\/edit$/);
+  await expect(page.getByTestId("check-name-input")).toBeVisible();
+});
+
 Then("the dashboard shows the check {string}", async ({ page }, name) => {
   await expect(
     page.getByTestId("dashboard-check-row").filter({ hasText: name })

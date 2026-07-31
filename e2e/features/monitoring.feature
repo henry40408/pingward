@@ -70,6 +70,24 @@ Feature: Monitoring core
     When I delete the project
     Then the dashboard shows no projects
 
+  # The row is a div, not a link: it navigates through a delegated handler
+  # reading `data-href` (an inline onclick would need a CSP that allows inline
+  # script). Nothing else exercises that handler.
+  Scenario: Clicking a dashboard row opens its check
+    Given a project named "Nightly jobs"
+    And a check named "backup" with period 60
+    When I click the dashboard row for "backup"
+    Then I am on the check page
+
+  # The same handler must keep its hands off a real link inside the row —
+  # what the removed `onclick="event.stopPropagation()"` used to do.
+  Scenario: A row's own link wins over the row's navigation
+    Given a project named "Nightly jobs"
+    And a check named "backup" with period 60
+    When I visit the project page for "Nightly jobs"
+    And I click the row's edit link for "backup"
+    Then I am on the check edit form
+
   Scenario: The dashboard filter narrows the list and can be cleared
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60

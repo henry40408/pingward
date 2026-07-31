@@ -30,9 +30,9 @@
   <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/ack"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn primary" data-testid="ack-button">Acknowledge</button></form>
   {% endif %}
   <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/regenerate"
-        onsubmit="return confirm('Regenerate the ping URL? The current URL stops working immediately and any job using it must be updated.')"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" data-testid="regenerate-button">Regenerate URL</button></form>
+        data-confirm="Regenerate the ping URL? The current URL stops working immediately and any job using it must be updated."><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" data-testid="regenerate-button">Regenerate URL</button></form>
   <form class="inline" method="post" action="{{ base }}/checks/{{ check.id }}/delete"
-        onsubmit="return confirm('Delete this check?')"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" data-testid="delete-check-button">Delete</button></form>
+        data-confirm="Delete this check?"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" data-testid="delete-check-button">Delete</button></form>
 </div>
 
 <div class="card">
@@ -123,89 +123,4 @@ mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
   </div>
 </div>
 
-<script>
-  (function(){
-    // Copy buttons live outside the swappable sections — bind once.
-    document.querySelectorAll('.copy').forEach(function(btn){
-      btn.addEventListener('click', function(){
-        var text = btn.getAttribute('data-copy');
-        if (navigator.clipboard) navigator.clipboard.writeText(text);
-      });
-    });
-
-    // Section wiring (fetch-and-swap, timestamp localization, expandable rows,
-    // date-field conversion) is shared with /admin's audit trail and lives in
-    // base.html's `pw` helper.
-    var toUtc = pw.toUtc, param = pw.param, wireSection = pw.wireSection;
-
-    var loadPings = wireSection('pings-section', function(s){
-      var qs = [];
-      var kind = s.querySelector('[data-testid=pings-kind]');
-      var from = s.querySelector('[data-testid=pings-from]');
-      var to = s.querySelector('[data-testid=pings-to]');
-      param(qs, 'pk', kind && kind.value);
-      param(qs, 'pfrom', toUtc(from && from.value));
-      param(qs, 'pto', toUtc(to && to.value));
-      return qs.length ? ('?'+qs.join('&')) : '';
-    });
-    wireSection('notifs-section', function(s){
-      var qs = [];
-      var ev = s.querySelector('[data-testid=notifs-event]');
-      var st = s.querySelector('[data-testid=notifs-status]');
-      var from = s.querySelector('[data-testid=notifs-from]');
-      var to = s.querySelector('[data-testid=notifs-to]');
-      param(qs, 'ne', ev && ev.value);
-      param(qs, 'ns', st && st.value);
-      param(qs, 'nfrom', toUtc(from && from.value));
-      param(qs, 'nto', toUtc(to && to.value));
-      return qs.length ? ('?'+qs.join('&')) : '';
-    });
-
-    // Live tail is opt-in, not always-on: an EventSource held open by every check
-    // page would spend one of the browser's ~6 HTTP/1.1 connections per origin,
-    // so a handful of open check tabs would stall the rest of the app.
-    var liveBtn = document.getElementById('pings-live');
-    var pingsSection = document.getElementById('pings-section');
-    var pingsCard = document.getElementById('pings-card');
-    if (liveBtn && pingsSection && loadPings && window.EventSource) {
-      var liveSource = null;
-      var liveTimer = null;
-      function stopLive(){
-        if (liveSource) { liveSource.close(); liveSource = null; }
-        if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
-        if (pingsCard) pingsCard.classList.remove('live-on');
-        liveBtn.setAttribute('aria-pressed', 'false');
-        liveBtn.removeAttribute('data-live');
-      }
-      function startLive(){
-        stopLive();
-        liveBtn.setAttribute('aria-pressed', 'true');
-        if (pingsCard) pingsCard.classList.add('live-on');
-        liveBtn.setAttribute('data-live', 'connecting');
-        liveSource = new EventSource(liveBtn.getAttribute('data-endpoint'));
-        liveSource.onopen = function(){ liveBtn.setAttribute('data-live', 'open'); };
-        liveSource.onmessage = function(){
-          if (liveTimer) clearTimeout(liveTimer);
-          liveTimer = setTimeout(function(){
-            loadPings(pingsSection.getAttribute('data-endpoint'));
-          }, 500);
-        };
-        // EventSource retries transport errors on its own, so there is no manual
-        // retry logic here — but the button must stop claiming "open" while that
-        // retry is in flight. A CLOSED stream is never coming back (the endpoint
-        // now 404s, say, because the check was deleted), so drop the toggle to
-        // off rather than showing a live tail that isn't running.
-        liveSource.onerror = function(){
-          if (liveSource !== this) return; // stale handler from a replaced stream
-          if (this.readyState === EventSource.CLOSED) stopLive();
-          else liveBtn.setAttribute('data-live', 'connecting');
-        };
-      }
-      liveBtn.addEventListener('click', function(){
-        if (liveBtn.getAttribute('aria-pressed') === 'true') stopLive(); else startLive();
-      });
-      window.addEventListener('pagehide', stopLive);
-    }
-  })();
-</script>
 {% endblock %}

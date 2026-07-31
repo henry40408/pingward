@@ -70,6 +70,20 @@ one `AppState`:
   are **structurally exempt from CSRF** (public, unauthenticated).
 - `assets::routes()` + `/healthz`.
 
+**Response headers**: `web::content_security_policy` is layered on the `web`
+router (like `no_store`), `web::security_headers` and `web::hsts` app-wide
+(nosniff, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`). The CSP
+says `script-src 'self'` with **no `'unsafe-inline'` and no nonce**, which
+holds only because every script is a file under `/assets` (`assets/app.js` +
+the render-blocking `assets/theme-init.js`) and **no template carries an
+`onclick=`/`onsubmit=` attribute** — row navigation, confirm prompts and the
+non-submitting filter forms are `data-href`/`data-confirm`/`data-nosubmit`
+handled by delegation in `app.js`, which also survives a fragment swap. Adding
+an inline handler means weakening the policy for the whole UI; add the
+behaviour to `app.js` instead. `style-src` keeps `'unsafe-inline'` for the
+heartbeat bars' computed `style="height:Npx"`. `/api/docs` is deliberately
+outside the CSP — Scalar loads its bundle from a CDN.
+
 **Session & CSRF secret** (`src/secret.rs`): one process secret
 (`PINGWARD_SECRET`) keys every browser credential, domain-separated —
 `cookie = <session_id>.HMAC(secret, "session:" ++ id)`,
