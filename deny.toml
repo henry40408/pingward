@@ -15,6 +15,14 @@ ignore = [
     # spin 0.9.8 is yanked but pulled in transitively via flume -> sqlx-sqlite;
     # we don't control the version and there is no non-yanked 0.9.x to move to.
     "spin@0.9.8",
+    # event-listener 5.4.1, via sqlx-core. Unsound, not exploitable: it makes
+    # `StackSlot<'_, T>` unconditionally Send/Sync, so a `!Send` tag set through
+    # `Event::with_tag` can cross threads. We hold no direct dependency and
+    # never touch that API. The fix is 5.4.2, published 2026-07-27 — inside the
+    # 7-day cooldown we give a new release to be caught and yanked. TEMPORARY:
+    # drop this entry when we `cargo update -p event-listener` on or after
+    # 2026-08-03.
+    "RUSTSEC-2026-0221",
 ]
 
 [licenses]
