@@ -319,3 +319,55 @@ async fn check_detail_paused_shows_no_deadline() {
         "paused check must not count down to a deadline nothing enforces: {body}"
     );
 }
+
+/// The strip renders past the widest viewport on purpose — `assets/app.css`
+/// clips the overflow from the left, so the *server* cap is what decides
+/// whether a wide screen can fill its width. Locking it here is what stops a
+/// well-meaning "why render bars nobody sees?" from silently putting the
+/// desktop strip back to a third of the card.
+#[tokio::test]
+async fn the_heartbeat_renders_more_bars_than_a_viewport_fits() {
+    let (server, store, pid) = server_with_project().await;
+    let cid = store
+        .create_check(&pingward::store::NewCheck {
+            project_id: pid,
+            name: "busy",
+            ping_uuid: "cu-busy",
+            kind: pingward::models::ScheduleKind::Period,
+            period_secs: Some(3600),
+            grace_secs: 300,
+            timezone: "UTC",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let check = store.find_check(cid).await.unwrap().unwrap();
+
+    // Start/success pairs, the shape the window is sized for: 150 runs is more
+    // than the cap, so the page must clamp rather than render every one.
+    for _ in 0..150 {
+        server
+            .post(&format!("/ping/{}/start", check.ping_uuid))
+            .await
+            .assert_status_ok();
+        server
+            .post(&format!("/ping/{}", check.ping_uuid))
+            .await
+            .assert_status_ok();
+    }
+
+    let body = server.get(&format!("/checks/{cid}")).await.text();
+    let strip = body
+        .split_once("class=\"beat\"")
+        .expect("heartbeat strip")
+        .1
+        .split_once("</div>")
+        .expect("strip closes")
+        .0;
+    let bars = strip.matches("<i ").count();
+    assert_eq!(bars, 120, "expected the full {} bars, got {bars}", 120);
+
+    // The caption must not name a count: how many of those bars a reader can
+    // actually see is the browser's answer, not ours.
+    assert!(!body.contains("30 runs ago"), "stale fixed-count caption");
+}

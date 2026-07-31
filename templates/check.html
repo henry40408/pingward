@@ -80,10 +80,17 @@ mybackup.sh 2>&1 | curl -fsS --data-binary @- {{ ping_url }}/fail</div>
       </div>
     </details>
     {% endif %}
-    <div class="beat" title="last 30 runs">
+    {# No run count in the label: the strip renders more bars than fit and the
+       browser decides how many are visible (assets/app.css `.beat`), so any
+       number here would be a claim the server cannot make. #}
+    <div class="beat" title="most recent runs, newest on the right">
       {% for b in bars %}<i class="{{ b.class }}" style="height:{{ b.height }}px" title="{{ b.title }}"></i>{% endfor %}
     </div>
-    <div class="beatcap"><span>30 runs ago</span><span class="key">taller = longer run &middot; amber &ge;80% budget &middot; red = failed</span><span>now</span></div>
+    {# The height claim is scoped to *solid* bars on purpose. Hollow bars are
+       rendered at a fixed height that outranks every measured one, so an
+       unqualified "taller = longer run" would be making a claim about them that
+       is not true. #}
+    <div class="beatcap"><span>older</span><span class="key">solid = timed run, taller = longer &middot; hollow = duration not measurable &middot; amber &ge;80% budget &middot; red = failed</span><span>now</span></div>
   </div>
 </div>
 

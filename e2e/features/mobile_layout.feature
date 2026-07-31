@@ -65,7 +65,7 @@ Feature: Mobile layout
     And I reload the check page
     Then the page has no horizontal scrollbar
 
-  # The heartbeat caption is three flex items on one row: "30 runs ago", a
+  # The heartbeat caption is three flex items on one row: "older", a
   # legend, and "now". Below ~640px they stop fitting, and because each is its
   # own flex item they wrapped independently and side by side — the legend's
   # second line landed beside "ago" rather than under its own first line. The

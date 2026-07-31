@@ -56,6 +56,15 @@ README assets (Playwright's Chromium, no extra deps; both commit their output):
   schedule budget — the boot `scan_once` would otherwise rewrite the status the
   shot is meant to show (cron checks anchor on a real fire time; see the cron
   helper there).
+  **Decide whether a change makes these stale, and say so without being
+  asked.** They are committed artefacts of the UI, so nothing fails when they
+  drift — the README simply keeps advertising a version of the app that no
+  longer exists, and the drift is only ever caught by eye. Any change to a
+  template, to `assets/app.css`, or to rendered copy is a candidate: open the
+  affected PNG, compare, and either regenerate or state that the surface is not
+  in frame. The version stamp in the footer is part of the shot, so build from
+  a clean tree (or pass `GIT_VERSION` explicitly) — `build.rs` will happily
+  reuse a stale `-dirty` stamp naming a commit a rebase has since replaced.
 - `cd e2e && npm run icons` — re-renders `assets/apple-touch-icon.png` from
   `assets/favicon.svg`. Run after editing the SVG.
 
@@ -252,6 +261,16 @@ than whole ping rows: selecting `body` meant decoding every captured POST
 output — up to `ping::MAX_BODY` (10 KiB) per row, 40 rows per check — only for
 `view::heartbeat` to drop it. That was most of the dashboard's render time
 (measured in #116, which records the before/after).
+
+The **check page's** strip is sized differently from the dashboard's six bars:
+the server renders more bars than fit (`web::HEARTBEAT_BARS`, over
+`web::HEARTBEAT_WINDOW` rows) and `.beat` in `assets/app.css` clips the
+overflow from the *left*, so the strip fills any viewport with the newest run
+pinned right — the server never needs to know the viewport. Do not "optimise"
+the window into a `kind IN ('success','fail')` query: `run_durations` pairs
+each finish ping with the `start` before it, so dropping the starts flattens
+every bar. Do not put a run count in the caption either; only the browser
+knows how many bars are visible.
 
 **Display status** (`src/view.rs::display_status`/`DisplayStatus`): a
 display-only status layered on top of the stored `CheckStatus`

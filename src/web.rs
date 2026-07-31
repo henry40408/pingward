@@ -733,6 +733,32 @@ async fn dashboard(
     Ok((jar, resp).into_response())
 }
 
+/// Bars rendered into the check page's heartbeat strip.
+///
+/// **More than fit on purpose.** How many bars a viewport has room for is a
+/// question only the browser can answer, so the server renders past the widest
+/// possible strip and `assets/app.css` clips the overflow from the *left* —
+/// oldest first, newest pinned to the right edge. A phone shows ~34 of these,
+/// a desktop ~100, with no JS, no media query and no second round trip.
+///
+/// The ceiling is fixed rather than generous-and-arbitrary: `.beat i` is 7px
+/// wide with a 3px gap (10px per bar) and `.wrap` caps the page at 1080px, so
+/// the strip can never exceed ~1000px ≈ 100 bars. 120 keeps the strip full at
+/// every width the layout allows.
+const HEARTBEAT_BARS: usize = 120;
+
+/// Pings read for the strip and for pairing run durations.
+///
+/// Deliberately not a filtered `kind IN ('success','fail')` query, which would
+/// be the obvious way to guarantee [`HEARTBEAT_BARS`] runs: `view::heartbeat`
+/// sizes each bar from `view::run_durations`, which pairs every finish ping
+/// with the `start` that preceded it, so dropping the starts would flatten
+/// every bar. A plain window over all kinds keeps that pairing intact; the
+/// cost is that a check which also logs heavily fills fewer bars than a check
+/// that only reports start/finish. Sized for the latter (two rows per run)
+/// with headroom.
+const HEARTBEAT_WINDOW: i64 = 300;
+
 /// Column-bounding cap for a stored `user_agent` (raw browser headers can be
 /// arbitrarily long; the value is display-only, so it is simply truncated).
 const MAX_USER_AGENT_CHARS: usize = 300;
@@ -2508,17 +2534,20 @@ async fn render_check_page(
             bound: bound.contains(&c.id),
         })
         .collect();
-    // The heartbeat/bars strip always shows the latest 40 pings, independent
-    // of the table's paging below — a paged (older) result must never feed it.
+    // The heartbeat/bars strip always reads the latest pings, independent of
+    // the table's paging below — a paged (older) result must never feed it.
     // Narrowed to the four columns the strip and the duration pairing read, so
     // this window never materialises the captured bodies (see #116); the
     // table's own rows come from `list_pings_page` and are still full pings.
-    let recent = state.store.list_recent_ping_summaries(id, 40).await?;
+    let recent = state
+        .store
+        .list_recent_ping_summaries(id, HEARTBEAT_WINDOW)
+        .await?;
     let bars = crate::view::heartbeat(
         &recent,
         check.max_runtime_secs,
         check.status == CheckStatus::Paused,
-        30,
+        HEARTBEAT_BARS,
     );
 
     let status = crate::view::display_status(&check, now).as_str();
@@ -2587,15 +2616,18 @@ async fn build_pings_partial(
         .list_pings_page(check_id, cursor, 20, &filter)
         .await?;
 
-    // Pair durations against the wider 40-row window on the default view so a
-    // run whose start sits just past row 20 still shows its duration; a filtered
-    // or paged view pairs within its own slice (a start ping may be filtered
-    // out, so pairing there is best-effort regardless).
+    // Pair durations against the wider [`HEARTBEAT_WINDOW`] on the default view
+    // so a run whose start sits just past the end of the page still shows its
+    // duration; a filtered or paged view pairs within its own slice (a start
+    // ping may be filtered out, so pairing there is best-effort regardless).
     let durations = if matches!(cursor, PageCursor::Latest) && filter.is_empty() {
         if let Some(r) = recent {
             crate::view::run_durations(r)
         } else {
-            let r = state.store.list_recent_ping_summaries(check_id, 40).await?;
+            let r = state
+                .store
+                .list_recent_ping_summaries(check_id, HEARTBEAT_WINDOW)
+                .await?;
             crate::view::run_durations(&r)
         }
     } else {

@@ -71,3 +71,43 @@ Then("the pings clear filter link is visible", async ({ page }) => {
 Then("the pings clear filter link is not visible", async ({ page }) => {
   await expect(page.getByTestId("pings-clear")).toHaveCount(0);
 });
+
+// The two heartbeat invariants that only exist in CSS. Measured rather than
+// asserted on markup: the bars are all rendered either way, and what this is
+// checking is which of them the clipping box lets through.
+Then(
+  "the newest heartbeat bar is flush with the strip's right edge",
+  async ({ page }) => {
+    const gap = await page.evaluate(() => {
+      const beat = document.querySelector(".beat");
+      const bars = beat.querySelectorAll("i");
+      const last = bars[bars.length - 1].getBoundingClientRect();
+      return Math.round(beat.getBoundingClientRect().right - last.right);
+    });
+    expect(
+      gap,
+      `the newest run sits ${gap}px from the right edge — the strip is not right-aligned`
+    ).toBeLessThanOrEqual(1);
+  }
+);
+
+Then("the oldest heartbeat bars are clipped off the left", async ({ page }) => {
+  // `scrollWidth` is no use here: the overflow runs off the *left* edge, which
+  // it does not count. Compare what was rendered against what the clipping box
+  // actually lets through instead.
+  const m = await page.evaluate(() => {
+    const beat = document.querySelector(".beat");
+    const box = beat.getBoundingClientRect();
+    const bars = [...beat.querySelectorAll("i")];
+    return {
+      rendered: bars.length,
+      visible: bars.filter((b) => b.getBoundingClientRect().left >= box.left - 0.5).length,
+      box: Math.round(box.width),
+    };
+  });
+  expect(m.rendered).toBeGreaterThan(30);
+  expect(
+    m.visible,
+    `all ${m.rendered} bars fit the ${m.box}px strip — nothing is being clipped, so this proves nothing`
+  ).toBeLessThan(m.rendered);
+});
