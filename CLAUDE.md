@@ -56,6 +56,15 @@ README assets (Playwright's Chromium, no extra deps; both commit their output):
   schedule budget — the boot `scan_once` would otherwise rewrite the status the
   shot is meant to show (cron checks anchor on a real fire time; see the cron
   helper there).
+  **Decide whether a change makes these stale, and say so without being
+  asked.** They are committed artefacts of the UI, so nothing fails when they
+  drift — the README simply keeps advertising a version of the app that no
+  longer exists, and the drift is only ever caught by eye. Any change to a
+  template, to `assets/app.css`, or to rendered copy is a candidate: open the
+  affected PNG, compare, and either regenerate or state that the surface is not
+  in frame. The version stamp in the footer is part of the shot, so build from
+  a clean tree (or pass `GIT_VERSION` explicitly) — `build.rs` will happily
+  reuse a stale `-dirty` stamp naming a commit a rebase has since replaced.
 - `cd e2e && npm run icons` — re-renders `assets/apple-touch-icon.png` from
   `assets/favicon.svg`. Run after editing the SVG.
 
