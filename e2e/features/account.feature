@@ -23,6 +23,21 @@ Feature: Account
     And I revoke the current session
     Then I am on the login page
 
+  Scenario: Change your own password and sign in with the new one
+    When I open the account page
+    And I change my password from "correct horse" to "battery staple"
+    Then the password change is confirmed
+    When I sign out
+    And I sign in as "admin" with password "correct horse"
+    Then the login page shows the error "invalid username or password"
+    When I sign in as "admin" with password "battery staple"
+    Then I land on the dashboard signed in
+
+  Scenario: The wrong current password is refused
+    When I open the account page
+    And I change my password from "wrong" to "battery staple"
+    Then the password change is rejected
+
   Scenario: Create an API key and see the token exactly once
     When I open the account page
     And I create an API key named "CI deploy"

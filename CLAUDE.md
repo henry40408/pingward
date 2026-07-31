@@ -143,8 +143,15 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   `AdminUser` (403 if not admin).
 - Owner scoping goes through `owned_project` / `owned_check` in `web.rs`, which
   return **404 (not 403)** for another user's resource — existence is hidden.
-- `/account` is the per-user account page (sessions, then API keys, stacked as
-  ordinary cards — no tabs). Session expiry is two layers: `expires_at` is an
+- `/account` is the per-user account page (password, sessions, then API keys,
+  stacked as ordinary cards — no tabs). `POST /account/password` is the only
+  way a non-admin can rotate their own credential; it demands the current
+  password, since a session cookie alone must not be enough to lock the owner
+  out, and revokes every *other* session on success (API keys survive, as they
+  do for the admin-driven `users_set_password`). A passwordless forward-auth
+  account has no card and is refused with 403 — its credential lives at the
+  gateway, and a local one would be a second way in that the gateway's
+  sign-out could not end. Session expiry is two layers: `expires_at` is an
   idle window (`SESSION_IDLE_TTL_HOURS`, 72h) that slides forward on use only
   past the half-life of the window, so it writes far less often than
   `last_seen_at`; a separate absolute cap (`SESSION_ABSOLUTE_MAX_DAYS`, 30d

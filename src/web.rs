@@ -67,6 +67,7 @@ pub fn routes() -> Router<AppState> {
         .route("/channels/{id}/test", post(channel_test))
         .route("/checks/{id}/channels", post(check_set_channels))
         .route("/account", get(account_page))
+        .route("/account/password", post(account_password))
         .route("/account/api-keys", post(api_keys_create))
         .route("/account/api-keys/{id}/delete", post(api_keys_delete))
         .route("/account/sessions/{handle}/revoke", post(sessions_revoke))
@@ -2171,6 +2172,9 @@ fn take_flash(
         "users_blocked" => {
             "That action was refused: you cannot remove your own access, and the last enabled admin cannot be removed."
         }
+        "password_changed" => {
+            "Password changed. Any other signed-in sessions were signed out; API keys are unaffected."
+        }
         "forward_auth_logout" => {
             "Signed out locally, but you're authenticated through your reverse proxy — this app can't end that session. To sign out completely, log out at your proxy or SSO provider."
         }
@@ -4158,12 +4162,31 @@ struct AccountTemplate {
     /// Count of non-current sessions, so the template can hide the "revoke
     /// others" control when there is nothing else to revoke.
     other_count: usize,
+    // password section
+    /// False for a passwordless forward-auth account: there is no current
+    /// password to verify against, and the credential it signs in with lives
+    /// at the gateway. The card is hidden rather than shown-and-refused.
+    can_change_password: bool,
+    password_error: Option<String>,
+    password_flash: Option<String>,
     // api-keys section
     keys: Vec<ApiKeyRow>,
     /// The plaintext token, rendered exactly once right after creation and
     /// never recoverable afterwards.
     new_token: Option<String>,
     key_error: Option<String>,
+}
+
+/// The optional inputs `render_account` needs beyond the data it always
+/// gathers itself, kept in one struct for the same reason [`AdminRender`]
+/// exists: the page has several independent sections, and threading one
+/// `Option` per section through a positional argument list stops scaling.
+#[derive(Default)]
+struct AccountRender {
+    new_token: Option<String>,
+    key_error: Option<String>,
+    password_error: Option<String>,
+    password_flash: Option<String>,
 }
 
 /// One row of the sessions table. Mirrors [`crate::models::Session`], minus
@@ -4219,7 +4242,18 @@ async fn account_page(
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
-    render_account(&state, &jar, &user, None, None).await
+    let (jar, password_flash) = take_flash(&state.config, jar, "password_changed");
+    let resp = render_account(
+        &state,
+        &jar,
+        &user,
+        AccountRender {
+            password_flash,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok((jar, resp).into_response())
 }
 
 /// Gather both the sessions and API-keys datasets and render the merged
@@ -4228,8 +4262,7 @@ async fn render_account(
     state: &AppState,
     jar: &CookieJar,
     user: &User,
-    new_token: Option<String>,
-    key_error: Option<&str>,
+    parts: AccountRender,
 ) -> Result<Response, AppError> {
     let now = Utc::now();
 
@@ -4286,11 +4319,110 @@ async fn render_account(
         is_admin: user.is_admin,
         sessions,
         other_count,
+        can_change_password: user.password_hash.is_some(),
+        password_error: parts.password_error,
+        password_flash: parts.password_flash,
         keys,
-        new_token,
-        key_error: key_error.map(str::to_string),
+        new_token: parts.new_token,
+        key_error: parts.key_error,
     })?
     .into_response())
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordForm {
+    current_password: String,
+    new_password: String,
+    confirm_password: String,
+}
+
+/// Change your own password.
+///
+/// The current password is required, which is the one thing a session cookie
+/// alone cannot supply: without it a hijacked session could lock the account's
+/// owner out of their own account (OWASP's "reauthentication after risk
+/// events"). A passwordless forward-auth account has nothing to verify
+/// against, so it is refused here as well as having no form — its credential
+/// lives at the gateway, and setting a local one would create a second way in
+/// that the gateway's own sign-out could not end.
+///
+/// On success every *other* session of this user is revoked, matching what
+/// `users_set_password` does for an admin-driven reset: a password change is
+/// how you evict someone, so leaving their cookie working would defeat it.
+/// API keys are deliberately untouched — same as the admin reset, and
+/// `/account` lists them right below for anyone who wants them gone too.
+async fn account_password(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+    Form(form): Form<ChangePasswordForm>,
+) -> Result<Response, AppError> {
+    let error = |msg: &str| AccountRender {
+        password_error: Some(msg.to_string()),
+        ..Default::default()
+    };
+    // 403 rather than a rendered message: the card is hidden for this account,
+    // so the only way here is a crafted request, and the error has no form to
+    // render into.
+    let Some(stored) = user.password_hash.clone() else {
+        return Ok((StatusCode::FORBIDDEN, "this account has no local password").into_response());
+    };
+    if !verify_password(&form.current_password, &stored) {
+        let parts = error("Current password is incorrect.");
+        return render_account(&state, &jar, &user, parts).await;
+    }
+    if form.new_password.is_empty() {
+        let parts = error("A new password is required.");
+        return render_account(&state, &jar, &user, parts).await;
+    }
+    if form.new_password != form.confirm_password {
+        let parts = error("The new passwords do not match.");
+        return render_account(&state, &jar, &user, parts).await;
+    }
+    let phc =
+        hash_password(&form.new_password).map_err(|e| AppError::Other(e.to_string().into()))?;
+    state.store.set_user_password(user.id, &phc).await?;
+    let revoked = match secret::session_id_from_jar(
+        &jar,
+        &state.config.secret,
+        session_cookie_name(&state),
+    ) {
+        Some(current) => {
+            state
+                .store
+                .delete_other_sessions_for_user(user.id, &current)
+                .await?
+        }
+        // Unreachable for a password account (a passwordless forward-auth one
+        // returned above), but revoking everything is the safe direction if it
+        // ever is reached.
+        None => state.store.delete_sessions_for_user(user.id).await?,
+    };
+    tracing::info!(
+        target: "pingward::session",
+        reason = "password_change",
+        user_id = user.id,
+        count = revoked,
+        "session.destroyed"
+    );
+    let detail = format!("sessions_revoked={revoked}");
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: user.id,
+                actor_username: &user.username,
+                action: "user.password_change",
+                target_type: Some("user"),
+                target_id: Some(user.id),
+                detail: Some(&detail),
+                ..Default::default()
+            },
+            Utc::now(),
+        )
+        .await?;
+    let jar = jar.add(flash_cookie(&state.config, "password_changed"));
+    Ok((jar, Redirect::to("/account")).into_response())
 }
 
 async fn api_keys_create(
@@ -4301,7 +4433,11 @@ async fn api_keys_create(
 ) -> Result<Response, AppError> {
     let name = form.name.trim();
     if name.is_empty() {
-        return render_account(&state, &jar, &user, None, Some("a name is required")).await;
+        let parts = AccountRender {
+            key_error: Some("a name is required".into()),
+            ..Default::default()
+        };
+        return render_account(&state, &jar, &user, parts).await;
     }
     // Optional expiry: blank means never; otherwise a duration from now
     // (`30d`, `12h`, …) reusing the same parser as the check/duration fields.
@@ -4313,14 +4449,13 @@ async fn api_keys_create(
             match crate::duration::parse_duration(raw) {
                 Some(secs) if secs > 0 => Some(Utc::now() + Duration::seconds(secs)),
                 _ => {
-                    return render_account(
-                        &state,
-                        &jar,
-                        &user,
-                        None,
-                        Some("expiry must be a duration like 30d, or blank for never"),
-                    )
-                    .await;
+                    let parts = AccountRender {
+                        key_error: Some(
+                            "expiry must be a duration like 30d, or blank for never".into(),
+                        ),
+                        ..Default::default()
+                    };
+                    return render_account(&state, &jar, &user, parts).await;
                 }
             }
         }
@@ -4330,7 +4465,11 @@ async fn api_keys_create(
         .store
         .insert_api_key(user.id, name, &hash, &prefix, expires_at, Utc::now())
         .await?;
-    render_account(&state, &jar, &user, Some(full), None).await
+    let parts = AccountRender {
+        new_token: Some(full),
+        ..Default::default()
+    };
+    render_account(&state, &jar, &user, parts).await
 }
 
 async fn api_keys_delete(

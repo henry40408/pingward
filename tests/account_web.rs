@@ -223,6 +223,177 @@ async fn unknown_or_foreign_handle_revokes_nothing() {
     );
 }
 
+// --- password section ---
+
+/// The stored PHC hash, read straight out of the table so a test can assert on
+/// the credential itself rather than on a login round-trip.
+async fn stored_hash(store: &Store, uid: i64) -> String {
+    store
+        .find_user_by_id(uid)
+        .await
+        .unwrap()
+        .unwrap()
+        .password_hash
+        .expect("password account")
+}
+
+#[tokio::test]
+async fn changing_the_password_rotates_it_and_signs_out_other_sessions() {
+    let (store, uid) = member_store().await;
+    let server1 = login_server(&store, "member", "pw").await;
+    let server2 = login_server(&store, "member", "pw").await;
+    assert_eq!(session_count(&store, uid).await, 2);
+
+    server1
+        .post("/account/password")
+        .form(&[
+            ("current_password", "pw"),
+            ("new_password", "new-pw"),
+            ("confirm_password", "new-pw"),
+        ])
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+
+    let phc = stored_hash(&store, uid).await;
+    assert!(pingward::auth::verify_password("new-pw", &phc));
+    assert!(!pingward::auth::verify_password("pw", &phc));
+
+    // The session that made the change survives; the other one is gone, so
+    // resetting a password to evict someone actually evicts them.
+    assert_eq!(session_count(&store, uid).await, 1);
+    let body = server1.get("/account").await.text();
+    assert!(body.contains("password-changed-flash"), "{body}");
+    // One-shot: a reload does not repeat the notice.
+    assert!(
+        !server1
+            .get("/account")
+            .await
+            .text()
+            .contains("password-changed-flash")
+    );
+    let res = server2.get("/account").await;
+    res.assert_status(StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/login");
+}
+
+#[tokio::test]
+async fn changing_the_password_leaves_api_keys_alone() {
+    let (store, uid) = member_store().await;
+    let server = login_server(&store, "member", "pw").await;
+    server
+        .post("/account/api-keys")
+        .form(&[("name", "ci")])
+        .await
+        .assert_status_ok();
+
+    server
+        .post("/account/password")
+        .form(&[
+            ("current_password", "pw"),
+            ("new_password", "new-pw"),
+            ("confirm_password", "new-pw"),
+        ])
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+
+    assert_eq!(
+        store.list_api_keys_for_user(uid).await.unwrap().len(),
+        1,
+        "a password change revokes sessions, not keys — /account says so"
+    );
+}
+
+/// Each rejection path: the credential is untouched and no session is revoked,
+/// so a wrong guess is never a way to sign someone else's browser out.
+#[tokio::test]
+async fn rejected_changes_touch_neither_the_password_nor_the_sessions() {
+    for (label, current, new, confirm) in [
+        ("wrong current password", "nope", "new-pw", "new-pw"),
+        ("mismatched confirmation", "pw", "new-pw", "different"),
+        ("blank new password", "pw", "", ""),
+    ] {
+        let (store, uid) = member_store().await;
+        let server1 = login_server(&store, "member", "pw").await;
+        let _server2 = login_server(&store, "member", "pw").await;
+        let before = stored_hash(&store, uid).await;
+
+        let res = server1
+            .post("/account/password")
+            .form(&[
+                ("current_password", current),
+                ("new_password", new),
+                ("confirm_password", confirm),
+            ])
+            .await;
+        res.assert_status_ok();
+        assert!(res.text().contains("password-error"), "{label}");
+
+        assert_eq!(stored_hash(&store, uid).await, before, "{label}");
+        assert_eq!(session_count(&store, uid).await, 2, "{label}");
+    }
+}
+
+/// A forward-auth account has no local password to verify against, so it gets
+/// no form — and posting anyway is refused rather than setting a first one,
+/// which would be a second way in that the gateway's sign-out cannot end.
+#[tokio::test]
+async fn a_passwordless_account_has_no_form_and_cannot_set_one() {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let uid = store
+        .create_user("sso-user", None, false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let session_id = pingward::auth::new_session_token();
+    store
+        .create_session(
+            &session_id,
+            uid,
+            chrono::Utc::now() + chrono::Duration::hours(1),
+            None,
+            None,
+            true,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let state = AppState::new(store.clone(), common::test_config());
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    server.add_cookie(axum_extra::extract::cookie::Cookie::new(
+        pingward::auth::session_cookie_name(false),
+        pingward::secret::sign_session(common::TEST_SECRET.as_bytes(), &session_id),
+    ));
+    server.add_header(
+        "x-csrf-token",
+        pingward::secret::derive_csrf(common::TEST_SECRET.as_bytes(), &session_id),
+    );
+
+    let body = server.get("/account").await.text();
+    assert!(!body.contains("password-submit"), "{body}");
+
+    server
+        .post("/account/password")
+        .form(&[
+            ("current_password", ""),
+            ("new_password", "new-pw"),
+            ("confirm_password", "new-pw"),
+        ])
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    assert!(
+        store
+            .find_user_by_id(uid)
+            .await
+            .unwrap()
+            .unwrap()
+            .password_hash
+            .is_none()
+    );
+}
+
 // --- API keys section ---
 
 #[tokio::test]

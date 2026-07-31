@@ -40,7 +40,9 @@ OS preference and the layout adapts to phones.
 - **Multi-user with admin** — session-cookie auth (argon2), per-user project /
   check ownership (other users' resources return 404, not 403), plus an
   `/admin/*` area for cross-user management. Optional trusted forward-auth header
-  auto-provisions a passwordless user.
+  auto-provisions a passwordless user. Every user can change their own password
+  from the **Account** page (it asks for the current one, and signs out every
+  other session).
 - **SQLite or Postgres** — one connection pool dispatches by URL scheme; no code
   change to switch backends.
 - **Configurable retention** — a prune loop deletes old pings and notifications.

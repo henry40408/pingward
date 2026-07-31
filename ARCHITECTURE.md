@@ -529,8 +529,9 @@ always `handle` — `auth::session_log_handle`, the same (truncated to 16 hex
 characters) SHA-256 handle `/account` uses to identify a row — **never the
 raw session id**, which is the bearer secret the cookie signature is attached
 to. Not every event has one to carry: the bulk `session.destroyed` reasons
-below (`revoke_others`, `password_reset`, `user_disabled`, `user_deleted`,
-`expired`) act on many rows via a single query, so they log `count` instead.
+below (`revoke_others`, `password_change`, `password_reset`, `user_disabled`,
+`user_deleted`, `expired`) act on many rows via a single query, so they log
+`count` instead.
 Fields:
 
 - `session.created` (`web::open_session`, the single mint point for all three
@@ -548,8 +549,10 @@ Fields:
   signal rather than user activity.
 - `session.destroyed` — one per teardown path, each tagged with a `reason`:
   `logout`, `revoked` (self-service, `handle`/`user_id`/`is_current`),
-  `revoke_others` (`user_id`/`count`), `password_reset`
-  (`user_id`/`count`/`actor_user_id`), `user_disabled` (same fields, only on
+  `revoke_others` (`user_id`/`count`), `password_change` (`user_id`/`count` —
+  the owner changing their own password on `/account`, so there is no separate
+  actor), `password_reset` (`user_id`/`count`/`actor_user_id`, the
+  admin-driven one), `user_disabled` (same fields, only on
   the disabling direction), `user_deleted` (`user_id`/`actor_user_id` — no
   `count`, since those rows go via `ON DELETE CASCADE` rather than a query
   this handler issues), and `expired` (`prune::prune_once`, one aggregate

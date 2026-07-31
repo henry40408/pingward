@@ -17,6 +17,27 @@ When("I revoke the current session", async ({ page }) => {
   await page.getByTestId("session-revoke").first().click();
 });
 
+// --- password ---
+
+When(
+  "I change my password from {string} to {string}",
+  async ({ page }, current, next) => {
+    await page.getByTestId("current-password-input").fill(current);
+    await page.getByTestId("new-password-input").fill(next);
+    await page.getByTestId("confirm-password-input").fill(next);
+    await page.getByTestId("password-submit").click();
+  }
+);
+
+Then("the password change is confirmed", async ({ page }) => {
+  await expect(page.getByTestId("password-changed-flash")).toBeVisible();
+});
+
+Then("the password change is rejected", async ({ page }) => {
+  await expect(page.getByTestId("password-error")).toBeVisible();
+  await expect(page.getByTestId("password-changed-flash")).toHaveCount(0);
+});
+
 When("I create an API key named {string}", async ({ page }, name) => {
   await page.getByTestId("api-key-name-input").fill(name);
   await page.getByTestId("api-key-submit").click();

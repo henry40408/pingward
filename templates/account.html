@@ -16,6 +16,42 @@
 </div>
 {% endif %}
 
+{% if let Some(flash) = password_flash %}
+<div class="card">
+  <div class="cb"><p class="flash ok" data-testid="password-changed-flash">{{ flash }}</p></div>
+</div>
+{% endif %}
+
+{% if can_change_password %}
+<div class="card">
+  <div class="ch"><h2>Change password</h2></div>
+  <div class="cb">
+    {% if let Some(error) = password_error %}<p class="flash err" data-testid="password-error">{{ error }}</p>{% endif %}
+    <p class="crumb tight">Changing it signs out every other session listed below. API keys keep working &mdash; revoke those separately.</p>
+    <form method="post" action="/account/password">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="field">
+        <label for="current_password">Current password</label>
+        <input id="current_password" name="current_password" type="password" autocomplete="current-password" data-testid="current-password-input" required>
+      </div>
+      <div class="two">
+        <div class="field">
+          <label for="new_password">New password</label>
+          <input id="new_password" name="new_password" type="password" autocomplete="new-password" data-testid="new-password-input" required>
+        </div>
+        <div class="field">
+          <label for="confirm_password">Confirm new password</label>
+          <input id="confirm_password" name="confirm_password" type="password" autocomplete="new-password" data-testid="confirm-password-input" required>
+        </div>
+      </div>
+      <div class="formactions">
+        <button class="btn primary" type="submit" data-testid="password-submit">Change password</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <div class="ch"><h2>Your sessions</h2></div>
   {% if sessions.is_empty() %}
