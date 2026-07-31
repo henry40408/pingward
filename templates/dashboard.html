@@ -68,7 +68,10 @@
   <span class="k"><span class="mini"><i class="sw-tall"></i></span>tall = long run · nearing timeout</span>
   <span class="k"><span class="mini"><i class="sw-late"></i></span>amber = used ≥80% of budget</span>
   <span class="k"><span class="mini"><i class="sw-down"></i></span>red = failed</span>
-  <span class="k"><span class="mini"><i class="sw-none"></i></span>hollow = duration unknown</span>
+  {# "duration not measurable", not "no duration": a hollow bar is also what a
+     *timed* run looks like when there is no ceiling to size it against (no
+     max_runtime_secs and <2 measured runs in the window) — see view::heartbeat. #}
+  <span class="k"><span class="mini"><i class="sw-none"></i></span>hollow = success, duration not measurable</span>
   <span class="k"><span class="mini"><i class="sw-paused"></i></span>flat = paused</span>
 </div>
 {% endif %}

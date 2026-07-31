@@ -77,7 +77,6 @@
   --late: #f5b13c;
   --paused: #5a6678;
   --new: #7c8aa0;
-  --bar-none: #33405a;
   --glow: 0.62;
 
   /* Soft badge variants (see mockups) */
@@ -114,7 +113,6 @@
   --late: #b26f12;
   --paused: #8a94a6;
   --new: #727a8a;
-  --bar-none: #cbd3de;
   --glow: 0;
 
   --up-bg: #e4f5ee;
@@ -707,9 +705,14 @@ nav.links a:hover {
 .spark i.bad {
   background: var(--down);
 }
+/* A run that succeeded but had no `/start` before it, so its duration is
+   unknown. Green like any other success — it was drawn in a neutral grey until
+   the fill/outline axis was left to carry "measured or not" on its own, and a
+   healthy uninstrumented check read as a wall of grey, i.e. as broken. Only red
+   and amber may pull the eye. */
 .spark i.none {
-  background: color-mix(in srgb, var(--bar-none) 22%, transparent);
-  border: 1.5px solid var(--bar-none);
+  background: color-mix(in srgb, var(--up) 22%, transparent);
+  border: 1.5px solid var(--up);
   opacity: 0.9;
   height: 16px !important;
 }
@@ -1172,9 +1175,17 @@ nav.links a:hover {
 .beat i.bad {
   background: var(--down);
 }
+/* Green like any other success (see `.spark i.none`), but deliberately *taller*
+   than any measured bar, which is where this departs from the design spec's
+   "fixed neutral height, never implies a magnitude". Shrinking it to a neutral
+   height hides exactly the runs an operator wants to find — the ones nothing
+   timed. The contradiction the spec was guarding against lives in the caption,
+   not the geometry, so `.beatcap` scopes "taller = longer" to solid bars and
+   names hollow separately; fill-vs-outline is the pre-attentive cue that keeps
+   the two readable apart. */
 .beat i.none {
-  background: color-mix(in srgb, var(--bar-none) 22%, transparent);
-  border: 1.5px solid var(--bar-none);
+  background: color-mix(in srgb, var(--up) 22%, transparent);
+  border: 1.5px solid var(--up);
   opacity: 0.9;
   height: 30px !important;
 }
@@ -1646,8 +1657,8 @@ tr.exp > td {
 }
 .mini i.sw-none {
   height: 16px;
-  background: color-mix(in srgb, var(--bar-none) 22%, transparent);
-  border: 1.5px solid var(--bar-none);
+  background: color-mix(in srgb, var(--up) 22%, transparent);
+  border: 1.5px solid var(--up);
 }
 .mini i.sw-paused {
   height: 4px;
