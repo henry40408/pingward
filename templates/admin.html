@@ -236,15 +236,15 @@
             <span class="btn disabled" title="You cannot disable your own account" data-testid="user-toggle-disabled">{% if u.disabled %}enable{% else %}disable{% endif %}</span>
             <span class="btn danger disabled" title="You cannot delete your own account" data-testid="user-delete">delete</span>
             {% else %}
-            <form class="inline" method="post" action="/admin/users/{{ u.id }}/admin"{% if u.is_admin %} onsubmit="return confirm('Revoke admin rights from this user?')"{% endif %}>
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/admin"{% if u.is_admin %} data-confirm="Revoke admin rights from this user?"{% endif %}>
               <input type="hidden" name="_csrf" value="{{ csrf }}">
               <button class="btn" type="submit" data-testid="user-toggle-admin">{% if u.is_admin %}revoke admin{% else %}make admin{% endif %}</button>
             </form>
-            <form class="inline" method="post" action="/admin/users/{{ u.id }}/disabled"{% if !u.disabled %} onsubmit="return confirm('Disable this user? They will not be able to sign in.')"{% endif %}>
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/disabled"{% if !u.disabled %} data-confirm="Disable this user? They will not be able to sign in."{% endif %}>
               <input type="hidden" name="_csrf" value="{{ csrf }}">
               <button class="btn" type="submit" data-testid="user-toggle-disabled">{% if u.disabled %}enable{% else %}disable{% endif %}</button>
             </form>
-            <form class="inline" method="post" action="/admin/users/{{ u.id }}/delete" onsubmit="return confirm('Delete this user? This cannot be undone.')"><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" type="submit" data-testid="user-delete">delete</button></form>
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/delete" data-confirm="Delete this user? This cannot be undone."><input type="hidden" name="_csrf" value="{{ csrf }}"><button class="btn danger" type="submit" data-testid="user-delete">delete</button></form>
             {% endif %}
           </td>
         </tr>
@@ -295,9 +295,9 @@
     <p class="empty">No projects yet.</p>
     {% endif %}
     {% for p in projects %}
-    <div class="check" tabindex="0" role="link" onclick="location='/admin/projects/{{ p.0.id }}'" onkeydown="if(event.key==='Enter' && event.target===this)location='/admin/projects/{{ p.0.id }}'">
+    <div class="check" tabindex="0" role="link" data-href="/admin/projects/{{ p.0.id }}">
       <div class="cmeta"><div class="nm">{{ p.0.name }}</div><div class="sc">owner: {{ p.1 }}</div></div>
-      <a class="rowedit" href="/admin/projects/{{ p.0.id }}" onclick="event.stopPropagation()">manage →</a>
+      <a class="rowedit" href="/admin/projects/{{ p.0.id }}">manage →</a>
     </div>
     {% endfor %}
   </div>
@@ -312,44 +312,4 @@
   </div>
 </div>
 
-<script>
-  // Render each heartbeat's "… ago" relative to now and keep it ticking. The
-  // absolute time beside it is localized by the shared base.html handler.
-  (function () {
-    function rel(ts) {
-      var d = new Date(ts);
-      if (isNaN(d.getTime())) return "";
-      var s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
-      if (s < 60) return s + "s ago";
-      var m = Math.floor(s / 60);
-      if (m < 60) return m + "m ago";
-      var h = Math.floor(m / 60);
-      if (h < 24) return h + "h " + (m % 60) + "m ago";
-      var days = Math.floor(h / 24);
-      return days + "d " + (h % 24) + "h ago";
-    }
-    function tick() {
-      document.querySelectorAll(".hb-ago[data-ago]").forEach(function (el) {
-        el.textContent = rel(el.getAttribute("data-ago"));
-      });
-    }
-    tick();
-    setInterval(tick, 1000);
-  })();
-
-  // The audit trail is a swappable history section like the check page's
-  // pings/notifications tables — same helper, same fragment contract.
-  pw.wireSection('audit-section', function (s) {
-    var qs = [];
-    var actor = s.querySelector("[data-testid=audit-actor]");
-    var action = s.querySelector("[data-testid=audit-action]");
-    var from = s.querySelector("[data-testid=audit-from]");
-    var to = s.querySelector("[data-testid=audit-to]");
-    pw.param(qs, "aactor", actor && actor.value);
-    pw.param(qs, "aaction", action && action.value);
-    pw.param(qs, "afrom", pw.toUtc(from && from.value));
-    pw.param(qs, "ato", pw.toUtc(to && to.value));
-    return qs.length ? "?" + qs.join("&") : "";
-  });
-</script>
 {% endblock %}

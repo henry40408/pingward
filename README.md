@@ -40,7 +40,9 @@ OS preference and the layout adapts to phones.
 - **Multi-user with admin** — session-cookie auth (argon2), per-user project /
   check ownership (other users' resources return 404, not 403), plus an
   `/admin/*` area for cross-user management. Optional trusted forward-auth header
-  auto-provisions a passwordless user.
+  auto-provisions a passwordless user. Every user can change their own password
+  from the **Account** page (it asks for the current one, and signs out every
+  other session).
 - **SQLite or Postgres** — one connection pool dispatches by URL scheme; no code
   change to switch backends.
 - **Configurable retention** — a prune loop deletes old pings and notifications.
@@ -209,6 +211,20 @@ the name itself changes, **toggling `PINGWARD_COOKIE_SECURE` or the scheme of
 hold a cookie under the old name, which the server no longer reads. This is
 the same one-time inconvenience a `PINGWARD_SECRET` rotation or restart (with
 no `PINGWARD_SECRET` set) already causes; just sign in again.
+
+#### Security headers
+
+Sent on every response, no configuration needed: `X-Content-Type-Options:
+nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin` and an empty
+`Permissions-Policy` allowlist. The web UI additionally carries a
+Content-Security-Policy whose `script-src` is `'self'` — no inline script, no
+nonce — because every script it runs is a file under `/assets`. If you put
+pingward behind a proxy that adds its own copies of these, they win: the app
+only fills in a header the response does not already carry.
+
+The one page outside that CSP is `/api/docs`, whose Scalar reference loads its
+bundle from `cdn.jsdelivr.net`. If your deployment must not reach a CDN at all,
+use `/api/openapi.json` with a local viewer instead.
 
 #### HSTS (Strict-Transport-Security)
 

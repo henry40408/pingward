@@ -2,7 +2,7 @@
    standalone by GET /admin/audit (JS swaps it into #audit-section) and inlined
    into admin.html. Rendered content is escaped here; the parent injects it with
    |safe. Mirrors check_pings.html. #}
-<form class="filters" data-testid="audit-filters" onsubmit="return false">
+<form class="filters" data-testid="audit-filters" data-nosubmit>
   <label class="fld">From <input type="datetime-local" data-testid="audit-from" data-utc="{{ f_from }}"></label>
   <label class="fld">To <input type="datetime-local" data-testid="audit-to" data-utc="{{ f_to }}"></label>
   <label class="fld">Actor

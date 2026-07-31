@@ -1,7 +1,7 @@
 {# Recent-notifications fragment: filter controls + table + keyset pager.
    Served standalone by GET /checks/{id}/notifications (JS swaps it into
    #notifs-section) and inlined into check.html via |safe. #}
-<form class="filters" data-testid="notifs-filters" onsubmit="return false">
+<form class="filters" data-testid="notifs-filters" data-nosubmit>
   <label class="fld">From <input type="datetime-local" data-testid="notifs-from" data-utc="{{ f_from }}"></label>
   <label class="fld">To <input type="datetime-local" data-testid="notifs-to" data-utc="{{ f_to }}"></label>
   <label class="fld">Event

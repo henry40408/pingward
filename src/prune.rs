@@ -211,7 +211,6 @@ mod tests {
     #[test]
     fn retention_cutoff_off_overflow_and_valid() {
         let now = Utc.with_ymd_and_hms(2026, 7, 13, 12, 0, 0).unwrap();
-        // retention off → None
         assert_eq!(retention_cutoff(now, None), None);
         assert_eq!(retention_cutoff(now, Some("0".into())), None);
         // sane value → cutoff = now - N days

@@ -67,6 +67,7 @@ pub fn routes() -> Router<AppState> {
         .route("/channels/{id}/test", post(channel_test))
         .route("/checks/{id}/channels", post(check_set_channels))
         .route("/account", get(account_page))
+        .route("/account/password", post(account_password))
         .route("/account/api-keys", post(api_keys_create))
         .route("/account/api-keys/{id}/delete", post(api_keys_delete))
         .route("/account/sessions/{handle}/revoke", post(sessions_revoke))
@@ -527,14 +528,7 @@ async fn logout(
     let jar = jar.remove(session_removal_cookie(&state.config));
 
     // A configured gateway logout URL ends the upstream identity too, so honour
-    // it however the request authenticated. We deliberately do not include
-    // "cookies" in `Clear-Site-Data` here: that directive clears cookies for
-    // the entire registrable domain, not just this origin, so on a typical
-    // SSO layout (pingward and the gateway as sibling subdomains of the same
-    // parent domain) it would wipe the gateway's own session cookie before
-    // the browser even follows the redirect — breaking the logout handoff
-    // this URL exists for, and signing the user out of every other app on
-    // the domain too. `"cache"` alone is origin-scoped and safe to send.
+    // it however the request authenticated.
     if let Some(url) = state.config.forward_auth_logout_url.as_deref() {
         return Ok((
             jar,
@@ -548,13 +542,7 @@ async fn logout(
     // clearing the local session cannot outlive the redirect — be honest about
     // it instead of pretending logout succeeded.
     if crate::auth::forward_auth_username(&headers, peer_ip, &state.config).is_some() {
-        // Deliberately no Clear-Site-Data here: this exit is not a credential
-        // teardown at all — the gateway re-mints the session on the very next
-        // request no matter what this response sends — so there is nothing
-        // to ask the browser to drop. Its whole job is delivering the
-        // `pingward_flash` cookie the dashboard needs to render the warning
-        // below. Do not "restore consistency" by adding the header back —
-        // see `logout`'s doc comment.
+        // No Clear-Site-Data on this exit — deliberately, see the doc comment.
         let jar = jar.add(flash_cookie(&state.config, "forward_auth_logout"));
         return Ok((jar, Redirect::to("/")).into_response());
     }
@@ -569,24 +557,22 @@ async fn logout(
 
 /// Ask the browser to drop this origin's cache on logout.
 ///
-/// Deliberately **excludes** `"cookies"`: unlike the other directives, it is
-/// scoped to the whole *registered domain*, including subdomains — not just
-/// this origin. On the SSO layout `PINGWARD_FORWARD_AUTH_LOGOUT_URL` is meant
-/// for (pingward and its gateway as sibling subdomains), sending it would
-/// clear the gateway's own session cookie before the browser follows the
-/// redirect, breaking the logout handoff and signing the user out of every
-/// other app on the domain. The session cookie is already ended by the
-/// removal `Set-Cookie` (`session_removal_cookie`), which *is* origin- and
-/// path-scoped, so nothing is lost by leaving "cookies" out here.
-/// Also deliberately **excludes** `"storage"`: the theme preference lives in
-/// `localStorage['pw-theme']` (templates/base.html), so clearing it would
-/// reset the user's appearance setting on every logout — and pingward keeps
-/// nothing secret in localStorage, so it is pure functional regression.
-/// `"executionContexts"` is excluded for the same kind of reason: it forces a
-/// reload, which fights with the redirect we are already issuing. Browsers
-/// only honour `Clear-Site-Data` on a trustworthy origin, so on a plain-HTTP
-/// deployment (`PINGWARD_COOKIE_SECURE` off) sending it is a harmless no-op,
-/// not a security control.
+/// Every other directive is excluded on purpose:
+/// - `"cookies"` is scoped to the whole *registered domain*, subdomains
+///   included. On the SSO layout `PINGWARD_FORWARD_AUTH_LOGOUT_URL` exists for
+///   (pingward and its gateway as sibling subdomains) it would clear the
+///   gateway's own cookie before the browser follows the redirect, breaking
+///   the logout handoff and signing the user out of every other app on the
+///   domain. Nothing is lost: the removal `Set-Cookie` already ends the
+///   session cookie, and *is* origin- and path-scoped.
+/// - `"storage"` holds the theme preference (`localStorage['pw-theme']`, see
+///   `assets/app.js`) and nothing secret, so clearing it would reset the
+///   user's appearance setting for no gain.
+/// - `"executionContexts"` forces a reload, which fights with the redirect
+///   this response is already issuing.
+///
+/// Browsers only honour the header on a trustworthy origin, so on a
+/// plain-HTTP deployment it is a harmless no-op rather than a control.
 const CLEAR_SITE_DATA: &str = r#""cache""#;
 
 /// The request's socket peer IP, or `None` when the router is driven without
@@ -1077,6 +1063,95 @@ pub async fn no_store(req: Request, next: Next) -> Response {
     if !resp.headers().contains_key(header::CACHE_CONTROL) {
         resp.headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    resp
+}
+
+/// The Content-Security-Policy served with every browser page.
+///
+/// `script-src 'self'` with no `'unsafe-inline'` and no nonce is the point of
+/// the whole arrangement: every script the UI runs is a file under `/assets`
+/// (see `assets/app.js`) and no template carries an `onclick=`/`onsubmit=`
+/// attribute, so an injected `<script>` — or an injected event attribute — has
+/// no way to execute. A policy that kept `'unsafe-inline'` would not stop the
+/// injection it exists to stop, and a nonce would have to be threaded through
+/// every template struct for the same result.
+///
+/// `style-src` still allows inline styles: the heartbeat strips size each bar
+/// with `style="height:Npx"`, computed per ping. That is a `style` attribute
+/// rather than a `<style>` block, and CSS injection is a far weaker primitive
+/// than script injection, so it is the one concession here.
+///
+/// `frame-ancestors 'none'` (clickjacking), `form-action 'self'` (a POST's
+/// destination cannot be rewritten to an attacker's host) and `base-uri
+/// 'none'` (a `<base>` tag cannot re-point every relative URL on the page) are
+/// the directives that carry weight even on a page with no injection at all.
+/// `connect-src` must stay `'self'`: the live tail's `EventSource` is
+/// same-origin.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
+     script-src 'self'; \
+     style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data:; \
+     font-src 'self'; \
+     connect-src 'self'; \
+     object-src 'none'; \
+     base-uri 'none'; \
+     form-action 'self'; \
+     frame-ancestors 'none'";
+
+/// CSP for the browser UI. Scoped to `web::routes()` for the same reason
+/// [`no_store`] is: it is a statement about pages this app renders. `/api/docs`
+/// is deliberately outside it — the Scalar reference loads its bundle from
+/// `cdn.jsdelivr.net`, so `script-src 'self'` would leave that page blank, and
+/// widening the policy app-wide to admit one CDN would cost every other page
+/// the guarantee above. It is still covered by [`security_headers`] below,
+/// including `X-Frame-Options`.
+///
+/// Only filled in when the response does not already carry one, so a handler
+/// can still override.
+pub async fn content_security_policy(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    if !resp.headers().contains_key(header::CONTENT_SECURITY_POLICY) {
+        resp.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+        );
+    }
+    resp
+}
+
+/// The response headers that are safe to send from every route, browser page
+/// or not — layered app-wide in `crate::app` alongside [`hsts`].
+///
+/// - `X-Content-Type-Options: nosniff` — stops a browser second-guessing a
+///   declared `Content-Type`. It matters most where the body is attacker-ish
+///   text served as JSON (`/api/v1`) or as `text/plain` (a captured ping body),
+///   which is exactly the part of the app the CSP does not cover.
+/// - `X-Frame-Options: DENY` — the CSP's `frame-ancestors` says this for the
+///   browser UI already; this repeats it for the routers the CSP skips,
+///   `/api/docs` above all.
+/// - `Referrer-Policy: same-origin` — a check page's URL identifies a check;
+///   an outbound link should not hand that path to whatever it points at.
+/// - `Permissions-Policy` — pingward asks for none of these APIs, so the
+///   honest value is an empty allowlist for each.
+const STATIC_SECURITY_HEADERS: &[(&str, &str)] = &[
+    ("x-content-type-options", "nosniff"),
+    ("x-frame-options", "DENY"),
+    ("referrer-policy", "same-origin"),
+    (
+        "permissions-policy",
+        "geolocation=(), camera=(), microphone=(), payment=(), usb=()",
+    ),
+];
+
+pub async fn security_headers(req: Request, next: Next) -> Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    for (name, value) in STATIC_SECURITY_HEADERS {
+        let name = HeaderName::from_static(name);
+        if !headers.contains_key(&name) {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
     }
     resp
 }
@@ -2170,6 +2245,9 @@ fn take_flash(
         "settings" => "Settings saved.",
         "users_blocked" => {
             "That action was refused: you cannot remove your own access, and the last enabled admin cannot be removed."
+        }
+        "password_changed" => {
+            "Password changed. Any other signed-in sessions were signed out; API keys are unaffected."
         }
         "forward_auth_logout" => {
             "Signed out locally, but you're authenticated through your reverse proxy — this app can't end that session. To sign out completely, log out at your proxy or SSO provider."
@@ -3943,15 +4021,8 @@ async fn users_set_password(
     // keeps the row exactly as `/account`'s "revoke others" does, and `logout`
     // only ever deletes the row for the browser issuing it. Evicting that
     // attacker therefore takes two steps: reset your password, then log out.
-    // This handler also does not touch the target's API keys, unlike
-    // `users_set_disabled` (covered because `api::extract::ApiUser` re-checks
-    // `disabled` on every request): a password reset revokes sessions only, so
-    // a `pw_…` key minted before the reset keeps working indefinitely, and
-    // evicting it requires revoking it from `/account` or disabling the
-    // account instead. That same re-check is why the residual-access flash
-    // below is suppressed for a target who is already disabled: their keys
-    // are already inert, so the warning would name access that does not
-    // exist.
+    // API keys are untouched — see the flash below, which is what surfaces
+    // that gap to the operator.
     let revoked = if id == admin.id {
         match secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state)) {
             Some(current) => {
@@ -3991,11 +4062,11 @@ async fn users_set_password(
             Utc::now(),
         )
         .await?;
-    // Sessions are revoked above, but API keys are not (see the doc comment
-    // above) — a `pw_…` key minted before the reset keeps working
-    // indefinitely. Surface that gap instead of leaving it silent: if the
-    // target still has at least one key, flash a warning naming the residual
-    // access and where to close it.
+    // Sessions are revoked above, but API keys are not — a `pw_…` key minted
+    // before the reset keeps working indefinitely, and closing it means
+    // revoking it from `/account` or disabling the account. Surface that gap
+    // instead of leaving it silent: if the target still has a key, flash a
+    // warning naming the residual access.
     // Count only keys that still resolve: `validate_api_key` already refuses
     // an expired key, so including one here would claim residual access that
     // does not exist.
@@ -4158,12 +4229,31 @@ struct AccountTemplate {
     /// Count of non-current sessions, so the template can hide the "revoke
     /// others" control when there is nothing else to revoke.
     other_count: usize,
+    // password section
+    /// False for a passwordless forward-auth account: there is no current
+    /// password to verify against, and the credential it signs in with lives
+    /// at the gateway. The card is hidden rather than shown-and-refused.
+    can_change_password: bool,
+    password_error: Option<String>,
+    password_flash: Option<String>,
     // api-keys section
     keys: Vec<ApiKeyRow>,
     /// The plaintext token, rendered exactly once right after creation and
     /// never recoverable afterwards.
     new_token: Option<String>,
     key_error: Option<String>,
+}
+
+/// The optional inputs `render_account` needs beyond the data it always
+/// gathers itself, kept in one struct for the same reason [`AdminRender`]
+/// exists: the page has several independent sections, and threading one
+/// `Option` per section through a positional argument list stops scaling.
+#[derive(Default)]
+struct AccountRender {
+    new_token: Option<String>,
+    key_error: Option<String>,
+    password_error: Option<String>,
+    password_flash: Option<String>,
 }
 
 /// One row of the sessions table. Mirrors [`crate::models::Session`], minus
@@ -4219,7 +4309,18 @@ async fn account_page(
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
-    render_account(&state, &jar, &user, None, None).await
+    let (jar, password_flash) = take_flash(&state.config, jar, "password_changed");
+    let resp = render_account(
+        &state,
+        &jar,
+        &user,
+        AccountRender {
+            password_flash,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok((jar, resp).into_response())
 }
 
 /// Gather both the sessions and API-keys datasets and render the merged
@@ -4228,8 +4329,7 @@ async fn render_account(
     state: &AppState,
     jar: &CookieJar,
     user: &User,
-    new_token: Option<String>,
-    key_error: Option<&str>,
+    parts: AccountRender,
 ) -> Result<Response, AppError> {
     let now = Utc::now();
 
@@ -4286,11 +4386,110 @@ async fn render_account(
         is_admin: user.is_admin,
         sessions,
         other_count,
+        can_change_password: user.password_hash.is_some(),
+        password_error: parts.password_error,
+        password_flash: parts.password_flash,
         keys,
-        new_token,
-        key_error: key_error.map(str::to_string),
+        new_token: parts.new_token,
+        key_error: parts.key_error,
     })?
     .into_response())
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordForm {
+    current_password: String,
+    new_password: String,
+    confirm_password: String,
+}
+
+/// Change your own password.
+///
+/// The current password is required, which is the one thing a session cookie
+/// alone cannot supply: without it a hijacked session could lock the account's
+/// owner out of their own account (OWASP's "reauthentication after risk
+/// events"). A passwordless forward-auth account has nothing to verify
+/// against, so it is refused here as well as having no form — its credential
+/// lives at the gateway, and setting a local one would create a second way in
+/// that the gateway's own sign-out could not end.
+///
+/// On success every *other* session of this user is revoked, matching what
+/// `users_set_password` does for an admin-driven reset: a password change is
+/// how you evict someone, so leaving their cookie working would defeat it.
+/// API keys are deliberately untouched — same as the admin reset, and
+/// `/account` lists them right below for anyone who wants them gone too.
+async fn account_password(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+    Form(form): Form<ChangePasswordForm>,
+) -> Result<Response, AppError> {
+    let error = |msg: &str| AccountRender {
+        password_error: Some(msg.to_string()),
+        ..Default::default()
+    };
+    // 403 rather than a rendered message: the card is hidden for this account,
+    // so the only way here is a crafted request, and the error has no form to
+    // render into.
+    let Some(stored) = user.password_hash.clone() else {
+        return Ok((StatusCode::FORBIDDEN, "this account has no local password").into_response());
+    };
+    if !verify_password(&form.current_password, &stored) {
+        let parts = error("Current password is incorrect.");
+        return render_account(&state, &jar, &user, parts).await;
+    }
+    if form.new_password.is_empty() {
+        let parts = error("A new password is required.");
+        return render_account(&state, &jar, &user, parts).await;
+    }
+    if form.new_password != form.confirm_password {
+        let parts = error("The new passwords do not match.");
+        return render_account(&state, &jar, &user, parts).await;
+    }
+    let phc =
+        hash_password(&form.new_password).map_err(|e| AppError::Other(e.to_string().into()))?;
+    state.store.set_user_password(user.id, &phc).await?;
+    let revoked = match secret::session_id_from_jar(
+        &jar,
+        &state.config.secret,
+        session_cookie_name(&state),
+    ) {
+        Some(current) => {
+            state
+                .store
+                .delete_other_sessions_for_user(user.id, &current)
+                .await?
+        }
+        // Unreachable for a password account (a passwordless forward-auth one
+        // returned above), but revoking everything is the safe direction if it
+        // ever is reached.
+        None => state.store.delete_sessions_for_user(user.id).await?,
+    };
+    tracing::info!(
+        target: "pingward::session",
+        reason = "password_change",
+        user_id = user.id,
+        count = revoked,
+        "session.destroyed"
+    );
+    let detail = format!("sessions_revoked={revoked}");
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: user.id,
+                actor_username: &user.username,
+                action: "user.password_change",
+                target_type: Some("user"),
+                target_id: Some(user.id),
+                detail: Some(&detail),
+                ..Default::default()
+            },
+            Utc::now(),
+        )
+        .await?;
+    let jar = jar.add(flash_cookie(&state.config, "password_changed"));
+    Ok((jar, Redirect::to("/account")).into_response())
 }
 
 async fn api_keys_create(
@@ -4301,7 +4500,11 @@ async fn api_keys_create(
 ) -> Result<Response, AppError> {
     let name = form.name.trim();
     if name.is_empty() {
-        return render_account(&state, &jar, &user, None, Some("a name is required")).await;
+        let parts = AccountRender {
+            key_error: Some("a name is required".into()),
+            ..Default::default()
+        };
+        return render_account(&state, &jar, &user, parts).await;
     }
     // Optional expiry: blank means never; otherwise a duration from now
     // (`30d`, `12h`, …) reusing the same parser as the check/duration fields.
@@ -4313,14 +4516,13 @@ async fn api_keys_create(
             match crate::duration::parse_duration(raw) {
                 Some(secs) if secs > 0 => Some(Utc::now() + Duration::seconds(secs)),
                 _ => {
-                    return render_account(
-                        &state,
-                        &jar,
-                        &user,
-                        None,
-                        Some("expiry must be a duration like 30d, or blank for never"),
-                    )
-                    .await;
+                    let parts = AccountRender {
+                        key_error: Some(
+                            "expiry must be a duration like 30d, or blank for never".into(),
+                        ),
+                        ..Default::default()
+                    };
+                    return render_account(&state, &jar, &user, parts).await;
                 }
             }
         }
@@ -4330,7 +4532,11 @@ async fn api_keys_create(
         .store
         .insert_api_key(user.id, name, &hash, &prefix, expires_at, Utc::now())
         .await?;
-    render_account(&state, &jar, &user, Some(full), None).await
+    let parts = AccountRender {
+        new_token: Some(full),
+        ..Default::default()
+    };
+    render_account(&state, &jar, &user, parts).await
 }
 
 async fn api_keys_delete(
@@ -4732,9 +4938,7 @@ struct AdminTemplate {
     user_flash: Option<String>,
     password_reset_flash: Option<String>,
     user_error: Option<String>,
-    // all projects
     projects: Vec<(Project, String)>,
-    // environment
     env_rows: Vec<(&'static str, Vec<EnvSetting>)>,
 }
 

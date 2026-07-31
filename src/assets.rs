@@ -46,6 +46,14 @@ const FONTS: &[(&str, &[u8])] = &[
     ),
 ];
 
+/// Every script the browser UI loads. They are files rather than inline
+/// `<script>` blocks so the CSP in `web::security_headers` can be
+/// `script-src 'self'` — see `assets/app.js`'s own header.
+const SCRIPTS: &[(&str, &str)] = &[
+    ("app.js", include_str!("../assets/app.js")),
+    ("theme-init.js", include_str!("../assets/theme-init.js")),
+];
+
 /// The app icons. `favicon.svg` is the browser-tab icon (every current browser
 /// takes an SVG one); `apple-touch-icon.png` is the 180×180 raster iOS uses for
 /// a home-screen bookmark, rendered from that same SVG — regenerate it with
@@ -108,8 +116,24 @@ static ICON_VERSION: LazyLock<String> = LazyLock::new(|| {
     format!("{:x}", hasher.finish())
 });
 
+/// Content hash of every script. One version for the whole set, like
+/// [`ICON_VERSION`]: the two files ship together and are never cached apart
+/// long enough for a finer grain to matter.
+static JS_VERSION: LazyLock<String> = LazyLock::new(|| {
+    let mut hasher = DefaultHasher::new();
+    for (name, body) in SCRIPTS {
+        name.hash(&mut hasher);
+        body.hash(&mut hasher);
+    }
+    format!("{:x}", hasher.finish())
+});
+
 pub fn css_version() -> &'static str {
     CSS_VERSION.as_str()
+}
+
+pub fn js_version() -> &'static str {
+    JS_VERSION.as_str()
 }
 
 pub fn icon_version() -> &'static str {
@@ -119,6 +143,7 @@ pub fn icon_version() -> &'static str {
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/assets/app.css", get(app_css))
+        .route("/assets/{file}", get(script))
         .route("/assets/fonts/{file}", get(font))
         // Served from the root, not `/assets`: browsers and iOS probe these
         // exact paths when a page omits the `<link>` (or when the URL is a
@@ -150,6 +175,24 @@ async fn icon(uri: Uri) -> impl IntoResponse {
                 (header::CACHE_CONTROL, IMMUTABLE_CACHE),
             ],
             *bytes,
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Serve whichever script the request path names. Registered as
+/// `/assets/{file}` rather than one route per script, which means it also
+/// answers `/assets/app.css` — axum prefers the literal route for that, so the
+/// stylesheet still reaches `app_css` and only unknown names land here as 404.
+async fn script(Path(file): Path<String>) -> impl IntoResponse {
+    match SCRIPTS.iter().find(|(name, _)| *name == file) {
+        Some((_, body)) => (
+            [
+                (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+                (header::CACHE_CONTROL, IMMUTABLE_CACHE),
+            ],
+            *body,
         )
             .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),

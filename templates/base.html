@@ -7,82 +7,11 @@
   <link rel="stylesheet" href="/assets/app.css?v={{ crate::assets::css_version() }}">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v={{ crate::assets::icon_version() }}">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png?v={{ crate::assets::icon_version() }}">
-  <script>
-    // Resolve the applied theme before first paint (avoids a flash). The stored
-    // preference is 'light' | 'dark' | 'system'; anything else (incl. unset)
-    // means follow the OS. 'system' is re-resolved live by the listener below.
-    (function(){try{var p=localStorage.getItem('pw-theme');var eff=(p==='light'||p==='dark')?p:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.setAttribute('data-theme',eff);}catch(e){}})();
-  </script>
-  <script>
-    // Shared helpers for the swappable history sections (check page pings +
-    // notifications, /admin audit trail). Defined in the head, not at the end
-    // of the body: each page's own script sits inside the `body` block and so
-    // runs *before* the footer script, and it calls into these. Nothing here
-    // touches the DOM at definition time.
-    window.pw = (function(){
-      var pad = function(n){ return String(n).padStart(2,'0'); };
-      // Localize any absolute timestamps within `root` to the viewer's zone,
-      // falling back to the server-rendered UTC text. Re-run per fragment
-      // after a partial swap, which is why it takes a root.
-      function localize(root){
-        root.querySelectorAll('.localtime[data-ts]').forEach(function(el){
-          var d = new Date(el.getAttribute('data-ts'));
-          if (!isNaN(d.getTime())) { el.textContent = d.toLocaleString(undefined,{hour12:false}); el.title = el.getAttribute('data-ts'); }
-        });
-      }
-      // Expand/collapse the detail row that follows a `tr.toggle`.
-      function bindToggles(root){
-        root.querySelectorAll('tr.toggle').forEach(function(r){
-          r.addEventListener('click', function(){
-            var n = r.nextElementSibling;
-            if (n && n.classList.contains('exp')) { n.classList.toggle('open'); r.querySelector('.caret').classList.toggle('open'); }
-          });
-        });
-      }
-      // Fill each datetime-local from its data-utc (UTC instant) in local time.
-      // Minute precision matches the inputs (no step=1 seconds sub-field, whose
-      // being-left-blank would otherwise make .value empty on submit).
-      function fillDates(root){
-        root.querySelectorAll('input[type=datetime-local][data-utc]').forEach(function(el){
-          var v = el.getAttribute('data-utc'); if (!v) return;
-          var d = new Date(v); if (isNaN(d.getTime())) return;
-          el.value = d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
-        });
-      }
-      // A datetime-local value (local wall clock) -> UTC RFC3339 (Z), '' if blank.
-      function toUtc(val){
-        if (!val) return '';
-        var d = new Date(val); if (isNaN(d.getTime())) return '';
-        return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-      }
-      function initSection(section){ localize(section); bindToggles(section); fillDates(section); }
-      // Wire a swappable history section: its pager/Clear links and Filter
-      // button fetch the fragment endpoint and replace the section's contents
-      // in place. Returns the loader so a caller can re-fetch on its own (the
-      // check page's live tail does). Null when the section is not on the page.
-      function wireSection(id, buildQuery){
-        var section = document.getElementById(id);
-        if (!section) return null;
-        var endpoint = section.getAttribute('data-endpoint');
-        function load(url){
-          fetch(url, {headers:{'X-Requested-With':'fetch'}})
-            .then(function(r){ return r.text(); })
-            .then(function(html){ section.innerHTML = html; initSection(section); });
-        }
-        section.addEventListener('click', function(e){
-          var a = e.target.closest('a.btn');
-          if (a && section.contains(a)) { e.preventDefault(); load(a.getAttribute('href')); return; }
-          var b = e.target.closest('button[data-apply]');
-          if (b && section.contains(b)) { e.preventDefault(); load(endpoint + buildQuery(section)); }
-        });
-        initSection(section);
-        return load;
-      }
-      // Append `key=val` to a query-string accumulator, skipping blanks.
-      function param(qs, key, val){ if (val) qs.push(key+'='+encodeURIComponent(val)); }
-      return { localize: localize, toUtc: toUtc, wireSection: wireSection, param: param };
-    })();
-  </script>
+  {# Render-blocking on purpose: it resolves the theme before the first paint.
+     Everything else is in the deferred app.js below. Both are files rather
+     than inline blocks so the CSP can be `script-src 'self'`. #}
+  <script src="/assets/theme-init.js?v={{ crate::assets::js_version() }}"></script>
+  <script src="/assets/app.js?v={{ crate::assets::js_version() }}" defer></script>
 </head>
 <body>
   {% if show_nav %}
@@ -99,36 +28,5 @@
   {# Outside the `show_nav` guard on purpose: login and setup are exactly the
      pages a bug report gets filed from, so the version has to be there too. #}
   <footer class="foot"><span data-testid="app-version">pingward {{ crate::view::version() }}</span></footer>
-  <script>
-    (function(){
-      var b=document.getElementById('pw-theme-toggle');if(!b)return;
-      var mq=matchMedia('(prefers-color-scheme: dark)');
-      var order=['light','dark','system'];
-      // Stored preference, normalized: unset/unknown -> 'system' (follow OS).
-      function pref(){var p=null;try{p=localStorage.getItem('pw-theme');}catch(e){}return (p==='light'||p==='dark'||p==='system')?p:'system';}
-      // Apply preference p: resolve to an effective light/dark for data-theme,
-      // and reflect the current preference in the button glyph + labels.
-      function apply(p){
-        var eff=(p==='light'||p==='dark')?p:(mq.matches?'dark':'light');
-        document.documentElement.setAttribute('data-theme',eff);
-        b.textContent=(p==='light'?'☀':p==='dark'?'☾':'◐');
-        b.setAttribute('title','Theme: '+p+' (click to change)');
-        b.setAttribute('aria-label','Theme: '+p+' (click to change)');
-        b.setAttribute('data-theme-pref',p);
-      }
-      apply(pref());
-      b.addEventListener('click',function(){
-        var next=order[(order.indexOf(pref())+1)%order.length];
-        try{localStorage.setItem('pw-theme',next);}catch(e){}
-        apply(next);
-      });
-      // In 'system' mode, follow live OS colour-scheme changes.
-      mq.addEventListener('change',function(){if(pref()==='system')apply('system');});
-    })();
-    // Render absolute timestamps (any `.localtime[data-ts]`) in the viewer's
-    // local time zone, falling back to the server-rendered UTC text when JS is
-    // off. Shared across every page so any template can opt in with the span.
-    pw.localize(document);
-  </script>
 </body>
 </html>

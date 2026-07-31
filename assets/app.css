@@ -1547,6 +1547,12 @@ tr.exp > td {
 .crumb.tight + .desc {
   margin-top: 12px;
 }
+/* Same problem one class over: `.crumb.tight` carries no bottom margin, and a
+   form's first `.field` has no top one, so an explanatory line above a form
+   ends up touching its first label. */
+.crumb.tight + form {
+  margin-top: 18px;
+}
 /* The ping-URL row when an admin has not revealed it: the credential's slot
    is held by the explanation plus the reveal control, so the card does not
    reflow when it is disclosed. */
