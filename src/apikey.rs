@@ -58,7 +58,6 @@ mod tests {
                 .chars()
                 .all(|c| c.is_ascii_hexdigit())
         );
-        // Display prefix is the shared prefix plus the first few body chars.
         assert_eq!(prefix.len(), API_KEY_PREFIX.len() + DISPLAY_BODY_CHARS);
         assert!(full.starts_with(&prefix));
         // Hash is 64 hex chars (SHA-256) and matches a re-hash of the token.

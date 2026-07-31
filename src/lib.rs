@@ -82,11 +82,8 @@ pub fn app(state: AppState) -> Router {
             state.clone(),
             web::hsts,
         ))
-        // App-wide like `hsts`, and for the same reason: nosniff, framing and
-        // referrer rules are statements about the whole origin, so they must
-        // also cover `/api/*` (including the CDN-loading `/api/docs`),
-        // `/ping/*`, `/healthz` and static assets — the routers the CSP above
-        // deliberately skips.
+        // App-wide like `hsts`: these are statements about the whole origin,
+        // so they also cover the routers the CSP above deliberately skips.
         .layer(axum::middleware::from_fn(web::security_headers))
         .with_state(state)
 }

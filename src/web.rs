@@ -528,14 +528,7 @@ async fn logout(
     let jar = jar.remove(session_removal_cookie(&state.config));
 
     // A configured gateway logout URL ends the upstream identity too, so honour
-    // it however the request authenticated. We deliberately do not include
-    // "cookies" in `Clear-Site-Data` here: that directive clears cookies for
-    // the entire registrable domain, not just this origin, so on a typical
-    // SSO layout (pingward and the gateway as sibling subdomains of the same
-    // parent domain) it would wipe the gateway's own session cookie before
-    // the browser even follows the redirect — breaking the logout handoff
-    // this URL exists for, and signing the user out of every other app on
-    // the domain too. `"cache"` alone is origin-scoped and safe to send.
+    // it however the request authenticated.
     if let Some(url) = state.config.forward_auth_logout_url.as_deref() {
         return Ok((
             jar,
@@ -549,13 +542,7 @@ async fn logout(
     // clearing the local session cannot outlive the redirect — be honest about
     // it instead of pretending logout succeeded.
     if crate::auth::forward_auth_username(&headers, peer_ip, &state.config).is_some() {
-        // Deliberately no Clear-Site-Data here: this exit is not a credential
-        // teardown at all — the gateway re-mints the session on the very next
-        // request no matter what this response sends — so there is nothing
-        // to ask the browser to drop. Its whole job is delivering the
-        // `pingward_flash` cookie the dashboard needs to render the warning
-        // below. Do not "restore consistency" by adding the header back —
-        // see `logout`'s doc comment.
+        // No Clear-Site-Data on this exit — deliberately, see the doc comment.
         let jar = jar.add(flash_cookie(&state.config, "forward_auth_logout"));
         return Ok((jar, Redirect::to("/")).into_response());
     }
@@ -570,24 +557,22 @@ async fn logout(
 
 /// Ask the browser to drop this origin's cache on logout.
 ///
-/// Deliberately **excludes** `"cookies"`: unlike the other directives, it is
-/// scoped to the whole *registered domain*, including subdomains — not just
-/// this origin. On the SSO layout `PINGWARD_FORWARD_AUTH_LOGOUT_URL` is meant
-/// for (pingward and its gateway as sibling subdomains), sending it would
-/// clear the gateway's own session cookie before the browser follows the
-/// redirect, breaking the logout handoff and signing the user out of every
-/// other app on the domain. The session cookie is already ended by the
-/// removal `Set-Cookie` (`session_removal_cookie`), which *is* origin- and
-/// path-scoped, so nothing is lost by leaving "cookies" out here.
-/// Also deliberately **excludes** `"storage"`: the theme preference lives in
-/// `localStorage['pw-theme']` (templates/base.html), so clearing it would
-/// reset the user's appearance setting on every logout — and pingward keeps
-/// nothing secret in localStorage, so it is pure functional regression.
-/// `"executionContexts"` is excluded for the same kind of reason: it forces a
-/// reload, which fights with the redirect we are already issuing. Browsers
-/// only honour `Clear-Site-Data` on a trustworthy origin, so on a plain-HTTP
-/// deployment (`PINGWARD_COOKIE_SECURE` off) sending it is a harmless no-op,
-/// not a security control.
+/// Every other directive is excluded on purpose:
+/// - `"cookies"` is scoped to the whole *registered domain*, subdomains
+///   included. On the SSO layout `PINGWARD_FORWARD_AUTH_LOGOUT_URL` exists for
+///   (pingward and its gateway as sibling subdomains) it would clear the
+///   gateway's own cookie before the browser follows the redirect, breaking
+///   the logout handoff and signing the user out of every other app on the
+///   domain. Nothing is lost: the removal `Set-Cookie` already ends the
+///   session cookie, and *is* origin- and path-scoped.
+/// - `"storage"` holds the theme preference (`localStorage['pw-theme']`, see
+///   `assets/app.js`) and nothing secret, so clearing it would reset the
+///   user's appearance setting for no gain.
+/// - `"executionContexts"` forces a reload, which fights with the redirect
+///   this response is already issuing.
+///
+/// Browsers only honour the header on a trustworthy origin, so on a
+/// plain-HTTP deployment it is a harmless no-op rather than a control.
 const CLEAR_SITE_DATA: &str = r#""cache""#;
 
 /// The request's socket peer IP, or `None` when the router is driven without
@@ -4036,15 +4021,8 @@ async fn users_set_password(
     // keeps the row exactly as `/account`'s "revoke others" does, and `logout`
     // only ever deletes the row for the browser issuing it. Evicting that
     // attacker therefore takes two steps: reset your password, then log out.
-    // This handler also does not touch the target's API keys, unlike
-    // `users_set_disabled` (covered because `api::extract::ApiUser` re-checks
-    // `disabled` on every request): a password reset revokes sessions only, so
-    // a `pw_…` key minted before the reset keeps working indefinitely, and
-    // evicting it requires revoking it from `/account` or disabling the
-    // account instead. That same re-check is why the residual-access flash
-    // below is suppressed for a target who is already disabled: their keys
-    // are already inert, so the warning would name access that does not
-    // exist.
+    // API keys are untouched — see the flash below, which is what surfaces
+    // that gap to the operator.
     let revoked = if id == admin.id {
         match secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state)) {
             Some(current) => {
@@ -4084,11 +4062,11 @@ async fn users_set_password(
             Utc::now(),
         )
         .await?;
-    // Sessions are revoked above, but API keys are not (see the doc comment
-    // above) — a `pw_…` key minted before the reset keeps working
-    // indefinitely. Surface that gap instead of leaving it silent: if the
-    // target still has at least one key, flash a warning naming the residual
-    // access and where to close it.
+    // Sessions are revoked above, but API keys are not — a `pw_…` key minted
+    // before the reset keeps working indefinitely, and closing it means
+    // revoking it from `/account` or disabling the account. Surface that gap
+    // instead of leaving it silent: if the target still has a key, flash a
+    // warning naming the residual access.
     // Count only keys that still resolve: `validate_api_key` already refuses
     // an expired key, so including one here would claim residual access that
     // does not exist.
@@ -4960,9 +4938,7 @@ struct AdminTemplate {
     user_flash: Option<String>,
     password_reset_flash: Option<String>,
     user_error: Option<String>,
-    // all projects
     projects: Vec<(Project, String)>,
-    // environment
     env_rows: Vec<(&'static str, Vec<EnvSetting>)>,
 }
 
