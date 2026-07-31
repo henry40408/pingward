@@ -1138,12 +1138,28 @@ nav.links a:hover {
 }
 
 /* ---- Big heartbeat (detail) ---- */
+/* The server renders more bars than fit (see `web::HEARTBEAT_BARS`) and this
+   is what decides how many are actually seen: the row is pinned to the right,
+   so the overflow falls off the *left* and the newest run is always the last
+   bar. That makes the strip fill the width at any viewport without the server
+   knowing the viewport — a phone shows ~34 bars, a desktop ~100. The mask
+   fades the clipped edge so a half-cut bar reads as "there is more history"
+   rather than as a rendering bug. */
 .beat {
   display: flex;
   align-items: flex-end;
+  justify-content: flex-end;
+  overflow: hidden;
   gap: 3px;
   height: 30px;
   margin-top: 16px;
+  mask-image: linear-gradient(to right, transparent 0, #000 28px);
+}
+/* Bars are fixed-width by design: a `flex: 1` strip would stretch to fill and
+   so could never say "more history exists off the left". Flex would otherwise
+   shrink them to fit, which is the same thing by another route. */
+.beat i {
+  flex: none;
 }
 .beat i {
   width: 7px;

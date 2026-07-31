@@ -421,6 +421,22 @@ slower with the wide form across check counts and body sizes, and the
 per-row decode alone (four columns rather than seven, no `String` for
 body/source_ip) accounts for the low end, so the win is not confined to
 instances that capture large bodies.
+The two callers want different amounts of it. The dashboard's strip is six
+bars in a narrow column, so it reads a 40-row window. The check page's strip
+is the width of the card, and **how many bars fit is a question only the
+browser can answer** — so the server renders past the widest possible strip
+(`web::HEARTBEAT_BARS`, 120, over a `web::HEARTBEAT_WINDOW` of 300 rows) and
+`assets/app.css`'s `.beat` clips the overflow from the *left*
+(`justify-content: flex-end` + `overflow: hidden`), keeping the newest run
+pinned to the right edge. A phone shows ~34 bars and a desktop ~100, with no
+JS, no media query and no second round trip; the ceiling is finite because
+`.wrap` caps the page at 1080px, so the strip can never exceed ~100 bars.
+Two consequences worth knowing before changing either number: the window is
+**not** filtered to `kind IN ('success','fail')`, because `run_durations`
+pairs each finish ping with the `start` before it and dropping the starts
+would flatten every bar; and no caption may name a bar count, since the server
+does not know how many are visible.
+
 The dashboard uses both, plus `checks_with_channels` (same `IN ($1,…,$N)`
 shape, but returning a flat `HashSet<i64>` of the check ids that have at least
 one bound channel rather than a per-parent map, since the caller only needs

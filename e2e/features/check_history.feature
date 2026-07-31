@@ -43,3 +43,16 @@ Feature: Check history pagination
     And I apply the pings filter
     Then the pings from date is "2020-01-01T00:00"
     And the pings table shows 3 rows
+
+  # The strip renders more bars than fit and lets CSS clip the overflow, so
+  # two things have to hold that no server-side test can see: the newest run
+  # stays pinned to the right edge (`justify-content: flex-end`), and the
+  # overflow is clipped rather than pushing the page wide (`overflow: hidden`).
+  # 60 runs overrun a phone-width strip several times over.
+  Scenario: The heartbeat strip clips its oldest runs instead of overflowing
+    When I send 60 "success" pings
+    And I view the site at 375px wide
+    And I reload the check page
+    Then the newest heartbeat bar is flush with the strip's right edge
+    And the oldest heartbeat bars are clipped off the left
+    And the page has no horizontal scrollbar

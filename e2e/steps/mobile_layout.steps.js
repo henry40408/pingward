@@ -145,7 +145,7 @@ Then(
 // report one rect no matter how its text wraps.
 //
 // Two assertions with different jobs. The edge captions being one line each is
-// the reported symptom ("30 runs ago" split into "30 runs" / "ago"). The
+// the reported symptom (the left caption splitting across two lines). The
 // legend starting below them is what actually distinguishes fixed from broken:
 // without the full-width row it shares the edge captions' row, so its top sits
 // level with theirs instead of under them.

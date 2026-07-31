@@ -253,6 +253,16 @@ output — up to `ping::MAX_BODY` (10 KiB) per row, 40 rows per check — only f
 `view::heartbeat` to drop it. That was most of the dashboard's render time
 (measured in #116, which records the before/after).
 
+The **check page's** strip is sized differently from the dashboard's six bars:
+the server renders more bars than fit (`web::HEARTBEAT_BARS`, over
+`web::HEARTBEAT_WINDOW` rows) and `.beat` in `assets/app.css` clips the
+overflow from the *left*, so the strip fills any viewport with the newest run
+pinned right — the server never needs to know the viewport. Do not "optimise"
+the window into a `kind IN ('success','fail')` query: `run_durations` pairs
+each finish ping with the `start` before it, so dropping the starts flattens
+every bar. Do not put a run count in the caption either; only the browser
+knows how many bars are visible.
+
 **Display status** (`src/view.rs::display_status`/`DisplayStatus`): a
 display-only status layered on top of the stored `CheckStatus`
 (`new`/`up`/`down`/`paused`) — `late` and `running` exist only here, so the
