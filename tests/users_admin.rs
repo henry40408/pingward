@@ -60,7 +60,7 @@ async fn creating_user_is_audited() {
     let (server, store, _admin) = admin_server().await;
     server
         .post("/admin/users")
-        .form(&[("username", "carol"), ("password", "pw123456")])
+        .form(&[("username", "carol"), ("password", "carol's passphrase")])
         .await;
     let carol = store.find_user_by_username("carol").await.unwrap().unwrap();
     let audit = store.list_audit(50).await.unwrap();
@@ -103,7 +103,7 @@ async fn resetting_password_for_nonexistent_user_writes_no_audit() {
     let (server, store, _admin) = admin_server().await;
     server
         .post("/admin/users/99999/password")
-        .form(&[("password", "whatever12")])
+        .form(&[("password", "whatever passphrase")])
         .await;
     assert!(
         !store
@@ -221,12 +221,12 @@ async fn admin_resets_password_and_target_can_login() {
 
     server
         .post(&format!("/admin/users/{}/password", dave.id))
-        .form(&[("password", "brandnew1")])
+        .form(&[("password", "a brand new passphrase")])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     let updated = store.find_user_by_id(dave.id).await.unwrap().unwrap();
     assert!(pingward::auth::verify_password(
-        "brandnew1",
+        "a brand new passphrase",
         updated.password_hash.as_deref().unwrap()
     ));
     assert!(
@@ -275,7 +275,7 @@ async fn admin_resets_own_password_keeps_current_session() {
 
     server
         .post(&format!("/admin/users/{admin_id}/password"))
-        .form(&[("password", "brandnew1")])
+        .form(&[("password", "a brand new passphrase")])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
 
@@ -297,7 +297,7 @@ async fn admin_resets_own_password_keeps_current_session() {
     );
 
     // (c) the new password now logs in.
-    let relogged = login_as(&store, "admin", "brandnew1").await;
+    let relogged = login_as(&store, "admin", "a brand new passphrase").await;
     relogged.get("/account").await.assert_status_ok();
 }
 
@@ -322,7 +322,7 @@ async fn password_reset_flashes_a_warning_when_target_has_api_keys() {
 
     let res = server
         .post(&format!("/admin/users/{dave_id}/password"))
-        .form(&[("password", "brandnew1")])
+        .form(&[("password", "a brand new passphrase")])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     let flash = res.maybe_cookie("pingward_flash");
@@ -369,7 +369,7 @@ async fn password_reset_has_no_warning_when_target_has_no_api_keys() {
 
     let res = server
         .post(&format!("/admin/users/{dave_id}/password"))
-        .form(&[("password", "brandnew1")])
+        .form(&[("password", "a brand new passphrase")])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(res.maybe_cookie("pingward_flash").is_none());
@@ -413,7 +413,7 @@ async fn password_reset_flash_excludes_expired_api_keys_from_the_count() {
 
     let res = server
         .post(&format!("/admin/users/{dave_id}/password"))
-        .form(&[("password", "brandnew1")])
+        .form(&[("password", "a brand new passphrase")])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
 
@@ -450,7 +450,7 @@ async fn password_reset_has_no_warning_when_only_key_is_expired() {
 
     let res = server
         .post(&format!("/admin/users/{dave_id}/password"))
-        .form(&[("password", "brandnew1")])
+        .form(&[("password", "a brand new passphrase")])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(res.maybe_cookie("pingward_flash").is_none());
@@ -482,7 +482,7 @@ async fn password_reset_has_no_warning_when_target_is_disabled() {
 
     let res = server
         .post(&format!("/admin/users/{dave_id}/password"))
-        .form(&[("password", "brandnew1")])
+        .form(&[("password", "a brand new passphrase")])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(res.maybe_cookie("pingward_flash").is_none());

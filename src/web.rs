@@ -355,12 +355,20 @@ async fn setup_submit(
     if state.store.count_users().await? > 0 {
         return Ok(Redirect::to("/login").into_response());
     }
-    if creds.username.is_empty() || creds.password.is_empty() {
+    let policy = crate::auth::validate_password(&creds.password);
+    if creds.username.is_empty() || policy.is_err() {
+        // A missing username still reports the pair, as it always has; a
+        // present one lets the password policy speak for itself.
+        let error = if creds.username.is_empty() {
+            "username and password are required".to_string()
+        } else {
+            policy.unwrap_err()
+        };
         return Ok(render(&SetupTemplate {
             show_nav: false,
             csrf: current_csrf(&state, &jar),
             is_admin: false,
-            error: Some("username and password are required".into()),
+            error: Some(error),
         })?
         .into_response());
     }
@@ -407,6 +415,40 @@ async fn login_page(
     .into_response())
 }
 
+/// Record a rejected sign-in attempt.
+///
+/// OWASP's Authentication Cheat Sheet asks for every authentication failure,
+/// password failure and lockout to be logged and reviewed. For a self-hosted
+/// instance this log is the *only* way an operator ever learns their login
+/// page is being sprayed — nothing else in pingward observes a failed attempt,
+/// and the audit table records only what succeeded.
+///
+/// One event name for all three reasons, discriminated by `reason`, so a single
+/// query catches them; splitting them across event names is how a lockout stops
+/// being noticed. Two addresses are recorded because they can legitimately
+/// differ: `ip` is the attribution address (`ping::ClientIp`, the same value
+/// stamped on `sessions.ip`), while `bucket` is the key the rate limiter
+/// counts against — see `ratelimit::rate_limit_key` for why those diverge.
+///
+/// `username` is attacker-chosen input, so it goes through
+/// [`crate::auth::log_username`] and is rendered with `Debug`; the password is
+/// never touched.
+fn log_login_failure(
+    username: &str,
+    ip: Option<&str>,
+    bucket: std::net::IpAddr,
+    reason: &'static str,
+) {
+    tracing::warn!(
+        target: "pingward::auth",
+        username = ?crate::auth::log_username(username),
+        ip,
+        bucket = %bucket,
+        reason,
+        "login.failed"
+    );
+}
+
 async fn login_submit(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -422,6 +464,7 @@ async fn login_submit(
     // never pays for the argon2 verification that follows.
     let client = crate::ratelimit::rate_limit_key(peer_ip, &headers, &state.config.trusted_proxies);
     if !state.login_limiter.try_acquire(client) {
+        log_login_failure(&creds.username, conn.0.as_deref(), client, "rate_limited");
         return Ok((
             StatusCode::TOO_MANY_REQUESTS,
             [(
@@ -438,11 +481,22 @@ async fn login_submit(
             .into_response());
     }
     let user = state.store.find_user_by_username(&creds.username).await?;
-    let ok = user
-        .as_ref()
-        .and_then(|u| u.password_hash.as_deref())
-        .is_some_and(|phc| verify_password(&creds.password, phc));
+    // `verify_password_or_dummy`, not a bare `verify_password` behind an
+    // `is_some_and`: an unknown username (or a forward-auth account with no
+    // local password) must still cost one argon2 verification, or the response
+    // time tells an attacker which usernames exist and the generic error
+    // message below buys nothing. See its doc comment.
+    let ok = crate::auth::verify_password_or_dummy(
+        &creds.password,
+        user.as_ref().and_then(|u| u.password_hash.as_deref()),
+    );
     if !ok {
+        log_login_failure(
+            &creds.username,
+            conn.0.as_deref(),
+            client,
+            "bad_credentials",
+        );
         return Ok(render(&LoginTemplate {
             show_nav: false,
             csrf: current_csrf(&state, &jar),
@@ -456,6 +510,12 @@ async fn login_submit(
         // Not released: valid credentials for a disabled account are not a
         // successful login. Releasing here would let an attacker holding one
         // known-disabled credential probe this client's budget indefinitely.
+        log_login_failure(
+            &creds.username,
+            conn.0.as_deref(),
+            client,
+            "account_disabled",
+        );
         return Ok(render(&LoginTemplate {
             show_nav: false,
             csrf: current_csrf(&state, &jar),
@@ -3931,7 +3991,13 @@ async fn users_create(
     AdminUser(admin): AdminUser,
     Form(form): Form<NewUserForm>,
 ) -> Result<Response, AppError> {
-    if form.username.trim().is_empty() || form.password.is_empty() {
+    let policy = crate::auth::validate_password(&form.password);
+    if form.username.trim().is_empty() || policy.is_err() {
+        let error = if form.username.trim().is_empty() {
+            "username and password are required".to_string()
+        } else {
+            policy.unwrap_err()
+        };
         let settings = load_settings_fields(&state).await?;
         let resp = render_admin(
             &state,
@@ -3943,7 +4009,7 @@ async fn users_create(
                 settings_flash: None,
                 user_flash: None,
                 password_reset_flash: None,
-                user_error: Some("username and password are required".into()),
+                user_error: Some(error),
             },
             &AdminAuditQuery::default(),
         )
@@ -4034,8 +4100,27 @@ async fn users_set_password(
     jar: CookieJar,
     Form(form): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
-    if form.password.is_empty() {
-        return Ok(Redirect::to("/admin").into_response());
+    // Rendered with the message rather than the silent `Redirect::to("/admin")`
+    // the empty-password case used to get: bouncing back to an unchanged page
+    // reads as success, and an admin who believes they reset a password when
+    // they did not is exactly the wrong failure for this control.
+    if let Err(msg) = crate::auth::validate_password(&form.password) {
+        let settings = load_settings_fields(&state).await?;
+        return render_admin(
+            &state,
+            &jar,
+            admin.id,
+            AdminRender {
+                settings,
+                settings_error: None,
+                settings_flash: None,
+                user_flash: None,
+                password_reset_flash: None,
+                user_error: Some(msg),
+            },
+            &AdminAuditQuery::default(),
+        )
+        .await;
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
@@ -4467,11 +4552,24 @@ async fn account_password(
         return Ok((StatusCode::FORBIDDEN, "this account has no local password").into_response());
     };
     if !verify_password(&form.current_password, &stored) {
+        // Logged for the same reason a failed login is: someone guessing at
+        // the current password from an already-authenticated session is a
+        // session takeover in progress, and this is the only place it shows.
+        tracing::warn!(
+            target: "pingward::auth",
+            username = ?crate::auth::log_username(&user.username),
+            user_id = user.id,
+            reason = "bad_current_password",
+            "password_change.failed"
+        );
         let parts = error("Current password is incorrect.");
         return render_account(&state, &jar, &user, parts).await;
     }
-    if form.new_password.is_empty() {
-        let parts = error("A new password is required.");
+    // Subsumes the old `is_empty` check. Ordered before the confirmation
+    // comparison so someone who typed a too-short password twice is told what
+    // is actually wrong with it.
+    if let Err(msg) = crate::auth::validate_password(&form.new_password) {
+        let parts = error(&msg);
         return render_account(&state, &jar, &user, parts).await;
     }
     if form.new_password != form.confirm_password {

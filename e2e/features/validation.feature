@@ -5,8 +5,8 @@ Feature: Server-side form validation
   optional numeric override fields), re-rendering the form with an error.
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
 
   Scenario: A whitespace-only project name is rejected server-side
     Given I open the new project form

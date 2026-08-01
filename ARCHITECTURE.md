@@ -564,6 +564,87 @@ proxy the leftmost hop is client-controlled — keying the limiter on it (via
 `ClientIp` or otherwise) would let an attacker mint a fresh bucket per
 request, reopening the exact bypass `rate_limit_key` exists to close.
 
+### The password policy, and why `/login` is exempt from it
+
+`auth::validate_password` is the one validator, called by every surface that
+**sets** a password: `setup_submit`, `web::account_password`,
+`web::users_create` and `web::users_set_password`. Length is the only rule —
+at least `MIN_PASSWORD_CHARS` (15) and at most `MAX_PASSWORD_CHARS` (128),
+counted in *characters* so a non-ASCII passphrase is not penalised for its
+UTF-8 width. There are deliberately no composition rules and no excluded
+characters (whitespace and unicode included), and the password is never
+trimmed: NIST SP800-63B and OWASP's Authentication Cheat Sheet both treat
+composition requirements as counterproductive. 15 rather than 8 because that
+is the figure that applies **without MFA**, which is pingward's situation; if
+a second factor is ever added, that constant is what changes.
+
+Over the maximum is a *rejection*, never a truncation — a silently truncated
+password would authenticate a shorter prefix than the user believes they set.
+The maximum is not a denial-of-service defence: unlike bcrypt, argon2's cost
+comes from its memory/time parameters and barely moves with input length.
+
+`POST /login` does **not** validate, and must not start: the length of a
+submitted password is not evidence of anything, and enforcing a floor at
+sign-in would lock out every account whose credential predates the policy.
+`web::users_set_password` renders its rejection rather than redirecting to
+`/admin`, which is what it used to do for an empty password — a bare redirect
+back to an unchanged page is indistinguishable from success, and an admin who
+believes they rotated a credential they did not is the wrong failure for this
+control.
+
+The Cheat Sheet's breached-password blocklist (Pwned Passwords) is the one
+control in that section **not** implemented, and the omission is deliberate: at
+a 15-character floor almost nothing in a top-100k list is still eligible, so
+the marginal gain is small against a new SHA-1 dependency plus either an
+outbound request on the password-set path or a checked-in list that goes
+stale. `validate_password` is the single seam to add it at if that changes.
+
+### Equal cost for an unknown username
+
+`auth::verify_password_or_dummy` is what `login_submit` calls, never a bare
+`verify_password` behind an `is_some_and`. When there is no stored hash — an
+unknown username, or a forward-auth account with no local password — it still
+runs one argon2 verification, against a throwaway PHC string minted once per
+process from a random secret (`dummy_password_hash`), and discards the result
+through `black_box`.
+
+Skipping that work is the "quick exit" pattern the Cheat Sheet names as a
+user-enumeration hole. The generic `invalid username or password` message is
+worthless on its own if the *response time* still separates the two cases, and
+argon2 is deliberately slow enough that the difference is trivially
+measurable: `tests/auth_web.rs`'s
+`an_unknown_username_costs_the_same_as_a_wrong_password` measured ~1.9 ms
+against ~590 ms with the equalisation removed. It does not equalise
+everything — the preceding `find_user_by_username` is still a hit-versus-miss
+— but that difference is orders of magnitude below one verification.
+
+### Rejected authentication attempts
+
+Failures are logged as `tracing` events under the `pingward::auth` target,
+separate from `pingward::session` so an operator can filter the two apart.
+Nothing else in pingward observes a rejected attempt: the `audit_log` table
+records what succeeded, and the rate limiter keeps its counters in memory and
+tells nobody. This log is therefore the only signal that the login page is
+being sprayed.
+
+- `login.failed` (`web::log_login_failure`) — `username`, `ip`, `bucket`,
+  `reason`. One event name for all three rejection paths, discriminated by
+  `reason` (`bad_credentials`, `account_disabled`, `rate_limited`), so a single
+  query catches them; splitting them across event names is how a lockout stops
+  being noticed. Two addresses because they can legitimately differ: `ip` is
+  the attribution address (`ping::ClientIp`, what a session row stamps) and
+  `bucket` is the key the limiter counted against (`rate_limit_key`) — see
+  above for why those resolve differently.
+- `password_change.failed` (`web::account_password`) — `username`, `user_id`,
+  `reason = "bad_current_password"`. Someone guessing at the current password
+  from an already-authenticated session is a session takeover in progress.
+
+The submitted password is never logged. `username` is attacker-chosen input,
+so it goes through `auth::log_username` (truncated, so a megabyte of form data
+cannot become a megabyte of log) and every call site renders it with `Debug`
+(`username = ?…`) — that quoting is what stops an embedded newline forging a
+second entry in `text` log format. `tests/auth_logging.rs` pins both halves.
+
 Session creation, renewal and destruction are logged as `tracing` events under
 the `pingward::session` target (not the `audit_log` table — that models "an
 admin acted on a target" via `actor_*`/`target_*` columns with no `ip`/

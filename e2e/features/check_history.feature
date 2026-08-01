@@ -5,8 +5,8 @@ Feature: Check history pagination
   under concurrent inserts.
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
     And a project named "Nightly jobs"
     And a check named "backup" with period 60
 

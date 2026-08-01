@@ -5,8 +5,8 @@ Feature: Check creation branches
   period or cron expression is missing, and client-side (a name is required).
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
     And a project named "Nightly jobs"
 
   Scenario: Create a check on a cron schedule

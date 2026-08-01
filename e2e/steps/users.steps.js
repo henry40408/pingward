@@ -215,3 +215,34 @@ Then("the user {string} is not marked disabled", async ({ page }, username) => {
 Then("the user {string} is not listed", async ({ page }, username) => {
   await expect(userRow(page, username)).toHaveCount(0);
 });
+
+// Unlike `addUser`, this expects the submission to be *refused*: the handler
+// re-renders /admin with an error instead of redirecting, so no navigation is
+// awaited and no new row is expected.
+When(
+  "I try to add a user {string} with password {string}",
+  async ({ page }, username, password) => {
+    await page.getByTestId("user-username-input").fill(username);
+    await page.getByTestId("user-password-input").fill(password);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "load" }),
+      page.getByTestId("user-submit").click(),
+    ]);
+  }
+);
+
+When(
+  "I try to reset {string}'s password to {string}",
+  async ({ page }, username, password) => {
+    const row = userRow(page, username);
+    await row.getByTestId("user-reset-input").fill(password);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "load" }),
+      row.getByTestId("user-reset-submit").click(),
+    ]);
+  }
+);
+
+Then("the user form shows the error {string}", async ({ page }, message) => {
+  await expect(page.getByTestId("user-error")).toHaveText(message);
+});

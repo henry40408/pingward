@@ -42,7 +42,9 @@ OS preference and the layout adapts to phones.
   `/admin/*` area for cross-user management. Optional trusted forward-auth header
   auto-provisions a passwordless user. Every user can change their own password
   from the **Account** page (it asks for the current one, and signs out every
-  other session).
+  other session). Passwords must be 15–128 characters — length is the only
+  rule, so passphrases, spaces and any script are all fine — and failed
+  sign-ins are logged (`pingward::auth`) so a spray is visible.
 - **SQLite or Postgres** — one connection pool dispatches by URL scheme; no code
   change to switch backends.
 - **Configurable retention** — a prune loop deletes old pings and notifications.

@@ -23,6 +23,6 @@ Feature: Static assets
     Then the footer shows the build version
 
   Scenario: The build version is in the footer when signed in
-    Given an admin "admin" with password "password123" exists
-    And I am signed in as "admin" with password "password123"
+    Given an admin "admin" with password "password123 stapler" exists
+    And I am signed in as "admin" with password "password123 stapler"
     Then the footer shows the build version

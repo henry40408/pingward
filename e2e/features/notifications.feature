@@ -1,8 +1,8 @@
 Feature: Notification channels
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
 
   Scenario Outline: Creating a <kind> channel lists it on the project
     Given a project named "Notify"

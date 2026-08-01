@@ -1,8 +1,8 @@
 Feature: Settings
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
 
   Scenario: The settings page loads with empty defaults
     When I visit "/admin"

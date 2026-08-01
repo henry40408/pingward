@@ -228,7 +228,7 @@
           <td>
             <form class="inline" method="post" action="/admin/users/{{ u.id }}/password">
               <input type="hidden" name="_csrf" value="{{ csrf }}">
-              <input type="password" name="password" placeholder="new password" data-testid="user-reset-input" required>
+              <input type="password" name="password" placeholder="new password" autocomplete="new-password" data-testid="user-reset-input" required>
               <button class="btn" type="submit" data-testid="user-reset-submit">reset</button>
             </form>
             {% if u.is_self %}
@@ -254,17 +254,17 @@
     </div>
 
     <h2 class="subhead">Add user</h2>
-    {% if let Some(error) = user_error %}<p class="flash err">{{ error }}</p>{% endif %}
+    {% if let Some(error) = user_error %}<p class="flash err" data-testid="user-error">{{ error }}</p>{% endif %}
     <form method="post" action="/admin/users">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="two">
         <div class="field">
           <label for="username">Username</label>
-          <input id="username" name="username" data-testid="user-username-input" required>
+          <input id="username" name="username" autocomplete="off" data-testid="user-username-input" required>
         </div>
         <div class="field">
           <label for="password">Password</label>
-          <input id="password" name="password" type="password" data-testid="user-password-input" required>
+          <input id="password" name="password" type="password" autocomplete="new-password" data-testid="user-password-input" required>
         </div>
       </div>
       <div class="two">

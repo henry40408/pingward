@@ -332,3 +332,66 @@ async fn check_created_via_web_form_is_bound_to_existing_channels() {
         "a check created in a project with existing channels must come out bound to all of them"
     );
 }
+
+/// Every credential field carries an `autocomplete` token, so a password
+/// manager can fill and store them (OWASP's Authentication Cheat Sheet asks
+/// applications not to make that job harder than necessary).
+///
+/// The tokens are not interchangeable: `current-password` on the login form is
+/// what makes a manager offer the *saved* credential, while `new-password` on a
+/// form that sets one is what stops it offering the same and prompts a
+/// generated value instead. Getting them the wrong way round is invisible until
+/// a user finds their manager unhelpful, which no other test would catch.
+#[tokio::test]
+async fn credential_fields_declare_their_autocomplete_role() {
+    let (server, _store) = server().await;
+
+    // Logged out, with no users: /setup is the first-run form.
+    let setup = server.get("/setup").await.text();
+    assert!(
+        setup.contains(r#"name="username" autocomplete="username""#),
+        "{setup}"
+    );
+    assert!(
+        setup.contains(r#"type="password" autocomplete="new-password""#),
+        "/setup sets a password, so it must not be tagged current-password: {setup}"
+    );
+
+    let (server, store, _uid) = logged_in_server().await;
+
+    // /login, once a user exists — reached from a second, logged-out server on
+    // the same store, since `logged_in_server`'s jar would bounce to `/`.
+    let mut anon = TestServer::new(app(AppState::new(store, common::test_config())));
+    anon.save_cookies();
+    let login = anon.get("/login").await.text();
+    assert!(
+        login.contains(r#"name="username" autocomplete="username""#),
+        "{login}"
+    );
+    assert!(
+        login.contains(r#"type="password" autocomplete="current-password""#),
+        "/login submits an existing credential: {login}"
+    );
+
+    // /admin manages *other* people's accounts, so its username field opts out
+    // of autofill entirely — offering the signed-in admin's own username there
+    // is never right — and both password fields set a new credential.
+    let admin = server.get("/admin").await.text();
+    assert!(
+        admin.contains(r#"name="username" autocomplete="off""#),
+        "{admin}"
+    );
+    assert_eq!(
+        admin.matches(r#"autocomplete="new-password""#).count(),
+        2,
+        "both the reset field and the add-user field must be new-password: {admin}"
+    );
+
+    // /account already had these; pinned here so the set stays complete.
+    let account = server.get("/account").await.text();
+    assert!(
+        account.contains(r#"autocomplete="current-password""#),
+        "{account}"
+    );
+    assert_eq!(account.matches(r#"autocomplete="new-password""#).count(), 2);
+}
