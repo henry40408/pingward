@@ -186,9 +186,20 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   throttled is a username oracle), and a success `clear`s its bucket rather
   than `release`-ing one attempt. An account lockout is inherently a DoS
   primitive; that is accepted and documented, not solved.
+- `web::reauthenticate` is the shared gate demanding the signed-in user's own
+  password again before a sensitive action; `POST /account/password` and
+  `POST /account/api-keys` use it. The API-key one carries its own weight: a
+  key is bound by neither session cap and survives `users_set_password`, so a
+  borrowed browser would otherwise buy permanent access. A **passwordless
+  forward-auth account passes unchallenged** (nothing to verify; its authority
+  is at the gateway) and is not rendered the field — `has_password` gates both
+  that and the password card. Attempts go through `account_limiter`, which is
+  what closed `/account/password`'s previously unmetered password oracle.
 - Rejected attempts log to the `pingward::auth` target — `login.failed`
-  (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`/`account_locked`) and
-  `password_change.failed`. Nothing else in pingward observes a failed
+  (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`/`account_locked`)
+  and `reauth.failed` (`surface` = `password_change`/`api_key_create`). One
+  event per layer, discriminated by a field rather than by name, so one alert
+  rule catches "somebody is guessing a password". Nothing else observes a failed
   attempt, so this is the only spray signal an operator gets. Never log the
   submitted password, and route an attempted username through
   `auth::log_username` rendered with `Debug` (`?…`), which is what stops an

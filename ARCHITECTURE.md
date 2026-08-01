@@ -672,6 +672,49 @@ against ~590 ms with the equalisation removed. It does not equalise
 everything — the preceding `find_user_by_username` is still a hit-versus-miss
 — but that difference is orders of magnitude below one verification.
 
+### Re-authentication for sensitive actions
+
+`web::reauthenticate` is the shared gate: it asks for the signed-in user's own
+password again before an action, because a session cookie proves who *opened*
+the browser, not who is at it now. Two surfaces use it today —
+`POST /account/password` and `POST /account/api-keys`.
+
+Note what this is and is not defending. The Cheat Sheet motivates
+re-authentication with CSRF, XSS and session hijacking; the first two are
+already closed here (a derived CSRF token with no path exemptions, and a CSP
+admitting no inline script), so the residual threat it answers is specifically a
+**borrowed or exported session cookie**. That narrows how much it is worth, and
+is why the gate is on two endpoints rather than every mutation.
+
+`POST /account/api-keys` is the case that justifies it on its own. An API key is
+a bearer credential that *escapes every session control*: it is bound by neither
+`SESSION_IDLE_TTL_HOURS` nor `SESSION_ABSOLUTE_MAX_DAYS`, and
+`users_set_password` deliberately leaves keys alone (the flash it raises exists
+to tell the operator so). A borrowed browser therefore converts one session's
+access into permanent access, and it is the one gated action that signing out
+cannot undo afterwards. The check runs *before* the name and expiry are
+validated, so a wrong password never reaches the rest of the handler.
+
+Two properties are load-bearing:
+
+- **A passwordless forward-auth account passes unchallenged**, and is not shown
+  a field it could never fill in (`has_password` gates both that field and the
+  "Change password" card). There is no stored credential to verify against, the
+  account's authority lives at the gateway, and pingward has no protocol for
+  asking the gateway to re-assert it. So a borrowed *forward-auth* session can
+  still mint a key — a real asymmetry, recorded here rather than papered over.
+  Refusing instead would be worse: those users legitimately need API keys and
+  would have no way to obtain one. This is the opposite outcome to
+  `account_password`'s 403 for the same kind of account, and deliberately so —
+  that one refuses because setting a *local* password on a gateway account
+  would create a second way in that the gateway's sign-out could not end.
+- **Attempts are charged to the account limiter**, the same bucket keyed the
+  same way as `login_submit`'s, because this is the same activity as guessing at
+  the login form — just from an authenticated seat. Before this existed,
+  `/account/password` was an unmetered password oracle: a stolen session could
+  guess its owner's password as often as it liked. A success clears the bucket,
+  exactly as a successful login does.
+
 ### Rejected authentication attempts
 
 Failures are logged as `tracing` events under the `pingward::auth` target,
@@ -692,9 +735,14 @@ being sprayed.
   the attribution address (`ping::ClientIp`, what a session row stamps) and
   `bucket` is the key the limiter counted against (`rate_limit_key`) — see
   above for why those resolve differently.
-- `password_change.failed` (`web::account_password`) — `username`, `user_id`,
-  `reason = "bad_current_password"`. Someone guessing at the current password
-  from an already-authenticated session is a session takeover in progress.
+- `reauth.failed` (`web::log_reauth_failure`) — `username`, `user_id`,
+  `surface`, `reason`. One event for every re-authentication gate (see below),
+  discriminated by `surface` (`password_change`, `api_key_create`) rather than
+  by event name: "somebody is guessing this account's password" is one thing to
+  alert on, and an operator should not have to enumerate the forms to catch it.
+  `reason` is `bad_current_password` or `rate_limited`. Kept separate from
+  `login.failed` because that one is unauthenticated and carries an address
+  instead of a `user_id`.
 
 The submitted password is never logged. `username` is attacker-chosen input,
 so it goes through `auth::log_username` (truncated, so a megabyte of form data

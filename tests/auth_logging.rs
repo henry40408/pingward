@@ -1,6 +1,6 @@
 //! Regression test for the `pingward::auth` failure-logging control
-//! (`web::log_login_failure` and the `password_change.failed` call site in
-//! `web::account_password`).
+//! (`web::log_login_failure` for the unauthenticated login form, and
+//! `web::log_reauth_failure` for every re-authentication gate).
 //!
 //! OWASP's Authentication Cheat Sheet asks for every authentication failure and
 //! lockout to be logged and reviewed. For a self-hosted pingward this log is
@@ -247,7 +247,11 @@ async fn a_wrong_current_password_on_account_is_logged() {
     })
     .await;
 
-    assert!(log.contains("password_change.failed"), "{log}");
+    // One event for every re-authentication gate, discriminated by `surface`,
+    // so an operator alerting on "someone is guessing a password" does not
+    // have to know which forms exist.
+    assert!(log.contains("reauth.failed"), "{log}");
+    assert!(log.contains("surface=\"password_change\""), "{log}");
     assert!(log.contains("reason=\"bad_current_password\""), "{log}");
     assert!(!log.contains(WRONG_PW), "{log}");
 }
@@ -283,5 +287,33 @@ async fn locking_an_account_logs_its_own_reason() {
 
     assert!(log.contains("reason=\"account_locked\""), "{log}");
     assert!(log.contains("alice"), "{log}");
+    assert!(!log.contains(WRONG_PW), "{log}");
+}
+
+/// The API-key gate logs under the same event as the password-change one,
+/// distinguished by `surface`. Two event names for "somebody is guessing this
+/// account's password" would mean two alert rules for one thing.
+#[tokio::test]
+async fn a_refused_api_key_re_authentication_is_logged() {
+    let (mut server, store) = server_with_user("alice", false).await;
+    attempt_login(&mut server, "alice", FIXTURE_PW).await;
+    let tok = common::newest_session_csrf(&store.pool).await;
+    server.add_header("x-csrf-token", tok.as_str());
+
+    let log = captured(|| async {
+        server
+            .post("/account/api-keys")
+            .form(&[
+                ("name", "ci"),
+                ("expires_in", ""),
+                ("current_password", WRONG_PW),
+            ])
+            .await;
+    })
+    .await;
+
+    assert!(log.contains("reauth.failed"), "{log}");
+    assert!(log.contains("surface=\"api_key_create\""), "{log}");
+    assert!(log.contains("reason=\"bad_current_password\""), "{log}");
     assert!(!log.contains(WRONG_PW), "{log}");
 }
