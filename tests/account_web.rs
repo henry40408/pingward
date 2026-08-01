@@ -288,7 +288,7 @@ async fn changing_the_password_leaves_api_keys_alone() {
     let server = login_server(&store, "member", "pw").await;
     server
         .post("/account/api-keys")
-        .form(&[("name", "ci")])
+        .form(&[("name", "ci"), ("current_password", "pw")])
         .await
         .assert_status_ok();
 
@@ -418,7 +418,11 @@ async fn create_shows_token_once_then_only_the_prefix() {
 
     let res = server
         .post("/account/api-keys")
-        .form(&[("name", "CI deploy"), ("expires_in", "")])
+        .form(&[
+            ("name", "CI deploy"),
+            ("expires_in", ""),
+            ("current_password", "pw"),
+        ])
         .await;
     res.assert_status_ok();
     let token = extract_token(&res.text());
@@ -582,7 +586,11 @@ async fn create_with_expiry_sets_expires_at() {
     let server = login_server(&store, "member", "pw").await;
     server
         .post("/account/api-keys")
-        .form(&[("name", "temp"), ("expires_in", "30d")])
+        .form(&[
+            ("name", "temp"),
+            ("expires_in", "30d"),
+            ("current_password", "pw"),
+        ])
         .await
         .assert_status_ok();
     let keys = store.list_api_keys_for_user(uid).await.unwrap();
@@ -595,7 +603,11 @@ async fn create_with_bad_expiry_is_rejected() {
     let server = login_server(&store, "member", "pw").await;
     let res = server
         .post("/account/api-keys")
-        .form(&[("name", "temp"), ("expires_in", "banana")])
+        .form(&[
+            ("name", "temp"),
+            ("expires_in", "banana"),
+            ("current_password", "pw"),
+        ])
         .await;
     res.assert_status_ok();
     assert!(res.text().contains("expiry must be"));
@@ -608,7 +620,11 @@ async fn create_with_blank_name_is_rejected() {
     let server = login_server(&store, "member", "pw").await;
     let res = server
         .post("/account/api-keys")
-        .form(&[("name", "   "), ("expires_in", "")])
+        .form(&[
+            ("name", "   "),
+            ("expires_in", ""),
+            ("current_password", "pw"),
+        ])
         .await;
     res.assert_status_ok();
     assert!(res.text().contains("a name is required"));
@@ -734,4 +750,220 @@ async fn session_count(store: &Store, user_id: i64) -> i64 {
         .fetch_one(&store.pool)
         .await
         .unwrap()
+}
+
+// --- re-authentication before minting an API key ---
+//
+// An API key outlives the session that minted it: it is bound by neither the
+// idle nor the absolute session cap, and `users_set_password` deliberately
+// leaves it alone. A borrowed browser would otherwise turn one session's access
+// into permanent access, which is the one gated action signing out cannot undo.
+
+#[tokio::test]
+async fn creating_a_key_without_the_password_is_refused() {
+    let (store, uid) = member_store().await;
+    let server = login_server(&store, "member", "pw").await;
+
+    let res = server
+        .post("/account/api-keys")
+        .form(&[("name", "ci"), ("expires_in", ""), ("current_password", "")])
+        .await;
+
+    res.assert_status_ok();
+    assert!(res.text().contains("api-key-error"), "{}", res.text());
+    assert!(
+        store.list_api_keys_for_user(uid).await.unwrap().is_empty(),
+        "a refused re-authentication must not have minted a key"
+    );
+}
+
+#[tokio::test]
+async fn creating_a_key_with_the_wrong_password_is_refused() {
+    let (store, uid) = member_store().await;
+    let server = login_server(&store, "member", "pw").await;
+
+    let res = server
+        .post("/account/api-keys")
+        .form(&[
+            ("name", "ci"),
+            ("expires_in", ""),
+            ("current_password", "not-my-password"),
+        ])
+        .await;
+
+    res.assert_status_ok();
+    assert!(res.text().contains("Current password is incorrect."));
+    assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
+}
+
+/// The gate is checked *before* the name and expiry are, so a crafted request
+/// cannot use the validation errors as an oracle for anything, and a wrong
+/// password never reaches the rest of the handler.
+#[tokio::test]
+async fn the_password_is_checked_before_the_rest_of_the_form() {
+    let (store, _uid) = member_store().await;
+    let server = login_server(&store, "member", "pw").await;
+
+    let res = server
+        .post("/account/api-keys")
+        .form(&[
+            ("name", "   "),          // also invalid
+            ("expires_in", "banana"), // also invalid
+            ("current_password", "not-my-password"),
+        ])
+        .await;
+
+    let body = res.text();
+    assert!(body.contains("Current password is incorrect."), "{body}");
+    assert!(!body.contains("a name is required"), "{body}");
+    assert!(!body.contains("expiry must be a duration"), "{body}");
+}
+
+/// The form renders the field, so the requirement is discoverable rather than
+/// a submission-time surprise.
+#[tokio::test]
+async fn the_key_form_asks_for_the_password() {
+    let (store, _uid) = member_store().await;
+    let server = login_server(&store, "member", "pw").await;
+    let body = server.get("/account").await.text();
+    assert!(body.contains("api-key-password-input"), "{body}");
+}
+
+/// Guessing the owner's password from a stolen session is the same activity as
+/// guessing it at the login form, and lands in the same account bucket. Before
+/// this the form was an unmetered password oracle.
+#[tokio::test]
+async fn repeated_wrong_passwords_exhaust_the_account_budget() {
+    let (store, uid) = member_store().await;
+    let server = login_server(&store, "member", "pw").await;
+
+    for _ in 0..pingward::ratelimit::ACCOUNT_MAX_ATTEMPTS {
+        server
+            .post("/account/api-keys")
+            .form(&[
+                ("name", "ci"),
+                ("expires_in", ""),
+                ("current_password", "not-my-password"),
+            ])
+            .await
+            .assert_status_ok();
+    }
+
+    // Budget spent: even the *correct* password is now refused, and the
+    // message says so rather than claiming the password was wrong.
+    let res = server
+        .post("/account/api-keys")
+        .form(&[
+            ("name", "ci"),
+            ("expires_in", ""),
+            ("current_password", "pw"),
+        ])
+        .await;
+    assert!(res.text().contains("Too many attempts"), "{}", res.text());
+    assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
+}
+
+/// A success clears the bucket, so an owner who fumbles their way to the edge
+/// and then gets it right is not left one mistake from a lockout.
+#[tokio::test]
+async fn a_correct_password_clears_the_account_budget() {
+    let (store, uid) = member_store().await;
+    let server = login_server(&store, "member", "pw").await;
+
+    for _ in 0..pingward::ratelimit::ACCOUNT_MAX_ATTEMPTS - 1 {
+        server
+            .post("/account/api-keys")
+            .form(&[
+                ("name", "ci"),
+                ("expires_in", ""),
+                ("current_password", "not-my-password"),
+            ])
+            .await;
+    }
+    server
+        .post("/account/api-keys")
+        .form(&[
+            ("name", "ci"),
+            ("expires_in", ""),
+            ("current_password", "pw"),
+        ])
+        .await
+        .assert_status_ok();
+    assert_eq!(store.list_api_keys_for_user(uid).await.unwrap().len(), 1);
+
+    // A full budget again: a refund of one would have run out immediately.
+    for _ in 0..pingward::ratelimit::ACCOUNT_MAX_ATTEMPTS {
+        let res = server
+            .post("/account/api-keys")
+            .form(&[
+                ("name", "ci2"),
+                ("expires_in", ""),
+                ("current_password", "not-my-password"),
+            ])
+            .await;
+        assert!(!res.text().contains("Too many attempts"));
+    }
+}
+
+/// A passwordless forward-auth account passes the gate unchallenged, and is not
+/// shown a field it could never fill in.
+///
+/// This is a real asymmetry, not an oversight: there is no stored credential to
+/// verify against, the account's authority lives at the gateway, and pingward
+/// has no protocol for asking the gateway to re-assert it. So a *borrowed*
+/// forward-auth session can still mint a key. Refusing instead would be worse —
+/// those users legitimately need API keys and would have no way to get one.
+///
+/// Note this is the opposite outcome to `/account/password`, which refuses such
+/// an account with 403. Different question: that one would be *setting* a local
+/// password, creating a second way in that the gateway's sign-out cannot end.
+#[tokio::test]
+async fn a_passwordless_account_mints_a_key_without_re_authenticating() {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let uid = store
+        .create_user("sso-user", None, false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let session_id = pingward::auth::new_session_token();
+    store
+        .create_session(
+            &session_id,
+            uid,
+            chrono::Utc::now() + chrono::Duration::hours(1),
+            None,
+            None,
+            true,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+
+    let state = AppState::new(store.clone(), common::test_config());
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    server.add_cookie(axum_extra::extract::cookie::Cookie::new(
+        pingward::auth::session_cookie_name(false),
+        pingward::secret::sign_session(common::TEST_SECRET.as_bytes(), &session_id),
+    ));
+    server.add_header(
+        "x-csrf-token",
+        pingward::secret::derive_csrf(common::TEST_SECRET.as_bytes(), &session_id),
+    );
+
+    let body = server.get("/account").await.text();
+    assert!(
+        !body.contains("api-key-password-input"),
+        "no stored password means no field to render: {body}"
+    );
+
+    // The posted form genuinely has no `current_password` key — which is why
+    // `NewApiKeyForm` defaults it rather than requiring it.
+    server
+        .post("/account/api-keys")
+        .form(&[("name", "ci"), ("expires_in", "")])
+        .await
+        .assert_status_ok();
+    assert_eq!(store.list_api_keys_for_user(uid).await.unwrap().len(), 1);
 }

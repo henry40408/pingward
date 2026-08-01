@@ -40,12 +40,21 @@ Feature: Account
 
   Scenario: Create an API key and see the token exactly once
     When I open the account page
-    And I create an API key named "CI deploy"
+    And I create an API key named "CI deploy" with my password "correct horse battery"
     Then the new API key token is shown once
     And the API keys list shows a key named "CI deploy"
 
   Scenario: Revoke an API key
     When I open the account page
-    And I create an API key named "temp"
+    And I create an API key named "temp" with my password "correct horse battery"
     And I revoke the API key
     Then no API keys remain
+
+  # An API key is not bound by the session caps and survives a password reset,
+  # so minting one asks for the password again — a borrowed browser must not be
+  # convertible into permanent access.
+  Scenario: Creating an API key with the wrong password is refused
+    When I open the account page
+    And I create an API key named "CI deploy" with my password "not my password"
+    Then the API key creation is rejected
+    And no API keys remain

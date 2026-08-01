@@ -449,6 +449,76 @@ fn log_login_failure(
     );
 }
 
+/// The outcome of re-authenticating the signed-in user for a sensitive action.
+enum Reauth {
+    /// Verified — or not required, because the account has no local password
+    /// to verify against.
+    Passed,
+    /// The submitted password did not match the stored one.
+    Failed,
+    /// This account's password-guessing budget is spent.
+    Throttled,
+}
+
+/// Demand the signed-in user's own password again before a sensitive action.
+///
+/// A session cookie proves who opened the browser, not who is at it now.
+/// OWASP's Authentication Cheat Sheet asks for the current credential before
+/// anything that mints or replaces one, precisely for the borrowed-laptop case:
+/// pingward's CSRF token is derived and exempts no path, and its CSP admits no
+/// inline script, so a *stolen or borrowed session* is the residual threat this
+/// answers — not CSRF, and not XSS.
+///
+/// **A passwordless forward-auth account passes without a check.** There is no
+/// stored credential to verify against; its authority lives at the gateway, and
+/// pingward has no protocol for asking the gateway to re-assert it. So a
+/// borrowed forward-auth session can still do these actions unchallenged — a
+/// real asymmetry, recorded in ARCHITECTURE.md rather than papered over. It is
+/// not the same case as `account_password`'s 403, which refuses because setting
+/// a *local* password on a gateway account would create a second way in.
+///
+/// Attempts are charged to the **account** limiter — the same bucket
+/// `login_submit` uses, keyed the same way — because this is the same activity
+/// as guessing at the login form, just from an authenticated seat. Without it a
+/// stolen session would be an unmetered password oracle against its owner,
+/// which is what `/account/password` was before this existed. A success clears
+/// the bucket, exactly as a successful login does.
+fn reauthenticate(state: &AppState, user: &User, submitted: &str, surface: &'static str) -> Reauth {
+    let Some(stored) = user.password_hash.as_deref() else {
+        return Reauth::Passed;
+    };
+    let key = crate::ratelimit::account_key(&user.username);
+    if !state.account_limiter.try_acquire(key.clone()) {
+        log_reauth_failure(user, surface, "rate_limited");
+        return Reauth::Throttled;
+    }
+    if verify_password(submitted, stored) {
+        state.account_limiter.clear(&key);
+        Reauth::Passed
+    } else {
+        log_reauth_failure(user, surface, "bad_current_password");
+        Reauth::Failed
+    }
+}
+
+/// Record a refused re-authentication.
+///
+/// One event for every gated surface, discriminated by `surface`, for the same
+/// reason [`log_login_failure`] uses one for its three rejection paths: somebody
+/// guessing at a password is one thing to alert on, and an operator should not
+/// have to know which forms exist to catch it. `login.failed` stays separate —
+/// it is unauthenticated and carries an address instead of a `user_id`.
+fn log_reauth_failure(user: &User, surface: &'static str, reason: &'static str) {
+    tracing::warn!(
+        target: "pingward::auth",
+        username = ?crate::auth::log_username(&user.username),
+        user_id = user.id,
+        surface,
+        reason,
+        "reauth.failed"
+    );
+}
+
 /// The 429 both login limiters answer with.
 ///
 /// Shared so the two cannot drift apart in what they disclose. The wording is
@@ -4379,11 +4449,17 @@ struct AccountTemplate {
     /// Count of non-current sessions, so the template can hide the "revoke
     /// others" control when there is nothing else to revoke.
     other_count: usize,
-    // password section
-    /// False for a passwordless forward-auth account: there is no current
+    /// False for a passwordless forward-auth account: there is no stored
     /// password to verify against, and the credential it signs in with lives
-    /// at the gateway. The card is hidden rather than shown-and-refused.
-    can_change_password: bool,
+    /// at the gateway.
+    ///
+    /// Gates two things, both above their own section rather than here: the
+    /// "Change password" card (hidden rather than shown-and-refused) and the
+    /// re-authentication field on the API-key form (see [`reauthenticate`],
+    /// which passes such an account unchallenged — so rendering a field it
+    /// could never fill in would be a lie).
+    has_password: bool,
+    // password section
     password_error: Option<String>,
     password_flash: Option<String>,
     // api-keys section
@@ -4452,6 +4528,13 @@ struct NewApiKeyForm {
     name: String,
     #[serde(default)]
     expires_in: String,
+    /// The submitter's own password, re-asserted (see [`reauthenticate`]).
+    ///
+    /// `serde(default)` is load-bearing, not tidiness: a passwordless
+    /// forward-auth account is not rendered the field at all, so the form it
+    /// posts genuinely has no such key and must still deserialize.
+    #[serde(default)]
+    current_password: String,
 }
 
 async fn account_page(
@@ -4536,7 +4619,7 @@ async fn render_account(
         is_admin: user.is_admin,
         sessions,
         other_count,
-        can_change_password: user.password_hash.is_some(),
+        has_password: user.password_hash.is_some(),
         password_error: parts.password_error,
         password_flash: parts.password_flash,
         keys,
@@ -4581,22 +4664,22 @@ async fn account_password(
     // 403 rather than a rendered message: the card is hidden for this account,
     // so the only way here is a crafted request, and the error has no form to
     // render into.
-    let Some(stored) = user.password_hash.clone() else {
+    if user.password_hash.is_none() {
         return Ok((StatusCode::FORBIDDEN, "this account has no local password").into_response());
-    };
-    if !verify_password(&form.current_password, &stored) {
-        // Logged for the same reason a failed login is: someone guessing at
-        // the current password from an already-authenticated session is a
-        // session takeover in progress, and this is the only place it shows.
-        tracing::warn!(
-            target: "pingward::auth",
-            username = ?crate::auth::log_username(&user.username),
-            user_id = user.id,
-            reason = "bad_current_password",
-            "password_change.failed"
-        );
-        let parts = error("Current password is incorrect.");
-        return render_account(&state, &jar, &user, parts).await;
+    }
+    // Goes through the shared gate rather than a bare `verify_password`, which
+    // is what closed this form's unmetered password oracle: a stolen session
+    // could previously guess the owner's password here as often as it liked.
+    match reauthenticate(&state, &user, &form.current_password, "password_change") {
+        Reauth::Passed => {}
+        Reauth::Failed => {
+            let parts = error("Current password is incorrect.");
+            return render_account(&state, &jar, &user, parts).await;
+        }
+        Reauth::Throttled => {
+            let parts = error("Too many attempts — try again later.");
+            return render_account(&state, &jar, &user, parts).await;
+        }
     }
     // Subsumes the old `is_empty` check. Ordered before the confirmation
     // comparison so someone who typed a too-short password twice is told what
@@ -4661,13 +4744,41 @@ async fn api_keys_create(
     CurrentUser(user): CurrentUser,
     Form(form): Form<NewApiKeyForm>,
 ) -> Result<Response, AppError> {
+    let key_error = |msg: &str| AccountRender {
+        key_error: Some(msg.to_string()),
+        ..Default::default()
+    };
+    // Before the name check, and before anything is written: an API key is a
+    // bearer credential that outlives the session which minted it — it is bound
+    // by neither `SESSION_IDLE_TTL_HOURS` nor `SESSION_ABSOLUTE_MAX_DAYS`, and
+    // `users_set_password` deliberately leaves it alone. So a borrowed browser
+    // would otherwise convert one session's access into permanent access, and
+    // this is the one gated action where not asking cannot be undone by
+    // signing out.
+    match reauthenticate(&state, &user, &form.current_password, "api_key_create") {
+        Reauth::Passed => {}
+        Reauth::Failed => {
+            return render_account(
+                &state,
+                &jar,
+                &user,
+                key_error("Current password is incorrect."),
+            )
+            .await;
+        }
+        Reauth::Throttled => {
+            return render_account(
+                &state,
+                &jar,
+                &user,
+                key_error("Too many attempts — try again later."),
+            )
+            .await;
+        }
+    }
     let name = form.name.trim();
     if name.is_empty() {
-        let parts = AccountRender {
-            key_error: Some("a name is required".into()),
-            ..Default::default()
-        };
-        return render_account(&state, &jar, &user, parts).await;
+        return render_account(&state, &jar, &user, key_error("a name is required")).await;
     }
     // Optional expiry: blank means never; otherwise a duration from now
     // (`30d`, `12h`, …) reusing the same parser as the check/duration fields.
@@ -4679,13 +4790,13 @@ async fn api_keys_create(
             match crate::duration::parse_duration(raw) {
                 Some(secs) if secs > 0 => Some(Utc::now() + Duration::seconds(secs)),
                 _ => {
-                    let parts = AccountRender {
-                        key_error: Some(
-                            "expiry must be a duration like 30d, or blank for never".into(),
-                        ),
-                        ..Default::default()
-                    };
-                    return render_account(&state, &jar, &user, parts).await;
+                    return render_account(
+                        &state,
+                        &jar,
+                        &user,
+                        key_error("expiry must be a duration like 30d, or blank for never"),
+                    )
+                    .await;
                 }
             }
         }

@@ -38,9 +38,20 @@ Then("the password change is rejected", async ({ page }) => {
   await expect(page.getByTestId("password-changed-flash")).toHaveCount(0);
 });
 
-When("I create an API key named {string}", async ({ page }, name) => {
-  await page.getByTestId("api-key-name-input").fill(name);
-  await page.getByTestId("api-key-submit").click();
+// The password is part of the step because it is part of the action: minting a
+// key re-authenticates, since the key outlives the session that created it.
+When(
+  "I create an API key named {string} with my password {string}",
+  async ({ page }, name, password) => {
+    await page.getByTestId("api-key-name-input").fill(name);
+    await page.getByTestId("api-key-password-input").fill(password);
+    await page.getByTestId("api-key-submit").click();
+  }
+);
+
+Then("the API key creation is rejected", async ({ page }) => {
+  await expect(page.getByTestId("api-key-error")).toBeVisible();
+  await expect(page.getByTestId("api-key-token")).toHaveCount(0);
 });
 
 Then("the new API key token is shown once", async ({ page }) => {

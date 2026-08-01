@@ -22,7 +22,7 @@
 </div>
 {% endif %}
 
-{% if can_change_password %}
+{% if has_password %}
 <div class="card">
   <div class="ch"><h2>Change password</h2></div>
   <div class="cb">
@@ -136,6 +136,13 @@
           <input id="expires_in" name="expires_in" data-testid="api-key-expires-input" placeholder="30d — blank = never">
         </div>
       </div>
+      {% if has_password %}
+      <div class="field">
+        <label for="key_current_password">Your password</label>
+        <input id="key_current_password" name="current_password" type="password" autocomplete="current-password" data-testid="api-key-password-input" required>
+        <p class="crumb tight">A key keeps working after you sign out or change your password, so it is asked for again here.</p>
+      </div>
+      {% endif %}
       <div class="formactions">
         <button class="btn primary" type="submit" data-testid="api-key-submit">Create key</button>
       </div>
