@@ -177,8 +177,17 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   `verify_password`: an unknown username (or a passwordless forward-auth
   account) must still pay for one argon2 verification, or the *response time*
   discloses which usernames exist and the generic error message buys nothing.
+- `POST /login` is guarded by **two** `ratelimit::RateLimiter`s (generic over
+  their key so both share one implementation): `login_limiter` is 5 per client
+  IP per minute, `account_limiter` is 10 per **account** per 15 minutes — a
+  per-address counter cannot see a distributed attack, which just buys `5 × N`
+  guesses. The account one is keyed on the *submitted* username **before** the
+  lookup, so an invented username throttles identically (otherwise being
+  throttled is a username oracle), and a success `clear`s its bucket rather
+  than `release`-ing one attempt. An account lockout is inherently a DoS
+  primitive; that is accepted and documented, not solved.
 - Rejected attempts log to the `pingward::auth` target — `login.failed`
-  (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`) and
+  (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`/`account_locked`) and
   `password_change.failed`. Nothing else in pingward observes a failed
   attempt, so this is the only spray signal an operator gets. Never log the
   submitted password, and route an attempted username through

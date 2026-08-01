@@ -1,4 +1,20 @@
-//! Per-client-IP fixed-window limiter for `POST /login`.
+//! Fixed-window limiters for `POST /login`, keyed two different ways.
+//!
+//! [`RateLimiter`] is generic over its key because `POST /login` needs two of
+//! them and they must not diverge in how a window rolls over or how the
+//! tracked-key cap behaves:
+//!
+//! - **per client IP** (`RateLimiter<IpAddr>`, keyed by [`rate_limit_key`]) —
+//!   [`MAX_ATTEMPTS`] per [`WINDOW_SECS`]. Stops one source grinding through a
+//!   dictionary.
+//! - **per account** (`RateLimiter<String>`, keyed by [`account_key`]) —
+//!   [`ACCOUNT_MAX_ATTEMPTS`] per [`ACCOUNT_WINDOW_SECS`]. Stops a *distributed*
+//!   attack, which the per-IP limiter cannot see at all: an attacker with N
+//!   addresses simply gets `MAX_ATTEMPTS × N` guesses against one account.
+//!   OWASP's Authentication Cheat Sheet asks for the counter to be associated
+//!   with the account rather than the source address for exactly this reason.
+//!   See [`ACCOUNT_MAX_ATTEMPTS`] for the denial-of-service trade-off that
+//!   comes with it.
 //!
 //! State is in-memory and per-process **on purpose**. A DB-backed counter
 //! would mean a write per login attempt — on `SQLite` that contends with the
@@ -36,6 +52,7 @@
 
 use axum::http::HeaderMap;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -46,10 +63,48 @@ pub const MAX_ATTEMPTS: u32 = 5;
 /// Width, in seconds, of the fixed window `MAX_ATTEMPTS` is counted over.
 pub const WINDOW_SECS: u64 = 60;
 
-/// Hard cap on tracked IPs, used as the default for `RateLimiter::max_entries`.
-/// When the cap is hit the map is pruned of expired windows first, so a spray
-/// from many source addresses cannot grow it without bound.
+/// Attempts allowed against a single **account** within
+/// [`ACCOUNT_WINDOW_SECS`], regardless of how many addresses they arrive from.
+///
+/// Deliberately looser than [`MAX_ATTEMPTS`] and over a much longer window,
+/// because the two limiters answer different questions and have opposite
+/// failure modes. Exhausting a per-IP bucket only inconveniences the address
+/// that did it. Exhausting an **account** bucket locks out the legitimate
+/// owner — so an account lockout is always a denial-of-service primitive
+/// handed to whoever knows a username, a trade-off the Cheat Sheet names
+/// explicitly. The parameters are chosen so that:
+///
+/// - a *distributed* attack gets 10 guesses per 15 minutes against a given
+///   account (40/hour) instead of `MAX_ATTEMPTS × addresses`, which is far too
+///   few for credential stuffing to be worth running; while
+/// - a legitimate owner has to fail ten times inside fifteen minutes to feel
+///   it, and any single success clears the counter outright
+///   ([`RateLimiter::clear`], which is why the account limiter does not use
+///   [`RateLimiter::release`]).
+///
+/// It is a rolling **window**, not a latch: nothing has to be unlocked, and it
+/// clears itself. Two further escape hatches exist for an operator being
+/// deliberately locked out — the state is per-process, so a restart clears
+/// every counter, and a forward-auth deployment does not use password login at
+/// all.
+pub const ACCOUNT_MAX_ATTEMPTS: u32 = 10;
+/// Width, in seconds, of the fixed window [`ACCOUNT_MAX_ATTEMPTS`] is counted
+/// over.
+pub const ACCOUNT_WINDOW_SECS: u64 = 900;
+
+/// Hard cap on tracked keys, used as the default for
+/// `RateLimiter::max_entries`. When the cap is hit the map is pruned of
+/// expired windows first, so a spray from many source addresses (or many
+/// invented usernames) cannot grow it without bound.
 const MAX_ENTRIES: usize = 10_000;
+
+/// Longest account key retained by [`account_key`].
+///
+/// The username is submitted, unvalidated, on an unauthenticated form, so its
+/// length is attacker-chosen — and it becomes a `HashMap` key held until its
+/// window elapses. Without a bound, `MAX_ENTRIES` oversized keys would be a
+/// memory-exhaustion lever rather than a rate limit.
+const ACCOUNT_KEY_MAX_CHARS: usize = 64;
 
 /// Size of the shared overflow bucket, as a multiple of `max_attempts`.
 ///
@@ -69,10 +124,10 @@ const OVERFLOW_FACTOR: u32 = 10;
 /// that finds the map full and charges the shared bucket does both under a
 /// single acquisition — splitting them would reintroduce defect 2 (see the
 /// module doc) on exactly the path that is under attack.
-struct Buckets {
-    per_ip: HashMap<IpAddr, (u32, Instant)>,
-    /// `(attempts, window start)` shared by every address that arrives while
-    /// `per_ip` is full of live windows.
+struct Buckets<K> {
+    per_key: HashMap<K, (u32, Instant)>,
+    /// `(attempts, window start)` shared by every key that arrives while
+    /// `per_key` is full of live windows.
     overflow: (u32, Instant),
 }
 
@@ -91,23 +146,28 @@ fn charge(counter: &mut (u32, Instant), max: u32, window_secs: u64) -> bool {
     true
 }
 
-/// Per-client-IP fixed-window limiter for login attempts.
-pub struct RateLimiter {
-    buckets: Mutex<Buckets>,
+/// Fixed-window limiter for login attempts, keyed by `K`.
+///
+/// Generic so the per-IP and per-account limiters are literally the same code:
+/// the window roll-over, the single-lock check-and-record, the tracked-key cap
+/// and the shared overflow bucket each fixed a defect (see the module doc), and
+/// a second hand-written copy would be a second chance to reintroduce one.
+pub struct RateLimiter<K> {
+    buckets: Mutex<Buckets<K>>,
     max_attempts: u32,
     window_secs: u64,
     /// Kept as a field (rather than the [`MAX_ENTRIES`] constant) purely so
     /// tests can lower it and exercise the capacity path without tracking
-    /// ten thousand addresses.
+    /// ten thousand keys.
     max_entries: usize,
 }
 
-impl RateLimiter {
+impl<K: Eq + Hash> RateLimiter<K> {
     /// Create a limiter allowing `max_attempts` within `window_secs`.
     pub fn new(max_attempts: u32, window_secs: u64) -> Self {
         Self {
             buckets: Mutex::new(Buckets {
-                per_ip: HashMap::new(),
+                per_key: HashMap::new(),
                 // Starting at zero attempts means the first overflow caller
                 // rolls the window over rather than inheriting boot time as a
                 // window start.
@@ -119,7 +179,7 @@ impl RateLimiter {
         }
     }
 
-    /// Reserve an attempt for `ip`, returning whether it may proceed.
+    /// Reserve an attempt for `key`, returning whether it may proceed.
     ///
     /// Checking and counting happen under a single lock, so concurrent
     /// requests cannot all observe the pre-attack count (defect 2 of the
@@ -128,7 +188,7 @@ impl RateLimiter {
     /// verification — and is handed back by [`release`](Self::release) when
     /// the credentials turn out to be valid, so only failures ultimately
     /// consume the window.
-    pub fn try_acquire(&self, ip: IpAddr) -> bool {
+    pub fn try_acquire(&self, key: K) -> bool {
         // (a) `std::sync::Mutex`, not `parking_lot::Mutex` — pingward has no
         // dependency on `parking_lot` and this task must not add one.
         // Recovering from poisoning (rather than `unwrap()`) means one
@@ -139,12 +199,12 @@ impl RateLimiter {
             .buckets
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if buckets.per_ip.len() >= self.max_entries && !buckets.per_ip.contains_key(&ip) {
+        if buckets.per_key.len() >= self.max_entries && !buckets.per_key.contains_key(&key) {
             let window_secs = self.window_secs;
             buckets
-                .per_ip
+                .per_key
                 .retain(|_, (_, started)| started.elapsed().as_secs() < window_secs);
-            if buckets.per_ip.len() >= self.max_entries {
+            if buckets.per_key.len() >= self.max_entries {
                 // Every entry is still live: a spray from more distinct
                 // sources than the cap. Existing counters are left alone —
                 // clearing the map would hand anyone already throttled a way
@@ -161,7 +221,7 @@ impl RateLimiter {
                 return charge(&mut buckets.overflow, max, window_secs);
             }
         }
-        let entry = buckets.per_ip.entry(ip).or_insert((0, Instant::now()));
+        let entry = buckets.per_key.entry(key).or_insert((0, Instant::now()));
         charge(entry, self.max_attempts, self.window_secs)
     }
 
@@ -172,15 +232,15 @@ impl RateLimiter {
     /// device, cleared cookies, a test suite) should not be locked out by it;
     /// an attacker's every attempt is a failure, so their budget is
     /// unchanged.
-    pub fn release(&self, ip: IpAddr) {
+    pub fn release(&self, key: &K) {
         let mut buckets = self
             .buckets
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(entry) = buckets.per_ip.get_mut(&ip) {
+        if let Some(entry) = buckets.per_key.get_mut(key) {
             entry.0 = entry.0.saturating_sub(1);
             if entry.0 == 0 {
-                buckets.per_ip.remove(&ip);
+                buckets.per_key.remove(key);
             }
             return;
         }
@@ -192,6 +252,53 @@ impl RateLimiter {
         // already saturating at zero.
         buckets.overflow.0 = buckets.overflow.0.saturating_sub(1);
     }
+
+    /// Drop `key`'s bucket entirely, rather than refunding one attempt.
+    ///
+    /// This is the **account** limiter's success path, and the difference from
+    /// [`release`](Self::release) is deliberate. Refunding a single attempt
+    /// would leave an owner who mistyped nine times and then signed in
+    /// correctly sitting one failure away from a fifteen-minute lockout, with
+    /// the credential already proven — which is the availability half of the
+    /// trade-off this limiter exists inside of (see [`ACCOUNT_MAX_ATTEMPTS`]),
+    /// falling on precisely the wrong person.
+    ///
+    /// The per-IP limiter must *not* do this: a success there says nothing
+    /// about the other attempts from that address, which may be a shared NAT
+    /// or a proxy carrying an attacker as well. A success *here* is proof of
+    /// the credential the preceding failures were guessing at.
+    ///
+    /// It does hand a small amount back to an attacker — someone spraying an
+    /// account has their budget reset whenever its owner signs in. That is
+    /// bounded by how often a person actually logs in (sessions here idle out
+    /// after 72 hours), so it is a few extra guesses a day against a budget of
+    /// 10 per 15 minutes, and it is worth the owner not being locked out of
+    /// their own monitoring during an attack.
+    pub fn clear(&self, key: &K) {
+        self.buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .per_key
+            .remove(key);
+    }
+}
+
+/// The account limiter's key: the **submitted** username, bounded in length.
+///
+/// Keyed on what the form carried, *not* on a resolved `users.id`, and looked
+/// up before the account is. An unknown username has to consume and exhaust a
+/// budget exactly as a real one does — otherwise "this request was throttled"
+/// becomes a username oracle, and the whole point of
+/// `auth::verify_password_or_dummy` (which equalises the response *time* for
+/// the same reason) is given back at a different layer.
+///
+/// Only the length is normalised, never the case: `find_user_by_username`
+/// compares exactly on both backends, so `Alice` and `alice` are different
+/// accounts and must be different buckets. Truncation can therefore make two
+/// very long usernames share a bucket; that direction is safe (they throttle
+/// each other sooner) and needs a 64-character common prefix to happen at all.
+pub fn account_key(username: &str) -> String {
+    username.chars().take(ACCOUNT_KEY_MAX_CHARS).collect()
 }
 
 /// Client address used as the login rate-limit key.
@@ -297,16 +404,84 @@ mod tests {
         let addr = ip(5);
         for _ in 0..10 {
             assert!(limiter.try_acquire(addr));
-            limiter.release(addr);
+            limiter.release(&addr);
         }
         assert!(
             limiter
                 .buckets
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .per_ip
+                .per_key
                 .is_empty()
         );
+    }
+
+    // --- the account-keyed limiter ---
+
+    /// The generic parameter is not decoration: the account limiter is a
+    /// `RateLimiter<String>` and must behave identically to the IP one.
+    #[test]
+    fn a_string_keyed_limiter_counts_per_key() {
+        let limiter: RateLimiter<String> = RateLimiter::new(2, 60);
+        assert!(limiter.try_acquire("alice".into()));
+        assert!(limiter.try_acquire("alice".into()));
+        assert!(!limiter.try_acquire("alice".into()));
+        // A different account is untouched — a lockout is never global.
+        assert!(limiter.try_acquire("bob".into()));
+    }
+
+    /// `clear` is the account limiter's success path, and differs from
+    /// `release` on purpose: proving the credential empties the bucket rather
+    /// than refunding the single attempt it just cost. Nine failures followed
+    /// by a success must leave the owner with a *full* budget, not one attempt.
+    #[test]
+    fn clear_empties_the_bucket_where_release_refunds_one() {
+        let refunded: RateLimiter<String> = RateLimiter::new(10, 60);
+        let cleared: RateLimiter<String> = RateLimiter::new(10, 60);
+        for _ in 0..9 {
+            assert!(refunded.try_acquire("alice".into()));
+            assert!(cleared.try_acquire("alice".into()));
+        }
+        // The tenth attempt is the successful sign-in, in both cases.
+        assert!(refunded.try_acquire("alice".into()));
+        refunded.release(&"alice".to_string());
+        assert!(cleared.try_acquire("alice".into()));
+        cleared.clear(&"alice".to_string());
+
+        // Refunded: one attempt left before the lockout bites again.
+        assert!(refunded.try_acquire("alice".into()));
+        assert!(!refunded.try_acquire("alice".into()));
+        // Cleared: the whole window is available again.
+        for _ in 0..10 {
+            assert!(cleared.try_acquire("alice".into()));
+        }
+        assert!(!cleared.try_acquire("alice".into()));
+    }
+
+    #[test]
+    fn clear_on_an_untracked_key_is_a_no_op() {
+        let limiter: RateLimiter<String> = RateLimiter::new(2, 60);
+        limiter.clear(&"never-seen".to_string());
+        assert!(limiter.try_acquire("never-seen".into()));
+    }
+
+    #[test]
+    fn account_key_bounds_its_length_without_touching_case() {
+        // Case is load-bearing: `find_user_by_username` compares exactly on
+        // both backends, so these are two different accounts and must not
+        // share a bucket.
+        assert_eq!(account_key("Alice"), "Alice");
+        assert_ne!(account_key("Alice"), account_key("alice"));
+        // Nor is anything else normalised away.
+        assert_eq!(account_key("  bob  "), "  bob  ");
+
+        // An attacker-chosen username cannot become an attacker-chosen
+        // allocation: the key is bounded however long the field was.
+        let huge = "x".repeat(10_000);
+        assert_eq!(account_key(&huge).chars().count(), ACCOUNT_KEY_MAX_CHARS);
+        // Truncation is by characters, so it never splits a code point.
+        let cjk = "漢".repeat(10_000);
+        assert_eq!(account_key(&cjk).chars().count(), ACCOUNT_KEY_MAX_CHARS);
     }
 
     #[test]
@@ -321,7 +496,7 @@ mod tests {
                 .buckets
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .per_ip
+                .per_key
                 .len()
                 <= 4
         );
@@ -346,7 +521,7 @@ mod tests {
                 .buckets
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .per_ip
+                .per_key
                 .len()
         );
 
@@ -357,7 +532,7 @@ mod tests {
             .buckets
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .per_ip
+            .per_key
             .len();
         assert!(len < 4, "map was not pruned: len = {len}");
     }
@@ -433,7 +608,7 @@ mod tests {
         );
         // Still not a global lockout: an address that owns a bucket with room
         // left is unaffected by the exhausted shared one.
-        limiter.release(ip(0));
+        limiter.release(&ip(0));
         assert!(limiter.try_acquire(ip(0)));
     }
 
@@ -462,7 +637,7 @@ mod tests {
         let addr = ip(150);
         for _ in 0..(OVERFLOW_FACTOR * 3) {
             assert!(limiter.try_acquire(addr));
-            limiter.release(addr);
+            limiter.release(&addr);
         }
         assert_eq!(
             0,

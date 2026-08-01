@@ -525,11 +525,18 @@ literal silently stops matching after the network is recreated. Addresses are
 compared (and stored) canonically, so an IPv4-mapped IPv6 peer matches an
 IPv4 entry; an unparseable entry matches nothing and DNS is never consulted.
 
-`POST /login` is additionally guarded by `ratelimit::RateLimiter`
-(`AppState::login_limiter`, `src/ratelimit.rs`): 5 attempts per client IP per
-60-second window, reserved *before* the argon2 verification and released back
-on a successful login only, so a legitimate user signing in repeatedly never
-exhausts the window. Its key comes from `ratelimit::rate_limit_key`, gated by
+`POST /login` is additionally guarded by **two** `ratelimit::RateLimiter`
+instances (`src/ratelimit.rs`), checked in that order and both reserved
+*before* the argon2 verification, so a refused attempt never pays for one.
+`RateLimiter` is generic over its key precisely so the two share one
+implementation: the window roll-over, the single-lock check-and-record, the
+tracked-key cap and the overflow bucket each fixed a defect (below), and a
+second hand-written copy would be a second chance to reintroduce one.
+
+`AppState::login_limiter` (`RateLimiter<IpAddr>`) is 5 attempts per client IP
+per 60-second window, released back on a successful login only, so a
+legitimate user signing in repeatedly never exhausts the window. Its key comes
+from `ratelimit::rate_limit_key`, gated by
 the same `is_trusted_proxy` check but reading the **rightmost**
 `X-Forwarded-For` hop rather than `client_ip`'s leftmost — under a stock
 appending proxy (nginx's `$proxy_add_x_forwarded_for`, Caddy's
@@ -540,7 +547,54 @@ state is in-process only: a multi-replica deployment counts each replica
 separately (effective budget is `5 × replicas`), and a restart resets every
 counter to zero.
 
-The tracked-address map is capped (`MAX_ENTRIES`, 10 000). On reaching it the
+`AppState::account_limiter` (`RateLimiter<String>`) is the second one:
+`ACCOUNT_MAX_ATTEMPTS` (10) per `ACCOUNT_WINDOW_SECS` (15 minutes) against a
+single **account**, however many addresses the attempts arrive from. The
+per-address limiter cannot substitute for it and cannot even see the attack it
+answers — an attacker holding N addresses simply gets `5 × N` guesses at one
+account, and each of them looks unremarkable to a counter keyed on origin.
+OWASP's Authentication Cheat Sheet asks for the counter to be associated with
+the account for exactly this reason.
+
+Three things about it are load-bearing:
+
+- **It is keyed on the submitted username** (`ratelimit::account_key`), not on
+  a resolved `users.id`, and is charged *before* the account is looked up. An
+  invented username has to consume and exhaust a budget exactly as a real one
+  does; a limiter that only engaged for accounts that exist would make "this
+  request was throttled" a username oracle, giving back at this layer what
+  `verify_password_or_dummy` protects at the next. Only length is normalised
+  (bounded, since the field is attacker-chosen and becomes a map key) — never
+  case, because `find_user_by_username` compares exactly on both backends, so
+  `Alice` and `alice` are different accounts and must be different buckets.
+- **A success clears the bucket outright** (`RateLimiter::clear`) rather than
+  refunding the one attempt it cost (`release`, which is what the per-address
+  limiter still does). Without that, an owner who mistyped nine times and then
+  signed in correctly would sit one failure away from a 15-minute lockout with
+  the credential already proven. The per-address limiter must *not* clear: a
+  success there says nothing about the other attempts from that address, which
+  may be a shared NAT carrying an attacker too. It does hand an attacker a
+  reset whenever the owner signs in, which is bounded by how rarely people
+  actually log in (sessions idle out after 72 hours).
+- **An account lockout is a denial-of-service primitive**, handed to anyone who
+  knows a username, and that is accepted rather than solved — the Cheat Sheet
+  names the trade-off and every account-lockout design has it. Once the budget
+  is spent the *correct* password is refused too
+  (`tests/login_rate_limit.rs::a_locked_account_refuses_even_the_correct_password`
+  pins this as a decision, not a surprise). What keeps it proportionate: the
+  budget is a rolling window rather than a latch, so nothing needs unlocking;
+  it is per-account, so a sprayed username never denies the instance; the state
+  is per-process, so a restart clears it; and a forward-auth deployment does
+  not use password login at all.
+
+Both limiters answer with the same 429 body (`web::throttled_login`), differing
+only in `Retry-After`. Which bucket ran out is not disclosed, and the wording
+avoids implying that the submitted username names a real account. The refusals
+are distinguishable in the log, though — `reason = "rate_limited"` versus
+`"account_locked"` (see "Rejected authentication attempts" above) — because for
+an operator they mean quite different things.
+
+The tracked-key map is capped (`MAX_ENTRIES`, 10 000). On reaching it the
 limiter first prunes windows that have already elapsed; if every entry is
 still live — a spray from more distinct sources than the cap — an address with
 no bucket of its own is charged to a single **shared overflow bucket**
@@ -629,7 +683,10 @@ being sprayed.
 
 - `login.failed` (`web::log_login_failure`) — `username`, `ip`, `bucket`,
   `reason`. One event name for all three rejection paths, discriminated by
-  `reason` (`bad_credentials`, `account_disabled`, `rate_limited`), so a single
+  `reason` (`bad_credentials`, `account_disabled`, `rate_limited`,
+  `account_locked` — the last two being the per-address and per-account
+  limiters respectively, kept apart because only the second one means somebody
+  is working on one specific account), so a single
   query catches them; splitting them across event names is how a lockout stops
   being noticed. Two addresses because they can legitimately differ: `ip` is
   the attribution address (`ping::ClientIp`, what a session row stamps) and
