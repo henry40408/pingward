@@ -5,8 +5,8 @@ Feature: User management
   Lockout guards protect the signed-in admin and the last enabled admin.
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
     And I am on the users page
 
   Scenario: The seeded admin is listed as an admin
@@ -31,10 +31,10 @@ Feature: User management
     Then the user "boss" is listed with role "member"
 
   Scenario: Resetting a password lets the user sign in with the new one
-    Given a member "member" with password "old pass one" exists
-    When I reset "member"'s password to "new pass two"
+    Given a member "member" with password "old passphrase one" exists
+    When I reset "member"'s password to "new passphrase two"
     And I sign out
-    And I am signed in as "member" with password "new pass two"
+    And I am signed in as "member" with password "new passphrase two"
     Then I land on the dashboard signed in
 
   Scenario: A disabled user cannot sign in
@@ -81,3 +81,18 @@ Feature: User management
     And the disable control on my own row is inert
     And the delete control on my own row is inert
     And the password reset control on my own row is usable
+
+  # The password length policy (`auth::validate_password`). Both admin-facing
+  # surfaces are covered because the reset one used to answer a bad password
+  # with a bare redirect back to /admin — indistinguishable from success.
+  Scenario: A new user's password below the length floor is rejected
+    When I try to add a user "carol" with password "short pass"
+    Then the user form shows the error "Password must be at least 15 characters."
+    And the user "carol" is not listed
+
+  Scenario: A password reset below the length floor is rejected, not silently ignored
+    Given a member "member" with password "hunter2 correct" exists
+    When I try to reset "member"'s password to "short pass"
+    Then the user form shows the error "Password must be at least 15 characters."
+    And I sign in as "member" with password "hunter2 correct"
+    Then I land on the dashboard signed in

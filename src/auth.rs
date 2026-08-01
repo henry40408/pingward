@@ -9,6 +9,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::CookieJar;
 use chrono::{DateTime, Duration, Utc};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::OnceLock;
 
 /// The unprefixed session cookie name, used when `Secure` is off.
 pub const SESSION_COOKIE_BASE: &str = "pingward_session";
@@ -179,6 +180,25 @@ pub fn session_log_handle(session_id: &str) -> String {
     crate::apikey::hash_api_key(session_id)[..16].to_string()
 }
 
+/// Longest username kept in a log line by [`log_username`].
+const LOG_USERNAME_MAX_CHARS: usize = 64;
+
+/// Make an attempted username safe to put in a log line.
+///
+/// The value on a failed login is whatever the form field carried, which means
+/// an attacker picks it. Two things follow. It is truncated, so a megabyte of
+/// form data cannot be turned into a megabyte of log; and callers must render
+/// the result with `Debug` (`username = ?…`), which quotes and escapes it, so
+/// an embedded newline cannot forge a second entry in `text` log format —
+/// `json` format escapes on its own, but the guarantee has to hold for both.
+pub fn log_username(raw: &str) -> String {
+    let mut out: String = raw.chars().take(LOG_USERNAME_MAX_CHARS).collect();
+    if out.chars().count() < raw.chars().count() {
+        out.push('…');
+    }
+    out
+}
+
 /// True when `ip` is covered by one of the configured trusted-proxy patterns.
 ///
 /// A pattern is either a bare address (`10.0.0.1`) or a CIDR block
@@ -286,11 +306,104 @@ pub fn client_ip(
     Some(forwarded.map_or_else(|| peer.to_string(), |ip| ip.to_canonical().to_string()))
 }
 
+/// Minimum password length, counted in **characters**, not bytes — a
+/// passphrase written in a script with multi-byte code points must not be
+/// penalised for it.
+///
+/// NIST SP800-63B, via OWASP's Authentication Cheat Sheet, calls anything
+/// shorter than 15 characters weak *when MFA is not available*, and 8 when it
+/// is. pingward has no second factor, so the higher figure is the applicable
+/// one: for a local account the password is the whole credential. **If TOTP is
+/// ever added, this is the constant to revisit** — not the composition rules,
+/// of which there are deliberately none (see [`validate_password`]).
+pub const MIN_PASSWORD_CHARS: usize = 15;
+
+/// Maximum password length, in characters.
+///
+/// The Cheat Sheet asks for *at least* 64 so that passphrases fit; the cap
+/// exists only to bound what reaches argon2. Note this is **not** the bcrypt
+/// situation — argon2's cost is set by its memory/time parameters and barely
+/// moves with input length, so a long password is not a denial-of-service
+/// lever here. The limit is a sanity bound on an unauthenticated form field,
+/// and it is a *rejection*, never a silent truncation.
+pub const MAX_PASSWORD_CHARS: usize = 128;
+
+/// Check a candidate password against the length policy, returning the message
+/// to show the user on failure.
+///
+/// Length is the *only* rule. There is deliberately no composition
+/// requirement (upper/lower/digit/symbol) and no character is excluded —
+/// whitespace and unicode included — because the Cheat Sheet and NIST both
+/// treat composition rules as counterproductive. The password is not trimmed
+/// either: what the user typed is what is hashed.
+///
+/// The one Cheat Sheet control **not** implemented here is the breached-password
+/// blocklist (Pwned Passwords). It was weighed and deferred: at a 15-character
+/// floor almost nothing in a top-100k list is still eligible, so the marginal
+/// gain is small against a new SHA-1 dependency plus either an outbound request
+/// on the password-set path or a checked-in list that goes stale. This function
+/// is the single seam to add it at if that trade ever changes — every surface
+/// that sets a password goes through here.
+pub fn validate_password(plain: &str) -> Result<(), String> {
+    let len = plain.chars().count();
+    if len < MIN_PASSWORD_CHARS {
+        return Err(format!(
+            "Password must be at least {MIN_PASSWORD_CHARS} characters."
+        ));
+    }
+    if len > MAX_PASSWORD_CHARS {
+        return Err(format!(
+            "Password must be at most {MAX_PASSWORD_CHARS} characters."
+        ));
+    }
+    Ok(())
+}
+
 /// Hash a plaintext password into a PHC string (`$argon2id$...`).
 pub fn hash_password(plain: &str) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
     let phc = Argon2::default().hash_password(plain.as_bytes(), &salt)?;
     Ok(phc.to_string())
+}
+
+/// A throwaway PHC string whose only purpose is to be *verified against* when
+/// there is no real hash to verify against — see [`verify_password_or_dummy`].
+///
+/// Built once per process from a random secret, so it can never match any
+/// submitted password. Minting it lazily means the first login miss of a
+/// process pays for a hash as well as a verify; that is a one-off, not a
+/// per-request signal, so it is not itself an oracle.
+fn dummy_password_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| {
+        hash_password(&uuid::Uuid::new_v4().to_string())
+            .expect("hashing a fixed-length uuid cannot fail")
+    })
+}
+
+/// Verify `plain` against `stored`, spending argon2's time even when `stored`
+/// is `None`.
+///
+/// Skipping the comparison for an unknown username is the "quick exit" pattern
+/// OWASP's Authentication Cheat Sheet names as a user-enumeration hole: a
+/// generic error message is worthless if the *response time* still separates
+/// "no such user" from "wrong password", because argon2 is deliberately slow
+/// and the difference is trivially measurable. `stored` is `None` for two
+/// distinct cases that must stay indistinguishable from outside — no such
+/// user, and a forward-auth account that has no local password.
+///
+/// This does not equalise everything: the database lookup preceding it is
+/// still a hit-versus-miss. That difference is orders of magnitude below one
+/// argon2 verification, which is what made the original gap measurable.
+pub fn verify_password_or_dummy(plain: &str, stored: Option<&str>) -> bool {
+    if let Some(phc) = stored {
+        verify_password(plain, phc)
+    } else {
+        // `black_box` so the discarded result cannot license LLVM to elide the
+        // call — the work *is* the point here.
+        std::hint::black_box(verify_password(plain, dummy_password_hash()));
+        false
+    }
 }
 
 /// Verify a plaintext password against a stored PHC string. A malformed
@@ -426,6 +539,88 @@ mod tests {
     #[test]
     fn verify_rejects_garbage_hash() {
         assert!(!verify_password("hunter2", "not-a-phc-string"));
+    }
+
+    #[test]
+    fn password_policy_enforces_both_bounds() {
+        assert!(validate_password(&"a".repeat(MIN_PASSWORD_CHARS)).is_ok());
+        assert!(validate_password(&"a".repeat(MAX_PASSWORD_CHARS)).is_ok());
+        assert!(validate_password(&"a".repeat(MIN_PASSWORD_CHARS - 1)).is_err());
+        assert!(validate_password(&"a".repeat(MAX_PASSWORD_CHARS + 1)).is_err());
+        assert!(validate_password("").is_err());
+        // The Cheat Sheet's floor only applies without MFA; if that ever
+        // changes, this assertion is the reminder to revisit the constant.
+        // The maximum has a floor of its own — "at least 64 characters", so
+        // that a passphrase fits.
+        const { assert!(MIN_PASSWORD_CHARS == 15) };
+        const { assert!(MAX_PASSWORD_CHARS >= 64) };
+    }
+
+    #[test]
+    fn password_policy_has_no_composition_rules() {
+        // All-lowercase, all-digits, whitespace and non-ASCII passphrases are
+        // every one of them acceptable: length is the only rule.
+        for pw in [
+            "correcthorsebatterystaple",
+            "123456789012345",
+            "correct horse battery staple",
+            "正確的馬電池釘書針這樣就夠長了吧",
+            "\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t",
+        ] {
+            assert!(validate_password(pw).is_ok(), "{pw:?} must be accepted");
+        }
+    }
+
+    #[test]
+    fn password_length_is_counted_in_characters_not_bytes() {
+        // 14 characters, but comfortably over 15 *bytes* in UTF-8: counting
+        // bytes would wrongly accept it.
+        let cjk = "密碼密碼密碼密碼密碼密碼密碼";
+        assert_eq!(cjk.chars().count(), MIN_PASSWORD_CHARS - 1);
+        assert!(cjk.len() > MIN_PASSWORD_CHARS);
+        assert!(validate_password(cjk).is_err());
+    }
+
+    /// The point of the dummy verification is that a miss costs what a hit
+    /// costs. Timing is too noisy to assert on directly, so this pins the
+    /// observable contract instead: `None` still returns false, and the
+    /// dummy hash is a real argon2 PHC that no password matches.
+    #[test]
+    fn verify_password_or_dummy_handles_a_missing_hash() {
+        let phc = hash_password("correct horse battery").unwrap();
+        assert!(verify_password_or_dummy(
+            "correct horse battery",
+            Some(&phc)
+        ));
+        assert!(!verify_password_or_dummy("wrong", Some(&phc)));
+        assert!(!verify_password_or_dummy("anything at all", None));
+
+        let dummy = dummy_password_hash();
+        assert!(dummy.starts_with("$argon2"));
+        assert!(!verify_password("", dummy));
+        // Stable for the life of the process, so it costs one hash, not one
+        // per miss.
+        assert_eq!(dummy, dummy_password_hash());
+    }
+
+    #[test]
+    fn log_username_truncates_and_stays_debug_escapable() {
+        assert_eq!(log_username("alice"), "alice");
+        let long = "a".repeat(LOG_USERNAME_MAX_CHARS * 2);
+        let cut = log_username(&long);
+        assert_eq!(cut.chars().count(), LOG_USERNAME_MAX_CHARS + 1);
+        assert!(cut.ends_with('…'));
+        // Truncation is by characters, so it can never split a code point.
+        let cjk = "漢".repeat(LOG_USERNAME_MAX_CHARS * 2);
+        assert_eq!(
+            log_username(&cjk).chars().count(),
+            LOG_USERNAME_MAX_CHARS + 1
+        );
+        // A forged-newline attempt survives truncation unchanged — it is the
+        // caller's `Debug` rendering that neutralises it, which this pins.
+        let forged = "bob\nsession.created user_id=1";
+        assert_eq!(log_username(forged), forged);
+        assert!(!format!("{:?}", log_username(forged)).contains('\n'));
     }
 
     /// P2-G: the `__Host-` prefix is only safe to apply once `Secure` is

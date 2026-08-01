@@ -63,7 +63,11 @@ async fn form_includes_csrf_and_form_post_succeeds() {
         .form(&[
             ("_csrf", token.as_str()),
             ("username", "bob"),
-            ("password", "pw"),
+            // Long enough for `auth::validate_password`: this case asserts the
+            // submission *succeeds*, so it has to clear the handler too, not
+            // just the CSRF layer. The rejected case below deliberately keeps a
+            // short one — it must never reach the handler at all.
+            ("password", "bob's long passphrase"),
         ])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);

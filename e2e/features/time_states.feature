@@ -6,8 +6,8 @@ Feature: Time-dependent check states
   # couple of seconds — no ping drives the transition.
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
 
   Scenario: An overdue check is downed by the scan loop
     Given a project named "Ops"

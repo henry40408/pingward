@@ -42,7 +42,7 @@ async fn setup_creates_admin_then_dashboard_loads() {
         .form(&[
             ("_csrf", csrf.as_str()),
             ("username", "admin"),
-            ("password", "pw12345"),
+            ("password", "a first admin passphrase"),
         ])
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
@@ -898,7 +898,11 @@ async fn admin_creates_and_deletes_user() {
     let (server, store, _uid) = logged_in_server().await;
     server
         .post("/admin/users")
-        .form(&[("username", "carol"), ("password", "pw2"), ("is_admin", "")])
+        .form(&[
+            ("username", "carol"),
+            ("password", "carol's passphrase"),
+            ("is_admin", ""),
+        ])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     let carol = store.find_user_by_username("carol").await.unwrap().unwrap();
@@ -1316,4 +1320,76 @@ async fn check_page_shows_notification_channel_and_error() {
     let body = res.text();
     assert!(body.contains("my-hook"), "channel name missing: {body}");
     assert!(body.contains("status 500"), "error text missing: {body}");
+}
+
+/// A login for an unknown username must cost what a login for a known one with
+/// the wrong password costs (`auth::verify_password_or_dummy`).
+///
+/// The "quick exit" this replaced skipped argon2 entirely when there was no
+/// stored hash, so the *response time* separated "no such user" from "wrong
+/// password" no matter how generic the error message was — OWASP's
+/// Authentication Cheat Sheet names exactly that pattern as a user-enumeration
+/// hole. Timing is noisy, so the assertion is deliberately loose: a miss must
+/// simply be in the same order of magnitude as a hit. Without the fix the miss
+/// is a database lookup against a hit's full argon2 verification — three orders
+/// of magnitude apart, not the 2x this allows.
+///
+/// A warm-up miss runs first, because the process-wide dummy hash is minted on
+/// the first one and that mint would otherwise land inside the measurement (in
+/// the safe direction, but as noise).
+#[tokio::test]
+async fn an_unknown_username_costs_the_same_as_a_wrong_password() {
+    use std::time::Instant;
+
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let mut state = AppState::new(store.clone(), common::test_config());
+    // Enough attempts to measure with: the default budget is five, and a 429
+    // is not a comparable measurement. `login_limiter` is a public field, so
+    // this needs no test-only seam in `AppState`.
+    state.login_limiter = std::sync::Arc::new(pingward::ratelimit::RateLimiter::new(1_000, 60));
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("alice", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+
+    async fn attempt(server: &mut TestServer, username: &str) {
+        let csrf = common::anonymous_csrf(server).await;
+        server
+            .post("/login")
+            .form(&[
+                ("_csrf", csrf.as_str()),
+                ("username", username),
+                ("password", "definitely-wrong"),
+            ])
+            .await
+            .assert_status_ok();
+    }
+
+    attempt(&mut server, "nobody-warmup").await;
+
+    // Interleaved, so a machine that slows down partway through skews both
+    // measurements rather than only the later one.
+    let (mut hit, mut miss) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+    for _ in 0..3 {
+        let t = Instant::now();
+        attempt(&mut server, "alice").await;
+        hit += t.elapsed();
+
+        let t = Instant::now();
+        attempt(&mut server, "nobody").await;
+        miss += t.elapsed();
+    }
+
+    assert!(
+        miss * 2 >= hit,
+        "an unknown username returned far faster than a wrong password \
+         ({miss:?} vs {hit:?}) — the argon2 work is being skipped, which \
+         makes response time a username oracle"
+    );
 }

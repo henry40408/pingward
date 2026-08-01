@@ -164,6 +164,26 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   trusted forward-auth header auto-provisions a passwordless non-admin user.
 - Request extractors: `CurrentUser` (401/redirect if none), `OptionalUser`,
   `AdminUser` (403 if not admin).
+- `auth::validate_password` is the single password policy, called by all four
+  surfaces that **set** one (`setup_submit`, `account_password`,
+  `users_create`, `users_set_password`) — length only
+  (`MIN_PASSWORD_CHARS` 15, `MAX_PASSWORD_CHARS` 128, counted in *characters*),
+  no composition rules, no trimming, and over-long is a rejection rather than a
+  truncation. **`/login` never validates** and must not start to: the floor
+  would lock out every credential predating the policy. A new
+  password-setting surface must call it; that is the seam a breached-password
+  check would be added at (deliberately absent — see ARCHITECTURE.md).
+- `login_submit` calls `auth::verify_password_or_dummy`, never a bare
+  `verify_password`: an unknown username (or a passwordless forward-auth
+  account) must still pay for one argon2 verification, or the *response time*
+  discloses which usernames exist and the generic error message buys nothing.
+- Rejected attempts log to the `pingward::auth` target — `login.failed`
+  (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`) and
+  `password_change.failed`. Nothing else in pingward observes a failed
+  attempt, so this is the only spray signal an operator gets. Never log the
+  submitted password, and route an attempted username through
+  `auth::log_username` rendered with `Debug` (`?…`), which is what stops an
+  embedded newline forging a log entry.
 - Owner scoping goes through `owned_project` / `owned_check` in `web.rs`, which
   return **404 (not 403)** for another user's resource — existence is hidden.
 - `/account` is the per-user account page (password, sessions, then API keys,

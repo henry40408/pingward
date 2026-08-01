@@ -1,8 +1,8 @@
 Feature: Theme selection
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
 
   Scenario: The theme control cycles light, dark, then system
     Then the resolved theme is "light"

@@ -7,11 +7,11 @@ Feature: Admin cross-user management
   (same data-testid selectors) with /admin-prefixed forms.
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
     And a non-admin user "member" with password "hunter2 correct" exists
     And "member" with password "hunter2 correct" owns a project "Member jobs" with a check "member-backup" period 60
-    And I am signed in as "admin" with password "correct horse"
+    And I am signed in as "admin" with password "correct horse battery"
 
   Scenario: The admin dashboard loads with site-wide stats
     When I open the admin dashboard

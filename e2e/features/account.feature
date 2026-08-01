@@ -1,8 +1,8 @@
 Feature: Account
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
 
   Scenario: The account page marks the current session
     When I open the account page
@@ -14,7 +14,7 @@ Feature: Account
   Scenario: A session behind a trusted proxy records the forwarded client IP
     Given requests arrive through a trusted proxy as "203.0.113.7"
     And I sign out
-    And I am signed in as "admin" with password "correct horse"
+    And I am signed in as "admin" with password "correct horse battery"
     When I open the account page
     Then the current session shows the IP "203.0.113.7"
 
@@ -25,17 +25,17 @@ Feature: Account
 
   Scenario: Change your own password and sign in with the new one
     When I open the account page
-    And I change my password from "correct horse" to "battery staple"
+    And I change my password from "correct horse battery" to "battery staple horse"
     Then the password change is confirmed
     When I sign out
-    And I sign in as "admin" with password "correct horse"
+    And I sign in as "admin" with password "correct horse battery"
     Then the login page shows the error "invalid username or password"
-    When I sign in as "admin" with password "battery staple"
+    When I sign in as "admin" with password "battery staple horse"
     Then I land on the dashboard signed in
 
   Scenario: The wrong current password is refused
     When I open the account page
-    And I change my password from "wrong" to "battery staple"
+    And I change my password from "wrong" to "battery staple horse"
     Then the password change is rejected
 
   Scenario: Create an API key and see the token exactly once

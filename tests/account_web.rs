@@ -225,6 +225,12 @@ async fn unknown_or_foreign_handle_revokes_nothing() {
 
 // --- password section ---
 
+/// The replacement password these tests set. It has to clear
+/// `auth::validate_password`'s length floor, which applies to every surface
+/// that *sets* a password (but never to `/login`, so the short `"pw"` the
+/// fixtures hash directly into the table still signs in fine).
+const NEW_PW: &str = "a whole new passphrase";
+
 /// The stored PHC hash, read straight out of the table so a test can assert on
 /// the credential itself rather than on a login round-trip.
 async fn stored_hash(store: &Store, uid: i64) -> String {
@@ -248,14 +254,14 @@ async fn changing_the_password_rotates_it_and_signs_out_other_sessions() {
         .post("/account/password")
         .form(&[
             ("current_password", "pw"),
-            ("new_password", "new-pw"),
-            ("confirm_password", "new-pw"),
+            ("new_password", NEW_PW),
+            ("confirm_password", NEW_PW),
         ])
         .await
         .assert_status(StatusCode::SEE_OTHER);
 
     let phc = stored_hash(&store, uid).await;
-    assert!(pingward::auth::verify_password("new-pw", &phc));
+    assert!(pingward::auth::verify_password(NEW_PW, &phc));
     assert!(!pingward::auth::verify_password("pw", &phc));
 
     // The session that made the change survives; the other one is gone, so
@@ -290,8 +296,8 @@ async fn changing_the_password_leaves_api_keys_alone() {
         .post("/account/password")
         .form(&[
             ("current_password", "pw"),
-            ("new_password", "new-pw"),
-            ("confirm_password", "new-pw"),
+            ("new_password", NEW_PW),
+            ("confirm_password", NEW_PW),
         ])
         .await
         .assert_status(StatusCode::SEE_OTHER);
@@ -308,9 +314,17 @@ async fn changing_the_password_leaves_api_keys_alone() {
 #[tokio::test]
 async fn rejected_changes_touch_neither_the_password_nor_the_sessions() {
     for (label, current, new, confirm) in [
-        ("wrong current password", "nope", "new-pw", "new-pw"),
-        ("mismatched confirmation", "pw", "new-pw", "different"),
+        ("wrong current password", "nope", NEW_PW, NEW_PW),
+        ("mismatched confirmation", "pw", NEW_PW, "different"),
         ("blank new password", "pw", "", ""),
+        // Below `auth::MIN_PASSWORD_CHARS`. Rejected on the same path as a
+        // blank one, which is what subsumed the old `is_empty` check.
+        (
+            "new password under the floor",
+            "pw",
+            "short pass",
+            "short pass",
+        ),
     ] {
         let (store, uid) = member_store().await;
         let server1 = login_server(&store, "member", "pw").await;
@@ -378,8 +392,8 @@ async fn a_passwordless_account_has_no_form_and_cannot_set_one() {
         .post("/account/password")
         .form(&[
             ("current_password", ""),
-            ("new_password", "new-pw"),
-            ("confirm_password", "new-pw"),
+            ("new_password", NEW_PW),
+            ("confirm_password", NEW_PW),
         ])
         .await
         .assert_status(StatusCode::FORBIDDEN);

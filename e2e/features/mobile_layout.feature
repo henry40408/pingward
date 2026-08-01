@@ -7,8 +7,8 @@ Feature: Mobile layout
   phone-width viewport across the app.
 
   Background:
-    Given an admin "admin" with password "correct horse" exists
-    And I am signed in as "admin" with password "correct horse"
+    Given an admin "admin" with password "correct horse battery" exists
+    And I am signed in as "admin" with password "correct horse battery"
 
   Scenario Outline: <page> has no horizontal scrollbar on a narrow viewport
     When I view the site at 375px wide
