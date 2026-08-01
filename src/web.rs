@@ -377,10 +377,27 @@ async fn setup_submit(
     // so it cannot be boxed directly into `AppError::Other`'s
     // `Box<dyn Error + Send + Sync>` payload; go through its `Display` text.
     let phc = hash_password(&creds.password).map_err(|e| AppError::Other(e.to_string().into()))?;
-    let uid = state
+    // Normally unreachable — this handler returns above unless the table is
+    // empty — but two visitors racing the very first `/setup` both pass that
+    // check, and the loser must be told to pick another name rather than shown
+    // a blank 500 on the app's first screen.
+    let uid = match state
         .store
         .create_user(&creds.username, Some(&phc), true, Utc::now())
-        .await?;
+        .await
+    {
+        Ok(id) => id,
+        Err(crate::store::CreateUserError::UsernameTaken) => {
+            return Ok(render(&SetupTemplate {
+                show_nav: false,
+                csrf: current_csrf(&state, &jar),
+                is_admin: false,
+                error: Some(username_taken(&creds.username)),
+            })?
+            .into_response());
+        }
+        Err(crate::store::CreateUserError::Db(e)) => return Err(e.into()),
+    };
     let ua = request_user_agent(&headers);
     let jar = start_session(&state, jar, uid, ua.as_deref(), conn.0.as_deref(), false).await?;
     Ok((jar, Redirect::to("/")).into_response())
@@ -4277,53 +4294,103 @@ async fn settings_save(
     Ok((jar, Redirect::to("/admin")).into_response())
 }
 
+/// The refusal an already-taken username earns, worded once so the pre-check
+/// and the constraint race cannot drift apart.
+fn username_taken(username: &str) -> String {
+    format!("A user named \"{username}\" already exists.")
+}
+
+/// Re-render `/admin` with a message in the "All users" card.
+///
+/// Every refusal from the user-management handlers lands here — a blank
+/// username, a password under the policy floor, a name already taken (whether
+/// caught by the pre-check or by the constraint) — so the shape of that
+/// response is written once. It had been copied per branch, which is how the
+/// constraint-race path ended up an untested duplicate of the pre-check path.
+async fn render_admin_user_error(
+    state: &AppState,
+    jar: &CookieJar,
+    admin: &User,
+    error: String,
+) -> Result<Response, AppError> {
+    let settings = load_settings_fields(state).await?;
+    render_admin(
+        state,
+        jar,
+        admin,
+        AdminRender {
+            settings,
+            settings_error: None,
+            settings_flash: None,
+            user_flash: None,
+            elevation_flash: None,
+            password_reset_flash: None,
+            user_error: Some(error),
+        },
+        &AdminAuditQuery::default(),
+    )
+    .await
+}
+
 async fn users_create(
     State(state): State<AppState>,
     jar: CookieJar,
     AdminUser(admin): AdminUser,
     Form(form): Form<NewUserForm>,
 ) -> Result<Response, AppError> {
+    let username = form.username.trim();
+    // Validation runs *before* the elevation gate, deliberately. All of it is
+    // read-only — no hash, no insert — and a submission that can never succeed
+    // should say so rather than send the admin through a confirmation for
+    // nothing. A locked admin is still an admin, so learning that a username
+    // is taken discloses nothing they cannot read off the list below.
+    let policy = crate::auth::validate_password(&form.password);
+    let taken =
+        !username.is_empty() && state.store.find_user_by_username(username).await?.is_some();
+    let error = if username.is_empty() {
+        Some("username and password are required".to_string())
+    } else if let Err(msg) = policy {
+        Some(msg)
+    } else if taken {
+        // Matched exactly, like the `UNIQUE` constraint and
+        // `find_user_by_username` itself: `Admin` and `admin` are different
+        // accounts, and rejecting a name the database would accept would be
+        // its own bug.
+        Some(username_taken(username))
+    } else {
+        None
+    };
+    if let Some(error) = error {
+        return render_admin_user_error(&state, &jar, &admin, error).await;
+    }
     // Creating an account mints a credential that keeps working after this
     // browser signs out — the same property that made API-key creation worth
-    // gating, and doubly so when the new account is an admin.
+    // gating, and doubly so when the new account is an admin. This must stay
+    // immediately above the first side effect: everything before it reads,
+    // everything after it writes.
     if !elevation(&state, &jar, &admin).allows() {
         return Ok(admin_locked(&state.config, jar));
-    }
-    let policy = crate::auth::validate_password(&form.password);
-    if form.username.trim().is_empty() || policy.is_err() {
-        let error = if form.username.trim().is_empty() {
-            "username and password are required".to_string()
-        } else {
-            policy.unwrap_err()
-        };
-        let settings = load_settings_fields(&state).await?;
-        let resp = render_admin(
-            &state,
-            &jar,
-            &admin,
-            AdminRender {
-                settings,
-                settings_error: None,
-                settings_flash: None,
-                user_flash: None,
-                elevation_flash: None,
-                password_reset_flash: None,
-                user_error: Some(error),
-            },
-            &AdminAuditQuery::default(),
-        )
-        .await?;
-        return Ok(resp);
     }
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
     // A checked checkbox submits `is_admin=1`; an unchecked one is either
     // omitted entirely or (as form-encoded test clients sometimes do) sent as
     // an empty string — both must be treated as "not admin".
     let is_admin = form.is_admin.as_deref().is_some_and(|s| !s.is_empty());
-    let new_id = state
+    // The check above is a read followed by a write, so two admins submitting
+    // the same name at once can both pass it. The constraint is the real
+    // arbiter; this maps its refusal onto the same message rather than letting
+    // it reach `AppError::Db` and render a blank 500.
+    let new_id = match state
         .store
-        .create_user(form.username.trim(), Some(&phc), is_admin, Utc::now())
-        .await?;
+        .create_user(username, Some(&phc), is_admin, Utc::now())
+        .await
+    {
+        Ok(id) => id,
+        Err(crate::store::CreateUserError::UsernameTaken) => {
+            return render_admin_user_error(&state, &jar, &admin, username_taken(username)).await;
+        }
+        Err(crate::store::CreateUserError::Db(e)) => return Err(e.into()),
+    };
     state
         .store
         .record_audit(
@@ -4409,23 +4476,7 @@ async fn users_set_password(
     // reads as success, and an admin who believes they reset a password when
     // they did not is exactly the wrong failure for this control.
     if let Err(msg) = crate::auth::validate_password(&form.password) {
-        let settings = load_settings_fields(&state).await?;
-        return render_admin(
-            &state,
-            &jar,
-            &admin,
-            AdminRender {
-                settings,
-                settings_error: None,
-                settings_flash: None,
-                user_flash: None,
-                elevation_flash: None,
-                password_reset_flash: None,
-                user_error: Some(msg),
-            },
-            &AdminAuditQuery::default(),
-        )
-        .await;
+        return render_admin_user_error(&state, &jar, &admin, msg).await;
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());

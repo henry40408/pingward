@@ -10,9 +10,17 @@ fn pg_url() -> Option<String> {
         .filter(|u| u.starts_with("postgres"))
 }
 
+/// Reset to a clean schema so migrations apply idempotently across runs.
+///
+/// **Every Postgres assertion has to live in the one test below.** This drops
+/// and recreates a schema in a *shared* database, and nextest runs tests
+/// concurrently, so a second `#[tokio::test]` calling this races the first —
+/// `CREATE SCHEMA public` fails with 42P06 for whichever loses. Isolating them
+/// would mean a schema per test (and a `search_path` to match) or a nextest
+/// test-group pinned to one thread; neither is worth it for a file that exists
+/// to prove the `Any` driver behaves the same on both backends.
 async fn fresh_pg_store(url: &str) -> Store {
     let pool = db::connect(url).await.expect("connect postgres");
-    // Reset to a clean schema so migrations apply idempotently across runs.
     sqlx::query("DROP SCHEMA public CASCADE")
         .execute(&pool)
         .await
@@ -39,6 +47,20 @@ async fn postgres_full_round_trip() {
         .create_user("alice", Some("phc"), true, now)
         .await
         .unwrap();
+    // `CreateUserError::UsernameTaken` is classified from the backend's own
+    // unique-violation code, and Postgres's 23505 is a different code from a
+    // different driver than `SQLite`'s 2067 — so covering one says nothing
+    // about the other. Without this, a duplicate username on a Postgres
+    // deployment could go back to `AppError::Db`'s blank 500 with the whole
+    // `SQLite` suite still green.
+    let err = store
+        .create_user("alice", Some("other"), false, now)
+        .await
+        .expect_err("the UNIQUE constraint must refuse a duplicate username");
+    assert!(
+        matches!(err, pingward::store::CreateUserError::UsernameTaken),
+        "expected UsernameTaken on postgres, got {err:?}"
+    );
     assert!(
         store
             .find_user_by_username("alice")

@@ -715,6 +715,42 @@ Two properties are load-bearing:
   guess its owner's password as often as it liked. A success clears the bucket,
   exactly as a successful login does.
 
+### Creating a user, and the order of the checks
+
+`Store::create_user` returns `CreateUserError`, not `sqlx::Error`.
+`users.username` is `UNIQUE` in both migration sets, so a duplicate is an
+ordinary outcome of a form submission — but as a bare `sqlx::Error` it reached
+`AppError::Db` and rendered a blank `500 internal error`, leaving an admin with
+no message and no form to correct. The distinct `UsernameTaken` variant makes
+that impossible to route into the 500 path by accident, and it is classified
+from the backend's own unique-violation code rather than a message, so it holds
+on both drivers (`tests/pg_store.rs` covers the Postgres side, since SQLite's
+2067 and Postgres's 23505 are different codes from different drivers).
+
+`web::users_create` runs its checks in a deliberate order: **username → password
+policy → duplicate → elevation gate → hash → insert.** Everything before the
+gate is read-only, and a submission that could never succeed should say so
+rather than send the admin through a confirmation for nothing — which is exactly
+the flow that produced a confirmation reading as success. A locked admin is
+still an admin, so learning that a username is taken discloses nothing they
+cannot read off the user list. **The gate must stay immediately above the first
+side effect**; `tests/admin_elevation.rs` pins both that a doomed submission
+never asks for a password and that a valid one from a locked admin still writes
+nothing.
+
+The pre-check does not replace the error mapping. It is a read followed by a
+write, so two admins submitting the same name concurrently can both pass it; the
+constraint is the real arbiter and its refusal lands on the same message.
+`setup_submit` handles `UsernameTaken` too — normally unreachable, since it
+returns early unless the table is empty, but two visitors racing the very first
+`/setup` both pass that check and the loser must not meet a blank 500 on the
+app's first screen.
+
+Usernames are compared **exactly**, matching the constraint and
+`find_user_by_username`: `Admin` and `admin` are different accounts. Rejecting a
+name the database would accept would be its own bug; making them collide is a
+migration, not a validator change.
+
 ### Elevation for `/admin`'s access-granting actions
 
 `/account` can carry a password field on the form itself. `/admin` cannot: its

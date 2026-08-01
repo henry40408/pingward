@@ -446,3 +446,52 @@ async fn confirming_does_not_claim_the_refused_action_succeeded() {
         "nothing was created, so nothing may read as created"
     );
 }
+
+/// Validation runs before the gate, so a submission that could never succeed
+/// says why instead of sending the admin through a confirmation for nothing.
+///
+/// This is the flow that produced the original report: submit a duplicate
+/// username while locked, get bounced, confirm, and come back to a page that
+/// looked like success. There is nothing to confirm now — the answer arrives
+/// on the first submission.
+#[tokio::test]
+async fn a_doomed_submission_is_refused_without_asking_for_a_password() {
+    let (server, store, _dave) = locked_admin().await;
+
+    let res = server
+        .post("/admin/users")
+        // "admin" is this very session's own account.
+        .form(&[("username", "admin"), ("password", "a long enough phrase")])
+        .await;
+
+    res.assert_status_ok(); // /admin re-rendered — no bounce
+    assert!(res.text().contains("already exists"), "{}", res.text());
+    // And no confirmation was demanded on the way.
+    assert!(
+        !server
+            .get("/admin/unlock")
+            .await
+            .text()
+            .contains("unlock-bounced")
+    );
+    assert_eq!(store.count_users().await.unwrap(), 2);
+}
+
+/// The reordering must not have moved the gate past a side effect: a *valid*
+/// submission from a locked admin still writes nothing.
+#[tokio::test]
+async fn a_valid_submission_still_needs_confirming() {
+    let (server, store, _dave) = locked_admin().await;
+    server
+        .post("/admin/users")
+        .form(&[("username", "carol"), ("password", "a long enough phrase")])
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(
+        store
+            .find_user_by_username("carol")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
