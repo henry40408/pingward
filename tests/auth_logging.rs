@@ -251,3 +251,37 @@ async fn a_wrong_current_password_on_account_is_logged() {
     assert!(log.contains("reason=\"bad_current_password\""), "{log}");
     assert!(!log.contains(WRONG_PW), "{log}");
 }
+
+/// An account lockout is a materially different event from an address
+/// throttle: it means somebody is working on one *specific* account, quite
+/// possibly from many addresses. It gets its own `reason` so an operator can
+/// alert on it separately, rather than being folded into `rate_limited`.
+#[tokio::test]
+async fn locking_an_account_logs_its_own_reason() {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let phc = pingward::auth::hash_password(FIXTURE_PW).unwrap();
+    store
+        .create_user("alice", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let mut state = AppState::new(store, common::test_config());
+    // Without this the per-address budget (5) runs out before the per-account
+    // one (10) and the log would say `rate_limited` instead.
+    state.login_limiter = std::sync::Arc::new(pingward::ratelimit::RateLimiter::new(u32::MAX, 60));
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+
+    for _ in 0..pingward::ratelimit::ACCOUNT_MAX_ATTEMPTS {
+        attempt_login(&mut server, "alice", WRONG_PW).await;
+    }
+    let log = captured(|| async {
+        attempt_login(&mut server, "alice", WRONG_PW).await;
+    })
+    .await;
+
+    assert!(log.contains("reason=\"account_locked\""), "{log}");
+    assert!(log.contains("alice"), "{log}");
+    assert!(!log.contains(WRONG_PW), "{log}");
+}

@@ -449,6 +449,31 @@ fn log_login_failure(
     );
 }
 
+/// The 429 both login limiters answer with.
+///
+/// Shared so the two cannot drift apart in what they disclose. The wording is
+/// the same for either limiter and mentions neither the account nor the
+/// address: which bucket ran out is not the visitor's business, and phrasing
+/// that implied "this account" would hint that the submitted username names a
+/// real one. Only `Retry-After` differs, because the windows do.
+fn throttled_login(
+    state: &AppState,
+    jar: &CookieJar,
+    retry_after_secs: u64,
+) -> Result<Response, AppError> {
+    Ok((
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, retry_after_secs.to_string())],
+        render(&LoginTemplate {
+            show_nav: false,
+            csrf: current_csrf(state, jar),
+            is_admin: false,
+            error: Some("too many login attempts — try again later".into()),
+        })?,
+    )
+        .into_response())
+}
+
 async fn login_submit(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -465,20 +490,25 @@ async fn login_submit(
     let client = crate::ratelimit::rate_limit_key(peer_ip, &headers, &state.config.trusted_proxies);
     if !state.login_limiter.try_acquire(client) {
         log_login_failure(&creds.username, conn.0.as_deref(), client, "rate_limited");
-        return Ok((
-            StatusCode::TOO_MANY_REQUESTS,
-            [(
-                header::RETRY_AFTER,
-                crate::ratelimit::WINDOW_SECS.to_string(),
-            )],
-            render(&LoginTemplate {
-                show_nav: false,
-                csrf: current_csrf(&state, &jar),
-                is_admin: false,
-                error: Some("too many login attempts — try again in a minute".into()),
-            })?,
-        )
-            .into_response());
+        return throttled_login(&state, &jar, crate::ratelimit::WINDOW_SECS);
+    }
+    // Then the per-account budget, which the per-address one cannot substitute
+    // for: an attacker with N addresses gets `MAX_ATTEMPTS × N` guesses against
+    // one account, and every one of them looks unremarkable to a counter keyed
+    // on where it came from. Charged on the **submitted** username, before the
+    // account is looked up, so an invented username exhausts a budget exactly
+    // as a real one does — a limiter that only engaged for accounts that exist
+    // would be a username oracle, undoing at this layer what
+    // `verify_password_or_dummy` does at the next.
+    //
+    // Ordered after the address check so a single-source attacker spends their
+    // own budget first, and deliberately *not* recorded as an
+    // `account_disabled`-style outcome: `reason = "account_locked"` is the one
+    // failure that means somebody is working on one specific account.
+    let account = crate::ratelimit::account_key(&creds.username);
+    if !state.account_limiter.try_acquire(account.clone()) {
+        log_login_failure(&creds.username, conn.0.as_deref(), client, "account_locked");
+        return throttled_login(&state, &jar, crate::ratelimit::ACCOUNT_WINDOW_SECS);
     }
     let user = state.store.find_user_by_username(&creds.username).await?;
     // `verify_password_or_dummy`, not a bare `verify_password` behind an
@@ -535,8 +565,11 @@ async fn login_submit(
     )
     .await?;
     // A successful login hands the reservation back so signing in repeatedly
-    // (several devices, a test suite) never exhausts the window.
-    state.login_limiter.release(client);
+    // (several devices, a test suite) never exhausts the window. The account
+    // bucket is *cleared* rather than refunded by one — see
+    // `RateLimiter::clear` for why the two differ.
+    state.login_limiter.release(&client);
+    state.account_limiter.clear(&account);
     Ok((jar, Redirect::to("/")).into_response())
 }
 
