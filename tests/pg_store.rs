@@ -638,3 +638,36 @@ async fn postgres_full_round_trip() {
     assert!(store.find_check(cid).await.unwrap().is_none());
     assert_eq!(store.validate_api_key(&h3, now).await.unwrap(), None);
 }
+
+/// `CreateUserError::UsernameTaken` depends on `is_unique_violation` seeing
+/// through the `Any` driver to the backend's own error code — `SQLite`'s 2067 and
+/// Postgres's 23505 are different codes reported by different drivers, so
+/// covering one says nothing about the other.
+///
+/// Without this, a duplicate username on a Postgres deployment could silently
+/// go back to `AppError::Db`'s blank 500 while the whole `SQLite` suite stayed
+/// green.
+#[tokio::test]
+async fn postgres_classifies_a_duplicate_username() {
+    let Some(url) = pg_url() else {
+        eprintln!("TEST_DATABASE_URL unset — skipping postgres_classifies_a_duplicate_username");
+        return;
+    };
+    let store = fresh_pg_store(&url).await;
+    let now = chrono::Utc::now();
+
+    store
+        .create_user("admin", Some("phc"), true, now)
+        .await
+        .expect("first insert");
+
+    let err = store
+        .create_user("admin", Some("other"), false, now)
+        .await
+        .expect_err("the UNIQUE constraint must refuse the second insert");
+    assert!(
+        matches!(err, pingward::store::CreateUserError::UsernameTaken),
+        "expected UsernameTaken on postgres, got {err:?}"
+    );
+    assert_eq!(store.count_users().await.unwrap(), 1);
+}

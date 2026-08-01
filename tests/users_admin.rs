@@ -639,3 +639,83 @@ async fn a_planted_unsigned_surface_flash_does_not_render() {
         "an unsigned flash must not render: {body}"
     );
 }
+
+/// The reported scenario, end to end: an admin submits the "Add user" form with
+/// a username that already exists.
+///
+/// It used to be a bare `500 internal error` — `users_create` never checked,
+/// the `UNIQUE` constraint on `users.username` raised a `sqlx::Error`, and
+/// `AppError::Db` rendered a blank page with no message and no form to correct.
+#[tokio::test]
+async fn creating_a_user_with_a_taken_username_is_refused_with_a_message() {
+    let (server, store, _admin) = admin_server().await;
+    let before = store.count_users().await.unwrap();
+
+    let res = server
+        .post("/admin/users")
+        .form(&[("username", "admin"), ("password", "a long enough phrase")])
+        .await;
+
+    res.assert_status_ok(); // /admin, re-rendered — not a 500
+    let body = res.text();
+    assert!(body.contains("user-error"), "{body}");
+    assert!(body.contains("already exists"), "{body}");
+    assert_eq!(
+        store.count_users().await.unwrap(),
+        before,
+        "nothing may have been created"
+    );
+    assert!(
+        !store
+            .list_audit(50)
+            .await
+            .unwrap()
+            .iter()
+            .any(|a| a.action == "user.create"),
+        "a refused creation is not a creation, and must not be audited as one"
+    );
+}
+
+/// The existing account is untouched — the reported scenario checked this by
+/// hand ("admin's password is still the same"), so it is worth pinning.
+#[tokio::test]
+async fn a_refused_duplicate_leaves_the_existing_account_alone() {
+    let (server, store, admin_id) = admin_server().await;
+    let before = store
+        .find_user_by_id(admin_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .password_hash
+        .unwrap();
+
+    server
+        .post("/admin/users")
+        .form(&[
+            ("username", "admin"),
+            ("password", "a completely new phrase"),
+        ])
+        .await;
+
+    let after = store.find_user_by_id(admin_id).await.unwrap().unwrap();
+    assert_eq!(after.password_hash.unwrap(), before);
+    assert!(after.is_admin, "and is still an admin");
+}
+
+/// Exact match, like the constraint: these are two different accounts.
+#[tokio::test]
+async fn a_username_differing_only_in_case_is_accepted() {
+    let (server, store, _admin) = admin_server().await;
+    server
+        .post("/admin/users")
+        .form(&[("username", "Admin"), ("password", "a long enough phrase")])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(
+        store
+            .find_user_by_username("Admin")
+            .await
+            .unwrap()
+            .is_some()
+    );
+}

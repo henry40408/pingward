@@ -14,6 +14,40 @@ pub struct Store {
     pub pool: Pool,
 }
 
+/// Why a [`Store::create_user`] failed.
+///
+/// `users.username` carries a `UNIQUE` constraint in both migration sets, so a
+/// duplicate is an ordinary outcome of a form submission — not a fault. It used
+/// to travel as a bare `sqlx::Error`, which `AppError::Db` turned into a blank
+/// `500 internal error`: an admin who typed a name already in the table got an
+/// error page with no message and no form to correct.
+///
+/// A distinct variant makes that impossible to route into the 500 path by
+/// accident — every caller now has to say what it does when a name is taken.
+#[derive(Debug, thiserror::Error)]
+pub enum CreateUserError {
+    #[error("that username is already taken")]
+    UsernameTaken,
+    #[error(transparent)]
+    Db(sqlx::Error),
+}
+
+impl From<sqlx::Error> for CreateUserError {
+    /// Classify the driver's error.
+    ///
+    /// `is_unique_violation` reads the backend's own code (`SQLite` 2067 /
+    /// Postgres 23505) rather than matching on a message, so it survives both
+    /// backends and any wording change. `users` has exactly one unique
+    /// constraint, so a violation can only be the username — if a second is
+    /// ever added, this needs to start distinguishing them.
+    fn from(e: sqlx::Error) -> Self {
+        match &e {
+            sqlx::Error::Database(db) if db.is_unique_violation() => Self::UsernameTaken,
+            _ => Self::Db(e),
+        }
+    }
+}
+
 /// Cross-user rollup of check statuses for the admin dashboard.
 #[derive(Debug, Clone, Default)]
 pub struct CheckStatusCounts {
@@ -774,7 +808,7 @@ impl Store {
         password_hash: Option<&str>,
         is_admin: bool,
         now: DateTime<Utc>,
-    ) -> Result<i64, sqlx::Error> {
+    ) -> Result<i64, CreateUserError> {
         let row = sqlx::query(
             "INSERT INTO users (username, password_hash, is_admin, created_at) VALUES ($1,$2,$3,$4) RETURNING id",
         )
@@ -783,7 +817,8 @@ impl Store {
         .bind(is_admin as i64)
         .bind(now.to_rfc3339())
         .fetch_one(&self.pool)
-        .await?;
+        .await
+        .map_err(CreateUserError::from)?;
         Ok(row.get::<i64, _>("id"))
     }
 
@@ -2078,6 +2113,53 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The classification `CreateUserError::from` depends on. If
+    /// `is_unique_violation` ever stopped seeing through the `Any` driver to
+    /// the backend's own error code, a duplicate username would silently go
+    /// back to being a blank 500 — and every handler test would still pass,
+    /// because they exercise the *pre-check*, not the constraint.
+    #[tokio::test]
+    async fn a_duplicate_username_is_classified_not_swallowed() {
+        let pool = db::connect("sqlite::memory:").await.unwrap();
+        db::migrate(&pool, "sqlite::memory:").await.unwrap();
+        let store = Store::new(pool);
+        store
+            .create_user("admin", Some("phc"), true, Utc::now())
+            .await
+            .unwrap();
+
+        let err = store
+            .create_user("admin", Some("other"), false, Utc::now())
+            .await
+            .expect_err("the UNIQUE constraint must refuse the second insert");
+        assert!(
+            matches!(err, CreateUserError::UsernameTaken),
+            "expected UsernameTaken, got {err:?}"
+        );
+        // And it really did not write: a `Db` misclassification would have
+        // been caught above, but a silently-ignored insert would not.
+        assert_eq!(store.count_users().await.unwrap(), 1);
+    }
+
+    /// Exact match, matching the `UNIQUE` constraint and
+    /// `find_user_by_username`. Changing this to case-insensitive is a
+    /// migration, not a validator tweak.
+    #[tokio::test]
+    async fn usernames_differing_only_in_case_are_distinct() {
+        let pool = db::connect("sqlite::memory:").await.unwrap();
+        db::migrate(&pool, "sqlite::memory:").await.unwrap();
+        let store = Store::new(pool);
+        store
+            .create_user("admin", Some("phc"), true, Utc::now())
+            .await
+            .unwrap();
+        store
+            .create_user("Admin", Some("phc"), false, Utc::now())
+            .await
+            .expect("the constraint is case-sensitive on both backends");
+        assert_eq!(store.count_users().await.unwrap(), 2);
+    }
     use crate::{
         db,
         models::{CheckStatus, PingKind, ScheduleKind},

@@ -186,6 +186,15 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   throttled is a username oracle), and a success `clear`s its bucket rather
   than `release`-ing one attempt. An account lockout is inherently a DoS
   primitive; that is accepted and documented, not solved.
+- `Store::create_user` returns `CreateUserError`, not `sqlx::Error`, so a
+  duplicate `users.username` cannot fall into `AppError::Db`'s blank 500 —
+  `UsernameTaken` is classified from the backend's own unique-violation code
+  and every caller must handle it. `users_create` also pre-checks, and does so
+  (with the rest of its read-only validation) **before** the elevation gate, so
+  a submission that can never succeed says why instead of demanding a
+  confirmation first; the gate still sits immediately above the first side
+  effect. The pre-check cannot replace the error mapping — two admins can race
+  it.
 - `web::reauthenticate` is the shared gate demanding the signed-in user's own
   password again before a sensitive action; `POST /account/password`,
   `POST /account/api-keys` and `POST /admin/unlock` use it. The API-key one carries its own weight: a
