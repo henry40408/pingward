@@ -2510,8 +2510,16 @@ fn take_flash(
         "admin_locked" => {
             "That action wasn't performed — it grants access, so it needs confirming first."
         }
+        // Must not name the gated actions. Listing them here read as a report
+        // on the action the admin had just attempted — someone who clicked
+        // "add user", got bounced, and confirmed came back to "Creating a user
+        // … available" and reasonably concluded the user had been created.
+        // Nothing had: a refused action is dropped, not replayed. The wording
+        // now says that, and says it for both arrival paths (bounced here, or
+        // navigated here deliberately) so no extra state is needed to tell
+        // them apart. How long it lasts is on the page being landed on.
         "admin_unlocked" => {
-            "Confirmed. Creating a user, resetting a password and granting admin are available for the next few minutes."
+            "Confirmed. If an action was refused a moment ago it was not performed — do it again now."
         }
         "forward_auth_logout" => {
             "Signed out locally, but you're authenticated through your reverse proxy — this app can't end that session. To sign out completely, log out at your proxy or SSO provider."

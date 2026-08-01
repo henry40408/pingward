@@ -408,3 +408,41 @@ async fn the_page_tells_a_passwordless_admin_it_does_not_apply() {
         .assert_status(StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(dave).await.unwrap().unwrap().is_admin);
 }
+
+/// Regression lock for the message an admin sees after confirming.
+///
+/// It used to list the gated actions — "Confirmed. **Creating a user**,
+/// resetting a password and granting admin are available…" — which, read by
+/// someone who had just clicked "add user" and been bounced here, said their
+/// user had been created. It had not: a refused action is dropped rather than
+/// replayed, so the confirmation has to send them back to redo it.
+#[tokio::test]
+async fn confirming_does_not_claim_the_refused_action_succeeded() {
+    let (server, store, _dave) = locked_admin().await;
+
+    // Attempt something gated, get bounced, confirm.
+    server
+        .post("/admin/users")
+        .form(&[("username", "carol"), ("password", "a long enough phrase")])
+        .await;
+    common::unlock_admin(&server, ADMIN_PW).await;
+
+    let body = server.get("/admin").await.text();
+    assert!(body.contains("elevation-flash"), "{body}");
+    assert!(body.contains("was not performed"), "{body}");
+    // Naming the actions is what made it readable as a success report.
+    assert!(
+        !body.contains("Creating a user, resetting"),
+        "the confirmation must not list the gated actions: {body}"
+    );
+    // And the claim it must never make is the true one, checked against the
+    // database rather than against the copy.
+    assert!(
+        store
+            .find_user_by_username("carol")
+            .await
+            .unwrap()
+            .is_none(),
+        "nothing was created, so nothing may read as created"
+    );
+}
