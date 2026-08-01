@@ -392,10 +392,7 @@ async fn setup_submit(
                 show_nav: false,
                 csrf: current_csrf(&state, &jar),
                 is_admin: false,
-                error: Some(format!(
-                    "A user named \"{}\" already exists.",
-                    creds.username
-                )),
+                error: Some(username_taken(&creds.username)),
             })?
             .into_response());
         }
@@ -4297,6 +4294,44 @@ async fn settings_save(
     Ok((jar, Redirect::to("/admin")).into_response())
 }
 
+/// The refusal an already-taken username earns, worded once so the pre-check
+/// and the constraint race cannot drift apart.
+fn username_taken(username: &str) -> String {
+    format!("A user named \"{username}\" already exists.")
+}
+
+/// Re-render `/admin` with a message in the "All users" card.
+///
+/// Every refusal from the user-management handlers lands here — a blank
+/// username, a password under the policy floor, a name already taken (whether
+/// caught by the pre-check or by the constraint) — so the shape of that
+/// response is written once. It had been copied per branch, which is how the
+/// constraint-race path ended up an untested duplicate of the pre-check path.
+async fn render_admin_user_error(
+    state: &AppState,
+    jar: &CookieJar,
+    admin: &User,
+    error: String,
+) -> Result<Response, AppError> {
+    let settings = load_settings_fields(state).await?;
+    render_admin(
+        state,
+        jar,
+        admin,
+        AdminRender {
+            settings,
+            settings_error: None,
+            settings_flash: None,
+            user_flash: None,
+            elevation_flash: None,
+            password_reset_flash: None,
+            user_error: Some(error),
+        },
+        &AdminAuditQuery::default(),
+    )
+    .await
+}
+
 async fn users_create(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -4321,29 +4356,12 @@ async fn users_create(
         // `find_user_by_username` itself: `Admin` and `admin` are different
         // accounts, and rejecting a name the database would accept would be
         // its own bug.
-        Some(format!("A user named \"{username}\" already exists."))
+        Some(username_taken(username))
     } else {
         None
     };
     if let Some(error) = error {
-        let settings = load_settings_fields(&state).await?;
-        let resp = render_admin(
-            &state,
-            &jar,
-            &admin,
-            AdminRender {
-                settings,
-                settings_error: None,
-                settings_flash: None,
-                user_flash: None,
-                elevation_flash: None,
-                password_reset_flash: None,
-                user_error: Some(error),
-            },
-            &AdminAuditQuery::default(),
-        )
-        .await?;
-        return Ok(resp);
+        return render_admin_user_error(&state, &jar, &admin, error).await;
     }
     // Creating an account mints a credential that keeps working after this
     // browser signs out — the same property that made API-key creation worth
@@ -4369,23 +4387,7 @@ async fn users_create(
     {
         Ok(id) => id,
         Err(crate::store::CreateUserError::UsernameTaken) => {
-            let settings = load_settings_fields(&state).await?;
-            return render_admin(
-                &state,
-                &jar,
-                &admin,
-                AdminRender {
-                    settings,
-                    settings_error: None,
-                    settings_flash: None,
-                    user_flash: None,
-                    elevation_flash: None,
-                    password_reset_flash: None,
-                    user_error: Some(format!("A user named \"{username}\" already exists.")),
-                },
-                &AdminAuditQuery::default(),
-            )
-            .await;
+            return render_admin_user_error(&state, &jar, &admin, username_taken(username)).await;
         }
         Err(crate::store::CreateUserError::Db(e)) => return Err(e.into()),
     };
@@ -4474,23 +4476,7 @@ async fn users_set_password(
     // reads as success, and an admin who believes they reset a password when
     // they did not is exactly the wrong failure for this control.
     if let Err(msg) = crate::auth::validate_password(&form.password) {
-        let settings = load_settings_fields(&state).await?;
-        return render_admin(
-            &state,
-            &jar,
-            &admin,
-            AdminRender {
-                settings,
-                settings_error: None,
-                settings_flash: None,
-                user_flash: None,
-                elevation_flash: None,
-                password_reset_flash: None,
-                user_error: Some(msg),
-            },
-            &AdminAuditQuery::default(),
-        )
-        .await;
+        return render_admin_user_error(&state, &jar, &admin, msg).await;
     }
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
