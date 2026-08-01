@@ -28,12 +28,7 @@
 <div class="card">
   <div class="ch"><h2>Why you're seeing this</h2></div>
   <div class="cb">
-    <p class="crumb tight">A session cookie proves who opened this browser, not who is at it now. These three actions hand out access that keeps working after you sign out, so they need a second confirmation before they run:</p>
-    <p class="pillrow" data-testid="unlock-gated">
-      <span class="badge new">Creating a user</span>
-      <span class="badge new">Resetting another user's password</span>
-      <span class="badge new">Granting admin rights</span>
-    </p>
+    <p class="crumb tight" data-testid="unlock-gated">A session cookie proves who opened this browser, not who is at it now. <strong>Creating a user</strong>, <strong>resetting another user's password</strong> and <strong>granting admin rights</strong> each hand out access that keeps working after you sign out, so they ask for a second confirmation before they run.</p>
     <p class="crumb tight">Actions that <em>remove</em> access &mdash; disabling, demoting, deleting &mdash; never ask, so you can always shut an account down in a hurry.</p>
     <p class="crumb tight">This is your same password again, not a second factor. Confirming lasts {{ ttl }}, and ends when you sign out.</p>
   </div>

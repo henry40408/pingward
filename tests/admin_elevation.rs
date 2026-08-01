@@ -285,9 +285,17 @@ async fn the_unlock_page_explains_the_requirement() {
     let body = server.get("/admin/unlock").await.text();
 
     assert!(body.contains("unlock-input"), "{body}");
-    // What it covers, and — just as important — what it does not.
+    // What it covers, and — just as important — what it does not. The three
+    // actions are named inline in the prose (emphasised with `<strong>`, which
+    // `.crumb strong` lifts out of the muted body colour) rather than as
+    // badges: `.badge` is the check-status vocabulary and reads as a status
+    // pill wherever it appears.
     assert!(body.contains("unlock-gated"), "{body}");
-    assert!(body.contains("Granting admin rights"), "{body}");
+    assert!(
+        body.contains("<strong>granting admin rights</strong>"),
+        "{body}"
+    );
+    assert!(!body.contains("badge"), "{body}");
     assert!(body.contains("disabling, demoting, deleting"), "{body}");
     // It is the same password again. Calling this a second *factor* would be
     // wrong, and an admin hunting for a TOTP app is a support ticket.
