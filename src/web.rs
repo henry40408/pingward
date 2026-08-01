@@ -80,7 +80,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin", get(admin_page))
         .route("/admin/audit", get(admin_audit_fragment))
         .route("/admin/settings", post(settings_save))
-        .route("/admin/unlock", post(admin_unlock))
+        .route("/admin/unlock", get(admin_unlock_page).post(admin_unlock))
         .route("/admin/users", post(users_create))
         .route("/admin/users/{id}/delete", post(users_delete))
         .route("/admin/users/{id}/password", post(users_set_password))
@@ -546,17 +546,22 @@ fn elevation(state: &AppState, jar: &CookieJar, user: &User) -> Elevation {
     }
 }
 
-/// Refuse an access-granting admin action that is not unlocked, by flashing
-/// what to do about it and returning to `/admin`.
+/// Refuse an access-granting admin action that is not unlocked, by sending the
+/// admin to the page that explains why and asks for their password.
 ///
-/// A flash rather than a 403: the controls stay live in the table (they are
-/// one-button inline forms, and hiding them would make the page depend on a
-/// timer), so the honest answer to clicking one while locked is to say why
-/// nothing happened. The check is server-side regardless of what the page
-/// rendered.
+/// An interstitial rather than a 403 or an inline error: the controls stay live
+/// in the table (they are one-button inline forms, and hiding them would make
+/// the page depend on a timer), so the honest answer to clicking one while
+/// locked is to explain the requirement and offer the way through it. The
+/// check is server-side regardless of what the page rendered.
+///
+/// The action itself is **not** replayed after confirming — the admin lands
+/// back on `/admin` and clicks again. Replaying would mean stashing a POST body
+/// across a redirect, and re-clicking one button is a smaller price than that
+/// machinery.
 fn admin_locked(config: &crate::config::Config, jar: CookieJar) -> Response {
     let jar = jar.add(flash_cookie(config, "admin_locked"));
-    (jar, Redirect::to("/admin")).into_response()
+    (jar, Redirect::to("/admin/unlock")).into_response()
 }
 
 /// Record a refused re-authentication.
@@ -2503,9 +2508,11 @@ fn take_flash(
             "Password changed. Any other signed-in sessions were signed out; API keys are unaffected."
         }
         "admin_locked" => {
-            "That action grants access, so it needs your password first. Unlock admin actions above, then try again."
+            "That action wasn't performed — it grants access, so it needs confirming first."
         }
-        "admin_unlocked" => "Admin actions unlocked.",
+        "admin_unlocked" => {
+            "Confirmed. Creating a user, resetting a password and granting admin are available for the next few minutes."
+        }
         "forward_auth_logout" => {
             "Signed out locally, but you're authenticated through your reverse proxy — this app can't end that session. To sign out completely, log out at your proxy or SSO provider."
         }
@@ -4012,10 +4019,8 @@ async fn admin_page(
     // next to check.
     let (jar, settings_flash) = take_flash(&state.config, jar, "settings");
     let (jar, user_flash) = take_flash(&state.config, jar, "users_blocked");
-    // The refusal shares `user_flash`'s error styling and slot — it is the
-    // other "that action was not performed" message on this page, and only one
-    // flash cookie can be in flight anyway.
-    let (jar, locked_flash) = take_flash(&state.config, jar, "admin_locked");
+    // The `admin_locked` flash is deliberately *not* taken here — it belongs to
+    // `/admin/unlock`, which is where a refused action sends the admin.
     let (jar, elevation_flash) = take_flash(&state.config, jar, "admin_unlocked");
     let (jar, password_reset_flash) = take_password_reset_keys_flash(&state.config, jar);
     let resp = render_admin(
@@ -4026,7 +4031,7 @@ async fn admin_page(
             settings,
             settings_error: None,
             settings_flash,
-            user_flash: user_flash.or(locked_flash),
+            user_flash,
             elevation_flash,
             password_reset_flash,
             user_error: None,
@@ -4034,6 +4039,69 @@ async fn admin_page(
         &audit,
     )
     .await?;
+    Ok((jar, resp).into_response())
+}
+
+#[derive(Template)]
+#[template(path = "admin_unlock.html")]
+struct AdminUnlockTemplate {
+    show_nav: bool,
+    csrf: String,
+    is_admin: bool,
+    /// False for a passwordless forward-auth admin: the page says the gate does
+    /// not apply to them instead of asking for something they do not have.
+    applies: bool,
+    /// `Some(readable duration)` when already confirmed.
+    remaining: Option<String>,
+    /// How long confirming lasts, rendered into the explanation so the page and
+    /// `elevate::ELEVATION_TTL_SECS` cannot drift apart.
+    ttl: String,
+    /// Set when the admin arrived here by clicking a gated control rather than
+    /// navigating, so the page opens by naming what was refused.
+    bounced_flash: Option<String>,
+    error: Option<String>,
+}
+
+/// Render the unlock page.
+///
+/// A page rather than a field on `/admin`: the requirement needs explaining —
+/// why a signed-in admin is being asked again, which actions it covers, which
+/// it deliberately does not, and that this is the same password rather than a
+/// second factor. None of that fits beside a button in a table row.
+fn render_admin_unlock(
+    state: &AppState,
+    jar: &CookieJar,
+    admin: &User,
+    bounced_flash: Option<String>,
+    error: Option<String>,
+) -> Result<Response, AppError> {
+    let elevation = elevation(state, jar, admin);
+    Ok(render(&AdminUnlockTemplate {
+        show_nav: true,
+        csrf: current_csrf(state, jar),
+        is_admin: true,
+        applies: !elevation.not_applicable,
+        remaining: elevation.remaining_secs.map(fmt_elevation_secs),
+        ttl: fmt_elevation_secs(crate::elevate::ELEVATION_TTL_SECS),
+        bounced_flash,
+        error,
+    })?
+    .into_response())
+}
+
+/// Render a live-or-total elevation window in the same readable form the
+/// duration fields use.
+fn fmt_elevation_secs(secs: u64) -> String {
+    crate::duration::fmt_duration(secs.try_into().unwrap_or(i64::MAX))
+}
+
+async fn admin_unlock_page(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    AdminUser(admin): AdminUser,
+) -> Result<Response, AppError> {
+    let (jar, bounced) = take_flash(&state.config, jar, "admin_locked");
+    let resp = render_admin_unlock(&state, &jar, &admin, bounced, None)?;
     Ok((jar, resp).into_response())
 }
 
@@ -4056,23 +4124,9 @@ async fn admin_unlock(
         Reauth::Throttled => Some("Too many attempts — try again later."),
     };
     if let Some(msg) = refusal {
-        let settings = load_settings_fields(&state).await?;
-        return render_admin(
-            &state,
-            &jar,
-            &admin,
-            AdminRender {
-                settings,
-                settings_error: None,
-                settings_flash: None,
-                user_flash: Some(msg.to_string()),
-                elevation_flash: None,
-                password_reset_flash: None,
-                user_error: None,
-            },
-            &AdminAuditQuery::default(),
-        )
-        .await;
+        // Back onto the same page, so the explanation stays in front of an
+        // admin who is mid-way through the flow.
+        return render_admin_unlock(&state, &jar, &admin, None, Some(msg.to_string()));
     }
     // A passwordless forward-auth admin reaches `Passed` without a check (see
     // `reauthenticate`), and there is no session handle to key on when the

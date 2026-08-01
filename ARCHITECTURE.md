@@ -720,10 +720,25 @@ Two properties are load-bearing:
 `/account` can carry a password field on the form itself. `/admin` cannot: its
 controls are single-button inline forms in a table row, and
 `users_toggle_admin` posts no body at all. So re-authentication is **decoupled
-from the action** (`src/elevate.rs`) — an admin unlocks once via
-`POST /admin/unlock`, which goes through the same `reauthenticate` gate, and
-`web::elevation` checks that the unlock is still fresh
+from the action** (`src/elevate.rs`): a refused action redirects to
+`GET /admin/unlock`, an interstitial that explains the requirement and takes the
+password; `POST /admin/unlock` runs the same `reauthenticate` gate, and
+`web::elevation` then checks that the confirmation is still fresh
 (`ELEVATION_TTL_SECS`, 15 minutes).
+
+The interstitial is a **page, not a field**, because the requirement needs
+explaining. An admin who is already signed in and gets asked for their password
+again will reasonably wonder whether something is wrong, so the page says why,
+which three actions it covers, which it deliberately does not, how long
+confirming lasts (rendered from the constant, so copy and code cannot drift),
+and — importantly — that this is the same password rather than a second factor.
+None of that fits beside a button in a table row. `/admin` keeps only a one-line
+state note linking to it, so the requirement is discoverable before an action is
+refused rather than only after.
+
+The refused action is **not replayed** afterwards: the admin lands back on
+`/admin` and clicks again. Replaying would mean stashing a POST body across a
+redirect, and one extra click is cheaper than that machinery.
 
 The line is **granting versus removing access**, not "dangerous versus safe":
 
@@ -762,10 +777,10 @@ Three properties:
   and the card is hidden rather than shown with a field they could not fill —
   the same asymmetry, for the same reason, as the API-key gate above.
 
-A refusal is a flash redirect to `/admin`, not a 403: the controls stay live in
-the table (hiding them would make the page depend on a timer), so the honest
-answer to clicking one while locked is to say why nothing happened. The check is
-server-side regardless of what the page rendered.
+A refusal is a redirect to the interstitial, not a 403: the controls stay live
+in the table (hiding them would make the page depend on a timer), so the honest
+answer to clicking one while locked is to explain the requirement and offer the
+way through it. The check is server-side regardless of what the page rendered.
 
 ### Rejected authentication attempts
 

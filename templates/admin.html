@@ -216,14 +216,10 @@
   <div class="cb">
     {% if let Some(f) = elevation_flash %}<p class="flash ok" data-testid="elevation-flash">{{ f }}</p>{% endif %}
     {% if let Some(left) = elevation_remaining %}
-    <p class="note" data-testid="elevation-state">Unlocked for another {{ left }}. Creating a user, resetting a password and granting admin are available.</p>
+    <p class="note" data-testid="elevation-state">Confirmed &mdash; creating a user, resetting a password and granting admin stay available for another {{ left }}.</p>
     {% else %}
-    <p class="crumb tight" data-testid="elevation-state">Creating a user, resetting a password and granting admin each hand out access that outlasts this browser session, so they need your password first. Removing access &mdash; disabling, demoting, deleting &mdash; never does.</p>
-    <form class="inline" method="post" action="/admin/unlock">
-      <input type="hidden" name="_csrf" value="{{ csrf }}">
-      <input type="password" name="password" placeholder="your password" autocomplete="current-password" data-testid="unlock-input" required>
-      <button class="btn primary" type="submit" data-testid="unlock-submit">Unlock</button>
-    </form>
+    <p class="crumb tight" data-testid="elevation-state">Creating a user, resetting a password and granting admin each hand out access that outlasts this browser session, so they ask you to confirm your password first. Removing access &mdash; disabling, demoting, deleting &mdash; never does.</p>
+    <p><a class="btn" href="/admin/unlock" data-testid="elevation-confirm-link">Confirm now</a></p>
     {% endif %}
   </div>
 </div>

@@ -105,9 +105,11 @@ Feature: User management
   Scenario: Granting admin is refused until admin actions are unlocked
     Given a member "member" with password "hunter2 correct" exists
     And I lock admin actions
-    When I toggle admin on "member"
-    Then the user "member" is listed with role "member"
-    And admin actions are locked
+    When I try to grant admin to "member"
+    Then I am sent to the confirmation page
+    And the confirmation page explains the requirement
+    And I am on the users page
+    And the user "member" is listed with role "member"
 
   Scenario: Removing access stays available while admin actions are locked
     Given a member "member" with password "hunter2 correct" exists

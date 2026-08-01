@@ -246,3 +246,14 @@ When(
 Then("the user form shows the error {string}", async ({ page }, message) => {
   await expect(page.getByTestId("user-error")).toHaveText(message);
 });
+
+// Like "I toggle admin on", but for the locked case: the click lands on the
+// confirmation interstitial rather than back on /admin, so the destination is
+// the assertion rather than a precondition.
+When("I try to grant admin to {string}", async ({ page }, username) => {
+  const row = userRow(page, username);
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: "load" }),
+    row.getByTestId("user-toggle-admin").click(),
+  ]);
+});

@@ -203,8 +203,12 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   The line is **granting vs removing access**: `users_create`,
   `users_set_password` and `users_toggle_admin` *when promoting* are gated;
   delete, disable and demote deliberately are **not** — an operator who thinks
-  they are under attack must not have to find their password first. A refusal is
-  a flash redirect, not a 403, since the controls stay live.
+  they are under attack must not have to find their password first. A refusal
+  redirects to `GET /admin/unlock` — an interstitial **page**, not a field,
+  because the requirement needs explaining (why a signed-in admin is asked
+  again, what it covers, that it is the same password and **not** a second
+  factor); `/admin` keeps only a one-line note linking there. The refused action
+  is not replayed afterwards.
 - Rejected attempts log to the `pingward::auth` target — `login.failed`
   (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`/`account_locked`)
   and `reauth.failed` (`surface` = `password_change`/`api_key_create`). One

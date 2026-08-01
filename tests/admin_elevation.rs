@@ -3,8 +3,9 @@
 //!
 //! `/admin`'s controls are single-button inline forms in a table row —
 //! `users_toggle_admin` posts no body at all — so the per-action password field
-//! `/account` uses does not fit. Re-authentication is decoupled instead: unlock
-//! once via `POST /admin/unlock`, act for a while.
+//! `/account` uses does not fit. Re-authentication is decoupled instead: a
+//! refused action bounces to `/admin/unlock`, an interstitial that *explains*
+//! the requirement and takes the password; confirming lasts a while.
 //!
 //! The line drawn is **granting versus removing access**. Creating a user,
 //! resetting a password and promoting to admin each hand out access that
@@ -72,10 +73,11 @@ async fn creating_a_user_is_refused_while_locked() {
             .is_none(),
         "a locked admin must not have created an account"
     );
-    assert!(
-        server.get("/admin").await.text().contains("users-flash"),
-        "the refusal has to say why, or nothing appears to have happened"
-    );
+    // The refusal is an interstitial, not a silent bounce: the admin lands on
+    // the page that explains the requirement, with what was refused named.
+    let bounced = server.get("/admin/unlock").await.text();
+    assert!(bounced.contains("unlock-bounced"), "{bounced}");
+    assert!(bounced.contains("unlock-input"), "{bounced}");
 }
 
 #[tokio::test]
@@ -154,7 +156,11 @@ async fn unlocking_then_granting_works() {
 
     let body = server.get("/admin").await.text();
     assert!(body.contains("elevation-state"), "{body}");
-    assert!(body.contains("Unlocked for another"), "{body}");
+    assert!(body.contains("stay available for another"), "{body}");
+    // And the page itself reports the live window rather than re-asking.
+    let page = server.get("/admin/unlock").await.text();
+    assert!(page.contains("unlock-state"), "{page}");
+    assert!(!page.contains("unlock-input"), "{page}");
 
     server
         .post(&format!("/admin/users/{dave}/admin"))
@@ -170,8 +176,11 @@ async fn the_wrong_password_does_not_unlock() {
         .post("/admin/unlock")
         .form(&[("password", "not-the-password")])
         .await;
-    res.assert_status_ok(); // re-rendered /admin with the error
+    // The unlock page re-renders with the error, keeping the explanation in
+    // front of an admin who is mid-flow.
+    res.assert_status_ok();
     assert!(res.text().contains("That password is not correct."));
+    assert!(res.text().contains("unlock-input"));
 
     server.post(&format!("/admin/users/{dave}/admin")).await;
     assert!(
@@ -263,4 +272,131 @@ async fn signing_out_and_back_in_starts_locked() {
         !store.find_user_by_id(dave).await.unwrap().unwrap().is_admin,
         "a fresh session after logout must start locked"
     );
+}
+
+// --- the interstitial page ---
+
+/// The page has to *explain*, not just ask. An admin who is already signed in
+/// and gets asked for their password again will otherwise reasonably wonder
+/// whether something is wrong.
+#[tokio::test]
+async fn the_unlock_page_explains_the_requirement() {
+    let (server, _store, _dave) = locked_admin().await;
+    let body = server.get("/admin/unlock").await.text();
+
+    assert!(body.contains("unlock-input"), "{body}");
+    // What it covers, and — just as important — what it does not.
+    assert!(body.contains("unlock-gated"), "{body}");
+    assert!(body.contains("Granting admin rights"), "{body}");
+    assert!(body.contains("disabling, demoting, deleting"), "{body}");
+    // It is the same password again. Calling this a second *factor* would be
+    // wrong, and an admin hunting for a TOTP app is a support ticket.
+    assert!(body.contains("not a second factor"), "{body}");
+    // The window is rendered from the constant rather than written into the
+    // copy, so the two cannot drift.
+    assert!(body.contains("15m"), "{body}");
+    // A way out that is not the browser back button.
+    assert!(body.contains("unlock-cancel"), "{body}");
+}
+
+/// Arriving under one's own steam is not the same as being bounced here: only
+/// the bounce names a refused action, and the notice is one-shot.
+#[tokio::test]
+async fn the_bounce_notice_is_one_shot_and_absent_when_navigating() {
+    let (server, _store, dave) = locked_admin().await;
+
+    assert!(
+        !server
+            .get("/admin/unlock")
+            .await
+            .text()
+            .contains("unlock-bounced")
+    );
+
+    server.post(&format!("/admin/users/{dave}/admin")).await;
+    assert!(
+        server
+            .get("/admin/unlock")
+            .await
+            .text()
+            .contains("unlock-bounced")
+    );
+    assert!(
+        !server
+            .get("/admin/unlock")
+            .await
+            .text()
+            .contains("unlock-bounced"),
+        "a reload must not repeat the notice"
+    );
+}
+
+/// `/admin` keeps a one-line state note linking here, so the requirement is
+/// discoverable before an action is refused rather than only after.
+#[tokio::test]
+async fn admin_links_to_the_page_while_locked() {
+    let (server, _store, _dave) = locked_admin().await;
+    let body = server.get("/admin").await.text();
+    assert!(body.contains("elevation-confirm-link"), "{body}");
+    assert!(body.contains("/admin/unlock"), "{body}");
+}
+
+/// A passwordless forward-auth admin has nothing to confirm, so the page says
+/// so instead of showing a field they could never fill in.
+#[tokio::test]
+async fn the_page_tells_a_passwordless_admin_it_does_not_apply() {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let uid = store
+        .create_user("sso-admin", None, true, chrono::Utc::now())
+        .await
+        .unwrap();
+    let session_id = pingward::auth::new_session_token();
+    store
+        .create_session(
+            &session_id,
+            uid,
+            chrono::Utc::now() + chrono::Duration::hours(1),
+            None,
+            None,
+            true,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+    let state = AppState::new(store.clone(), common::test_config());
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    server.add_cookie(axum_extra::extract::cookie::Cookie::new(
+        pingward::auth::session_cookie_name(false),
+        pingward::secret::sign_session(common::TEST_SECRET.as_bytes(), &session_id),
+    ));
+    server.add_header(
+        "x-csrf-token",
+        pingward::secret::derive_csrf(common::TEST_SECRET.as_bytes(), &session_id),
+    );
+
+    let body = server.get("/admin/unlock").await.text();
+    assert!(body.contains("unlock-not-applicable"), "{body}");
+    assert!(!body.contains("unlock-input"), "{body}");
+    // And /admin does not nag them about a gate that cannot apply.
+    assert!(
+        !server
+            .get("/admin")
+            .await
+            .text()
+            .contains("elevation-state")
+    );
+
+    // The gate really is inert for them, not merely hidden.
+    let dave = store
+        .create_user("dave", Some("x"), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    server
+        .post(&format!("/admin/users/{dave}/admin"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(store.find_user_by_id(dave).await.unwrap().unwrap().is_admin);
 }

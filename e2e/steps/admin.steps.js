@@ -254,7 +254,7 @@ When("I reveal the ping URL", async ({ page }) => {
 Given(
   "I unlock admin actions with my password {string}",
   async ({ page, serverUrl }, password) => {
-    await page.goto(`${serverUrl}/admin`);
+    await page.goto(`${serverUrl}/admin/unlock`);
     await page.getByTestId("unlock-input").fill(password);
     await Promise.all([
       page.waitForNavigation({ waitUntil: "load" }),
@@ -264,8 +264,17 @@ Given(
   }
 );
 
-Then("admin actions are locked", async ({ page }) => {
-  await expect(page.getByTestId("unlock-submit")).toBeVisible();
+// A refused action redirects to the interstitial rather than failing in place,
+// so "was it refused?" is answered by where the browser ended up.
+Then("I am sent to the confirmation page", async ({ page, serverUrl }) => {
+  await expect(page).toHaveURL(`${serverUrl}/admin/unlock`);
+  await expect(page.getByTestId("unlock-bounced")).toBeVisible();
+  await expect(page.getByTestId("unlock-input")).toBeVisible();
+});
+
+Then("the confirmation page explains the requirement", async ({ page }) => {
+  await expect(page.getByTestId("unlock-gated")).toBeVisible();
+  await expect(page.getByTestId("unlock-cancel")).toBeVisible();
 });
 
 // Elevation is per-session and dropped on sign-out, so signing out and back in
@@ -274,5 +283,7 @@ Then("admin actions are locked", async ({ page }) => {
 Given("I lock admin actions", async ({ page, serverUrl }) => {
   await signIn(page, serverUrl, "admin", "correct horse battery");
   await page.goto(`${serverUrl}/admin`);
-  await expect(page.getByTestId("unlock-submit")).toBeVisible();
+  // Locked state on /admin is a one-line note linking to the interstitial —
+  // the form itself lives there, not here.
+  await expect(page.getByTestId("elevation-confirm-link")).toBeVisible();
 });

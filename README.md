@@ -46,8 +46,8 @@ OS preference and the layout adapts to phones.
   rule, so passphrases, spaces and any script are all fine. Creating an API key
   asks for that password again, since a key outlives the session that made it,
   and the admin actions that hand out access (creating a user, resetting a
-  password, granting admin) sit behind a 15-minute unlock — the ones that
-  *remove* access never do.
+  password, granting admin) sit behind a 15-minute confirmation, on a page that
+  explains what it covers — the ones that *remove* access never ask.
   Login is throttled
   both per source address (5/minute) and per account (10/15 minutes, so a
   distributed attempt cannot just add addresses), and failed sign-ins are
