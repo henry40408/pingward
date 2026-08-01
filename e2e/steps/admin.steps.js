@@ -246,3 +246,44 @@ When("I reveal the ping URL", async ({ page }) => {
   await page.getByTestId("reveal-ping-url").click();
   await expect(page.getByTestId("ping-url")).toBeVisible();
 });
+
+// Creating a user, resetting a password and granting admin each hand out access
+// that outlives the browser session, so they sit behind an elevation gate
+// (`src/elevate.rs`). An admin unlocks once with their own password and then
+// acts; removing access — disabling, demoting, deleting — never needs it.
+Given(
+  "I unlock admin actions with my password {string}",
+  async ({ page, serverUrl }, password) => {
+    await page.goto(`${serverUrl}/admin/unlock`);
+    await page.getByTestId("unlock-input").fill(password);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "load" }),
+      page.getByTestId("unlock-submit").click(),
+    ]);
+    await expect(page.getByTestId("elevation-flash")).toBeVisible();
+  }
+);
+
+// A refused action redirects to the interstitial rather than failing in place,
+// so "was it refused?" is answered by where the browser ended up.
+Then("I am sent to the confirmation page", async ({ page, serverUrl }) => {
+  await expect(page).toHaveURL(`${serverUrl}/admin/unlock`);
+  await expect(page.getByTestId("unlock-bounced")).toBeVisible();
+  await expect(page.getByTestId("unlock-input")).toBeVisible();
+});
+
+Then("the confirmation page explains the requirement", async ({ page }) => {
+  await expect(page.getByTestId("unlock-gated")).toBeVisible();
+  await expect(page.getByTestId("unlock-cancel")).toBeVisible();
+});
+
+// Elevation is per-session and dropped on sign-out, so signing out and back in
+// is how a scenario returns to the locked state after the Background unlocked
+// it. There is no "lock now" control — the window simply expires.
+Given("I lock admin actions", async ({ page, serverUrl }) => {
+  await signIn(page, serverUrl, "admin", "correct horse battery");
+  await page.goto(`${serverUrl}/admin`);
+  // Locked state on /admin is a one-line note linking to the interstitial —
+  // the form itself lives there, not here.
+  await expect(page.getByTestId("elevation-confirm-link")).toBeVisible();
+});

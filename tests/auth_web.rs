@@ -896,6 +896,9 @@ async fn admin_sets_retention_days() {
 #[tokio::test]
 async fn admin_creates_and_deletes_user() {
     let (server, store, _uid) = logged_in_server().await;
+    // Creating an account is access-granting, so it sits behind the elevation
+    // gate; deleting one is not, and needs no unlock.
+    common::unlock_admin(&server, "pw").await;
     server
         .post("/admin/users")
         .form(&[

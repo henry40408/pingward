@@ -28,6 +28,10 @@ pub struct AppState {
     /// per-address counter: N addresses simply buy N times the budget against
     /// one account. See `ratelimit::ACCOUNT_MAX_ATTEMPTS`.
     pub account_limiter: Arc<crate::ratelimit::RateLimiter<String>>,
+    /// Which browser sessions have re-asserted their password recently, and so
+    /// may perform the `/admin` actions that *grant* access. In-memory and
+    /// per-process — see `crate::elevate` for why that costs nothing here.
+    pub elevations: Arc<crate::elevate::Elevations>,
 }
 
 impl AppState {
@@ -44,6 +48,9 @@ impl AppState {
             account_limiter: Arc::new(crate::ratelimit::RateLimiter::new(
                 crate::ratelimit::ACCOUNT_MAX_ATTEMPTS,
                 crate::ratelimit::ACCOUNT_WINDOW_SECS,
+            )),
+            elevations: Arc::new(crate::elevate::Elevations::new(
+                crate::elevate::ELEVATION_TTL_SECS,
             )),
         }
     }

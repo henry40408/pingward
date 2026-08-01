@@ -249,3 +249,25 @@ pub fn normalise_route_path(raw: &str) -> String {
     }
     out
 }
+
+/// Unlock `/admin`'s access-granting controls for this server's session.
+///
+/// Creating a user, resetting a password and granting admin each hand out
+/// access that outlives the browser session, so they sit behind
+/// `elevate::Elevations` and need the admin's password re-asserted first. A
+/// test driving one of those does what an admin does: unlock once, then act.
+///
+/// Requires the session's CSRF token to already be installed as a default
+/// header, which every admin fixture in this suite does.
+///
+/// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — each test
+/// binary compiles this module separately, so anything not used by *that*
+/// binary reads as dead there.
+#[allow(dead_code)]
+pub async fn unlock_admin(server: &axum_test::TestServer, password: &str) {
+    server
+        .post("/admin/unlock")
+        .form(&[("password", password)])
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+}

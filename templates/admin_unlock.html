@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="phead">
+  <div>
+    <h1>Confirm it's you</h1>
+    <p class="crumb tight">Some admin actions ask for your password a second time, even though you're already signed in.</p>
+  </div>
+</div>
+
+{% if let Some(f) = bounced_flash %}<p class="flash err" data-testid="unlock-bounced">{{ f }}</p>{% endif %}
+{% if let Some(error) = error %}<p class="flash err" data-testid="unlock-error">{{ error }}</p>{% endif %}
+
+{% if !applies %}
+<div class="card">
+  <div class="cb">
+    <p class="note" data-testid="unlock-not-applicable">Your account signs in through your reverse proxy or SSO provider, so there is no password here to confirm. Every admin action is already available to you.</p>
+    <p><a class="btn" href="/admin" data-testid="unlock-back">Back to admin</a></p>
+  </div>
+</div>
+{% else if let Some(left) = remaining %}
+<div class="card">
+  <div class="cb">
+    <p class="note" data-testid="unlock-state">Already confirmed &mdash; these actions stay available for another {{ left }}.</p>
+    <p><a class="btn primary" href="/admin" data-testid="unlock-back">Back to admin</a></p>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <div class="ch"><h2>Why you're seeing this</h2></div>
+  <div class="cb">
+    <p class="crumb tight" data-testid="unlock-gated">A session cookie proves who opened this browser, not who is at it now. <strong>Creating a user</strong>, <strong>resetting another user's password</strong> and <strong>granting admin rights</strong> each hand out access that keeps working after you sign out, so they ask for a second confirmation before they run.</p>
+    <p class="crumb tight">Actions that <em>remove</em> access &mdash; disabling, demoting, deleting &mdash; never ask, so you can always shut an account down in a hurry.</p>
+    <p class="crumb tight">This is your same password again, not a second factor. Confirming lasts {{ ttl }}, and ends when you sign out.</p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ch"><h2>Confirm your password</h2></div>
+  <div class="cb">
+    <form method="post" action="/admin/unlock">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" data-testid="unlock-input" required>
+      </div>
+      <div class="formactions">
+        <button class="btn primary" type="submit" data-testid="unlock-submit">Confirm</button>
+        <a class="btn" href="/admin" data-testid="unlock-cancel">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

@@ -52,6 +52,7 @@ async fn admin_server() -> (TestServer, Store, i64) {
         .await;
     let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
+    common::unlock_admin(&server, "pw").await;
     (server, store, uid)
 }
 

@@ -9,6 +9,7 @@ Feature: Admin cross-user management
   Background:
     Given an admin "admin" with password "correct horse battery" exists
     And I am signed in as "admin" with password "correct horse battery"
+    And I unlock admin actions with my password "correct horse battery"
     And a non-admin user "member" with password "hunter2 correct" exists
     And "member" with password "hunter2 correct" owns a project "Member jobs" with a check "member-backup" period 60
     And I am signed in as "admin" with password "correct horse battery"

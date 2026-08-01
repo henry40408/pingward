@@ -187,14 +187,28 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   than `release`-ing one attempt. An account lockout is inherently a DoS
   primitive; that is accepted and documented, not solved.
 - `web::reauthenticate` is the shared gate demanding the signed-in user's own
-  password again before a sensitive action; `POST /account/password` and
-  `POST /account/api-keys` use it. The API-key one carries its own weight: a
+  password again before a sensitive action; `POST /account/password`,
+  `POST /account/api-keys` and `POST /admin/unlock` use it. The API-key one carries its own weight: a
   key is bound by neither session cap and survives `users_set_password`, so a
   borrowed browser would otherwise buy permanent access. A **passwordless
   forward-auth account passes unchallenged** (nothing to verify; its authority
   is at the gateway) and is not rendered the field — `has_password` gates both
   that and the password card. Attempts go through `account_limiter`, which is
   what closed `/account/password`'s previously unmetered password oracle.
+- `/admin`'s controls are single-button inline forms (`users_toggle_admin` posts
+  no body), so a per-action password field does not fit: re-auth is decoupled
+  into `src/elevate.rs`, an in-memory per-session unlock
+  (`POST /admin/unlock`, `ELEVATION_TTL_SECS` 15min, keyed by session **handle**,
+  dropped on logout — no migration, since a restart just means unlocking again).
+  The line is **granting vs removing access**: `users_create`,
+  `users_set_password` and `users_toggle_admin` *when promoting* are gated;
+  delete, disable and demote deliberately are **not** — an operator who thinks
+  they are under attack must not have to find their password first. A refusal
+  redirects to `GET /admin/unlock` — an interstitial **page**, not a field,
+  because the requirement needs explaining (why a signed-in admin is asked
+  again, what it covers, that it is the same password and **not** a second
+  factor); `/admin` keeps only a one-line note linking there. The refused action
+  is not replayed afterwards.
 - Rejected attempts log to the `pingward::auth` target — `login.failed`
   (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`/`account_locked`)
   and `reauth.failed` (`surface` = `password_change`/`api_key_create`). One

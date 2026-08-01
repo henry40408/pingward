@@ -863,6 +863,16 @@ nav.links a:hover {
   color: var(--faint);
   margin: 0 7px;
 }
+/* Emphasis inside muted prose (`.crumb`, `.note`) has to lift the colour as
+   well as the weight: bold still rendered at `--muted` reads as noise against
+   its neighbours rather than as emphasis. `em` deliberately does *not* lift,
+   which leaves two distinct levels — `strong` for the thing being named, `em`
+   for a contrastive word inside the sentence around it. */
+.crumb strong,
+.note strong {
+  color: var(--ink);
+  font-weight: 600;
+}
 
 /* ---- Check header (detail) ---- */
 .chead {
@@ -1566,6 +1576,13 @@ tr.exp > td {
 /* A crumb line hugging the element directly above it. */
 .crumb.tight {
   margin: 2px 0 0;
+}
+/* That 2px is tuned for a single line sitting under a heading. Stacked as
+   prose — as `/admin/unlock` does, making three separate points — it collapses
+   them into one wall of text. Space only the *subsequent* siblings, so the
+   first still hugs whatever it follows and every existing use is untouched. */
+.crumb.tight + .crumb.tight {
+  margin-top: 14px;
 }
 /* The check page stacks `.chead` → `.crumb.tight` (schedule) → `.desc`, and
    `.desc`'s -6px top margin is tuned for following a `.phead` that carries its

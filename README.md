@@ -44,7 +44,10 @@ OS preference and the layout adapts to phones.
   from the **Account** page (it asks for the current one, and signs out every
   other session). Passwords must be 15–128 characters — length is the only
   rule, so passphrases, spaces and any script are all fine. Creating an API key
-  asks for that password again, since a key outlives the session that made it.
+  asks for that password again, since a key outlives the session that made it,
+  and the admin actions that hand out access (creating a user, resetting a
+  password, granting admin) sit behind a 15-minute confirmation, on a page that
+  explains what it covers — the ones that *remove* access never ask.
   Login is throttled
   both per source address (5/minute) and per account (10/15 minutes, so a
   distributed attempt cannot just add addresses), and failed sign-ins are

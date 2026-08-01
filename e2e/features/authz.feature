@@ -3,6 +3,7 @@ Feature: Authorization and security boundaries
   Background:
     Given an admin "admin" with password "correct horse battery" exists
     And I am signed in as "admin" with password "correct horse battery"
+    And I unlock admin actions with my password "correct horse battery"
 
   Scenario: An admin sees the Admin nav link
     Then the "Admin" nav link is visible

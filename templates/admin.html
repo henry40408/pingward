@@ -210,6 +210,21 @@
   </div>
 </div>
 
+{% if elevation_applies %}
+<div class="card">
+  <div class="ch"><h2>Admin actions</h2></div>
+  <div class="cb">
+    {% if let Some(f) = elevation_flash %}<p class="flash ok" data-testid="elevation-flash">{{ f }}</p>{% endif %}
+    {% if let Some(left) = elevation_remaining %}
+    <p class="note" data-testid="elevation-state">Confirmed &mdash; creating a user, resetting a password and granting admin stay available for another {{ left }}.</p>
+    {% else %}
+    <p class="crumb tight" data-testid="elevation-state">Creating a user, resetting a password and granting admin each hand out access that outlasts this browser session, so they ask you to confirm your password first. Removing access &mdash; disabling, demoting, deleting &mdash; never does.</p>
+    <p><a class="btn" href="/admin/unlock" data-testid="elevation-confirm-link">Confirm now</a></p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <div class="ch"><h2>All users</h2></div>
   <div class="cb">

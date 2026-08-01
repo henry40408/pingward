@@ -52,6 +52,7 @@ async fn admin_server() -> (TestServer, Store, i64) {
         ])
         .await;
     set_csrf(&mut server, &store).await;
+    common::unlock_admin(&server, "pw").await;
     (server, store, admin_id)
 }
 
