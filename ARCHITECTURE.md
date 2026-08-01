@@ -676,8 +676,8 @@ everything — the preceding `find_user_by_username` is still a hit-versus-miss
 
 `web::reauthenticate` is the shared gate: it asks for the signed-in user's own
 password again before an action, because a session cookie proves who *opened*
-the browser, not who is at it now. Two surfaces use it today —
-`POST /account/password` and `POST /account/api-keys`.
+the browser, not who is at it now. Three surfaces use it —
+`POST /account/password`, `POST /account/api-keys` and `POST /admin/unlock`.
 
 Note what this is and is not defending. The Cheat Sheet motivates
 re-authentication with CSRF, XSS and session hijacking; the first two are
@@ -715,6 +715,58 @@ Two properties are load-bearing:
   guess its owner's password as often as it liked. A success clears the bucket,
   exactly as a successful login does.
 
+### Elevation for `/admin`'s access-granting actions
+
+`/account` can carry a password field on the form itself. `/admin` cannot: its
+controls are single-button inline forms in a table row, and
+`users_toggle_admin` posts no body at all. So re-authentication is **decoupled
+from the action** (`src/elevate.rs`) — an admin unlocks once via
+`POST /admin/unlock`, which goes through the same `reauthenticate` gate, and
+`web::elevation` checks that the unlock is still fresh
+(`ELEVATION_TTL_SECS`, 15 minutes).
+
+The line is **granting versus removing access**, not "dangerous versus safe":
+
+| Gated | Not gated |
+| --- | --- |
+| `POST /admin/users` (creates an account + password) | `POST /admin/users/{id}/delete` |
+| `POST /admin/users/{id}/password` (replaces a credential) | `POST /admin/users/{id}/disabled` |
+| `POST /admin/users/{id}/admin` **when promoting** | the same route when demoting |
+
+Each gated action hands out access that outlives the browser session that
+performed it — the same property that made API-key creation worth gating, which
+is why `users_toggle_admin` is gated in one direction only. The ungated column
+is not an oversight: disabling, demoting and deleting *take* access away, and an
+operator who believes an account is compromised must be able to do them without
+first finding their password. Ungating them is the same instinct that leaves
+`/account`'s session-revoke controls alone.
+
+Deliberately outside the gate too: `settings_save` (no credential; shortening
+`audit_retention_days` is already recorded by its own `settings.update` audit
+entry) and `POST /admin/checks/{id}/ping-url` (a disclosure of one check's
+capability token, already audited, and recoverable by regenerating it).
+
+Three properties:
+
+- **State is in-memory and per-process**, like `crate::ratelimit` and
+  `AppState::events`, and this is the one place that costs nothing. Elevation is
+  short-lived by design, so persisting it would buy at most the tail of one
+  window; a restart or a second replica just means entering the password again,
+  which is the safe direction for a privilege gate. That is why this needed no
+  migration.
+- **Keyed per session, by the SHA-256 handle**, never the raw session id — the
+  rule `auth::session_log_handle` and `/account`'s rows already follow. Per
+  session rather than per user, so unlocking one browser does not unlock
+  another signed in as the same admin, and `logout` revokes it.
+- **A passwordless forward-auth admin is never gated** (`Elevation::not_applicable`),
+  and the card is hidden rather than shown with a field they could not fill —
+  the same asymmetry, for the same reason, as the API-key gate above.
+
+A refusal is a flash redirect to `/admin`, not a 403: the controls stay live in
+the table (hiding them would make the page depend on a timer), so the honest
+answer to clicking one while locked is to say why nothing happened. The check is
+server-side regardless of what the page rendered.
+
 ### Rejected authentication attempts
 
 Failures are logged as `tracing` events under the `pingward::auth` target,
@@ -737,7 +789,8 @@ being sprayed.
   above for why those resolve differently.
 - `reauth.failed` (`web::log_reauth_failure`) — `username`, `user_id`,
   `surface`, `reason`. One event for every re-authentication gate (see below),
-  discriminated by `surface` (`password_change`, `api_key_create`) rather than
+  discriminated by `surface` (`password_change`, `api_key_create`,
+  `admin_unlock`) rather than
   by event name: "somebody is guessing this account's password" is one thing to
   alert on, and an operator should not have to enumerate the forms to catch it.
   `reason` is `bad_current_password` or `rate_limited`. Kept separate from

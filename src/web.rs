@@ -80,6 +80,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin", get(admin_page))
         .route("/admin/audit", get(admin_audit_fragment))
         .route("/admin/settings", post(settings_save))
+        .route("/admin/unlock", post(admin_unlock))
         .route("/admin/users", post(users_create))
         .route("/admin/users/{id}/delete", post(users_delete))
         .route("/admin/users/{id}/password", post(users_set_password))
@@ -501,6 +502,63 @@ fn reauthenticate(state: &AppState, user: &User, submitted: &str, surface: &'sta
     }
 }
 
+/// The SHA-256 handle of the session this request carries, if any.
+///
+/// The handle hashes the session *id*, so the cookie must be unwrapped and
+/// verified first — hashing the raw cookie value would never match anything.
+/// It is what identifies a session anywhere outside the cookie itself
+/// (`/account`'s rows, `elevate::Elevations`, the session log), because the id
+/// is the bearer secret and must not be copied around.
+fn current_session_handle(state: &AppState, jar: &CookieJar) -> Option<String> {
+    secret::session_id_from_jar(jar, &state.config.secret, session_cookie_name(state))
+        .map(|id| crate::apikey::hash_api_key(&id))
+}
+
+/// How the elevation gate stands for this request.
+struct Elevation {
+    /// The account has no local password, so there is nothing to re-assert and
+    /// the gate cannot apply — see [`reauthenticate`], which passes such an
+    /// account for the same reason.
+    not_applicable: bool,
+    /// Seconds left on the unlock, when there is one.
+    remaining_secs: Option<u64>,
+}
+
+impl Elevation {
+    /// Whether an access-granting admin action may proceed.
+    fn allows(&self) -> bool {
+        self.not_applicable || self.remaining_secs.is_some()
+    }
+}
+
+/// Read this request's elevation state.
+fn elevation(state: &AppState, jar: &CookieJar, user: &User) -> Elevation {
+    if user.password_hash.is_none() {
+        return Elevation {
+            not_applicable: true,
+            remaining_secs: None,
+        };
+    }
+    Elevation {
+        not_applicable: false,
+        remaining_secs: current_session_handle(state, jar)
+            .and_then(|h| state.elevations.remaining_secs(&h)),
+    }
+}
+
+/// Refuse an access-granting admin action that is not unlocked, by flashing
+/// what to do about it and returning to `/admin`.
+///
+/// A flash rather than a 403: the controls stay live in the table (they are
+/// one-button inline forms, and hiding them would make the page depend on a
+/// timer), so the honest answer to clicking one while locked is to say why
+/// nothing happened. The check is server-side regardless of what the page
+/// rendered.
+fn admin_locked(config: &crate::config::Config, jar: CookieJar) -> Response {
+    let jar = jar.add(flash_cookie(config, "admin_locked"));
+    (jar, Redirect::to("/admin")).into_response()
+}
+
 /// Record a refused re-authentication.
 ///
 /// One event for every gated surface, discriminated by `surface`, for the same
@@ -681,6 +739,12 @@ async fn logout(
         secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
     {
         state.store.delete_session(&id).await?;
+        // Drop any admin elevation with the row. The handle is derived from the
+        // session id, so a re-signed-in browser gets a fresh id and would never
+        // match a stale entry anyway — but leaving one behind would keep a dead
+        // session's privilege alive in the map until its window elapsed, and
+        // this map is the only place that state lives.
+        state.elevations.revoke(&crate::apikey::hash_api_key(&id));
         tracing::info!(
             target: "pingward::session",
             reason = "logout",
@@ -2438,6 +2502,10 @@ fn take_flash(
         "password_changed" => {
             "Password changed. Any other signed-in sessions were signed out; API keys are unaffected."
         }
+        "admin_locked" => {
+            "That action grants access, so it needs your password first. Unlock admin actions above, then try again."
+        }
+        "admin_unlocked" => "Admin actions unlocked.",
         "forward_auth_logout" => {
             "Signed out locally, but you're authenticated through your reverse proxy — this app can't end that session. To sign out completely, log out at your proxy or SSO provider."
         }
@@ -3924,6 +3992,9 @@ struct AdminRender {
     settings_error: Option<String>,
     settings_flash: Option<String>,
     user_flash: Option<String>,
+    /// Success notice from `POST /admin/unlock`, styled as an "ok" flash
+    /// rather than sharing `user_flash`, which is the error slot.
+    elevation_flash: Option<String>,
     password_reset_flash: Option<String>,
     user_error: Option<String>,
 }
@@ -3941,16 +4012,22 @@ async fn admin_page(
     // next to check.
     let (jar, settings_flash) = take_flash(&state.config, jar, "settings");
     let (jar, user_flash) = take_flash(&state.config, jar, "users_blocked");
+    // The refusal shares `user_flash`'s error styling and slot — it is the
+    // other "that action was not performed" message on this page, and only one
+    // flash cookie can be in flight anyway.
+    let (jar, locked_flash) = take_flash(&state.config, jar, "admin_locked");
+    let (jar, elevation_flash) = take_flash(&state.config, jar, "admin_unlocked");
     let (jar, password_reset_flash) = take_password_reset_keys_flash(&state.config, jar);
     let resp = render_admin(
         &state,
         &jar,
-        admin.id,
+        &admin,
         AdminRender {
             settings,
             settings_error: None,
             settings_flash,
-            user_flash,
+            user_flash: user_flash.or(locked_flash),
+            elevation_flash,
             password_reset_flash,
             user_error: None,
         },
@@ -3958,6 +4035,55 @@ async fn admin_page(
     )
     .await?;
     Ok((jar, resp).into_response())
+}
+
+/// Re-assert the admin's password to unlock the access-granting controls for
+/// `elevate::ELEVATION_TTL_SECS`.
+///
+/// Goes through the same [`reauthenticate`] gate `/account` uses, so a wrong
+/// password is charged to the account limiter here too — this form is reachable
+/// from an authenticated seat and would otherwise be a third password oracle
+/// alongside the two that gate closed.
+async fn admin_unlock(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    AdminUser(admin): AdminUser,
+    Form(form): Form<PasswordForm>,
+) -> Result<Response, AppError> {
+    let refusal = match reauthenticate(&state, &admin, &form.password, "admin_unlock") {
+        Reauth::Passed => None,
+        Reauth::Failed => Some("That password is not correct."),
+        Reauth::Throttled => Some("Too many attempts — try again later."),
+    };
+    if let Some(msg) = refusal {
+        let settings = load_settings_fields(&state).await?;
+        return render_admin(
+            &state,
+            &jar,
+            &admin,
+            AdminRender {
+                settings,
+                settings_error: None,
+                settings_flash: None,
+                user_flash: Some(msg.to_string()),
+                elevation_flash: None,
+                password_reset_flash: None,
+                user_error: None,
+            },
+            &AdminAuditQuery::default(),
+        )
+        .await;
+    }
+    // A passwordless forward-auth admin reaches `Passed` without a check (see
+    // `reauthenticate`), and there is no session handle to key on when the
+    // router is driven without a cookie; both simply fall through to the
+    // redirect, which is harmless because `Elevation::not_applicable` already
+    // lets those accounts act.
+    if let Some(handle) = current_session_handle(&state, &jar) {
+        state.elevations.grant(&handle);
+    }
+    let jar = jar.add(flash_cookie(&state.config, "admin_unlocked"));
+    Ok((jar, Redirect::to("/admin")).into_response())
 }
 
 async fn settings_save(
@@ -4024,7 +4150,7 @@ async fn settings_save(
                 let resp = render_admin(
                     &state,
                     &jar,
-                    admin.id,
+                    &admin,
                     AdminRender {
                         settings: SettingsFields {
                             scan_interval: form.scan_interval.clone(),
@@ -4035,6 +4161,7 @@ async fn settings_save(
                             display_timezone: form.display_timezone.clone(),
                         },
                         settings_error: Some(msg),
+                        elevation_flash: None,
                         settings_flash: None,
                         user_flash: None,
                         password_reset_flash: None,
@@ -4094,6 +4221,12 @@ async fn users_create(
     AdminUser(admin): AdminUser,
     Form(form): Form<NewUserForm>,
 ) -> Result<Response, AppError> {
+    // Creating an account mints a credential that keeps working after this
+    // browser signs out — the same property that made API-key creation worth
+    // gating, and doubly so when the new account is an admin.
+    if !elevation(&state, &jar, &admin).allows() {
+        return Ok(admin_locked(&state.config, jar));
+    }
     let policy = crate::auth::validate_password(&form.password);
     if form.username.trim().is_empty() || policy.is_err() {
         let error = if form.username.trim().is_empty() {
@@ -4105,12 +4238,13 @@ async fn users_create(
         let resp = render_admin(
             &state,
             &jar,
-            admin.id,
+            &admin,
             AdminRender {
                 settings,
                 settings_error: None,
                 settings_flash: None,
                 user_flash: None,
+                elevation_flash: None,
                 password_reset_flash: None,
                 user_error: Some(error),
             },
@@ -4203,6 +4337,11 @@ async fn users_set_password(
     jar: CookieJar,
     Form(form): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
+    // Replaces someone else's credential with one this admin knows, which
+    // outlives the session that set it.
+    if !elevation(&state, &jar, &admin).allows() {
+        return Ok(admin_locked(&state.config, jar));
+    }
     // Rendered with the message rather than the silent `Redirect::to("/admin")`
     // the empty-password case used to get: bouncing back to an unchanged page
     // reads as success, and an admin who believes they reset a password when
@@ -4212,12 +4351,13 @@ async fn users_set_password(
         return render_admin(
             &state,
             &jar,
-            admin.id,
+            &admin,
             AdminRender {
                 settings,
                 settings_error: None,
                 settings_flash: None,
                 user_flash: None,
+                elevation_flash: None,
                 password_reset_flash: None,
                 user_error: Some(msg),
             },
@@ -4329,6 +4469,15 @@ async fn users_toggle_admin(
         return Ok(Redirect::to("/admin").into_response());
     };
     let new_admin = !target.is_admin;
+    // Gated in one direction only. *Granting* admin creates a second full-control
+    // way into the instance that outlives this browser; revoking it takes access
+    // away, and an operator who thinks they are under attack must be able to do
+    // that without first finding their password. The same asymmetry is why
+    // `users_delete` and `users_set_disabled` are not gated at all — see
+    // ARCHITECTURE.md.
+    if new_admin && !elevation(&state, &jar, &admin).allows() {
+        return Ok(admin_locked(&state.config, jar));
+    }
     // Refuse to remove the last enabled admin. Provably unreachable today:
     // see `users_delete`'s comment — the self-guard above already rules out
     // target == actor, so a target that is a *different* enabled admin
@@ -4566,11 +4715,7 @@ async fn render_account(
 ) -> Result<Response, AppError> {
     let now = Utc::now();
 
-    // The handle hashes the session *id*, so the cookie must be unwrapped first
-    // — hashing the raw cookie value would never match any row.
-    let current_handle =
-        secret::session_id_from_jar(jar, &state.config.secret, session_cookie_name(state))
-            .map(|id| crate::apikey::hash_api_key(&id));
+    let current_handle = current_session_handle(state, jar);
     // Reap this user's past-the-absolute-cap rows before listing. They are
     // already inert, but leaving them in the table until the next prune pass
     // means the owner can neither see nor revoke them; deleting them here is
@@ -5210,6 +5355,12 @@ struct AdminTemplate {
     // users
     users: Vec<UserRow>,
     user_flash: Option<String>,
+    elevation_flash: Option<String>,
+    /// False for a passwordless forward-auth admin, whose authority is asserted
+    /// at the gateway and who therefore has nothing to re-assert here.
+    elevation_applies: bool,
+    /// `Some(readable duration)` while the unlock is live, `None` when locked.
+    elevation_remaining: Option<String>,
     password_reset_flash: Option<String>,
     user_error: Option<String>,
     projects: Vec<(Project, String)>,
@@ -5249,7 +5400,7 @@ impl UserRow {
 async fn render_admin(
     state: &AppState,
     jar: &CookieJar,
-    admin_id: i64,
+    admin: &User,
     r: AdminRender,
     audit: &AdminAuditQuery,
 ) -> Result<Response, AppError> {
@@ -5258,6 +5409,7 @@ async fn render_admin(
     // the `/admin/audit` fragment endpoint emit byte-identical markup.
     let audit_partial = render(&build_audit_partial(state, audit).await?)?.0;
     let (notif_ok, notif_err) = state.store.notification_counts_since(day_ago).await?;
+    let elevation = elevation(state, jar, admin);
     Ok(render(&AdminTemplate {
         show_nav: true,
         csrf: current_csrf(state, jar),
@@ -5288,9 +5440,17 @@ async fn render_admin(
             .list_users()
             .await?
             .into_iter()
-            .map(|u| UserRow::from_user(u, admin_id))
+            .map(|u| UserRow::from_user(u, admin.id))
             .collect(),
         user_flash: r.user_flash,
+        elevation_flash: r.elevation_flash,
+        // The card is hidden entirely for an account the gate cannot apply to,
+        // rather than shown with a field it could never fill in — the same
+        // choice `/account` makes with `has_password`.
+        elevation_applies: !elevation.not_applicable,
+        elevation_remaining: elevation
+            .remaining_secs
+            .map(|s| crate::duration::fmt_duration(s.try_into().unwrap_or(i64::MAX))),
         password_reset_flash: r.password_reset_flash,
         user_error: r.user_error,
         projects: state.store.list_all_projects_with_owner().await?,

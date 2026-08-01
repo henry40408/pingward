@@ -8,6 +8,7 @@ pub mod auth;
 pub mod config;
 pub mod db;
 pub mod duration;
+pub mod elevate;
 pub mod error;
 pub mod markdown;
 pub mod models;

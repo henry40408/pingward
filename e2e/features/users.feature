@@ -7,6 +7,7 @@ Feature: User management
   Background:
     Given an admin "admin" with password "correct horse battery" exists
     And I am signed in as "admin" with password "correct horse battery"
+    And I unlock admin actions with my password "correct horse battery"
     And I am on the users page
 
   Scenario: The seeded admin is listed as an admin
@@ -96,3 +97,21 @@ Feature: User management
     Then the user form shows the error "Password must be at least 15 characters."
     And I sign in as "member" with password "hunter2 correct"
     Then I land on the dashboard signed in
+
+  # The elevation gate (src/elevate.rs). The line is granting versus removing
+  # access: handing out access that outlives this browser needs the password
+  # again; taking access away must stay available to an operator who thinks
+  # they are under attack.
+  Scenario: Granting admin is refused until admin actions are unlocked
+    Given a member "member" with password "hunter2 correct" exists
+    And I lock admin actions
+    When I toggle admin on "member"
+    Then the user "member" is listed with role "member"
+    And admin actions are locked
+
+  Scenario: Removing access stays available while admin actions are locked
+    Given a member "member" with password "hunter2 correct" exists
+    And I lock admin actions
+    When I disable "member"
+    Then the user "member" is marked disabled
+
