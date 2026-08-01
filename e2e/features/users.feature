@@ -102,13 +102,11 @@ Feature: User management
   # access: handing out access that outlives this browser needs the password
   # again; taking access away must stay available to an operator who thinks
   # they are under attack.
-  Scenario: Granting admin is refused until admin actions are unlocked
+  Scenario: Granting admin asks for confirmation before it happens
     Given a member "member" with password "hunter2 correct" exists
     And I lock admin actions
     When I try to grant admin to "member"
-    Then I am sent to the confirmation page
-    And the confirmation page explains the requirement
-    And I am on the users page
+    Then the confirmation dialog appears naming "grant admin rights"
     And the user "member" is listed with role "member"
 
   Scenario: Removing access stays available while admin actions are locked
@@ -116,4 +114,39 @@ Feature: User management
     And I lock admin actions
     When I disable "member"
     Then the user "member" is marked disabled
+
+  # The in-page dialog (assets/app.js). Its whole point is that the form
+  # survives: bouncing to /admin/unlock discards what was typed, and an admin
+  # who confirms then finds their work gone is the bug this replaced.
+  Scenario: Confirming in place keeps the filled-in form and creates the user
+    Given I lock admin actions
+    When I fill in the new user "carol" with password "a long enough phrase"
+    And I submit the new user form
+    Then the confirmation dialog appears naming "create this user"
+    When I confirm the dialog with password "correct horse battery"
+    Then the user "carol" is listed with role "member"
+
+  Scenario: A wrong password keeps the dialog open and loses nothing
+    Given I lock admin actions
+    When I fill in the new user "carol" with password "a long enough phrase"
+    And I submit the new user form
+    And I answer the dialog with the wrong password "not my password"
+    Then the dialog is still open with an error
+    When I dismiss the dialog
+    Then the new user form still holds "carol"
+    And the user "carol" is not listed
+
+  Scenario: Once confirmed, the dialog stops asking
+    When I fill in the new user "carol" with password "a long enough phrase"
+    And I submit the new user form
+    Then no confirmation dialog appears
+    And the user "carol" is listed with role "member"
+
+  # The page behind the dialog. It is what a browser without JavaScript gets
+  # when the server bounces a refused action, and it is reachable on purpose
+  # from /admin so the requirement is visible before anything is refused.
+  Scenario: The confirmation page is reachable before anything is refused
+    Given I lock admin actions
+    When I follow the confirm link on the admin page
+    Then the confirmation page explains the requirement
 

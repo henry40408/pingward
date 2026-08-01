@@ -495,3 +495,98 @@ async fn a_valid_submission_still_needs_confirming() {
             .is_none()
     );
 }
+
+// --- the in-page dialog's half of the contract ---
+//
+// `app.js` asks in place rather than letting the server bounce, so the form the
+// admin filled in survives. That needs two things from the server: a reply it
+// can act on without rendering HTML, and a marker telling it which controls
+// will be refused. Both are checked here; the dialog itself is covered by the
+// browser tests, which is the only place its behaviour is real.
+
+/// `X-Requested-With: fetch` is this app's existing "answer me, do not navigate
+/// me" signal. The decision is identical either way — only the presentation
+/// differs — so a scripted caller is never a weaker door than the form.
+#[tokio::test]
+async fn the_fetch_variant_answers_with_status_codes() {
+    let (server, store, dave) = locked_admin().await;
+
+    let wrong = server
+        .post("/admin/unlock")
+        .add_header("x-requested-with", "fetch")
+        .form(&[("password", "not-the-password")])
+        .await;
+    wrong.assert_status(StatusCode::FORBIDDEN);
+    assert!(wrong.text().is_empty(), "no page to render into a dialog");
+
+    let ok = server
+        .post("/admin/unlock")
+        .add_header("x-requested-with", "fetch")
+        .form(&[("password", ADMIN_PW)])
+        .await;
+    ok.assert_status(StatusCode::NO_CONTENT);
+
+    // And it really elevated, rather than merely answering politely.
+    server
+        .post(&format!("/admin/users/{dave}/admin"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(store.find_user_by_id(dave).await.unwrap().unwrap().is_admin);
+}
+
+#[tokio::test]
+async fn the_fetch_variant_reports_the_lockout_too() {
+    let (server, _store, _dave) = locked_admin().await;
+    for _ in 0..pingward::ratelimit::ACCOUNT_MAX_ATTEMPTS {
+        server
+            .post("/admin/unlock")
+            .add_header("x-requested-with", "fetch")
+            .form(&[("password", "not-the-password")])
+            .await;
+    }
+    let res = server
+        .post("/admin/unlock")
+        .add_header("x-requested-with", "fetch")
+        .form(&[("password", ADMIN_PW)])
+        .await;
+    res.assert_status(StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        res.header("retry-after"),
+        pingward::ratelimit::ACCOUNT_WINDOW_SECS.to_string()
+    );
+}
+
+/// The marker follows the same granting-versus-removing rule the handlers do,
+/// and disappears once confirmed. If it ever drifted from the handlers the
+/// server would still refuse — the cost of drift is a needless dialog or a
+/// bounce, never an ungated action.
+#[tokio::test]
+async fn only_the_granting_controls_are_marked_and_only_while_locked() {
+    let (server, store, dave) = locked_admin().await;
+    let body = server.get("/admin").await.text();
+    assert!(body.contains(r#"data-reauth="create this user""#), "{body}");
+    // One reset control per row, the signed-in admin's own included — that
+    // form is deliberately not hidden behind `is_self`.
+    assert_eq!(
+        i64::try_from(body.matches(r#"data-reauth="reset this user"#).count()).unwrap(),
+        store.count_users().await.unwrap(),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"data-reauth="grant admin rights""#),
+        "{body}"
+    );
+
+    // Demoting goes through the same route and must not be marked — it is the
+    // control an operator reaches for when they think they are under attack.
+    store.set_user_admin(dave, true).await.unwrap();
+    let body = server.get("/admin").await.text();
+    assert!(
+        !body.contains(r#"data-reauth="grant admin rights""#),
+        "{body}"
+    );
+
+    // Confirmed: nothing is marked, so every form submits straight through.
+    common::unlock_admin(&server, ADMIN_PW).await;
+    assert!(!server.get("/admin").await.text().contains("data-reauth"));
+}

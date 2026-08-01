@@ -216,8 +216,14 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   redirects to `GET /admin/unlock` — an interstitial **page**, not a field,
   because the requirement needs explaining (why a signed-in admin is asked
   again, what it covers, that it is the same password and **not** a second
-  factor); `/admin` keeps only a one-line note linking there. The refused action
-  is not replayed afterwards.
+  factor); `/admin` keeps only a one-line note linking there. With JS, `app.js`
+  pre-empts the bounce: forms marked `data-reauth` (rendered **only** while
+  locked) open a native `<dialog>`, which posts to `/admin/unlock` with
+  `X-Requested-With: fetch` for a 204/403/429 instead of HTML, then submits the
+  original form — so nothing the admin typed is lost. The dialog is built by
+  delegation in `app.js` (CSP forbids inline handlers), and the server re-checks
+  regardless, so drift between the marker and the handlers costs a needless
+  prompt, never an ungated action. Without JS the bounce still works.
 - Rejected attempts log to the `pingward::auth` target — `login.failed`
   (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`/`account_locked`)
   and `reauth.failed` (`surface` = `password_change`/`api_key_create`). One
