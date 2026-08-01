@@ -122,8 +122,107 @@ document.addEventListener('submit', function (e) {
   if (!form.getAttribute) return;
   if (form.hasAttribute('data-nosubmit')) { e.preventDefault(); return; }
   var message = form.getAttribute('data-confirm');
-  if (message && !confirm(message)) e.preventDefault();
+  if (message && !confirm(message)) { e.preventDefault(); return; }
+  var action = form.getAttribute('data-reauth');
+  if (action) { e.preventDefault(); askToConfirm(form, action); }
 });
+
+// --- admin re-authentication dialog ---
+//
+// The `/admin` controls that hand out access are single-button inline forms in
+// a table row, so they cannot carry a password field of their own. Without
+// this the server bounces them to `/admin/unlock`, and whatever was typed into
+// the form is gone — the admin confirms, lands back on /admin, and has to
+// start over. Asking in place keeps the form intact, and the password never
+// goes anywhere but the unlock request.
+//
+// Progressive enhancement, in both directions: the server refuses an
+// unconfirmed action whatever the page did, and with JS off (or if this throws)
+// the bounce still works. `data-reauth` is only rendered while locked, so a
+// confirmed admin submits straight through and this never runs.
+//
+// No inline handlers anywhere — the CSP is `script-src 'self'` with no nonce
+// and no 'unsafe-inline', so behaviour has to arrive by delegation from here.
+var reauthDialog = null;
+var reauthPending = null;
+
+function buildReauthDialog() {
+  var d = document.createElement('dialog');
+  d.className = 'reauth';
+  d.setAttribute('data-testid', 'reauth-dialog');
+  d.innerHTML =
+    '<form method="dialog" class="reauth-body">' +
+    '<h2>Confirm it\'s you</h2>' +
+    '<p class="crumb tight" data-testid="reauth-why">You\'re about to <strong data-testid="reauth-action"></strong>, ' +
+    'which hands out access that keeps working after you sign out. ' +
+    'This is your same password again, not a second factor.</p>' +
+    '<p class="flash err" data-testid="reauth-error" hidden></p>' +
+    '<div class="field"><label for="reauth-password">Password</label>' +
+    '<input id="reauth-password" type="password" autocomplete="current-password" data-testid="reauth-input" required></div>' +
+    '<div class="formactions">' +
+    '<button class="btn primary" type="button" data-testid="reauth-submit">Confirm</button>' +
+    '<button class="btn" type="button" data-testid="reauth-cancel">Cancel</button>' +
+    '</div></form>';
+  document.body.appendChild(d);
+  d.querySelector('[data-testid="reauth-cancel"]').addEventListener('click', function () {
+    reauthPending = null;
+    d.close();
+  });
+  d.querySelector('[data-testid="reauth-submit"]').addEventListener('click', submitReauth);
+  d.querySelector('[data-testid="reauth-input"]').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); submitReauth(); }
+  });
+  return d;
+}
+
+function reauthError(text) {
+  var p = reauthDialog.querySelector('[data-testid="reauth-error"]');
+  p.textContent = text;
+  p.hidden = !text;
+}
+
+function askToConfirm(form, action) {
+  if (!reauthDialog) reauthDialog = buildReauthDialog();
+  reauthPending = form;
+  reauthDialog.querySelector('[data-testid="reauth-action"]').textContent = action;
+  reauthError('');
+  var input = reauthDialog.querySelector('[data-testid="reauth-input"]');
+  input.value = '';
+  reauthDialog.showModal();
+  input.focus();
+}
+
+function submitReauth() {
+  var form = reauthPending;
+  if (!form) return;
+  var input = reauthDialog.querySelector('[data-testid="reauth-input"]');
+  var csrf = form.querySelector('input[name="_csrf"]');
+  var body = new URLSearchParams();
+  body.set('password', input.value);
+  if (csrf) body.set('_csrf', csrf.value);
+  fetch('/admin/unlock', {
+    method: 'POST',
+    headers: { 'X-Requested-With': 'fetch', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString()
+  }).then(function (r) {
+    if (r.status === 204) {
+      // Confirmed for a while, so nothing else needs asking either.
+      var marked = document.querySelectorAll('[data-reauth]');
+      for (var i = 0; i < marked.length; i++) marked[i].removeAttribute('data-reauth');
+      reauthPending = null;
+      reauthDialog.close();
+      // `submit()` deliberately, not `requestSubmit()`: it does not fire the
+      // submit event, so the handler above cannot intercept this one again.
+      form.submit();
+      return;
+    }
+    if (r.status === 403) { reauthError('That password is not correct.'); return; }
+    if (r.status === 429) { reauthError('Too many attempts — try again later.'); return; }
+    // Anything else (session gone, server trouble): hand over to the page that
+    // can explain properly rather than leaving the admin stuck in a dialog.
+    location = '/admin/unlock';
+  }).catch(function () { location = '/admin/unlock'; });
+}
 
 // --- theme toggle ---
 (function () {

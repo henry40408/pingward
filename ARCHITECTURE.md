@@ -762,8 +762,36 @@ password; `POST /admin/unlock` runs the same `reauthenticate` gate, and
 `web::elevation` then checks that the confirmation is still fresh
 (`ELEVATION_TTL_SECS`, 15 minutes).
 
-The interstitial is a **page, not a field**, because the requirement needs
-explaining. An admin who is already signed in and gets asked for their password
+With JavaScript, the bounce is pre-empted: `app.js` intercepts a marked
+submission and asks in a native `<dialog>` instead, then submits the original
+form once confirmed. That is not decoration — it is what stops the admin's
+filled-in form being discarded. Bouncing to a page loses whatever was typed, so
+an admin who confirmed came back to an empty form (and, for a while, to a
+message that read as though the action had succeeded).
+
+The layering is deliberate in both directions. `data-reauth` is rendered only
+while locked (`elevation_locked`), naming the action so the dialog can say what
+is about to happen; once confirmed nothing is marked and forms submit straight
+through. The dialog talks to `POST /admin/unlock` with this app's existing
+`X-Requested-With: fetch` signal, which returns 204/403/429 instead of HTML —
+the *decision* is identical either way, so a scripted caller is never a weaker
+door. Anything unexpected sends the browser to the page rather than leaving it
+stuck in a dialog. And the server re-checks regardless of what the page
+rendered: if `data-reauth` ever drifted from the handlers, the cost is a
+needless dialog or a needless bounce, never an ungated action. The password
+never leaves the browser except in that one unlock request — which is why the
+form is not preserved server-side across the bounce instead: that would mean
+stashing a plaintext password across a redirect.
+
+No inline handlers, since the CSP is `script-src 'self'` with no nonce; the
+dialog is built and wired from `app.js` by delegation, like `data-confirm` and
+`data-href` before it. `<dialog>`/`showModal()` supplies focus trapping, Esc and
+the backdrop, so none of that is script here.
+
+The interstitial page remains, and remains the target of the server-side bounce
+— it is what a browser without JavaScript gets, and `/admin` links to it so the
+requirement is visible before anything is refused. It is a **page, not a field**,
+because the requirement needs explaining. An admin who is already signed in and gets asked for their password
 again will reasonably wonder whether something is wrong, so the page says why,
 which three actions it covers, which it deliberately does not, how long
 confirming lasts (rendered from the constant, so copy and code cannot drift),

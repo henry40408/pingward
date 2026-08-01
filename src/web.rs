@@ -4137,13 +4137,54 @@ async fn admin_unlock_page(
 /// password is charged to the account limiter here too — this form is reachable
 /// from an authenticated seat and would otherwise be a third password oracle
 /// alongside the two that gate closed.
+/// Start this request's session on an elevation window.
+///
+/// A passwordless forward-auth admin reaches here without a password check at
+/// all (see [`reauthenticate`]), and there is no session handle to key on when
+/// the router is driven without a cookie; both are no-ops, which is harmless
+/// because `Elevation::not_applicable` already lets those accounts act.
+fn grant_elevation(state: &AppState, jar: &CookieJar) {
+    if let Some(handle) = current_session_handle(state, jar) {
+        state.elevations.grant(&handle);
+    }
+}
+
 async fn admin_unlock(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: HeaderMap,
     AdminUser(admin): AdminUser,
     Form(form): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
-    let refusal = match reauthenticate(&state, &admin, &form.password, "admin_unlock") {
+    let outcome = reauthenticate(&state, &admin, &form.password, "admin_unlock");
+    // `X-Requested-With: fetch` is this app's existing "answer me, do not
+    // navigate me" signal (see the audit fragment endpoint and `app.js`). The
+    // in-page dialog uses it to get a status code back instead of a rendered
+    // page, since it has a form waiting to submit and nowhere to put HTML.
+    // Everything about the decision itself is identical either way — the
+    // branch is presentation only, which is what keeps a scripted caller from
+    // being a second, weaker door.
+    if headers
+        .get("x-requested-with")
+        .is_some_and(|v| v.as_bytes() == b"fetch")
+    {
+        return Ok(match outcome {
+            Reauth::Passed => {
+                grant_elevation(&state, &jar);
+                StatusCode::NO_CONTENT.into_response()
+            }
+            Reauth::Failed => StatusCode::FORBIDDEN.into_response(),
+            Reauth::Throttled => (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(
+                    header::RETRY_AFTER,
+                    crate::ratelimit::ACCOUNT_WINDOW_SECS.to_string(),
+                )],
+            )
+                .into_response(),
+        });
+    }
+    let refusal = match outcome {
         Reauth::Passed => None,
         Reauth::Failed => Some("That password is not correct."),
         Reauth::Throttled => Some("Too many attempts — try again later."),
@@ -4153,14 +4194,7 @@ async fn admin_unlock(
         // admin who is mid-way through the flow.
         return render_admin_unlock(&state, &jar, &admin, None, Some(msg.to_string()));
     }
-    // A passwordless forward-auth admin reaches `Passed` without a check (see
-    // `reauthenticate`), and there is no session handle to key on when the
-    // router is driven without a cookie; both simply fall through to the
-    // redirect, which is harmless because `Elevation::not_applicable` already
-    // lets those accounts act.
-    if let Some(handle) = current_session_handle(&state, &jar) {
-        state.elevations.grant(&handle);
-    }
+    grant_elevation(&state, &jar);
     let jar = jar.add(flash_cookie(&state.config, "admin_unlocked"));
     Ok((jar, Redirect::to("/admin")).into_response())
 }
@@ -5474,6 +5508,14 @@ struct AdminTemplate {
     elevation_applies: bool,
     /// `Some(readable duration)` while the unlock is live, `None` when locked.
     elevation_remaining: Option<String>,
+    /// Applies *and* not currently confirmed — i.e. the next access-granting
+    /// action will be refused. The gated controls carry `data-reauth` only in
+    /// this state, so `app.js` knows to ask before submitting; when confirmed
+    /// they submit straight through, and when the gate cannot apply they are
+    /// never marked at all. The server re-checks regardless: if the window
+    /// lapses between render and click, the ordinary bounce to
+    /// `/admin/unlock` catches it.
+    elevation_locked: bool,
     password_reset_flash: Option<String>,
     user_error: Option<String>,
     projects: Vec<(Project, String)>,
@@ -5561,9 +5603,8 @@ async fn render_admin(
         // rather than shown with a field it could never fill in — the same
         // choice `/account` makes with `has_password`.
         elevation_applies: !elevation.not_applicable,
-        elevation_remaining: elevation
-            .remaining_secs
-            .map(|s| crate::duration::fmt_duration(s.try_into().unwrap_or(i64::MAX))),
+        elevation_locked: !elevation.not_applicable && elevation.remaining_secs.is_none(),
+        elevation_remaining: elevation.remaining_secs.map(fmt_elevation_secs),
         password_reset_flash: r.password_reset_flash,
         user_error: r.user_error,
         projects: state.store.list_all_projects_with_owner().await?,

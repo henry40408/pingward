@@ -1869,3 +1869,35 @@ select:focus-visible,
   outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
+
+/* ---- Admin re-authentication dialog (app.js `askToConfirm`) ---- */
+/* A native <dialog>, so focus trapping, Esc and the backdrop come from the
+   browser rather than from script. Styled as a card, since that is what every
+   other panel in the app is. */
+dialog.reauth {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--ink);
+  width: min(460px, calc(100vw - 32px));
+  box-shadow: var(--shadow);
+}
+dialog.reauth::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+.reauth-body {
+  padding: 20px 22px 18px;
+}
+.reauth-body h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+/* `.crumb.tight` carries no bottom margin (it is tuned for sitting under a
+   heading), which would butt the explanation straight against the field. */
+.reauth-body .crumb.tight {
+  margin-bottom: 14px;
+}
+.reauth-body .flash {
+  margin: 0 0 14px;
+}

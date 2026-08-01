@@ -241,7 +241,7 @@
           <td>{{ u.username }}</td>
           <td>{% if u.is_admin %}<span class="pill ok" data-testid="user-role">admin</span>{% else %}<span class="pill start" data-testid="user-role">member</span>{% endif %}{% if u.disabled %} <span class="pill fail" data-testid="user-disabled">disabled</span>{% endif %}</td>
           <td>
-            <form class="inline" method="post" action="/admin/users/{{ u.id }}/password">
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/password"{% if elevation_locked %} data-reauth="reset this user's password"{% endif %}>
               <input type="hidden" name="_csrf" value="{{ csrf }}">
               <input type="password" name="password" placeholder="new password" autocomplete="new-password" data-testid="user-reset-input" required>
               <button class="btn" type="submit" data-testid="user-reset-submit">reset</button>
@@ -251,7 +251,7 @@
             <span class="btn disabled" title="You cannot disable your own account" data-testid="user-toggle-disabled">{% if u.disabled %}enable{% else %}disable{% endif %}</span>
             <span class="btn danger disabled" title="You cannot delete your own account" data-testid="user-delete">delete</span>
             {% else %}
-            <form class="inline" method="post" action="/admin/users/{{ u.id }}/admin"{% if u.is_admin %} data-confirm="Revoke admin rights from this user?"{% endif %}>
+            <form class="inline" method="post" action="/admin/users/{{ u.id }}/admin"{% if u.is_admin %} data-confirm="Revoke admin rights from this user?"{% else if elevation_locked %} data-reauth="grant admin rights"{% endif %}>
               <input type="hidden" name="_csrf" value="{{ csrf }}">
               <button class="btn" type="submit" data-testid="user-toggle-admin">{% if u.is_admin %}revoke admin{% else %}make admin{% endif %}</button>
             </form>
@@ -270,7 +270,7 @@
 
     <h2 class="subhead">Add user</h2>
     {% if let Some(error) = user_error %}<p class="flash err" data-testid="user-error">{{ error }}</p>{% endif %}
-    <form method="post" action="/admin/users">
+    <form method="post" action="/admin/users"{% if elevation_locked %} data-reauth="create this user"{% endif %}>
       <input type="hidden" name="_csrf" value="{{ csrf }}">
       <div class="two">
         <div class="field">

@@ -264,17 +264,23 @@ Given(
   }
 );
 
-// A refused action redirects to the interstitial rather than failing in place,
-// so "was it refused?" is answered by where the browser ended up.
-Then("I am sent to the confirmation page", async ({ page, serverUrl }) => {
+// The interstitial page is what a browser *without* JavaScript gets — the
+// server bounces a refused action to it. With JS it is reached by following the
+// link on /admin, which is what these steps drive; the bounce itself is
+// asserted in `tests/admin_elevation.rs`, where no script is in the way.
+When("I follow the confirm link on the admin page", async ({ page, serverUrl }) => {
+  await page.goto(`${serverUrl}/admin`);
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: "load" }),
+    page.getByTestId("elevation-confirm-link").click(),
+  ]);
   await expect(page).toHaveURL(`${serverUrl}/admin/unlock`);
-  await expect(page.getByTestId("unlock-bounced")).toBeVisible();
-  await expect(page.getByTestId("unlock-input")).toBeVisible();
 });
 
 Then("the confirmation page explains the requirement", async ({ page }) => {
   await expect(page.getByTestId("unlock-gated")).toBeVisible();
   await expect(page.getByTestId("unlock-cancel")).toBeVisible();
+  await expect(page.getByTestId("unlock-input")).toBeVisible();
 });
 
 // Elevation is per-session and dropped on sign-out, so signing out and back in
@@ -286,4 +292,60 @@ Given("I lock admin actions", async ({ page, serverUrl }) => {
   // Locked state on /admin is a one-line note linking to the interstitial —
   // the form itself lives there, not here.
   await expect(page.getByTestId("elevation-confirm-link")).toBeVisible();
+});
+
+// --- the in-page re-authentication dialog ---
+//
+// A gated control asks in place rather than bouncing to /admin/unlock, so the
+// form the admin filled in is still there to submit afterwards. Only a browser
+// can tell whether that actually happens, which is why this lives here rather
+// than in the Rust suite.
+
+When("I fill in the new user {string} with password {string}", async ({ page, serverUrl }, username, password) => {
+  await page.goto(`${serverUrl}/admin`);
+  await page.getByTestId("user-username-input").fill(username);
+  await page.getByTestId("user-password-input").fill(password);
+});
+
+When("I submit the new user form", async ({ page }) => {
+  await page.getByTestId("user-submit").click();
+});
+
+Then("the confirmation dialog appears naming {string}", async ({ page }, action) => {
+  await expect(page.getByTestId("reauth-dialog")).toBeVisible();
+  await expect(page.getByTestId("reauth-action")).toHaveText(action);
+  // It has to say this, or an admin goes hunting for an authenticator app.
+  await expect(page.getByTestId("reauth-why")).toContainText("not a second factor");
+});
+
+When("I confirm the dialog with password {string}", async ({ page }, password) => {
+  await page.getByTestId("reauth-input").fill(password);
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: "load" }),
+    page.getByTestId("reauth-submit").click(),
+  ]);
+});
+
+When("I answer the dialog with the wrong password {string}", async ({ page }, password) => {
+  await page.getByTestId("reauth-input").fill(password);
+  await page.getByTestId("reauth-submit").click();
+  await expect(page.getByTestId("reauth-error")).toBeVisible();
+});
+
+Then("the dialog is still open with an error", async ({ page }) => {
+  await expect(page.getByTestId("reauth-dialog")).toBeVisible();
+  await expect(page.getByTestId("reauth-error")).toHaveText("That password is not correct.");
+});
+
+When("I dismiss the dialog", async ({ page }) => {
+  await page.getByTestId("reauth-cancel").click();
+  await expect(page.getByTestId("reauth-dialog")).toBeHidden();
+});
+
+Then("the new user form still holds {string}", async ({ page }, username) => {
+  await expect(page.getByTestId("user-username-input")).toHaveValue(username);
+});
+
+Then("no confirmation dialog appears", async ({ page }) => {
+  await expect(page.getByTestId("reauth-dialog")).toHaveCount(0);
 });

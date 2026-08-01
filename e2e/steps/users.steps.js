@@ -247,13 +247,10 @@ Then("the user form shows the error {string}", async ({ page }, message) => {
   await expect(page.getByTestId("user-error")).toHaveText(message);
 });
 
-// Like "I toggle admin on", but for the locked case: the click lands on the
-// confirmation interstitial rather than back on /admin, so the destination is
-// the assertion rather than a precondition.
+// Like "I toggle admin on", but for the locked case, where the click does not
+// navigate: `app.js` intercepts it and opens the confirmation dialog. The
+// server-side bounce this replaces (for a browser without JS) is covered in
+// `tests/admin_elevation.rs`, where it is the real behaviour.
 When("I try to grant admin to {string}", async ({ page }, username) => {
-  const row = userRow(page, username);
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: "load" }),
-    row.getByTestId("user-toggle-admin").click(),
-  ]);
+  await userRow(page, username).getByTestId("user-toggle-admin").click();
 });
