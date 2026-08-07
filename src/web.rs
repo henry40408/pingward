@@ -1252,6 +1252,39 @@ fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
         .unwrap_or_default()
 }
 
+/// Upper bound on the buffered request body when reading the `_csrf` form field.
+/// Browser POSTs to `web::routes()` carry small urlencoded forms; 1 MiB is a
+/// generous ceiling that caps memory a malicious client could force us to buffer.
+const CSRF_MAX_BODY_BYTES: usize = 1 << 20;
+
+/// Record a [`csrf_guard`] rejection.
+///
+/// One event name discriminated by `reason`, the way [`log_login_failure`] and
+/// [`log_reauth_failure`] each cover several rejection paths: an operator
+/// alerting on "CSRF started refusing things" must not have to know which
+/// branches the guard has.
+///
+/// `noisy` marks the one reason an unauthenticated scanner produces in bulk.
+/// `csrf_guard` is layered *outside* every handler, so it answers before
+/// `login_submit` ever consults `login_limiter` — a bot sending `POST /login`
+/// is refused here, with nothing throttling it, and at `warn!` would write one
+/// line per request forever. Dropping *that* reason to `debug!` is what keeps
+/// the remaining ones worth reading: every other path means a token was
+/// actually presented and still failed to verify.
+///
+/// The session is identified by [`crate::auth::session_log_handle`], never the
+/// raw id — it is the bearer secret the cookie's signature is attached to, and
+/// the handle is the same value `/account` shows the user for the row they can
+/// revoke.
+fn log_csrf_rejection(reason: &'static str, session_id: Option<&str>, noisy: bool) {
+    let handle = session_id.map(crate::auth::session_log_handle);
+    if noisy {
+        tracing::debug!(target: "pingward::auth", reason, handle, "csrf.rejected");
+    } else {
+        tracing::warn!(target: "pingward::auth", reason, handle, "csrf.rejected");
+    }
+}
+
 /// CSRF synchronizer-token guard, applied to `web::routes()` only (the machine
 /// `/ping/*` endpoints, assets, and `/healthz` live in sibling routers and are
 /// therefore structurally exempt).
@@ -1266,11 +1299,10 @@ fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
 /// stored, so this costs no database round trip; comparison is constant-time
 /// (`secret::verify_csrf`) because the token is now a MAC over a known input.
 ///
-/// Upper bound on the buffered request body when reading the `_csrf` form field.
-/// Browser POSTs to `web::routes()` carry small urlencoded forms; 1 MiB is a
-/// generous ceiling that caps memory a malicious client could force us to buffer.
-const CSRF_MAX_BODY_BYTES: usize = 1 << 20;
-
+/// Every refusal is recorded by [`log_csrf_rejection`]; see there for why one
+/// of the five reasons is deliberately quieter than the rest. The 403 itself
+/// stays bodyless — naming the missing field would only tell a scanner what to
+/// send next.
 pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
     // Safe methods never change state.
     if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
@@ -1282,6 +1314,11 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
     let secret = &state.config.secret;
     let Some(session_id) = secret::session_id_from_jar(&jar, secret, session_cookie_name(&state))
     else {
+        // Unreachable in the composed app: `anonymous_session` runs outside
+        // this layer and either finds a signed cookie or mints one into the
+        // request. Kept, and logged loudly, precisely because only the layer
+        // ordering makes it so — if this ever fires, that ordering broke.
+        log_csrf_rejection("no_session", None, false);
         return StatusCode::FORBIDDEN.into_response();
     };
     // Prefer the header token — this path avoids buffering the body.
@@ -1293,18 +1330,33 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
         if secret::verify_csrf(secret, &session_id, submitted) {
             return next.run(req).await;
         }
+        log_csrf_rejection("header_mismatch", Some(&session_id), false);
         return StatusCode::FORBIDDEN.into_response();
     }
     // Otherwise read the `_csrf` form field: buffer the body, extract the token,
     // then rebuild the request with the same bytes for the downstream handler.
     let (parts, body) = req.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, CSRF_MAX_BODY_BYTES).await else {
+        // Over `CSRF_MAX_BODY_BYTES`, or a truncated stream. A browser form
+        // cannot reach that, and a client that wants to repeat it has to send
+        // the megabyte every time, so this needs no volume exemption.
+        log_csrf_rejection("body_unreadable", Some(&session_id), false);
         return StatusCode::FORBIDDEN.into_response();
     };
-    let submitted = form_urlencoded::parse(&bytes)
+    let Some(submitted) = form_urlencoded::parse(&bytes)
         .find(|(k, _)| k == "_csrf")
-        .map(|(_, v)| v.into_owned());
-    if !submitted.is_some_and(|t| secret::verify_csrf(secret, &session_id, &t)) {
+        .map(|(_, v)| v.into_owned())
+    else {
+        // No token at all: the signature of something that never rendered the
+        // form. This is the noisy one.
+        log_csrf_rejection("token_missing", Some(&session_id), true);
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if !secret::verify_csrf(secret, &session_id, &submitted) {
+        // A token was presented and did not verify. This is the event worth
+        // alerting on — it is what a token drifting out of step with its
+        // session looks like from the server side.
+        log_csrf_rejection("token_mismatch", Some(&session_id), false);
         return StatusCode::FORBIDDEN.into_response();
     }
     let req = Request::from_parts(parts, axum::body::Body::from(bytes));
