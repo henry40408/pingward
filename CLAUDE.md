@@ -225,14 +225,22 @@ busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
   regardless, so drift between the marker and the handlers costs a needless
   prompt, never an ungated action. Without JS the bounce still works.
 - Rejected attempts log to the `pingward::auth` target — `login.failed`
-  (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`/`account_locked`)
-  and `reauth.failed` (`surface` = `password_change`/`api_key_create`). One
+  (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`/`account_locked`),
+  `reauth.failed` (`surface` = `password_change`/`api_key_create`), and
+  `csrf.rejected` (`reason` = `no_session`/`header_mismatch`/`body_unreadable`/
+  `token_missing`/`token_mismatch`). One
   event per layer, discriminated by a field rather than by name, so one alert
   rule catches "somebody is guessing a password". Nothing else observes a failed
   attempt, so this is the only spray signal an operator gets. Never log the
   submitted password, and route an attempted username through
   `auth::log_username` rendered with `Debug` (`?…`), which is what stops an
   embedded newline forging a log entry.
+  `csrf.rejected` is the one event split across levels: `token_missing` is
+  `debug!` and every other reason is `warn!`. `csrf_guard` is layered outside
+  every handler, so it refuses before `login_submit` reaches `login_limiter` —
+  a bot never sends `_csrf`, so all of that unthrottled traffic lands on that
+  one reason, while the rest mean a token was presented and still failed to
+  verify. Do not flatten the two levels; `tests/csrf_logging.rs` pins them.
 - Owner scoping goes through `owned_project` / `owned_check` in `web.rs`, which
   return **404 (not 403)** for another user's resource — existence is hidden.
 - `/account` is the per-user account page (password, sessions, then API keys,

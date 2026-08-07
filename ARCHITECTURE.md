@@ -875,6 +875,29 @@ being sprayed.
   `reason` is `bad_current_password` or `rate_limited`. Kept separate from
   `login.failed` because that one is unauthenticated and carries an address
   instead of a `user_id`.
+- `csrf.rejected` (`web::log_csrf_rejection`) — `reason`, `handle`. One event
+  for all five of `csrf_guard`'s refusal paths: `no_session`,
+  `header_mismatch`, `body_unreadable`, `token_missing` and `token_mismatch`.
+  It is the **only** one of these three events emitted at two different levels,
+  and the split is about volume rather than severity. `csrf_guard` is layered
+  outside every handler, so it answers before `login_submit` ever consults
+  `login_limiter`: an unauthenticated bot is refused here with nothing
+  throttling it, and since a bot never carries a `_csrf` field, all of that
+  traffic lands on `token_missing`. That one reason is therefore `debug!` and
+  the rest are `warn!` — every other path means a token was actually presented
+  and still failed to verify, which is what a token drifting out of step with
+  its session looks like from the server side, and the event this whole
+  vocabulary exists to make visible. `no_session` is unreachable while the
+  layer ordering holds (`anonymous_session` runs outside `csrf_guard` and
+  guarantees a signed cookie downstream), so it warns precisely because only
+  that ordering makes it so. `tests/csrf_logging.rs` pins the levels; without
+  it, promoting `token_missing` to `warn!` is a one-word change that reads as
+  a tidy-up and silently costs the signal.
+
+The 403 stays bodyless throughout — the gap this event closed was a refusal
+leaving no trace for the *operator*, not one that failed to explain itself to
+the caller, and naming the missing field would only tell a scanner what to send
+next.
 
 The submitted password is never logged. `username` is attacker-chosen input,
 so it goes through `auth::log_username` (truncated, so a megabyte of form data
