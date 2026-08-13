@@ -118,6 +118,27 @@ Then("the page background is dark", async ({ page }) => {
   expect(await backgroundLuminance(page)).toBeLessThan(0.5);
 });
 
+// `toBeHidden`, not `toHaveCount(0)`: these are hidden by CSS, so the elements
+// are still in the DOM and a count assertion would fail for the wrong reason —
+// and would keep failing even if the rule worked.
+Then("the copy button is absent", async ({ page }) => {
+  await expect(page.locator(".copy").first()).toBeHidden();
+});
+
+Then("the live tail toggle is absent", async ({ page }) => {
+  await expect(page.getByTestId("pings-live")).toBeHidden();
+});
+
+Then("the theme toggle is absent", async ({ page }) => {
+  await expect(page.locator("#pw-theme-toggle")).toBeHidden();
+});
+
+Then("the scheduler heartbeat shows an age", async ({ page }) => {
+  await expect(page.locator("[data-testid=sched-scan] .hb-ago")).toContainText(
+    /\d+[smhd] ago/
+  );
+});
+
 // Deliberately not monitoring.steps.js's "I delete the check": that one accepts
 // a `confirm()` dialog and expects to land back on the project page, which is
 // the scripted path. Here the click is expected to reach an interstitial.

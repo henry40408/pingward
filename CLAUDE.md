@@ -119,7 +119,11 @@ fetch) and read as UTC without it — matching what each mode displays.
 first paint); the absence is what lets `app.css`'s
 `@media (prefers-color-scheme: light) { :root:not([data-theme]) }` answer for a
 scriptless browser. That light palette exists **twice** — keep both in sync,
-`tests/no_js.rs` compares them token by token. `style-src` keeps `'unsafe-inline'` for the
+`tests/no_js.rs` compares them token by token. A control whose behaviour is
+entirely in `app.js` is **not drawn** without it (`:root:not(.js)` hides
+`.copy`, `.live-toggle`, `#pw-theme-toggle`); content is the opposite — the
+`/admin` heartbeat age is rendered server-side (`relative_setting`) and merely
+re-ticked by JS. `style-src` keeps `'unsafe-inline'` for the
 heartbeat bars' computed `style="height:Npx"`. `/api/docs` is deliberately
 outside the CSP — Scalar loads its bundle from a CDN.
 

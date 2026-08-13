@@ -103,7 +103,7 @@
           <div class="hb-label">Last scan</div>
           {% if let Some(t) = last_scan_at %}
           <div class="hb-time localtime" data-ts="{{ t }}">{{ t }}</div>
-          <div class="hb-ago" data-ago="{{ t }}"></div>
+          <div class="hb-ago" data-ago="{{ t }}">{% if let Some(a) = last_scan_ago %}{{ a }}{% endif %}</div>
           {% else %}
           <div class="hb-time hb-never">never</div>
           {% endif %}
@@ -115,7 +115,7 @@
           <div class="hb-label">Last prune</div>
           {% if let Some(t) = last_prune_at %}
           <div class="hb-time localtime" data-ts="{{ t }}">{{ t }}</div>
-          <div class="hb-ago" data-ago="{{ t }}"></div>
+          <div class="hb-ago" data-ago="{{ t }}">{% if let Some(a) = last_prune_ago %}{{ a }}{% endif %}</div>
           {% else %}
           <div class="hb-time hb-never">never</div>
           {% endif %}

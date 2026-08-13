@@ -1720,6 +1720,21 @@ tr.exp > td {
 :root:not(.js) .caret {
   opacity: 0;
 }
+/* Controls whose entire behaviour lives in `app.js`: copying to the clipboard,
+   opening the live-tail EventSource, and cycling the theme. Removed rather
+   than left there to be clicked at — `display: none` rather than the carets'
+   `opacity: 0`, because none of these is holding a column open and a button
+   that takes up space while ignoring every click is worse than one that is not
+   drawn.
+   Nothing is lost with them: the ping URL and API token sit in a `code`
+   element that selects and copies by hand, the live tail is an opt-in view of
+   rows a reload also shows, and the theme now follows the OS by itself (see
+   the `prefers-color-scheme` block near the top of this file). */
+:root:not(.js) .copy,
+:root:not(.js) .live-toggle,
+:root:not(.js) #pw-theme-toggle {
+  display: none;
+}
 :root.js tr.toggle {
   cursor: pointer;
 }

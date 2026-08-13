@@ -210,6 +210,17 @@ visual-drift risk not worth taking here. `tests/no_js.rs` compares the two
 blocks token by token, because a value tuned in one copy only is invisible
 until someone opens the app with script off.
 
+Three controls are pure `app.js` and are **removed** rather than left to be
+clicked at: the clipboard `.copy` buttons, the live-tail toggle, and the theme
+cycle (`:root:not(.js)`, `display: none`). Nothing is lost with them — the ping
+URL and API token sit in a `code` element that selects by hand, the live tail
+shows rows a reload also shows, and the theme now follows the OS by itself. The
+same rule of thumb applies to anything added later: a control whose behaviour
+lives entirely in a script should not be drawn when the script is absent. The
+one exception is content, not a control — `/admin`'s heartbeat age, which the
+handler now renders server-side (`web::relative_setting`) and `app.js` merely
+keeps ticking, since a blank line is worse than a slightly stale one.
+
 `data-confirm` is the same shape of promise, and is likewise **not** what
 enforces anything. The attribute only turns into a question if `app.js` is
 running, so the server refuses every irreversible action that does not carry

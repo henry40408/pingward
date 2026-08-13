@@ -1,7 +1,7 @@
 //! What still works with JavaScript switched off.
 //!
 //! `app.js` is progressive enhancement everywhere *except* where these tests
-//! are pointed. Three things had quietly stopped being optional:
+//! are pointed. Several things had quietly stopped being optional:
 //!
 //! 1. A check row's only route to the check page was the delegated `data-href`
 //!    click handler, so with no JS the dashboard led nowhere at all.
@@ -11,9 +11,14 @@
 //! 3. Every irreversible action asked "are you sure?" through a `data-confirm`
 //!    attribute that only `app.js` reads, so with no JS a misclick deleted a
 //!    project outright.
+//! 4. The filter forms had no method, no action, no field names and a
+//!    `type="button"` submit — four reasons one click did nothing.
+//! 5. `/admin`'s heartbeat tiles rendered an empty div where the age goes.
 //!
-//! All three are invisible to the browser suite, which always runs with JS on.
-//! These assertions are the guard instead.
+//! Every one is invisible to the browser suite, which runs with JS on — except
+//! for the `no-js` Playwright project (`e2e/features/no_js.feature`), which
+//! covers the parts that are CSS or navigation rather than markup. These
+//! assertions are the server-side half of the same guard.
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
@@ -251,6 +256,44 @@ async fn the_redirect_never_answers_for_another_users_check() {
         .get(&format!("/checks/{cid}/notifications"))
         .await
         .assert_status_not_found();
+}
+
+// --- the scheduler heartbeat states its own age ------------------------------
+
+/// `/admin`'s heartbeat tiles rendered an empty `.hb-ago` div for `app.js` to
+/// fill in every second, so with no script the one number an operator actually
+/// reads off them — how long ago the loop last ran — was simply blank.
+#[tokio::test]
+async fn the_scheduler_heartbeat_renders_its_age_server_side() {
+    let (server, store, _uid) = logged_in_server().await;
+    let ninety_minutes_ago = chrono::Utc::now() - chrono::Duration::minutes(90);
+    store
+        .set_setting("last_scan_at", &ninety_minutes_ago.to_rfc3339())
+        .await
+        .unwrap();
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        body.contains("class=\"hb-ago\" data-ago=") && body.contains("1h ago"),
+        "the scan heartbeat has no server-rendered age: {body}"
+    );
+}
+
+/// An unparseable stamp renders no age rather than a wrong one — the absolute
+/// timestamp beside it still shows either way.
+#[tokio::test]
+async fn an_unparseable_heartbeat_stamp_renders_no_age() {
+    let (server, store, _uid) = logged_in_server().await;
+    store
+        .set_setting("last_scan_at", "not-a-date")
+        .await
+        .unwrap();
+
+    let body = server.get("/admin").await.text();
+    assert!(
+        body.contains("class=\"hb-ago\" data-ago=\"not-a-date\"></div>"),
+        "an unparseable stamp should leave the age empty: {body}"
+    );
 }
 
 // --- the light palette exists twice, and must stay identical -----------------
