@@ -89,7 +89,12 @@ the render-blocking `assets/theme-init.js`) and **no template carries an
 non-submitting filter forms are `data-href`/`data-confirm`/`data-nosubmit`
 handled by delegation in `app.js`, which also survives a fragment swap. Adding
 an inline handler means weakening the policy for the whole UI; add the
-behaviour to `app.js` instead. `style-src` keeps `'unsafe-inline'` for the
+behaviour to `app.js` instead. `data-href` is a mouse convenience over the
+row's **real** `<a>` (the name), never the only route to a page — see
+`tests/no_js.rs`, which also pins that the three fragment endpoints redirect a
+JS-less navigation to the page embedding the section
+(`wants_fragment`/`fragment_page_redirect`) rather than serving a bare,
+unstyled partial. `style-src` keeps `'unsafe-inline'` for the
 heartbeat bars' computed `style="height:Npx"`. `/api/docs` is deliberately
 outside the CSP — Scalar loads its bundle from a CDN.
 

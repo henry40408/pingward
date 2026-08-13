@@ -265,6 +265,17 @@ async fn admin_keeps_nav_link_on_owner_form_validation_error() {
 
 // --- audit trail on /admin -------------------------------------------------
 
+/// GET a fragment endpoint the way `app.js` does. Without this header the
+/// endpoint answers a plain navigation with a redirect to the page that embeds
+/// the section instead of a bare partial (see `tests/no_js.rs`); these tests
+/// are about the partial, so they ask for it.
+async fn get_fragment(server: &TestServer, path: &str) -> axum_test::TestResponse {
+    server
+        .get(path)
+        .add_header("x-requested-with", "fetch")
+        .await
+}
+
 /// Record `n` audit rows directly, one second apart, alternating action so the
 /// filter has something to narrow. Returns the seeded rows' actions in order.
 async fn seed_audit(store: &Store, actor_id: i64, n: i64) {
@@ -348,7 +359,7 @@ async fn admin_audit_fragment_filters_by_action() {
     let (server, store, admin_id) = admin_server().await;
     seed_audit(&store, admin_id, 6).await;
 
-    let res = server.get("/admin/audit?aaction=user.create").await;
+    let res = get_fragment(&server, "/admin/audit?aaction=user.create").await;
     res.assert_status_ok();
     let body = res.text();
     assert_eq!(
@@ -376,7 +387,7 @@ async fn admin_audit_fragment_filtered_empty_state_differs() {
     let (server, store, admin_id) = admin_server().await;
     seed_audit(&store, admin_id, 2).await;
 
-    let res = server.get("/admin/audit?aactor=nobody").await;
+    let res = get_fragment(&server, "/admin/audit?aactor=nobody").await;
     res.assert_status_ok();
     assert!(
         res.text().contains("No audit entries match the filter."),
@@ -393,14 +404,14 @@ async fn admin_audit_pages_and_carries_the_filter() {
     // 20 rows per page, so 24 rows means a second page exists.
     seed_audit(&store, admin_id, 24).await;
 
-    let res = server.get("/admin/audit?aaction=admin.access").await;
+    let res = get_fragment(&server, "/admin/audit?aaction=admin.access").await;
     res.assert_status_ok();
     let body = res.text();
     // 12 of the 24 rows are admin.access — one page's worth, no Older link.
     assert_eq!(body.matches("data-testid=\"audit-row\"").count(), 12);
 
     // Unfiltered, 24 rows page at 20.
-    let res = server.get("/admin/audit").await;
+    let res = get_fragment(&server, "/admin/audit").await;
     let body = res.text();
     assert_eq!(body.matches("data-testid=\"audit-row\"").count(), 20);
     let older = body
@@ -414,7 +425,7 @@ async fn admin_audit_pages_and_carries_the_filter() {
         .expect("an Older link with 24 rows");
     assert!(older.starts_with("/admin/audit?ab="), "unexpected: {older}");
 
-    let res = server.get(&older).await;
+    let res = get_fragment(&server, &older).await;
     res.assert_status_ok();
     assert_eq!(res.text().matches("data-testid=\"audit-row\"").count(), 4);
 }
@@ -426,7 +437,7 @@ async fn admin_audit_pager_href_carries_the_active_filter() {
     // 48 rows: 24 of each action, so a filtered view still has two pages.
     seed_audit(&store, admin_id, 48).await;
 
-    let res = server.get("/admin/audit?aaction=admin.access").await;
+    let res = get_fragment(&server, "/admin/audit?aaction=admin.access").await;
     let body = res.text();
     assert!(
         body.contains("aaction=admin.access") && body.contains("/admin/audit?ab="),

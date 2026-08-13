@@ -177,13 +177,15 @@ When("I clear the dashboard filter", async ({ page }) => {
 });
 
 // The row carries `data-href` and is navigated by the delegated handler in
-// app.js — clicking its text (not a nested control) is what must move.
+// app.js. Deliberately clicks the schedule line, not the name: the name is a
+// real `<a>` to the same place, so clicking it would prove the anchor works
+// and leave the delegated handler untested.
 When("I click the dashboard row for {string}", async ({ page, serverUrl }, name) => {
   await page.goto(`${serverUrl}/`);
   await page
     .getByTestId("dashboard-check-row")
     .filter({ hasText: name })
-    .getByText(name, { exact: true })
+    .locator(".sc")
     .click();
 });
 

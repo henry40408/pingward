@@ -3132,14 +3132,57 @@ fn sse_for_check(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// Whether the caller wants a bare fragment rather than a whole page.
+///
+/// `X-Requested-With: fetch` is this app's "answer me, do not navigate me"
+/// signal: `app.js` sets it on every fragment load and on the re-auth dialog's
+/// unlock POST. Its absence means a real navigation — a pager or Clear link
+/// followed with JS off, or a URL pasted into the address bar.
+fn wants_fragment(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-requested-with")
+        .is_some_and(|v| v.as_bytes() == b"fetch")
+}
+/// Where a fragment endpoint sends a caller that asked for a *page*.
+///
+/// Every history section's pager and Clear controls are real `<a href>`s
+/// pointing at the fragment endpoint, because with JS on `wireSection` swaps
+/// the response in place. Followed as ordinary links they would otherwise
+/// render the partial as the whole document: no `<head>`, so no stylesheet, no
+/// nav, no way back — a page that reads as a broken site rather than as a
+/// missing feature. Redirecting to the page that *contains* the section keeps
+/// those links working unscripted, and the pager cursor and filters survive
+/// because the full page parses the very same query struct. The anchor lands
+/// the reader on the section they were paging instead of the top of a long
+/// page.
+///
+/// Not cached anywhere despite varying on a request header: the whole `web`
+/// router is wrapped in [`no_store`].
+fn fragment_page_redirect(path: &str, anchor: &str, uri: &axum::http::Uri) -> Response {
+    let query = uri.query().unwrap_or_default();
+    let sep = if query.is_empty() { "" } else { "?" };
+    Redirect::to(&format!("{path}{sep}{query}#{anchor}")).into_response()
+}
+
 /// `GET /checks/{id}/pings` — the pings fragment for a JS partial refresh.
 async fn check_pings(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
     Path(id): Path<i64>,
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
+    // Ownership first, so a stranger still gets `owned_check`'s 404 rather
+    // than a redirect that discloses the check page even exists.
     let check = owned_check(&state.store, id, user.id).await?;
+    if !wants_fragment(&headers) {
+        return Ok(fragment_page_redirect(
+            &format!("/checks/{}", check.id),
+            "pings-section",
+            &uri,
+        ));
+    }
     Ok(render(&build_pings_partial(&state, check.id, "", &page, None).await?)?.into_response())
 }
 
@@ -3160,10 +3203,19 @@ async fn check_events(
 async fn check_notifications(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
     Path(id): Path<i64>,
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
+    if !wants_fragment(&headers) {
+        return Ok(fragment_page_redirect(
+            &format!("/checks/{}", check.id),
+            "notifs-section",
+            &uri,
+        ));
+    }
     let names = channel_name_map(&state, check.project_id).await?;
     Ok(render(&build_notifs_partial(&state, check.id, "", &page, &names).await?)?.into_response())
 }
@@ -3172,12 +3224,20 @@ async fn check_notifications(
 async fn admin_check_pings(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,
+    headers: HeaderMap,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    if !wants_fragment(&headers) {
+        return Ok(fragment_page_redirect(
+            &format!("/admin/checks/{}", check.id),
+            "pings-section",
+            &uri,
+        ));
+    }
     Ok(
         render(&build_pings_partial(&state, check.id, "/admin", &page, None).await?)?
             .into_response(),
@@ -3201,12 +3261,20 @@ async fn admin_check_events(
 async fn admin_check_notifications(
     State(state): State<AppState>,
     AdminUser(admin): AdminUser,
+    headers: HeaderMap,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    if !wants_fragment(&headers) {
+        return Ok(fragment_page_redirect(
+            &format!("/admin/checks/{}", check.id),
+            "notifs-section",
+            &uri,
+        ));
+    }
     let names = channel_name_map(&state, check.project_id).await?;
     Ok(
         render(&build_notifs_partial(&state, check.id, "/admin", &page, &names).await?)?
@@ -4209,17 +4277,13 @@ async fn admin_unlock(
     Form(form): Form<PasswordForm>,
 ) -> Result<Response, AppError> {
     let outcome = reauthenticate(&state, &admin, &form.password, "admin_unlock");
-    // `X-Requested-With: fetch` is this app's existing "answer me, do not
-    // navigate me" signal (see the audit fragment endpoint and `app.js`). The
-    // in-page dialog uses it to get a status code back instead of a rendered
-    // page, since it has a form waiting to submit and nowhere to put HTML.
+    // The in-page dialog uses [`wants_fragment`]'s signal to get a status code
+    // back instead of a rendered page, since it has a form waiting to submit
+    // and nowhere to put HTML.
     // Everything about the decision itself is identical either way — the
     // branch is presentation only, which is what keeps a scripted caller from
     // being a second, weaker door.
-    if headers
-        .get("x-requested-with")
-        .is_some_and(|v| v.as_bytes() == b"fetch")
-    {
+    if wants_fragment(&headers) {
         return Ok(match outcome {
             Reauth::Passed => {
                 grant_elevation(&state, &jar);
@@ -5762,8 +5826,13 @@ async fn build_audit_partial(
 async fn admin_audit_fragment(
     State(state): State<AppState>,
     AdminUser(_admin): AdminUser,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
     Query(q): Query<AdminAuditQuery>,
 ) -> Result<Response, AppError> {
+    if !wants_fragment(&headers) {
+        return Ok(fragment_page_redirect("/admin", "audit-section", &uri));
+    }
     Ok(render(&build_audit_partial(&state, &q).await?)?.into_response())
 }
 

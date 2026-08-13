@@ -310,8 +310,8 @@
     <p class="empty">No projects yet.</p>
     {% endif %}
     {% for p in projects %}
-    <div class="check" tabindex="0" role="link" data-href="/admin/projects/{{ p.0.id }}">
-      <div class="cmeta"><div class="nm">{{ p.0.name }}</div><div class="sc">owner: {{ p.1 }}</div></div>
+    <div class="check" data-href="/admin/projects/{{ p.0.id }}">
+      <div class="cmeta"><div class="nm"><a href="/admin/projects/{{ p.0.id }}">{{ p.0.name }}</a></div><div class="sc">owner: {{ p.1 }}</div></div>
       <a class="rowedit" href="/admin/projects/{{ p.0.id }}">manage →</a>
     </div>
     {% endfor %}

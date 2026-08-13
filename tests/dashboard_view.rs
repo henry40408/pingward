@@ -403,16 +403,13 @@ async fn dashboard_filter_by_check_name_drops_other_projects_and_narrows_counter
     let body = server.get("/?q=rotate").await.text();
 
     assert!(body.contains(">infra</h2>"), "infra group missing: {body}");
-    assert!(
-        body.contains(">rotate-certs</div>"),
-        "match missing: {body}"
-    );
+    assert!(shows_check(&body, "rotate-certs"), "match missing: {body}");
     assert!(
         !body.contains(">web</h2>"),
         "a project with no matching check must not render: {body}"
     );
     assert!(
-        !body.contains(">vacuum</div>"),
+        !shows_check(&body, "vacuum"),
         "a sibling check that does not match must not render: {body}"
     );
     // The counters follow the filter: one visible check, and it is "new".
@@ -438,7 +435,7 @@ async fn dashboard_filter_by_project_description_keeps_all_of_its_checks() {
 
     assert!(body.contains(">infra</h2>"), "infra group missing: {body}");
     assert!(
-        body.contains(">rotate-certs</div>") && body.contains(">vacuum</div>"),
+        shows_check(&body, "rotate-certs") && shows_check(&body, "vacuum"),
         "a project-level match must keep every check in that project: {body}"
     );
     assert!(
@@ -454,7 +451,7 @@ async fn dashboard_filter_by_project_name_keeps_all_of_its_checks() {
     let body = server.get("/?q=infra").await.text();
 
     assert!(
-        body.contains(">rotate-certs</div>") && body.contains(">vacuum</div>"),
+        shows_check(&body, "rotate-certs") && shows_check(&body, "vacuum"),
         "a project-name match must keep every check in that project: {body}"
     );
     assert!(!body.contains(">web</h2>"), "web must not render: {body}");
@@ -474,7 +471,7 @@ async fn dashboard_filter_matches_description_text_beyond_the_visible_summary() 
     );
 
     let body = server.get("/?q=glacier").await.text();
-    assert!(body.contains(">backup</div>"), "match missing: {body}");
+    assert!(shows_check(&body, "backup"), "match missing: {body}");
     // "glacier" does appear once, echoed into the search box — but the tail it
     // came from must not be rendered, proving the match came from the stored
     // description rather than anything on screen.
@@ -488,7 +485,7 @@ async fn dashboard_filter_matches_description_text_beyond_the_visible_summary() 
         "the term should appear only in the echoed search box: {body}"
     );
     assert!(
-        !body.contains(">deploy</div>"),
+        !shows_check(&body, "deploy"),
         "a sibling check that does not match must not render: {body}"
     );
     assert_tile(&body, "Total", 1);
@@ -500,7 +497,7 @@ async fn dashboard_filter_is_case_insensitive() {
     // An uppercase query against lowercase stored data.
     let body = server.get("/?q=ROTATE-Certs").await.text();
     assert!(
-        body.contains(">rotate-certs</div>"),
+        shows_check(&body, "rotate-certs"),
         "an uppercase term must match lowercase stored text: {body}"
     );
     assert_tile(&body, "Total", 1);
@@ -510,7 +507,7 @@ async fn dashboard_filter_is_case_insensitive() {
     // Without this, dropping `to_lowercase()` on the haystack passes the suite.
     let body = server.get("/?q=tls").await.text();
     assert!(
-        body.contains(">rotate-certs</div>"),
+        shows_check(&body, "rotate-certs"),
         "a lowercase term must match uppercase stored text: {body}"
     );
     assert_tile(&body, "Total", 1);
@@ -606,11 +603,11 @@ async fn server_with_mixed_statuses() -> TestServer {
     server
 }
 
-/// Whether a check row for `name` is rendered (matches the row's `nm` cell, so
+/// Whether a check row for `name` is rendered (reads the row's `nm` cell, so
 /// it can't be fooled by the name appearing in the search box or a project
 /// header).
 fn shows_check(body: &str, name: &str) -> bool {
-    body.contains(&format!("class=\"nm\">{name}</div>"))
+    check_order(body).iter().any(|n| n == name)
 }
 
 #[tokio::test]
@@ -801,8 +798,15 @@ fn project_order(body: &str) -> Vec<String> {
 
 /// Check rows, top to bottom, flattened across groups. Matches the row's `nm`
 /// cell, so the search box and project headers cannot contribute.
+///
+/// The cell wraps its text in the row's real link to the check (that anchor is
+/// what makes the row work with JS off — see `tests/no_js.rs`), so the name
+/// starts after the anchor's own `>`.
 fn check_order(body: &str) -> Vec<String> {
-    rendered_order(body, "class=\"nm\">", "</div>")
+    rendered_order(body, "class=\"nm\"><a href=\"", "</a>")
+        .iter()
+        .filter_map(|cell| cell.split_once('>').map(|(_href, name)| name.to_string()))
+        .collect()
 }
 
 #[tokio::test]

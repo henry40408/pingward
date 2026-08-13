@@ -260,8 +260,9 @@ Then("the check's notify channels show an empty state", async ({ page }) => {
   await expect(page.getByTestId("check-channels-empty")).toBeVisible();
 });
 
-// From the project page, click into a check's row (a `role="link"` div, not a
-// real anchor) to reach its check page.
+// From the project page, click into a check's row to reach its check page.
+// Clicks the row body rather than the name link inside it, so this goes
+// through app.js's delegated `data-href` handler.
 When("I visit the check page for {string}", async ({ page }, name) => {
   await page.locator(".check", { hasText: name }).click();
   await expect(page).toHaveURL(/\/checks\/\d+$/);

@@ -97,21 +97,20 @@ window.pw = (function () {
 
 // A whole row acts as a link to `data-href`. Delegated from the document so it
 // also covers rows inserted by a fragment swap. A click that landed on a real
-// control (the row's own "edit" link, a form button) is left alone — that is
-// what the old `onclick="event.stopPropagation()"` on those links was for.
+// control (the row's name link, its "edit" link, a form button) is left alone —
+// that is what the old `onclick="event.stopPropagation()"` on those links was
+// for.
+//
+// This is a *mouse convenience only*, not the row's link. The name inside each
+// row is a real `<a>` to the same destination, which is what carries keyboard
+// access, the focus ring, the context menu, middle-click, and the row working
+// at all with JS off — an earlier `tabindex="0" role="link"` on the row itself
+// simulated the first two and delivered none of the rest. Nothing here should
+// grow back into the only way to reach a page.
 document.addEventListener('click', function (e) {
   if (e.target.closest('a, button, input, select, textarea, label')) return;
   var row = e.target.closest('[data-href]');
   if (row) location = row.getAttribute('data-href');
-});
-
-// Keyboard equivalent, for the same rows (they carry tabindex + role=link).
-// Only when the row itself has focus: Enter inside a nested control belongs to
-// that control.
-document.addEventListener('keydown', function (e) {
-  if (e.key !== 'Enter') return;
-  var row = e.target.closest && e.target.closest('[data-href]');
-  if (row && e.target === row) location = row.getAttribute('data-href');
 });
 
 // Destructive forms confirm first (`data-confirm`), and the filter forms never
