@@ -644,6 +644,15 @@ nav.links a:hover {
   font-weight: 600;
   font-size: 14px;
 }
+/* The row's real link (see `app.js`'s `data-href` note). Styled to disappear
+   into the row: the whole row already reads as clickable via `.check`'s cursor
+   and hover, so an underlined blue name would announce a second, narrower
+   target that behaves identically. It still focuses, rings and opens in a new
+   tab like the anchor it is. */
+.cmeta .nm a {
+  color: inherit;
+  text-decoration: none;
+}
 .cmeta .sc {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
     monospace;
@@ -1864,8 +1873,7 @@ form.inline,
 a:focus-visible,
 button:focus-visible,
 input:focus-visible,
-select:focus-visible,
-.check:focus-visible {
+select:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
 }

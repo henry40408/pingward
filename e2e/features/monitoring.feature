@@ -70,9 +70,11 @@ Feature: Monitoring core
     When I delete the project
     Then the dashboard shows no projects
 
-  # The row is a div, not a link: it navigates through a delegated handler
-  # reading `data-href` (an inline onclick would need a CSP that allows inline
-  # script). Nothing else exercises that handler.
+  # Clicking the row *body* navigates through a delegated handler reading
+  # `data-href` (an inline onclick would need a CSP that allows inline script).
+  # Nothing else exercises that handler — the name inside the row is a real
+  # anchor and takes its own path, which is what makes the row work with JS
+  # off. See the no-JS render assertions in tests/dashboard_view.rs.
   Scenario: Clicking a dashboard row opens its check
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60

@@ -172,7 +172,13 @@ paint) and **no template carries an `onclick=`/`onsubmit=` attribute**. Row
 navigation (`data-href`), confirmation prompts (`data-confirm`) and the
 non-submitting filter forms (`data-nosubmit`) go through delegated handlers in
 `app.js` instead, which also means they keep working on markup inserted by a
-fragment swap. Reintroducing one inline handler means either weakening the
+fragment swap. `data-href` is a **mouse convenience layered over a real
+link**, not the link itself: the name inside each row is an `<a>` to the same
+destination, which is what carries keyboard access, the focus ring,
+middle-click and — the reason it exists — the row working at all with JS off.
+It replaced a `tabindex="0" role="link"` div that simulated the first two and
+delivered none of the rest, leaving the dashboard with no route to a check
+page for an unscripted browser. `tests/no_js.rs` is the guard. Reintroducing one inline handler means either weakening the
 policy for the whole UI or minting a nonce per response, so don't: put the
 behaviour in `app.js` behind a `data-` attribute. `style-src` does keep
 `'unsafe-inline'` — the heartbeat bars carry a computed
@@ -1275,6 +1281,19 @@ inlined into the full page by the handler and served standalone by a fragment
 endpoint (`GET /checks/{id}/pings`, `…/notifications`, `GET /admin/audit`) —
 so the markup has one source and a partial refresh cannot drift from a full
 load.
+
+A fragment endpoint answers a *navigation* with a redirect rather than a
+partial (`web::wants_fragment` / `web::fragment_page_redirect`). The pager and
+Clear controls are real `<a href>`s aimed at those endpoints, because with JS
+on `wireSection` intercepts the click and swaps the response in place; followed
+as ordinary links they used to render the partial as the whole document — no
+`<head>`, so no stylesheet, no nav, no way back, a page that reads as a broken
+site rather than as a missing feature. Absent `X-Requested-With: fetch` the
+endpoint now redirects to the page that embeds the section, carrying the query
+string (the full page parses the very same query struct, so the cursor and
+filters survive) and anchoring on the section. Ownership/admin resolution runs
+**before** the redirect decision, so the fallback never becomes a cheap way to
+confirm that someone else's check exists.
 
 The client half is `pw.wireSection` in `base.html`: it delegates clicks inside
 the section, turning a pager/Clear link or the Filter button into a `fetch` of

@@ -241,11 +241,18 @@ Then(
   }
 );
 
-// Same Range-based line-box count as the group-header step above: `.cmeta` is
-// a flex item, so measuring it directly would report one rect however its text
-// wraps. The chip assertion is the non-vacuity guard — a row rendering no chip
-// at all would trivially leave the name on one line and prove nothing about
-// whether showing the chip at phone width is affordable.
+// Same Range-based measurement as the group-header step above: `.cmeta` is a
+// flex item, so measuring it directly would report one rect however its text
+// wraps. Counted by *distinct line tops* rather than raw rect count, because
+// `.nm` wraps its text in the row's real link to the check (the anchor that
+// makes the row work with JS off) and a Range spanning an element yields a rect
+// for the element box on top of the one for its text — two rects at the same y,
+// which is still one line. The raw count rides along in the failure message so
+// a genuine wrap stays distinguishable from that artefact.
+//
+// The chip assertion is the non-vacuity guard — a row rendering no chip at all
+// would trivially leave the name on one line and prove nothing about whether
+// showing the chip at phone width is affordable.
 Then(
   "the check row's name stays on one line beside the {string} chip",
   async ({ page }, chip) => {
@@ -256,8 +263,10 @@ Then(
       range.selectNodeContents(nm);
       const badge = row.querySelector('[data-testid="check-no-channel"]');
       const box = badge && badge.getBoundingClientRect();
+      const rects = [...range.getClientRects()];
       return {
-        lines: range.getClientRects().length,
+        lines: new Set(rects.map((r) => Math.round(r.top))).size,
+        rects: rects.length,
         name: nm.textContent,
         chip: badge && badge.textContent,
         chipWidth: box ? Math.round(box.width) : 0,
@@ -272,7 +281,7 @@ Then(
     ).toBeGreaterThan(0);
     expect(
       m.lines,
-      `the check name "${m.name}" spans ${m.lines} lines — the chip squeezed .cmeta until it wrapped`
+      `the check name "${m.name}" spans ${m.lines} lines (${m.rects} client rects) — the chip squeezed .cmeta until it wrapped`
     ).toBe(1);
     // The name staying on one line is only affordable because the chip wrapped
     // onto a row of its own; without that it shares the row and the assertion
