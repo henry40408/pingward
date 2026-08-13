@@ -253,6 +253,55 @@ async fn the_redirect_never_answers_for_another_users_check() {
         .assert_status_not_found();
 }
 
+// --- the light palette exists twice, and must stay identical -----------------
+
+/// Every `--token: value` pair inside the first `{ … }` block following
+/// `marker`. Brace-counting is overkill here: neither block nests.
+fn palette_after(css: &str, marker: &str) -> Vec<(String, String)> {
+    let start = css
+        .find(marker)
+        .unwrap_or_else(|| panic!("{marker} is gone from app.css"))
+        + marker.len();
+    let rest = &css[start..];
+    let end = rest.find('}').expect("unterminated block");
+    rest[..end]
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("--"))
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| {
+            (
+                k.trim().to_string(),
+                v.trim().trim_end_matches(';').to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The light palette is written twice — once for the `data-theme` attribute
+/// `theme-init.js` sets, once inside a `prefers-color-scheme` query for a
+/// browser that never ran it. A selector list cannot span a media query, so
+/// the duplication is unavoidable; this is what stops the copies drifting.
+/// A token added or retuned in one block only is invisible until someone opens
+/// the app with script off, which is precisely the case nobody tests by hand.
+#[test]
+fn the_two_light_palettes_are_identical() {
+    let css = include_str!("../assets/app.css");
+    let scripted = palette_after(css, ":root[data-theme=\"light\"] {");
+    let scriptless = palette_after(css, ":root:not([data-theme]) {");
+
+    assert!(
+        scripted.len() > 20,
+        "parsed only {} tokens — the marker probably moved and this test is \
+         passing vacuously",
+        scripted.len()
+    );
+    assert_eq!(
+        scripted, scriptless,
+        "the scripted and scriptless light palettes have drifted; every token \
+         must appear in both, with the same value and in the same order"
+    );
+}
+
 // --- the filter forms submit on their own ------------------------------------
 
 /// A GET submission replaces the whole query string, so the pings form has to
