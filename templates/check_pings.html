@@ -2,11 +2,23 @@
    standalone by GET /checks/{id}/pings (JS swaps it into #pings-section) and
    inlined into check.html. Rendered content is escaped here; the parent injects
    it with |safe. #}
-<form class="filters" data-testid="pings-filters" data-nosubmit>
-  <label class="fld">From <input type="datetime-local" data-testid="pings-from" data-utc="{{ f_from }}"></label>
-  <label class="fld">To <input type="datetime-local" data-testid="pings-to" data-utc="{{ f_to }}"></label>
+{# A real GET form submitting to the check page, so it filters with no script:
+   the page parses the very same query params the fragment endpoint does. With
+   script, `app.js`'s `data-apply` handler cancels the submit and swaps the
+   fragment in place instead, and `data-nosubmit` stops a stray Enter
+   navigating away. The hidden fields carry the *notifications* filter, which a
+   GET submission would otherwise drop — it replaces the whole query string.
+
+   The `datetime-local` values are the viewer's local wall clock, converted to
+   UTC by `app.js` before it fetches. Submitted raw they are read as UTC
+   (`web::parse_date_bound`), which is the same zone the page prints times in
+   when no script localizes them — so each mode agrees with what it shows. #}
+<form class="filters" method="get" action="{{ base }}/checks/{{ check_id }}" data-testid="pings-filters" data-nosubmit>
+  {% for f in carry %}<input type="hidden" name="{{ f.name }}" value="{{ f.value }}">{% endfor %}
+  <label class="fld">From <input type="datetime-local" name="pfrom" data-testid="pings-from" data-utc="{{ f_from }}"></label>
+  <label class="fld">To <input type="datetime-local" name="pto" data-testid="pings-to" data-utc="{{ f_to }}"></label>
   <label class="fld">Kind
-    <select data-testid="pings-kind">
+    <select name="pk" data-testid="pings-kind">
       <option value=""{% if f_kind == "" %} selected{% endif %}>All</option>
       <option value="success"{% if f_kind == "success" %} selected{% endif %}>success</option>
       <option value="fail"{% if f_kind == "fail" %} selected{% endif %}>fail</option>
@@ -14,8 +26,8 @@
       <option value="log"{% if f_kind == "log" %} selected{% endif %}>log</option>
     </select>
   </label>
-  <button class="btn" type="button" data-apply data-testid="pings-apply">Filter</button>
-  {% if filtered %}<a class="btn ghost" href="{{ base }}/checks/{{ check_id }}/pings" data-testid="pings-clear">Clear</a>{% endif %}
+  <button class="btn" type="submit" data-apply data-testid="pings-apply">Filter</button>
+  {% if filtered %}<a class="btn ghost" href="{{ clear }}" data-testid="pings-clear">Clear</a>{% endif %}
 </form>
 {% if empty %}
 <p class="empty" data-testid="pings-empty">{% if filtered %}No pings match the filter.{% else %}No pings yet.{% endif %}</p>

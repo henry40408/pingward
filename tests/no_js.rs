@@ -253,6 +253,73 @@ async fn the_redirect_never_answers_for_another_users_check() {
         .assert_status_not_found();
 }
 
+// --- the filter forms submit on their own ------------------------------------
+
+/// A GET submission replaces the whole query string, so the pings form has to
+/// re-send the notifications filter as hidden state or narrowing one section
+/// would silently clear the other. Asserted on the rendered page rather than
+/// through a browser because it is the server that has to emit them.
+#[tokio::test]
+async fn each_filter_form_carries_the_other_sections_filter() {
+    let (server, store, uid) = logged_in_server().await;
+    let (_pid, cid) = check_for(&store, uid, "cu").await;
+
+    let body = server
+        .get(&format!("/checks/{cid}?pk=fail&ne=down"))
+        .await
+        .text();
+
+    // The pings form re-sends the notifications half...
+    assert!(
+        body.contains("<input type=\"hidden\" name=\"ne\" value=\"down\">"),
+        "pings form drops the notifications filter: {body}"
+    );
+    // ...and the notifications form re-sends the pings half.
+    assert!(
+        body.contains("<input type=\"hidden\" name=\"pk\" value=\"fail\">"),
+        "notifications form drops the pings filter: {body}"
+    );
+    // Neither re-sends its own keys as hidden state — the visible controls
+    // carry those, and a duplicate would submit the stale value alongside.
+    assert!(
+        !body.contains("<input type=\"hidden\" name=\"pk\" value=\"fail\">\n  <input"),
+        "a form re-sent its own filter as hidden state: {body}"
+    );
+    // Clear drops only its own section's filter.
+    assert!(
+        body.contains(&format!("/checks/{cid}/pings?ne=down")),
+        "the pings Clear link drops the notifications filter: {body}"
+    );
+    assert!(
+        body.contains(&format!("/checks/{cid}/notifications?pk=fail")),
+        "the notifications Clear link drops the pings filter: {body}"
+    );
+}
+
+/// The forms post to the page, not to the fragment endpoint, and the button is
+/// a real submit — four separate reasons a scriptless click used to do nothing.
+#[tokio::test]
+async fn the_filter_forms_are_real_get_forms() {
+    let (server, store, uid) = logged_in_server().await;
+    let (_pid, cid) = check_for(&store, uid, "cu").await;
+
+    let body = server.get(&format!("/checks/{cid}")).await.text();
+    assert!(
+        body.contains(&format!("method=\"get\" action=\"/checks/{cid}\"")),
+        "a filter form has no GET action: {body}"
+    );
+    assert!(
+        !body.contains("type=\"button\" data-apply"),
+        "a Filter button is still type=button, so it submits nothing: {body}"
+    );
+    for name in ["pk", "pfrom", "pto", "ne", "ns", "nfrom", "nto"] {
+        assert!(
+            body.contains(&format!("name=\"{name}\"")),
+            "filter control {name} has no name, so it submits nothing: {body}"
+        );
+    }
+}
+
 // --- irreversible actions ask before they run --------------------------------
 //
 // With JS the question is a native `confirm()` driven by the form's
