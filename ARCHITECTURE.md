@@ -180,6 +180,18 @@ It replaced a `tabindex="0" role="link"` div that simulated the first two and
 delivered none of the rest, leaving the dashboard with no route to a check
 page for an unscripted browser. `tests/no_js.rs` is the guard.
 
+CSS that hides content a click would reveal has the same problem, and hangs
+off a **`js` class on `<html>`** set by the render-blocking `theme-init.js`.
+The expandable ping/audit panels are collapsed by `:root.js tr.exp:not(.open)`
+alone, so with no script they stay open and a failed job's captured output —
+the most useful thing on the page when something has broken — is still
+readable rather than sealed behind a caret nothing can open. The carets and
+the row's pointer cursor are suppressed in the same state, since both
+advertise an affordance that is not there. The class is set in
+`theme-init.js` rather than `app.js` for the reason that file exists at all:
+`app.js` is deferred, so collapsing from there would show every panel and then
+snap them shut after the first paint.
+
 `data-confirm` is the same shape of promise, and is likewise **not** what
 enforces anything. The attribute only turns into a question if `app.js` is
 running, so the server refuses every irreversible action that does not carry
@@ -1390,6 +1402,18 @@ with `.steps.js` step definitions, run via `cd e2e && npm test` (which runs
 ensures the binary is built; each scenario then spawns its own fresh
 `pingward` binary against a temporary SQLite database on a random port, so
 scenarios don't share state.
+
+There are **two Playwright projects**. `chromium` runs everything except
+`no_js.feature`; the `no-js` project runs only that file, in a context with
+`javaScriptEnabled: false`. Scripting is a browser capability rather than
+something a page can be asked to give up, so it needs its own context — and
+without one the whole suite is structurally blind to anything the UI has
+quietly started depending on `app.js` for, which is how a dashboard with no
+route to a check page, pager links rendering a bare fragment, and captured
+output nothing could open all shipped. Assertions that need both sides (a
+panel that is open without script and collapsed with it) are paired across
+`no_js.feature` and the JS-on suite deliberately: a fix that simply left the
+panel always open would satisfy the no-JS half on its own.
 
 ## How to make common changes
 
