@@ -76,6 +76,20 @@ Feature: The UI with JavaScript switched off
     And I visit the dashboard
     Then the page background is dark
 
+  # Copy, LIVE and the theme cycle are pure `app.js`. A button that ignores
+  # every click is worse than one that was never drawn.
+  Scenario: Controls that would do nothing are not drawn
+    Given a check named "backup" with period 60
+    Then the copy button is absent
+    And the live tail toggle is absent
+    And the theme toggle is absent
+
+  # The age is the number an operator actually reads off these tiles, and it
+  # was rendered as an empty div for `app.js` to fill in every second.
+  Scenario: The scheduler heartbeat shows how long ago it ran
+    When I open the admin dashboard
+    Then the scheduler heartbeat shows an age
+
   # #144: `data-confirm` is inert without script, so the server asks instead.
   Scenario: Deleting a check asks first, as a page
     Given a check named "backup" with period 60

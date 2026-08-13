@@ -2429,6 +2429,18 @@ fn parse_date_bound(v: Option<&str>) -> Option<DateTime<Utc>> {
     None
 }
 
+/// How long ago a `settings`-table timestamp was, or `None` if it is unset or
+/// unparseable.
+///
+/// The scheduler and prune loops stamp these as RFC3339 strings, so the value
+/// is text by the time it reaches here. An unparseable one renders no age
+/// rather than a wrong one — the absolute timestamp beside it is still shown
+/// either way.
+fn relative_setting(raw: Option<&str>, now: DateTime<Utc>) -> Option<String> {
+    let at = DateTime::parse_from_rfc3339(raw?).ok()?.with_timezone(&Utc);
+    Some(crate::view::fmt_relative(at, now))
+}
+
 /// One `<input type="hidden">` in a filter form.
 ///
 /// A history section's filter is a real GET form submitting to the page that
@@ -6002,6 +6014,14 @@ struct AdminTemplate {
     recent_fail: Vec<Notification>,
     last_scan_at: Option<String>,
     last_prune_at: Option<String>,
+    /// "3m ago" for the two timestamps above, rendered server-side.
+    ///
+    /// `app.js` retitles these every second from `data-ago`, but it used to be
+    /// the *only* thing that ever put text in them, so with no script the
+    /// heartbeat tiles showed an absolute timestamp and a blank line where the
+    /// age should be — the one number an operator actually reads at a glance.
+    last_scan_ago: Option<String>,
+    last_prune_ago: Option<String>,
     // settings
     scan_interval: String,
     nag_interval: String,
@@ -6071,10 +6091,13 @@ async fn render_admin(
     r: AdminRender,
     audit: &AdminAuditQuery,
 ) -> Result<Response, AppError> {
-    let day_ago = Utc::now() - Duration::days(1);
+    let now = Utc::now();
+    let day_ago = now - Duration::days(1);
     // Rendered here rather than in the template so the inline card body and
     // the `/admin/audit` fragment endpoint emit byte-identical markup.
     let audit_partial = render(&build_audit_partial(state, audit).await?)?.0;
+    let last_scan_at = state.store.get_setting("last_scan_at").await?;
+    let last_prune_at = state.store.get_setting("last_prune_at").await?;
     let (notif_ok, notif_err) = state.store.notification_counts_since(day_ago).await?;
     let elevation = elevation(state, jar, admin);
     Ok(render(&AdminTemplate {
@@ -6092,8 +6115,10 @@ async fn render_admin(
         notif_err,
         channel_fail: state.store.channel_failure_counts_since(day_ago).await?,
         recent_fail: state.store.recent_failed_notifications(10).await?,
-        last_scan_at: state.store.get_setting("last_scan_at").await?,
-        last_prune_at: state.store.get_setting("last_prune_at").await?,
+        last_scan_at: last_scan_at.clone(),
+        last_prune_at: last_prune_at.clone(),
+        last_scan_ago: relative_setting(last_scan_at.as_deref(), now),
+        last_prune_ago: relative_setting(last_prune_at.as_deref(), now),
         scan_interval: r.settings.scan_interval,
         nag_interval: r.settings.nag_interval,
         pings_retention_days: r.settings.pings_retention_days,
