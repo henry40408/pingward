@@ -422,6 +422,130 @@ async fn the_user_toggles_ask_only_in_the_direction_that_takes_access_away() {
     assert!(is_admin(member).await, "demoted without confirming");
 }
 
+#[tokio::test]
+async fn revoking_an_api_key_asks_first() {
+    let (server, store, uid) = logged_in_server().await;
+    let kid = store
+        .insert_api_key(uid, "ci", "hash", "pw_abcd", None, chrono::Utc::now())
+        .await
+        .unwrap();
+
+    let res = server
+        .post(&format!("/account/api-keys/{kid}/delete"))
+        .await;
+    res.assert_status_ok();
+    assert!(is_confirmation_page(&res.text()));
+    assert_eq!(
+        store.list_api_keys_for_user(uid).await.unwrap().len(),
+        1,
+        "the key was revoked before anyone confirmed"
+    );
+
+    server
+        .post(&format!("/account/api-keys/{kid}/delete?confirmed=1"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
+}
+
+/// Signing a browser out is not undoable from that browser, so it asks too —
+/// including the "revoke every other session" bulk control, which is the one
+/// most likely to be hit by mistake.
+#[tokio::test]
+async fn revoking_sessions_asks_first() {
+    let (server, store, uid) = logged_in_server().await;
+    let sessions = store
+        .list_sessions_for_user(uid, chrono::Utc::now())
+        .await
+        .unwrap();
+    let handle = pingward::apikey::hash_api_key(&sessions[0].id);
+
+    let res = server.post("/account/sessions/revoke-others").await;
+    res.assert_status_ok();
+    assert!(is_confirmation_page(&res.text()));
+
+    let res = server
+        .post(&format!("/account/sessions/{handle}/revoke"))
+        .await;
+    res.assert_status_ok();
+    assert!(is_confirmation_page(&res.text()));
+    assert_eq!(
+        store
+            .list_sessions_for_user(uid, chrono::Utc::now())
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the session was revoked before anyone confirmed"
+    );
+
+    // Confirming revokes the current session, which signs this browser out.
+    server
+        .post(&format!("/account/sessions/{handle}/revoke?confirmed=1"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(
+        store
+            .list_sessions_for_user(uid, chrono::Utc::now())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// The `/admin` twins share the owner templates but not the handlers, so each
+/// needs its own gate — and each needs its own assertion that it has one.
+#[tokio::test]
+async fn the_admin_twins_ask_first_too() {
+    let (server, store, _uid) = logged_in_server().await;
+    let owner = store
+        .create_user("owner", Some("x"), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let (pid, cid) = check_for(&store, owner, "cu2").await;
+    let before = store.find_check(cid).await.unwrap().unwrap().ping_uuid;
+
+    let res = server
+        .post(&format!("/admin/checks/{cid}/regenerate"))
+        .await;
+    res.assert_status_ok();
+    assert!(is_confirmation_page(&res.text()));
+    assert_eq!(
+        store.find_check(cid).await.unwrap().unwrap().ping_uuid,
+        before
+    );
+
+    let res = server.post(&format!("/admin/checks/{cid}/delete")).await;
+    res.assert_status_ok();
+    assert!(is_confirmation_page(&res.text()));
+    assert!(store.find_check(cid).await.unwrap().is_some());
+
+    let res = server.post(&format!("/admin/projects/{pid}/delete")).await;
+    res.assert_status_ok();
+    assert!(is_confirmation_page(&res.text()));
+    assert!(store.find_project(pid).await.unwrap().is_some());
+
+    // ...and confirming each still works, deepest first.
+    server
+        .post(&format!("/admin/checks/{cid}/regenerate?confirmed=1"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert_ne!(
+        store.find_check(cid).await.unwrap().unwrap().ping_uuid,
+        before
+    );
+    server
+        .post(&format!("/admin/checks/{cid}/delete?confirmed=1"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(store.find_check(cid).await.unwrap().is_none());
+    server
+        .post(&format!("/admin/projects/{pid}/delete?confirmed=1"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(store.find_project(pid).await.unwrap().is_none());
+}
+
 /// Authorization still comes first: a stranger's resource is a 404, not an
 /// invitation to confirm deleting something they cannot see.
 #[tokio::test]
