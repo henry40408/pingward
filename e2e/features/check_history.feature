@@ -56,3 +56,13 @@ Feature: Check history pagination
     Then the newest heartbeat bar is flush with the strip's right edge
     And the oldest heartbeat bars are clipped off the left
     And the page has no horizontal scrollbar
+
+  # The other half of no_js.feature's "captured output is readable": with
+  # script on the panel must still start collapsed. Without this, leaving every
+  # panel permanently open would satisfy that scenario and break nothing here.
+  Scenario: The captured output stays collapsed until the row is clicked
+    When I send a failing ping with output "boom: disk full"
+    And I reload the check page
+    Then the captured output "boom: disk full" is hidden
+    When I expand the first ping row
+    Then the captured output "boom: disk full" is visible

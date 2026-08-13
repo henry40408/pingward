@@ -20,6 +20,21 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    {
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"] },
+      // `no_js.feature` is the same app with scripting switched off, which is
+      // a browser capability rather than anything the page can be asked to do
+      // — so it needs its own context, and must not also run here.
+      testIgnore: /no_js\.feature\.spec\.js$/,
+    },
+    {
+      // Everything the UI promises that `app.js` is not allowed to be the only
+      // provider of. The rest of the suite runs with script on and is blind to
+      // this by construction.
+      name: "no-js",
+      use: { ...devices["Desktop Chrome"], javaScriptEnabled: false },
+      testMatch: /no_js\.feature\.spec\.js$/,
+    },
   ],
 });

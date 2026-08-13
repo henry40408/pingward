@@ -48,6 +48,12 @@ Browser E2E (Playwright + playwright-bdd, in `e2e/`):
   runs `cargo build` first; each scenario spawns a **fresh binary + temp SQLite
   DB** on a random port. Selectors use `data-testid`.
 - Single feature/scenario: `cd e2e && npx bddgen && npx playwright test ping_kinds -g "POST body"`.
+- **Two projects**: `chromium` runs everything but `no_js.feature`; `no-js`
+  runs only that file with `javaScriptEnabled: false`
+  (`npx playwright test --project=no-js`). Anything `app.js` must not be the
+  sole provider of belongs there — the rest of the suite cannot see it. Where
+  both directions matter (open without script, collapsed with it), pair the
+  scenario across `no_js.feature` and the JS-on suite.
 
 README assets (Playwright's Chromium, no extra deps; both commit their output):
 - `cd e2e && npm run screenshots` — rebuilds `docs/screenshots/*.png` by seeding
@@ -99,7 +105,11 @@ irreversible handler runs only with `?confirmed=1` and otherwise renders
 `templates/confirm.html` (the same question as a page), with `app.js` appending
 the flag after its dialog. The flag is a **query** param because several of
 these forms post no body, and the gate sits **below** authorization and below
-every refusal guard — see ARCHITECTURE.md's "Confirming a destructive action". `style-src` keeps `'unsafe-inline'` for the
+every refusal guard — see ARCHITECTURE.md's "Confirming a destructive action".
+CSS that hides what a click reveals must hang off the **`js` class** on
+`<html>` (set by `theme-init.js` before first paint, not by the deferred
+`app.js`): `:root.js tr.exp:not(.open)` is what collapses the ping/audit output
+panels, so an unscripted browser keeps them open instead of losing the content. `style-src` keeps `'unsafe-inline'` for the
 heartbeat bars' computed `style="height:Npx"`. `/api/docs` is deliberately
 outside the CSP — Scalar loads its bundle from a CDN.
 

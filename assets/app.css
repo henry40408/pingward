@@ -1450,11 +1450,16 @@ tbody td.fail-txt {
   white-space: normal;
   min-width: 56ch;
 }
-tr.exp {
+/* Collapsed only where a click can open it again. The panel holds a failed
+   job's captured output — the single most useful thing on the page when
+   something has broken — and `.open` is added by `app.js`, so hiding it
+   unconditionally put that content out of reach of any browser running no
+   script. `:root.js` is set by the render-blocking `theme-init.js`, so the
+   collapse happens before the first paint rather than as a visible jump.
+   `:not(.open)` rather than a second rule to re-show it: an `:root.js tr.exp`
+   rule would outrank a plain `tr.exp.open` on specificity. */
+:root.js tr.exp:not(.open) {
   display: none;
-}
-tr.exp.open {
-  display: table-row;
 }
 tr.exp > td {
   background: color-mix(in srgb, var(--faint) 8%, transparent);
@@ -1653,7 +1658,13 @@ tr.exp > td {
 .caret.blank {
   opacity: 0;
 }
-tr.toggle {
+/* Both affordances are lies without script: the panel is already open, and the
+   row does not respond to a click. Hidden the same way `.caret.blank` is —
+   opacity, not display — so the column keeps its width either way. */
+:root:not(.js) .caret {
+  opacity: 0;
+}
+:root.js tr.toggle {
   cursor: pointer;
 }
 tr.exp > td {
