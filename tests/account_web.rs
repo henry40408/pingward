@@ -125,7 +125,7 @@ async fn second_login_lists_two_sessions_and_revoke_others_leaves_one() {
     );
 
     server1
-        .post("/account/sessions/revoke-others")
+        .post("/account/sessions/revoke-others?confirmed=1")
         .await
         .assert_status(StatusCode::SEE_OTHER);
 
@@ -151,7 +151,7 @@ async fn revoking_the_current_session_logs_out() {
     let handle = apikey::hash_api_key(&sessions[0].id);
 
     server
-        .post(&format!("/account/sessions/{handle}/revoke"))
+        .post(&format!("/account/sessions/{handle}/revoke?confirmed=1"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
 
@@ -201,7 +201,9 @@ async fn unknown_or_foreign_handle_revokes_nothing() {
 
     // Nor does another user's real handle — that session survives.
     server
-        .post(&format!("/account/sessions/{other_handle}/revoke"))
+        .post(&format!(
+            "/account/sessions/{other_handle}/revoke?confirmed=1"
+        ))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert_eq!(
@@ -523,7 +525,7 @@ async fn keys_are_caller_scoped() {
 
     // And they can't revoke it — the delete is a silent no-op, key survives.
     server
-        .post(&format!("/account/api-keys/{other_kid}/delete"))
+        .post(&format!("/account/api-keys/{other_kid}/delete?confirmed=1"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert_eq!(store.list_api_keys_for_user(other).await.unwrap().len(), 1);
@@ -541,7 +543,7 @@ async fn revoke_own_key() {
         .unwrap();
 
     server
-        .post(&format!("/account/api-keys/{kid}/delete"))
+        .post(&format!("/account/api-keys/{kid}/delete?confirmed=1"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());

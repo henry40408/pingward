@@ -109,7 +109,7 @@ async fn resetting_a_password_is_refused_while_locked() {
 async fn promoting_to_admin_is_refused_while_locked() {
     let (server, store, dave) = locked_admin().await;
     server
-        .post(&format!("/admin/users/{dave}/admin"))
+        .post(&format!("/admin/users/{dave}/admin?confirmed=1"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert!(!store.find_user_by_id(dave).await.unwrap().unwrap().is_admin);
@@ -125,7 +125,7 @@ async fn demoting_an_admin_works_while_locked() {
     let (server, store, dave) = locked_admin().await;
     store.set_user_admin(dave, true).await.unwrap();
     server
-        .post(&format!("/admin/users/{dave}/admin"))
+        .post(&format!("/admin/users/{dave}/admin?confirmed=1"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert!(!store.find_user_by_id(dave).await.unwrap().unwrap().is_admin);
@@ -135,13 +135,13 @@ async fn demoting_an_admin_works_while_locked() {
 async fn disabling_and_deleting_work_while_locked() {
     let (server, store, dave) = locked_admin().await;
     server
-        .post(&format!("/admin/users/{dave}/disabled"))
+        .post(&format!("/admin/users/{dave}/disabled?confirmed=1"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(dave).await.unwrap().unwrap().disabled);
 
     server
-        .post(&format!("/admin/users/{dave}/delete"))
+        .post(&format!("/admin/users/{dave}/delete?confirmed=1"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(dave).await.unwrap().is_none());
@@ -163,7 +163,7 @@ async fn unlocking_then_granting_works() {
     assert!(!page.contains("unlock-input"), "{page}");
 
     server
-        .post(&format!("/admin/users/{dave}/admin"))
+        .post(&format!("/admin/users/{dave}/admin?confirmed=1"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(dave).await.unwrap().unwrap().is_admin);
@@ -182,7 +182,9 @@ async fn the_wrong_password_does_not_unlock() {
     assert!(res.text().contains("That password is not correct."));
     assert!(res.text().contains("unlock-input"));
 
-    server.post(&format!("/admin/users/{dave}/admin")).await;
+    server
+        .post(&format!("/admin/users/{dave}/admin?confirmed=1"))
+        .await;
     assert!(
         !store.find_user_by_id(dave).await.unwrap().unwrap().is_admin,
         "a failed unlock must not have elevated anything"
@@ -232,7 +234,9 @@ async fn elevation_does_not_leak_to_another_session() {
     let tok = common::newest_session_csrf(&store.pool).await;
     other.add_header("x-csrf-token", tok.as_str());
 
-    other.post(&format!("/admin/users/{dave}/admin")).await;
+    other
+        .post(&format!("/admin/users/{dave}/admin?confirmed=1"))
+        .await;
     assert!(
         !store.find_user_by_id(dave).await.unwrap().unwrap().is_admin,
         "the second session was never unlocked"
@@ -267,7 +271,9 @@ async fn signing_out_and_back_in_starts_locked() {
     let tok = common::newest_session_csrf(&store.pool).await;
     again.add_header("x-csrf-token", tok.as_str());
 
-    again.post(&format!("/admin/users/{dave}/admin")).await;
+    again
+        .post(&format!("/admin/users/{dave}/admin?confirmed=1"))
+        .await;
     assert!(
         !store.find_user_by_id(dave).await.unwrap().unwrap().is_admin,
         "a fresh session after logout must start locked"
@@ -321,7 +327,9 @@ async fn the_bounce_notice_is_one_shot_and_absent_when_navigating() {
             .contains("unlock-bounced")
     );
 
-    server.post(&format!("/admin/users/{dave}/admin")).await;
+    server
+        .post(&format!("/admin/users/{dave}/admin?confirmed=1"))
+        .await;
     assert!(
         server
             .get("/admin/unlock")
@@ -403,7 +411,7 @@ async fn the_page_tells_a_passwordless_admin_it_does_not_apply() {
         .await
         .unwrap();
     server
-        .post(&format!("/admin/users/{dave}/admin"))
+        .post(&format!("/admin/users/{dave}/admin?confirmed=1"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(dave).await.unwrap().unwrap().is_admin);
@@ -528,7 +536,7 @@ async fn the_fetch_variant_answers_with_status_codes() {
 
     // And it really elevated, rather than merely answering politely.
     server
-        .post(&format!("/admin/users/{dave}/admin"))
+        .post(&format!("/admin/users/{dave}/admin?confirmed=1"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(dave).await.unwrap().unwrap().is_admin);

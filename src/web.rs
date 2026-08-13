@@ -581,6 +581,157 @@ fn admin_locked(config: &crate::config::Config, jar: CookieJar) -> Response {
     (jar, Redirect::to("/admin/unlock")).into_response()
 }
 
+// --- confirming a destructive action -----------------------------------------
+//
+// Every irreversible control in the UI is a one-button inline form carrying a
+// `data-confirm` message, which `app.js` turns into a native `confirm()`. With
+// no script that attribute is inert and the click used to delete outright, so
+// the only thing standing between a misclick and a deleted project was a
+// feature the browser might not be running.
+//
+// The gate is therefore server-side: a destructive handler runs only when the
+// request carries `?confirmed=1`, and otherwise renders [`ConfirmTemplate`] —
+// the same question as a page. `app.js` appends the flag after its dialog is
+// accepted, so a scripted browser still asks in place and still posts once.
+// Neither side trusts the other: the page cannot skip the flag, and the server
+// never assumes a dialog ran.
+//
+// The flag rides in the *query string* rather than the body so that adding the
+// gate costs each handler one infallible `Query` extractor. A body extractor
+// would reject the several destructive forms that legitimately post nothing at
+// all with a 415 before authorization ever ran, turning `owned_check`'s 404
+// into a content-type error.
+
+/// A destructive action's confirmation copy.
+///
+/// Deliberately *not* the same string as the template's `data-confirm`: the
+/// dialog gets one terse line because that is all a `confirm()` can show, while
+/// the page has room to name the action and say what it takes with it. Same
+/// decision as `/admin/unlock`, which is a page rather than a field precisely
+/// because the requirement needs explaining.
+struct Confirm {
+    /// Page heading, phrased as the question being asked.
+    title: &'static str,
+    /// What the action does, including anything it takes with it.
+    message: &'static str,
+    /// Label on the button that goes through with it.
+    button: &'static str,
+}
+
+const CONFIRM_DELETE_PROJECT: Confirm = Confirm {
+    title: "Delete this project?",
+    message: "Deleting a project deletes everything inside it: every check it holds, their ping history, and the notification channels configured on it. Any job still pinging one of those checks will start getting 404s. This cannot be undone.",
+    button: "Delete project",
+};
+
+const CONFIRM_DELETE_CHECK: Confirm = Confirm {
+    title: "Delete this check?",
+    message: "The check and its whole ping history go away, and its ping URL stops answering — a job still calling it will start getting 404s. This cannot be undone.",
+    button: "Delete check",
+};
+
+const CONFIRM_REGENERATE_URL: Confirm = Confirm {
+    title: "Regenerate this check's ping URL?",
+    message: "The current URL stops working immediately. Every job that pings this check must be updated to the new URL, or the check will go down when its next ping never arrives.",
+    button: "Regenerate URL",
+};
+
+const CONFIRM_REVOKE_SESSION: Confirm = Confirm {
+    title: "Revoke this session?",
+    message: "The browser holding it is signed out at once. If it is the session you are using now, that includes this one.",
+    button: "Revoke session",
+};
+
+const CONFIRM_REVOKE_OTHER_SESSIONS: Confirm = Confirm {
+    title: "Revoke every other session?",
+    message: "Every other signed-in browser is signed out at once. Only this one stays. API keys are unaffected — they are separate credentials, revoked from the API keys card below.",
+    button: "Revoke the others",
+};
+
+const CONFIRM_REVOKE_API_KEY: Confirm = Confirm {
+    title: "Revoke this API key?",
+    message: "Anything using this key stops being able to reach the API immediately. The key cannot be recovered — a replacement is a new key with a new token.",
+    button: "Revoke key",
+};
+
+const CONFIRM_DELETE_USER: Confirm = Confirm {
+    title: "Delete this user?",
+    message: "The account goes away along with everything it owns: its projects, their checks, and the whole ping history behind them. This cannot be undone. To cut off access while keeping the data, disable the account instead.",
+    button: "Delete user",
+};
+
+const CONFIRM_DEMOTE_ADMIN: Confirm = Confirm {
+    title: "Revoke this user's admin rights?",
+    message: "They keep their account and their own projects, but lose access to /admin and to every other user's data.",
+    button: "Revoke admin rights",
+};
+
+const CONFIRM_DISABLE_USER: Confirm = Confirm {
+    title: "Disable this user?",
+    message: "They cannot sign in again until the account is re-enabled. Nothing they own is deleted, and their checks keep running and alerting.",
+    button: "Disable user",
+};
+
+/// Whether a destructive request carries its confirmation.
+///
+/// `#[serde(default)]` on the one field is what keeps this infallible: a
+/// request with no query string at all deserializes to "not confirmed" rather
+/// than a 400, which is exactly the unscripted first click.
+#[derive(Deserialize, Default)]
+struct ConfirmQuery {
+    #[serde(default)]
+    confirmed: Option<String>,
+}
+
+impl ConfirmQuery {
+    fn is_confirmed(&self) -> bool {
+        self.confirmed.is_some()
+    }
+}
+
+#[derive(Template)]
+#[template(path = "confirm.html")]
+struct ConfirmTemplate {
+    show_nav: bool,
+    is_admin: bool,
+    csrf: String,
+    title: &'static str,
+    message: &'static str,
+    button: &'static str,
+    action: String,
+    cancel: String,
+}
+
+/// Ask the question as a page, with `action` re-posting the identical request
+/// plus the confirmation flag and `cancel` going back where the click came
+/// from.
+///
+/// Call it **after** authorization and after any guard that would refuse the
+/// action anyway: a request that can never succeed should say so rather than
+/// demand a confirmation first, the same ordering `users_create` uses for its
+/// validation and elevation gate.
+fn confirmation_page(
+    state: &AppState,
+    jar: &CookieJar,
+    is_admin: bool,
+    confirm: &Confirm,
+    action: &str,
+    cancel: String,
+) -> Result<Response, AppError> {
+    let sep = if action.contains('?') { '&' } else { '?' };
+    Ok(render(&ConfirmTemplate {
+        show_nav: true,
+        is_admin,
+        csrf: current_csrf(state, jar),
+        title: confirm.title,
+        message: confirm.message,
+        button: confirm.button,
+        action: format!("{action}{sep}confirmed=1"),
+        cancel,
+    })?
+    .into_response())
+}
+
 /// Record a refused re-authentication.
 ///
 /// One event for every gated surface, discriminated by `surface`, for the same
@@ -2012,10 +2163,22 @@ async fn project_update(
 
 async fn project_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     owned_project(&state.store, id, user.id).await?;
+    if !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            user.is_admin,
+            &CONFIRM_DELETE_PROJECT,
+            &format!("/projects/{id}/delete"),
+            format!("/projects/{id}"),
+        );
+    }
     state.store.delete_project(id).await?;
     Ok(Redirect::to("/").into_response())
 }
@@ -3432,10 +3595,22 @@ async fn check_ack(
 
 async fn check_regenerate(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     owned_check(&state.store, id, user.id).await?;
+    if !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            user.is_admin,
+            &CONFIRM_REGENERATE_URL,
+            &format!("/checks/{id}/regenerate"),
+            format!("/checks/{id}"),
+        );
+    }
     state
         .store
         .regenerate_uuid(id, &uuid::Uuid::new_v4().to_string())
@@ -3445,10 +3620,22 @@ async fn check_regenerate(
 
 async fn check_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
+    if !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            user.is_admin,
+            &CONFIRM_DELETE_CHECK,
+            &format!("/checks/{id}/delete"),
+            format!("/checks/{id}"),
+        );
+    }
     state.store.delete_check(id).await?;
     Ok(Redirect::to(&format!("/projects/{}", check.project_id)).into_response())
 }
@@ -4564,6 +4751,7 @@ async fn users_delete(
     jar: CookieJar,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     // Never allow deleting yourself — you'd lose your own account mid-session.
     if id == admin.id {
@@ -4580,6 +4768,18 @@ async fn users_delete(
     // defence-in-depth behind the self-guard.
     if target.is_admin && !target.disabled && state.store.count_enabled_admins().await? <= 1 {
         return Ok(users_blocked(&state.config, jar));
+    }
+    // Below both refusals on purpose: a delete that is going to be blocked
+    // should say so rather than ask for a confirmation it will then ignore.
+    if !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            true,
+            &CONFIRM_DELETE_USER,
+            &format!("/admin/users/{id}/delete"),
+            "/admin".to_string(),
+        );
     }
     state.store.delete_user(id).await?;
     // No `count` field here: the user's session rows go via the FK's ON
@@ -4721,6 +4921,7 @@ async fn users_toggle_admin(
     jar: CookieJar,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     // Never allow revoking your own admin rights — it would lock you out of
     // `/admin` immediately (the very next request re-resolves AdminUser and
@@ -4753,6 +4954,19 @@ async fn users_toggle_admin(
     {
         return Ok(users_blocked(&state.config, jar));
     }
+    // Confirmed in the *demote* direction only, matching the template: promotion
+    // is already gated by the elevation check above, and asking twice for one
+    // click would be its own kind of noise.
+    if !new_admin && !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            true,
+            &CONFIRM_DEMOTE_ADMIN,
+            &format!("/admin/users/{id}/admin"),
+            "/admin".to_string(),
+        );
+    }
     state.store.set_user_admin(id, new_admin).await?;
     state
         .store
@@ -4777,6 +4991,7 @@ async fn users_set_disabled(
     jar: CookieJar,
     AdminUser(admin): AdminUser,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     // Never disable yourself.
     if id == admin.id {
@@ -4797,6 +5012,18 @@ async fn users_set_disabled(
         && state.store.count_enabled_admins().await? <= 1
     {
         return Ok(users_blocked(&state.config, jar));
+    }
+    // Confirmed in the *disable* direction only, matching the template —
+    // re-enabling an account gives nothing away and needs no ceremony.
+    if new_disabled && !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            true,
+            &CONFIRM_DISABLE_USER,
+            &format!("/admin/users/{id}/disabled"),
+            "/admin".to_string(),
+        );
     }
     state.store.set_user_disabled(id, new_disabled).await?;
     // Only delete in the "disable" direction. Enabling has no sessions to
@@ -5223,9 +5450,21 @@ async fn api_keys_create(
 
 async fn api_keys_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
+    if !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            user.is_admin,
+            &CONFIRM_REVOKE_API_KEY,
+            &format!("/account/api-keys/{id}/delete"),
+            "/account".to_string(),
+        );
+    }
     // Owner-scoped delete; a key the caller doesn't own is silently a no-op.
     state.store.delete_api_key(id, user.id).await?;
     Ok(Redirect::to("/account").into_response())
@@ -5236,6 +5475,7 @@ async fn sessions_revoke(
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(handle): Path<String>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     // Resolve the handle among the caller's own sessions; an unknown or
     // foreign handle is a silent no-op (never a 500), mirroring the
@@ -5250,6 +5490,18 @@ async fn sessions_revoke(
     else {
         return Ok((jar, Redirect::to("/account")).into_response());
     };
+    // After the lookup, so a handle that resolves to nothing stays the silent
+    // no-op it was rather than offering to revoke a session that isn't there.
+    if !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            user.is_admin,
+            &CONFIRM_REVOKE_SESSION,
+            &format!("/account/sessions/{handle}/revoke"),
+            "/account".to_string(),
+        );
+    }
     let is_current =
         secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
             .is_some_and(|id| id == target.id);
@@ -5280,7 +5532,18 @@ async fn sessions_revoke_others(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
+    if !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            user.is_admin,
+            &CONFIRM_REVOKE_OTHER_SESSIONS,
+            "/account/sessions/revoke-others",
+            "/account".to_string(),
+        );
+    }
     if let Some(id) =
         secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
     {
@@ -5897,12 +6160,24 @@ async fn admin_project_update(
 
 async fn admin_project_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
+    if !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            true,
+            &CONFIRM_DELETE_PROJECT,
+            &format!("/admin/projects/{id}/delete"),
+            format!("/admin/projects/{id}"),
+        );
+    }
     state.store.delete_project(id).await?;
     Ok(Redirect::to("/admin").into_response())
 }
@@ -6099,12 +6374,24 @@ async fn admin_check_ack(
 
 async fn admin_check_regenerate(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    if !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            true,
+            &CONFIRM_REGENERATE_URL,
+            &format!("/admin/checks/{id}/regenerate"),
+            format!("/admin/checks/{id}"),
+        );
+    }
     state
         .store
         .regenerate_uuid(id, &uuid::Uuid::new_v4().to_string())
@@ -6114,12 +6401,24 @@ async fn admin_check_regenerate(
 
 async fn admin_check_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    if !confirm.is_confirmed() {
+        return confirmation_page(
+            &state,
+            &jar,
+            true,
+            &CONFIRM_DELETE_CHECK,
+            &format!("/admin/checks/{id}/delete"),
+            format!("/admin/checks/{id}"),
+        );
+    }
     state.store.delete_check(id).await?;
     Ok(Redirect::to(&format!("/admin/projects/{}", check.project_id)).into_response())
 }

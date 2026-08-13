@@ -1,0 +1,27 @@
+{# The interstitial standing in for `app.js`'s `confirm()` dialog when the
+   browser runs no script. Reached by POSTing a destructive action *without*
+   `?confirmed=1`; the form below re-posts the identical action with it. The
+   page is therefore always the second-to-last step, never a side effect — a
+   reload just renders it again. #}
+{% extends "base.html" %}
+{% block body %}
+<div class="phead">
+  <div>
+    <h1>{{ title }}</h1>
+    <p class="crumb tight" data-testid="confirm-why">Nothing has happened yet. This page is standing in for the confirmation prompt your browser would normally show, so the action is not carried out until you say so here.</p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="cb">
+    <p class="crumb tight" data-testid="confirm-message">{{ message }}</p>
+    <form method="post" action="{{ action }}">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <div class="formactions">
+        <button class="btn danger" type="submit" data-testid="confirm-submit">{{ button }}</button>
+        <a class="btn" href="{{ cancel }}" data-testid="confirm-cancel">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
