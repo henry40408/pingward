@@ -94,7 +94,12 @@ row's **real** `<a>` (the name), never the only route to a page — see
 `tests/no_js.rs`, which also pins that the three fragment endpoints redirect a
 JS-less navigation to the page embedding the section
 (`wants_fragment`/`fragment_page_redirect`) rather than serving a bare,
-unstyled partial. `style-src` keeps `'unsafe-inline'` for the
+unstyled partial. `data-confirm` is likewise not what enforces anything: an
+irreversible handler runs only with `?confirmed=1` and otherwise renders
+`templates/confirm.html` (the same question as a page), with `app.js` appending
+the flag after its dialog. The flag is a **query** param because several of
+these forms post no body, and the gate sits **below** authorization and below
+every refusal guard — see ARCHITECTURE.md's "Confirming a destructive action". `style-src` keeps `'unsafe-inline'` for the
 heartbeat bars' computed `style="height:Npx"`. `/api/docs` is deliberately
 outside the CSP — Scalar loads its bundle from a CDN.
 

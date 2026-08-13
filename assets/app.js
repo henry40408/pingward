@@ -121,7 +121,17 @@ document.addEventListener('submit', function (e) {
   if (!form.getAttribute) return;
   if (form.hasAttribute('data-nosubmit')) { e.preventDefault(); return; }
   var message = form.getAttribute('data-confirm');
-  if (message && !confirm(message)) { e.preventDefault(); return; }
+  if (message) {
+    if (!confirm(message)) { e.preventDefault(); return; }
+    // Answered here, so tell the server as much. Without this flag it refuses
+    // the action and renders the same question as a page (see `ConfirmQuery`
+    // in web.rs) — which is exactly what a browser running no script gets, and
+    // what this dialog is standing in for. The flag goes in the query string
+    // because several of these forms post no body at all.
+    if (form.action.indexOf('confirmed=1') === -1) {
+      form.action += (form.action.indexOf('?') === -1 ? '?' : '&') + 'confirmed=1';
+    }
+  }
   var action = form.getAttribute('data-reauth');
   if (action) { e.preventDefault(); askToConfirm(form, action); }
 });

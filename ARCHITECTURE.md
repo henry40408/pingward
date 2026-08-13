@@ -178,7 +178,18 @@ destination, which is what carries keyboard access, the focus ring,
 middle-click and — the reason it exists — the row working at all with JS off.
 It replaced a `tabindex="0" role="link"` div that simulated the first two and
 delivered none of the rest, leaving the dashboard with no route to a check
-page for an unscripted browser. `tests/no_js.rs` is the guard. Reintroducing one inline handler means either weakening the
+page for an unscripted browser. `tests/no_js.rs` is the guard.
+
+`data-confirm` is the same shape of promise, and is likewise **not** what
+enforces anything. The attribute only turns into a question if `app.js` is
+running, so the server refuses every irreversible action that does not carry
+`?confirmed=1` and renders `templates/confirm.html` — the same question as a
+page — instead of doing the work. `app.js` appends the flag once its dialog is
+accepted, so a scripted browser still asks in place and still posts once, and
+neither side trusts the other: the page cannot skip the flag and the server
+never assumes a dialog ran. See "Confirming a destructive action" below.
+
+Reintroducing one inline handler means either weakening the
 policy for the whole UI or minting a nonce per response, so don't: put the
 behaviour in `app.js` behind a `data-` attribute. `style-src` does keep
 `'unsafe-inline'` — the heartbeat bars carry a computed
@@ -851,6 +862,45 @@ A refusal is a redirect to the interstitial, not a 403: the controls stay live
 in the table (hiding them would make the page depend on a timer), so the honest
 answer to clicking one while locked is to explain the requirement and offer the
 way through it. The check is server-side regardless of what the page rendered.
+
+### Confirming a destructive action
+
+Every irreversible control is a one-button inline form carrying a
+`data-confirm` message that `app.js` turns into a native `confirm()`. That
+attribute is inert without script, so for a browser running none the only thing
+between a misclick and a deleted project was a feature it was not running.
+
+The gate is therefore server-side, in the same shape as the elevation gate
+above: a destructive handler does its work only when the request carries
+`?confirmed=1`, and otherwise renders `templates/confirm.html`, which asks the
+same question as a page and offers a form that re-posts the identical action
+with the flag. `app.js` appends the flag once its dialog is accepted, so a
+scripted browser still asks in place and still posts once. Neither side trusts
+the other: the page cannot skip the flag, and the server never assumes a dialog
+ran.
+
+Three details are load-bearing:
+
+- **The flag rides in the query string, not the body.** Several of these forms
+  legitimately post nothing at all (`users_toggle_admin` sends no fields), so a
+  body extractor would reject them with a 415 *before* authorization ran,
+  turning `owned_check`'s 404 into a content-type error. `Query<ConfirmQuery>`
+  is infallible — no query string at all deserializes to "not confirmed", which
+  is exactly the unscripted first click.
+- **The gate sits below authorization and below every refusal.** A stranger's
+  check is a 404, not an invitation to confirm deleting something they cannot
+  see; and a delete that the self-guard or last-enabled-admin guard will block
+  says so rather than asking for a confirmation it would then ignore. Same
+  ordering, for the same reason, as `users_create`'s validation-before-elevation.
+- **The two `/admin` toggles are gated in one direction only**, matching what
+  the template renders `data-confirm` for. Demoting and disabling ask; promoting
+  and re-enabling do not — promotion is already behind the elevation password,
+  and making an operator confirm an *undo* is friction pointing the wrong way.
+
+The page's copy is deliberately not the same string as the dialog's: a
+`confirm()` can show one terse line, while the page has room to name what the
+action takes with it. Same reason `/admin/unlock` is a page rather than a
+field.
 
 ### Rejected authentication attempts
 

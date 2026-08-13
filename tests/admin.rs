@@ -182,7 +182,9 @@ async fn admin_deletes_other_users_project_and_lands_on_admin() {
         .await
         .unwrap();
     // Admin deletes the project and should land on /admin, not /admin/projects.
-    let res = server.post(&format!("/admin/projects/{pid}/delete")).await;
+    let res = server
+        .post(&format!("/admin/projects/{pid}/delete?confirmed=1"))
+        .await;
     assert_eq!(res.status_code(), StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/admin");
     // Verify the project is actually deleted.

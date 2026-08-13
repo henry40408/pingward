@@ -186,7 +186,7 @@ async fn create_and_delete_project() {
         .assert_status_ok();
 
     server
-        .post(&format!("/projects/{pid}/delete"))
+        .post(&format!("/projects/{pid}/delete?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(store.list_projects_for_user(uid).await.unwrap().is_empty());
@@ -461,7 +461,7 @@ async fn regenerate_uuid_changes_ping_url() {
         .await
         .unwrap();
     server
-        .post(&format!("/checks/{cid}/regenerate"))
+        .post(&format!("/checks/{cid}/regenerate?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_ne!(
@@ -911,7 +911,7 @@ async fn admin_creates_and_deletes_user() {
     let carol = store.find_user_by_username("carol").await.unwrap().unwrap();
     assert!(!carol.is_admin);
     server
-        .post(&format!("/admin/users/{}/delete", carol.id))
+        .post(&format!("/admin/users/{}/delete?confirmed=1", carol.id))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(
@@ -1139,7 +1139,7 @@ async fn cannot_operate_on_another_users_check() {
         .await
         .assert_status(axum::http::StatusCode::NOT_FOUND);
     server
-        .post(&format!("/checks/{ocid}/delete"))
+        .post(&format!("/checks/{ocid}/delete?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::NOT_FOUND);
     // The check must still exist — no cross-user mutation happened.
@@ -1199,7 +1199,7 @@ async fn cannot_create_channel_in_another_users_project() {
 async fn admin_cannot_delete_self() {
     let (server, store, uid) = logged_in_server().await; // uid is the sole admin
     server
-        .post(&format!("/admin/users/{uid}/delete"))
+        .post(&format!("/admin/users/{uid}/delete?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     // Self-delete is a no-op guard: the admin must still exist.

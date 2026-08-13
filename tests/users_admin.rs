@@ -78,7 +78,9 @@ async fn deleting_user_is_audited() {
         .create_user("dave", Some(&phc), false, chrono::Utc::now())
         .await
         .unwrap();
-    server.post(&format!("/admin/users/{dave}/delete")).await;
+    server
+        .post(&format!("/admin/users/{dave}/delete?confirmed=1"))
+        .await;
     let audit = store.list_audit(50).await.unwrap();
     assert!(audit.iter().any(|a| a.action == "user.delete"
         && a.target_type.as_deref() == Some("user")
@@ -89,7 +91,7 @@ async fn deleting_user_is_audited() {
 async fn deleting_nonexistent_user_writes_no_audit() {
     let (server, store, _admin) = admin_server().await;
     let before = store.list_audit(50).await.unwrap().len();
-    server.post("/admin/users/99999/delete").await; // nonexistent id
+    server.post("/admin/users/99999/delete?confirmed=1").await; // nonexistent id
     let after = store.list_audit(50).await.unwrap();
     assert!(
         !after
@@ -125,12 +127,14 @@ async fn promote_and_demote_admin() {
         .unwrap();
     // promote
     server
-        .post(&format!("/admin/users/{uid}/admin"))
+        .post(&format!("/admin/users/{uid}/admin?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(uid).await.unwrap().unwrap().is_admin);
     // demote back
-    server.post(&format!("/admin/users/{uid}/admin")).await;
+    server
+        .post(&format!("/admin/users/{uid}/admin?confirmed=1"))
+        .await;
     assert!(!store.find_user_by_id(uid).await.unwrap().unwrap().is_admin);
     assert!(
         store
@@ -149,7 +153,9 @@ async fn cannot_demote_self() {
     // self-guard from the (provably unreachable) last-admin guard; see
     // `demoting_self_is_refused_with_flash_even_with_a_second_admin` below
     // for a case that isolates the self-guard.
-    server.post(&format!("/admin/users/{admin_id}/admin")).await;
+    server
+        .post(&format!("/admin/users/{admin_id}/admin?confirmed=1"))
+        .await;
     assert!(
         store
             .find_user_by_id(admin_id)
@@ -172,7 +178,9 @@ async fn demoting_self_is_refused_with_flash_even_with_a_second_admin() {
         .await
         .unwrap();
 
-    let res = server.post(&format!("/admin/users/{admin_id}/admin")).await;
+    let res = server
+        .post(&format!("/admin/users/{admin_id}/admin?confirmed=1"))
+        .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(
         store
@@ -515,7 +523,7 @@ async fn disable_and_enable_member() {
     );
 
     server
-        .post(&format!("/admin/users/{uid}/disabled"))
+        .post(&format!("/admin/users/{uid}/disabled?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(uid).await.unwrap().unwrap().disabled);
@@ -528,7 +536,9 @@ async fn disable_and_enable_member() {
             .is_empty()
     );
 
-    server.post(&format!("/admin/users/{uid}/disabled")).await;
+    server
+        .post(&format!("/admin/users/{uid}/disabled?confirmed=1"))
+        .await;
     assert!(!store.find_user_by_id(uid).await.unwrap().unwrap().disabled);
     // Core regression: re-enabling must NOT resurrect the old session.
     assert!(
@@ -567,7 +577,7 @@ async fn deleting_user_cascades_its_sessions() {
     );
 
     server
-        .post(&format!("/admin/users/{uid}/delete"))
+        .post(&format!("/admin/users/{uid}/delete?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
 
@@ -590,7 +600,7 @@ async fn cannot_disable_self() {
     // self-guard from the (provably unreachable) last-admin guard — see the
     // comment on `cannot_demote_self` for the same caveat.
     server
-        .post(&format!("/admin/users/{admin_id}/disabled"))
+        .post(&format!("/admin/users/{admin_id}/disabled?confirmed=1"))
         .await;
     assert!(
         !store
