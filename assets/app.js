@@ -352,33 +352,12 @@ document.querySelectorAll('.copy').forEach(function (btn) {
   window.addEventListener('pagehide', stopLive);
 })();
 
-// --- forms whose visible fields depend on a <select> ---
-
-// Check form: period vs cron.
-(function () {
-  var sel = document.getElementById('schedule_kind'); if (!sel) return;
-  function sync() {
-    document.querySelectorAll('.sched').forEach(function (d) {
-      d.style.display = d.getAttribute('data-sched') === sel.value ? '' : 'none';
-    });
-  }
-  sel.addEventListener('change', sync);
-  sync();
-})();
-
-// Channel form: one config block per kind. The select is absent on the edit
-// form — the kind is immutable there, so the single relevant block is already
-// the only one rendered.
-(function () {
-  var sel = document.getElementById('kind'); if (!sel) return;
-  function sync() {
-    document.querySelectorAll('.cfg').forEach(function (d) {
-      d.style.display = d.getAttribute('data-kind') === sel.value ? '' : 'none';
-    });
-  }
-  sel.addEventListener('change', sync);
-  sync();
-})();
+// Nothing here switches the check form's period/cron fields or the channel
+// form's per-kind config blocks any more. Both used to be a `sync()` setting
+// inline `style.display`, which meant that with no script every branch of the
+// form showed at once. They are now `:has()` rules in `app.css`, which follow
+// the select on their own — and an inline style would have outranked those
+// rules, so keeping a script copy would only have made the two disagree.
 
 // --- /admin: ticking heartbeat ages + the audit trail section ---
 (function () {

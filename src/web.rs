@@ -2441,6 +2441,14 @@ fn relative_setting(raw: Option<&str>, now: DateTime<Utc>) -> Option<String> {
     Some(crate::view::fmt_relative(at, now))
 }
 
+/// A settings-table timestamp as the plain text `/admin` shows when `app.js`
+/// is not there to localize it. `None` (and so the raw string, unchanged) if
+/// it will not parse — better a stamp that looks odd than one that is wrong.
+fn absolute_setting(raw: Option<&str>) -> Option<String> {
+    let at = DateTime::parse_from_rfc3339(raw?).ok()?.with_timezone(&Utc);
+    Some(crate::view::fmt_utc(&at))
+}
+
 /// One `<input type="hidden">` in a filter form.
 ///
 /// A history section's filter is a real GET form submitting to the page that
@@ -6022,6 +6030,11 @@ struct AdminTemplate {
     /// age should be — the one number an operator actually reads at a glance.
     last_scan_ago: Option<String>,
     last_prune_ago: Option<String>,
+    /// The same two stamps as readable UTC. The `data-ts`/`data-ago`
+    /// attributes keep the raw RFC3339 for `app.js`; this is the text beside
+    /// them, which used to be that raw string — `T` separator, offset and all.
+    last_scan_utc: Option<String>,
+    last_prune_utc: Option<String>,
     // settings
     scan_interval: String,
     nag_interval: String,
@@ -6119,6 +6132,8 @@ async fn render_admin(
         last_prune_at: last_prune_at.clone(),
         last_scan_ago: relative_setting(last_scan_at.as_deref(), now),
         last_prune_ago: relative_setting(last_prune_at.as_deref(), now),
+        last_scan_utc: absolute_setting(last_scan_at.as_deref()),
+        last_prune_utc: absolute_setting(last_prune_at.as_deref()),
         scan_interval: r.settings.scan_interval,
         nag_interval: r.settings.nag_interval,
         pings_retention_days: r.settings.pings_retention_days,

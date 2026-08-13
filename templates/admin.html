@@ -80,7 +80,7 @@
       <tbody>
         {% for n in recent_fail %}
         <tr>
-          <td class="mono"><span class="localtime" data-ts="{{ n.created_at.to_rfc3339() }}">{{ n.created_at }}</span></td>
+          <td class="mono"><span class="localtime" data-ts="{{ n.created_at.to_rfc3339() }}">{{ crate::view::fmt_utc(n.created_at) }}</span></td>
           <td>{{ n.event.as_str() }}</td>
           <td><a href="/admin/checks/{{ n.check_id }}">#{{ n.check_id }}</a></td>
           <td class="fail-txt">{% if let Some(e) = n.error %}{{ e }}{% endif %}</td>
@@ -102,7 +102,7 @@
         <div class="hb-body">
           <div class="hb-label">Last scan</div>
           {% if let Some(t) = last_scan_at %}
-          <div class="hb-time localtime" data-ts="{{ t }}">{{ t }}</div>
+          <div class="hb-time localtime" data-ts="{{ t }}">{% if let Some(u) = last_scan_utc %}{{ u }}{% else %}{{ t }}{% endif %}</div>
           <div class="hb-ago" data-ago="{{ t }}">{% if let Some(a) = last_scan_ago %}{{ a }}{% endif %}</div>
           {% else %}
           <div class="hb-time hb-never">never</div>
@@ -114,7 +114,7 @@
         <div class="hb-body">
           <div class="hb-label">Last prune</div>
           {% if let Some(t) = last_prune_at %}
-          <div class="hb-time localtime" data-ts="{{ t }}">{{ t }}</div>
+          <div class="hb-time localtime" data-ts="{{ t }}">{% if let Some(u) = last_prune_utc %}{{ u }}{% else %}{{ t }}{% endif %}</div>
           <div class="hb-ago" data-ago="{{ t }}">{% if let Some(a) = last_prune_ago %}{{ a }}{% endif %}</div>
           {% else %}
           <div class="hb-time hb-never">never</div>

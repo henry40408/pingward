@@ -221,6 +221,29 @@ one exception is content, not a control — `/admin`'s heartbeat age, which the
 handler now renders server-side (`web::relative_setting`) and `app.js` merely
 keeps ticking, since a blank line is worse than a slightly stale one.
 
+Two more places used to depend on script and no longer do:
+
+- The check form's period-vs-cron fields and the channel form's six per-kind
+  config blocks are switched by `:has()` rules in `app.css` — `:checked`
+  follows the select and the rules re-evaluate, so the interaction is identical
+  with or without script. It was a `sync()` setting inline `style.display`,
+  which meant an unscripted form showed every branch at once. The script half
+  is **deleted** rather than kept alongside: an inline style outranks a
+  stylesheet rule, so two mechanisms could only disagree.
+- Every absolute timestamp's plain-text fallback goes through `view::fmt_utc`
+  (`2026-08-13 17:54:27 UTC`). It is what stays on the page when `app.js` is
+  not there to localize the `.localtime[data-ts]` span, so it is text a person
+  reads: the zone spelled out, no `T` separator, no sub-second digits. The
+  history tables always did this; `/account` and `/admin` were falling back to
+  chrono's `Display` or to the raw RFC3339 string.
+
+There is deliberately **no `<noscript>` banner**. One would have been worth
+having when a scriptless visit hit a dashboard that led nowhere and pager links
+that rendered a bare fragment — it would at least have named the cause. With
+those fixed there is nothing left for it to explain: what remains is a live
+tail that is not offered, times in UTC rather than local, and no clipboard
+button, none of which reads as breakage.
+
 `data-confirm` is the same shape of promise, and is likewise **not** what
 enforces anything. The attribute only turns into a question if `app.js` is
 running, so the server refuses every irreversible action that does not carry

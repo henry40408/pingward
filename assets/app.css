@@ -1735,6 +1735,35 @@ tr.exp > td {
 :root:not(.js) #pw-theme-toggle {
   display: none;
 }
+
+/* ---- Forms whose visible fields depend on a <select> ---- */
+/* The check form's period-vs-cron fields and the channel form's per-kind
+   config blocks, switched declaratively so they work with or without script:
+   `:checked` follows the select as the user changes it and `:has()`
+   re-evaluates, which is the entire interaction.
+   This was `app.js` toggling inline `style.display`, so with no script every
+   branch showed at once — both schedule kinds, then all six channel kinds,
+   stacked. The script half is deleted rather than kept alongside: an inline
+   style outranks any rule here, so two mechanisms would mean the CSS silently
+   losing wherever they disagreed.
+   One selector per option value, since a selector cannot compare one
+   attribute against another. The channel *edit* form renders only the block
+   for its (immutable) kind and has no `#kind` select at all, so none of these
+   match there and its single block stays put. */
+form:has(#schedule_kind option[value="period"]:checked)
+  .sched:not([data-sched="period"]),
+form:has(#schedule_kind option[value="cron"]:checked)
+  .sched:not([data-sched="cron"]),
+form:has(#kind option[value="webhook"]:checked) .cfg:not([data-kind="webhook"]),
+form:has(#kind option[value="slack"]:checked) .cfg:not([data-kind="slack"]),
+form:has(#kind option[value="telegram"]:checked)
+  .cfg:not([data-kind="telegram"]),
+form:has(#kind option[value="ntfy"]:checked) .cfg:not([data-kind="ntfy"]),
+form:has(#kind option[value="pushover"]:checked)
+  .cfg:not([data-kind="pushover"]),
+form:has(#kind option[value="email"]:checked) .cfg:not([data-kind="email"]) {
+  display: none;
+}
 :root.js tr.toggle {
   cursor: pointer;
 }

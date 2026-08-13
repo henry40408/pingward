@@ -139,6 +139,32 @@ Then("the scheduler heartbeat shows an age", async ({ page }) => {
   );
 });
 
+// The check form, reached from the project page created in Background.
+When("I start creating a check", async ({ page }) => {
+  await page.getByTestId("new-check-link").click();
+  await expect(page.getByTestId("check-name-input")).toBeVisible();
+});
+
+// "I choose the {string} schedule kind" is shared with check_create.steps.js —
+// a plain `<select>` change either way. With no script behind it, `:checked`
+// moves and the `:has()` rules in app.css re-evaluate on their own.
+
+Then("the period field is visible", async ({ page }) => {
+  await expect(page.getByTestId("check-period-input")).toBeVisible();
+});
+
+Then("the period field is hidden", async ({ page }) => {
+  await expect(page.getByTestId("check-period-input")).toBeHidden();
+});
+
+Then("the cron field is visible", async ({ page }) => {
+  await expect(page.locator("#cron_expr")).toBeVisible();
+});
+
+Then("the cron field is hidden", async ({ page }) => {
+  await expect(page.locator("#cron_expr")).toBeHidden();
+});
+
 // Deliberately not monitoring.steps.js's "I delete the check": that one accepts
 // a `confirm()` dialog and expects to land back on the project page, which is
 // the scripted path. Here the click is expected to reach an interstitial.
