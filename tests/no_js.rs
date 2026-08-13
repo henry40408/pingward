@@ -258,6 +258,55 @@ async fn the_redirect_never_answers_for_another_users_check() {
         .assert_status_not_found();
 }
 
+// --- absolute timestamps read as text, not as a machine stamp ----------------
+
+/// Every absolute time sits in a `.localtime[data-ts]` span that `app.js`
+/// rewrites into the viewer's zone. The text inside it is what a scriptless
+/// browser keeps, and on `/account` and `/admin` that was whatever chrono's
+/// `Display` produced — nanoseconds and all — or, for the heartbeat tiles, the
+/// raw RFC3339 string. The history tables already formatted theirs; these now
+/// share it.
+#[tokio::test]
+async fn absolute_timestamps_fall_back_to_readable_utc() {
+    let (server, store, _uid) = logged_in_server().await;
+    store
+        .set_setting("last_scan_at", &chrono::Utc::now().to_rfc3339())
+        .await
+        .unwrap();
+
+    for path in ["/account", "/admin"] {
+        let body = server.get(path).await.text();
+        // Split on the marker rather than by line: two spans can share a line,
+        // and the text is simply whatever sits between the tag's `>` and the
+        // next `<`. The `data-ts` attribute keeps RFC3339 for the script; the
+        // text must not, so no fractional seconds and no `T` separator.
+        // Split on the class *name*, not `class="localtime"`: the heartbeat
+        // tiles carry `class="hb-time localtime"`, so an exact-attribute match
+        // silently skips the only ones `/admin` has.
+        let texts: Vec<&str> = body
+            .split("localtime")
+            .skip(1)
+            .filter_map(|s| s.split_once('>'))
+            .filter_map(|(_, rest)| rest.split_once('<'))
+            .map(|(text, _)| text)
+            .collect();
+
+        assert!(
+            !texts.is_empty(),
+            "{path} renders no localizable timestamps — assertion is vacuous"
+        );
+        for text in texts {
+            // Not a `!contains('T')` check for the RFC3339 separator: "UTC"
+            // has one. The space at index 10 is what distinguishes
+            // `2026-08-13 17:54:27 UTC` from `2026-08-13T17:54:27+00:00`.
+            assert!(
+                text.ends_with(" UTC") && !text.contains('.') && text.chars().nth(10) == Some(' '),
+                "{path} renders an unformatted timestamp fallback: {text:?}"
+            );
+        }
+    }
+}
+
 // --- the scheduler heartbeat states its own age ------------------------------
 
 /// `/admin`'s heartbeat tiles rendered an empty `.hb-ago` div for `app.js` to

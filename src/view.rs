@@ -227,6 +227,22 @@ pub fn fmt_secs(secs: i64) -> String {
     }
 }
 
+/// An absolute timestamp as the UI's plain-text fallback.
+///
+/// Every absolute time in the UI is rendered inside a `.localtime[data-ts]`
+/// span that `app.js` rewrites into the viewer's own zone. This is what stays
+/// on the page when it does not — so it is a string a person reads, not a
+/// machine-readable stamp: no sub-second digits, no `T`, and the zone spelled
+/// out, because a bare number that might be local or might be UTC is worse
+/// than one that says which. The history tables have always formatted theirs
+/// this way; this is the same format, shared so `/account` and `/admin` stop
+/// falling back to chrono's `Display` (nanoseconds and all) instead.
+/// Takes a reference so Askama can call it on a field or a `Some(t)` binding
+/// alike — both give the template a `&DateTime`.
+pub fn fmt_utc(at: &DateTime<Utc>) -> String {
+    at.format("%Y-%m-%d %H:%M:%S UTC").to_string()
+}
+
 pub fn fmt_relative(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let s = (now - then).num_seconds().max(0);
     if s < 60 {

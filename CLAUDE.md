@@ -123,7 +123,10 @@ scriptless browser. That light palette exists **twice** — keep both in sync,
 entirely in `app.js` is **not drawn** without it (`:root:not(.js)` hides
 `.copy`, `.live-toggle`, `#pw-theme-toggle`); content is the opposite — the
 `/admin` heartbeat age is rendered server-side (`relative_setting`) and merely
-re-ticked by JS. `style-src` keeps `'unsafe-inline'` for the
+re-ticked by JS. The check/channel forms switch their per-kind field blocks
+with `:has()` rules in `app.css`, **not** JS (an inline `style.display` would
+outrank them), and every absolute timestamp's fallback text goes through
+`view::fmt_utc`. `style-src` keeps `'unsafe-inline'` for the
 heartbeat bars' computed `style="height:Npx"`. `/api/docs` is deliberately
 outside the CSP — Scalar loads its bundle from a CDN.
 

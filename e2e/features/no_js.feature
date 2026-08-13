@@ -90,6 +90,17 @@ Feature: The UI with JavaScript switched off
     When I open the admin dashboard
     Then the scheduler heartbeat shows an age
 
+  # The check form used to show the period *and* cron fields at once, and the
+  # channel form all six kinds stacked, because only `app.js` hid the
+  # irrelevant ones. The `:has()` rules follow the select on their own.
+  Scenario: The check form shows only the selected schedule kind
+    When I start creating a check
+    Then the period field is visible
+    And the cron field is hidden
+    When I choose the "cron" schedule kind
+    Then the cron field is visible
+    And the period field is hidden
+
   # #144: `data-confirm` is inert without script, so the server asks instead.
   Scenario: Deleting a check asks first, as a page
     Given a check named "backup" with period 60
