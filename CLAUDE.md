@@ -114,7 +114,12 @@ The three history filters are **real GET forms** posting to the embedding page
 with named controls; each carries the sibling section's filter as hidden inputs
 (`carry_fields`/`clear_href`) because a GET submit replaces the whole query
 string. `datetime-local` values are local wall clock with JS (converted before
-fetch) and read as UTC without it — matching what each mode displays. `style-src` keeps `'unsafe-inline'` for the
+fetch) and read as UTC without it — matching what each mode displays.
+`base.html` carries **no default `data-theme`** (`theme-init.js` sets it before
+first paint); the absence is what lets `app.css`'s
+`@media (prefers-color-scheme: light) { :root:not([data-theme]) }` answer for a
+scriptless browser. That light palette exists **twice** — keep both in sync,
+`tests/no_js.rs` compares them token by token. `style-src` keeps `'unsafe-inline'` for the
 heartbeat bars' computed `style="height:Npx"`. `/api/docs` is deliberately
 outside the CSP — Scalar loads its bundle from a CDN.
 

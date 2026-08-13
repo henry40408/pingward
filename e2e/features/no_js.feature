@@ -65,6 +65,17 @@ Feature: The UI with JavaScript switched off
     And the pings kind filter shows "fail"
     And the notifications event filter shows "down"
 
+  # `data-theme` is only ever set by `theme-init.js`, so every scriptless
+  # visitor got the dark base regardless of what their OS asked for —
+  # `prefers-color-scheme` needs no script to answer.
+  Scenario: The OS colour scheme is honoured
+    When my system prefers "light"
+    And I visit the dashboard
+    Then the page background is light
+    When my system prefers "dark"
+    And I visit the dashboard
+    Then the page background is dark
+
   # #144: `data-confirm` is inert without script, so the server asks instead.
   Scenario: Deleting a check asks first, as a page
     Given a check named "backup" with period 60

@@ -1,5 +1,10 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+{# No `data-theme` here on purpose. `theme-init.js` sets it before the first
+   paint, and hardcoding a value only decided what a browser running *no*
+   script was stuck with — always dark, whatever its OS asked for. Left off,
+   the `prefers-color-scheme` block in app.css (which is keyed on the attribute
+   being absent) finally gets to answer. #}
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">

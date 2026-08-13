@@ -94,6 +94,10 @@
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
 }
 
+/* Applied by `theme-init.js`, which resolves 'light' | 'dark' | follow-the-OS
+   into a `data-theme` attribute before first paint. **Keep in sync with the
+   `prefers-color-scheme` copy below** — a token added here and not there is
+   invisible until someone opens the app with script off. */
 :root[data-theme="light"] {
   --brand: #5654d4;
   --brand-ink: #ffffff;
@@ -126,6 +130,58 @@
 
   --grid: rgba(0, 0, 0, 0.02);
   --shadow: 0 8px 24px rgba(20, 30, 60, 0.08);
+}
+
+/* The same palette, for a browser running no script.
+ *
+ * `data-theme` is only ever set by `theme-init.js`, so without it every
+ * visitor got the dark base above no matter what their OS asked for — the one
+ * remaining place where the UI ignored a preference it could see perfectly
+ * well, since `prefers-color-scheme` needs no script at all.
+ *
+ * `:not([data-theme])` is what keeps this inert whenever the script *did* run:
+ * it always sets the attribute, to `light` or `dark`, never leaves it off. So
+ * this block is unreachable in a scripted browser and cannot fight the toggle.
+ *
+ * Duplicated rather than shared because a selector list cannot span a media
+ * query boundary. `light-dark()` would collapse both palettes into one list,
+ * but rewriting all thirty tokens risks visual drift across every surface —
+ * not a trade worth making for this. **Keep the two blocks in sync.**
+ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --brand: #5654d4;
+    --brand-ink: #ffffff;
+    --bg: #f3f5f8;
+    --surface: #ffffff;
+    --surface-2: #ffffff;
+    --hover: #f7f8fa;
+    --input: #fbfcfd;
+    --border: #e4e7ec;
+    --border-soft: #eef0f3;
+    --ink: #171a21;
+    --ink-2: #2c3240;
+    --muted: #727a8a;
+    --faint: #9aa1b0;
+    --up: #0e7c5a;
+    --down: #d23b48;
+    --late: #b26f12;
+    --paused: #8a94a6;
+    --new: #727a8a;
+    --glow: 0;
+
+    --up-bg: #e4f5ee;
+    --down-bg: #fce7e9;
+    --late-bg: #fbf0dd;
+    --paused-bg: #eef0f3;
+    --up-bd: #bce6d6;
+    --down-bd: #f6cfd3;
+    --late-bd: #f0dfbc;
+    --paused-bd: #e1e4ea;
+
+    --grid: rgba(0, 0, 0, 0.02);
+    --shadow: 0 8px 24px rgba(20, 30, 60, 0.08);
+  }
 }
 
 /* ---- Base ---- */

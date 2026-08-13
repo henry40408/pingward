@@ -192,6 +192,24 @@ advertise an affordance that is not there. The class is set in
 `app.js` is deferred, so collapsing from there would show every panel and then
 snap them shut after the first paint.
 
+The **theme** is the same story told with `data-theme`. `theme-init.js`
+resolves the stored `light | dark | system` preference into that attribute
+before the first paint; `base.html` deliberately does **not** carry a default
+value, because a hardcoded one is precisely what a scriptless browser would be
+stuck with — it was `dark`, so every such visitor got a dark page whatever
+their OS asked for, even though `prefers-color-scheme` answers that question
+with no script at all. With the attribute absent, `app.css`'s
+`@media (prefers-color-scheme: light) { :root:not([data-theme]) { … } }` gets
+to apply. `:not([data-theme])` is what keeps it inert once the script has run,
+since `theme-init.js` always sets the attribute and never leaves it off, so
+the media block can never fight the toggle.
+
+That palette is written **twice** — a selector list cannot span a media query
+boundary, and `light-dark()` would mean rewriting all thirty tokens for a
+visual-drift risk not worth taking here. `tests/no_js.rs` compares the two
+blocks token by token, because a value tuned in one copy only is invisible
+until someone opens the app with script off.
+
 `data-confirm` is the same shape of promise, and is likewise **not** what
 enforces anything. The attribute only turns into a question if `app.js` is
 running, so the server refuses every irreversible action that does not carry

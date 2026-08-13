@@ -92,6 +92,32 @@ Then(
   }
 );
 
+// A CDP-level media override, so it works with scripting disabled — the page
+// never has to be asked anything.
+When("my system prefers {string}", async ({ page }, scheme) => {
+  await page.emulateMedia({ colorScheme: scheme });
+});
+
+// Asserted by brightness rather than an exact token value: the claim is "this
+// is a light page", and pinning `#f3f5f8` would turn any future palette tweak
+// into a failure that says nothing about whether the theme still works.
+async function backgroundLuminance(page) {
+  return page.evaluate(() => {
+    const [r, g, b] = getComputedStyle(document.body)
+      .backgroundColor.match(/\d+(\.\d+)?/g)
+      .map(Number);
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  });
+}
+
+Then("the page background is light", async ({ page }) => {
+  expect(await backgroundLuminance(page)).toBeGreaterThan(0.5);
+});
+
+Then("the page background is dark", async ({ page }) => {
+  expect(await backgroundLuminance(page)).toBeLessThan(0.5);
+});
+
 // Deliberately not monitoring.steps.js's "I delete the check": that one accepts
 // a `confirm()` dialog and expects to land back on the project page, which is
 // the scripted path. Here the click is expected to reach an interstitial.
