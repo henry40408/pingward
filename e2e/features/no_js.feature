@@ -37,6 +37,34 @@ Feature: The UI with JavaScript switched off
     And I click the dashboard check link for "backup"
     Then I am on the check page
 
+  # The filter forms had no method, no action, no field names and a
+  # `type="button"` submit — four separate reasons a scriptless click did
+  # nothing at all.
+  Scenario: The pings filter narrows the table
+    Given a check named "backup" with period 60
+    When I send a "success" ping
+    And I send a "fail" ping
+    And I reload the check page
+    And I filter the pings by kind "fail"
+    Then the pings table shows 1 rows
+    And the pings kind filter shows "fail"
+
+  # A GET submission replaces the whole query string, so without the hidden
+  # fields narrowing one section would silently clear the other's filter.
+  Scenario: Filtering one section keeps the other section's filter
+    Given a check named "backup" with period 60
+    When I send a "success" ping
+    And I send a "fail" ping
+    And I reload the check page
+    And I filter the notifications by event "down"
+    And I filter the pings by kind "fail"
+    # The row count is what proves a round trip happened at all: a select whose
+    # value was merely set in the DOM would satisfy the two assertions below
+    # without anything ever reaching the server.
+    Then the pings table shows 1 rows
+    And the pings kind filter shows "fail"
+    And the notifications event filter shows "down"
+
   # #144: `data-confirm` is inert without script, so the server asks instead.
   Scenario: Deleting a check asks first, as a page
     Given a check named "backup" with period 60

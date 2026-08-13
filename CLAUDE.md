@@ -109,7 +109,12 @@ every refusal guard — see ARCHITECTURE.md's "Confirming a destructive action".
 CSS that hides what a click reveals must hang off the **`js` class** on
 `<html>` (set by `theme-init.js` before first paint, not by the deferred
 `app.js`): `:root.js tr.exp:not(.open)` is what collapses the ping/audit output
-panels, so an unscripted browser keeps them open instead of losing the content. `style-src` keeps `'unsafe-inline'` for the
+panels, so an unscripted browser keeps them open instead of losing the content.
+The three history filters are **real GET forms** posting to the embedding page
+with named controls; each carries the sibling section's filter as hidden inputs
+(`carry_fields`/`clear_href`) because a GET submit replaces the whole query
+string. `datetime-local` values are local wall clock with JS (converted before
+fetch) and read as UTC without it — matching what each mode displays. `style-src` keeps `'unsafe-inline'` for the
 heartbeat bars' computed `style="height:Npx"`. `/api/docs` is deliberately
 outside the CSP — Scalar loads its bundle from a CDN.
 

@@ -63,6 +63,35 @@ When(
   }
 );
 
+// A plain form submission: pick the value, press the button, follow the
+// navigation. With script the same click is cancelled and swapped in place, so
+// there is no shared step for this.
+When("I filter the pings by kind {string}", async ({ page }, kind) => {
+  await page.getByTestId("pings-kind").selectOption(kind);
+  await page.getByTestId("pings-apply").click();
+});
+
+When(
+  "I filter the notifications by event {string}",
+  async ({ page }, event) => {
+    await page.getByTestId("notifs-event").selectOption(event);
+    await page.getByTestId("notifs-apply").click();
+  }
+);
+
+// The selected value surviving a round trip is what proves the filter reached
+// the server and came back rendered, rather than the page merely reloading.
+Then("the pings kind filter shows {string}", async ({ page }, kind) => {
+  await expect(page.getByTestId("pings-kind")).toHaveValue(kind);
+});
+
+Then(
+  "the notifications event filter shows {string}",
+  async ({ page }, event) => {
+    await expect(page.getByTestId("notifs-event")).toHaveValue(event);
+  }
+);
+
 // Deliberately not monitoring.steps.js's "I delete the check": that one accepts
 // a `confirm()` dialog and expects to land back on the project page, which is
 // the scripted path. Here the click is expected to reach an interstitial.

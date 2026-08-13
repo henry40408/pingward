@@ -2325,6 +2325,11 @@ struct CheckPingsTemplate {
     f_to: String,
     /// Any filter active — controls the "Clear" affordance.
     filtered: bool,
+    /// The notifications section's filter, re-sent as hidden fields so a
+    /// scriptless submit of *this* form does not clear it.
+    carry: Vec<HiddenField>,
+    /// Where Clear goes: the page, keeping the other section's filter.
+    clear: String,
     newer: Option<String>,
     older: Option<String>,
 }
@@ -2345,6 +2350,9 @@ struct CheckNotifsTemplate {
     f_from: String,
     f_to: String,
     filtered: bool,
+    /// The pings section's filter — see [`CheckPingsTemplate::carry`].
+    carry: Vec<HiddenField>,
+    clear: String,
     newer: Option<String>,
     older: Option<String>,
 }
@@ -2419,6 +2427,45 @@ fn parse_date_bound(v: Option<&str>) -> Option<DateTime<Utc>> {
         }
     }
     None
+}
+
+/// One `<input type="hidden">` in a filter form.
+///
+/// A history section's filter is a real GET form submitting to the page that
+/// embeds it, which is what makes it work with no script. A GET submission
+/// replaces the whole query string, though, so the *other* section's active
+/// filter would be wiped by narrowing this one — filtering the pings on a
+/// check page would silently clear the notifications filter. These carry it
+/// across.
+struct HiddenField {
+    name: &'static str,
+    value: String,
+}
+
+/// The hidden fields (and Clear href) a filter form needs so that submitting it
+/// leaves every other section's filter alone. `mine` is the set of query keys
+/// this form owns and therefore must *not* re-send as hidden state — the
+/// visible controls carry those.
+fn carry_fields(all: &[(&'static str, String)], mine: &[&str]) -> Vec<HiddenField> {
+    all.iter()
+        .filter(|(k, v)| !v.is_empty() && !mine.contains(k))
+        .map(|(k, v)| HiddenField {
+            name: k,
+            value: v.clone(),
+        })
+        .collect()
+}
+
+/// `path` plus the fields a Clear link must preserve — i.e. everything except
+/// the filter being cleared. Same rule as [`carry_fields`], as an href.
+fn clear_href(path: &str, carry: &[HiddenField]) -> String {
+    use std::fmt::Write as _;
+    let mut href = path.to_string();
+    for (i, f) in carry.iter().enumerate() {
+        let sep = if i == 0 { '?' } else { '&' };
+        let _ = write!(href, "{sep}{}={}", f.name, f.value);
+    }
+    href
 }
 
 /// Canonical `Z`-form RFC3339 for echoing a parsed date bound back into a
@@ -3160,6 +3207,38 @@ async fn build_pings_partial(
         .flatten()
         .map(|p| history_href(&endpoint, ("pa", p.id), &carry));
 
+    // The notifications half of the query, which this form must preserve.
+    let notif_filter = NotifFilter {
+        events: parse_filter_enum(page.ne.as_deref()),
+        statuses: parse_filter_enum(page.ns.as_deref()),
+        from: parse_date_bound(page.nfrom.as_deref()),
+        to: parse_date_bound(page.nto.as_deref()),
+    };
+    let tokens = check_page_filter_tokens(
+        &f_kind,
+        &f_from,
+        &f_to,
+        &notif_filter
+            .events
+            .first()
+            .map(|e| e.as_str().to_string())
+            .unwrap_or_default(),
+        &notif_filter
+            .statuses
+            .first()
+            .map(|s| s.as_str().to_string())
+            .unwrap_or_default(),
+        &date_bound_token(notif_filter.from),
+        &date_bound_token(notif_filter.to),
+    );
+    let hidden = carry_fields(&tokens, &PINGS_FILTER_KEYS);
+    // Clear stays pointed at the *fragment* endpoint: with script `wireSection`
+    // intercepts it and expects a partial back, and without script that
+    // endpoint redirects to the page carrying this query (see
+    // `fragment_page_redirect`). Either way the notifications filter rides
+    // along and only the pings filter is dropped.
+    let clear = clear_href(&endpoint, &hidden);
+
     Ok(CheckPingsTemplate {
         base: base.to_string(),
         check_id,
@@ -3169,6 +3248,8 @@ async fn build_pings_partial(
         f_from,
         f_to,
         filtered: !filter.is_empty(),
+        carry: hidden,
+        clear,
         newer,
         older,
     })
@@ -3246,6 +3327,29 @@ async fn build_notifs_partial(
         .flatten()
         .map(|n| history_href(&endpoint, ("na", n.id), &carry));
 
+    // The pings half of the query, which this form must preserve.
+    let ping_filter = PingFilter {
+        kinds: parse_filter_enum(page.pk.as_deref()),
+        from: parse_date_bound(page.pfrom.as_deref()),
+        to: parse_date_bound(page.pto.as_deref()),
+    };
+    let tokens = check_page_filter_tokens(
+        &ping_filter
+            .kinds
+            .first()
+            .map(|k| k.as_str().to_string())
+            .unwrap_or_default(),
+        &date_bound_token(ping_filter.from),
+        &date_bound_token(ping_filter.to),
+        &f_event,
+        &f_status,
+        &f_from,
+        &f_to,
+    );
+    let hidden = carry_fields(&tokens, &NOTIFS_FILTER_KEYS);
+    // Fragment endpoint, for the reason spelled out in `build_pings_partial`.
+    let clear = clear_href(&endpoint, &hidden);
+
     Ok(CheckNotifsTemplate {
         base: base.to_string(),
         check_id,
@@ -3256,6 +3360,8 @@ async fn build_notifs_partial(
         f_from,
         f_to,
         filtered: !filter.is_empty(),
+        carry: hidden,
+        clear,
         newer,
         older,
     })
@@ -5827,6 +5933,33 @@ struct AdminAuditTemplate {
     newer: Option<String>,
     older: Option<String>,
 }
+
+/// The whole check-page query, as `(key, token)` pairs in the canonical form
+/// the templates echo back. One list so the two history sections can each
+/// carry the other's half without either knowing which keys belong to whom.
+fn check_page_filter_tokens(
+    f_kind: &str,
+    p_from: &str,
+    p_to: &str,
+    f_event: &str,
+    f_status: &str,
+    n_from: &str,
+    n_to: &str,
+) -> [(&'static str, String); 7] {
+    [
+        ("pk", f_kind.to_string()),
+        ("pfrom", p_from.to_string()),
+        ("pto", p_to.to_string()),
+        ("ne", f_event.to_string()),
+        ("ns", f_status.to_string()),
+        ("nfrom", n_from.to_string()),
+        ("nto", n_to.to_string()),
+    ]
+}
+
+/// The query keys each history section's visible controls own.
+const PINGS_FILTER_KEYS: [&str; 3] = ["pk", "pfrom", "pto"];
+const NOTIFS_FILTER_KEYS: [&str; 4] = ["ne", "ns", "nfrom", "nto"];
 
 /// One rendered audit row. The four columns are the "who did what to what,
 /// when" summary; `method_path`, `detail` and `target_owner` are the rest of

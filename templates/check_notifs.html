@@ -1,11 +1,14 @@
 {# Recent-notifications fragment: filter controls + table + keyset pager.
    Served standalone by GET /checks/{id}/notifications (JS swaps it into
    #notifs-section) and inlined into check.html via |safe. #}
-<form class="filters" data-testid="notifs-filters" data-nosubmit>
-  <label class="fld">From <input type="datetime-local" data-testid="notifs-from" data-utc="{{ f_from }}"></label>
-  <label class="fld">To <input type="datetime-local" data-testid="notifs-to" data-utc="{{ f_to }}"></label>
+{# Real GET form submitting to the check page — see check_pings.html for why,
+   including what the hidden fields and the raw `datetime-local` values mean. #}
+<form class="filters" method="get" action="{{ base }}/checks/{{ check_id }}" data-testid="notifs-filters" data-nosubmit>
+  {% for f in carry %}<input type="hidden" name="{{ f.name }}" value="{{ f.value }}">{% endfor %}
+  <label class="fld">From <input type="datetime-local" name="nfrom" data-testid="notifs-from" data-utc="{{ f_from }}"></label>
+  <label class="fld">To <input type="datetime-local" name="nto" data-testid="notifs-to" data-utc="{{ f_to }}"></label>
   <label class="fld">Event
-    <select data-testid="notifs-event">
+    <select name="ne" data-testid="notifs-event">
       <option value=""{% if f_event == "" %} selected{% endif %}>All</option>
       <option value="down"{% if f_event == "down" %} selected{% endif %}>down</option>
       <option value="up"{% if f_event == "up" %} selected{% endif %}>up</option>
@@ -13,14 +16,14 @@
     </select>
   </label>
   <label class="fld">Result
-    <select data-testid="notifs-status">
+    <select name="ns" data-testid="notifs-status">
       <option value=""{% if f_status == "" %} selected{% endif %}>All</option>
       <option value="ok"{% if f_status == "ok" %} selected{% endif %}>sent</option>
       <option value="error"{% if f_status == "error" %} selected{% endif %}>error</option>
     </select>
   </label>
-  <button class="btn" type="button" data-apply data-testid="notifs-apply">Filter</button>
-  {% if filtered %}<a class="btn ghost" href="{{ base }}/checks/{{ check_id }}/notifications" data-testid="notifs-clear">Clear</a>{% endif %}
+  <button class="btn" type="submit" data-apply data-testid="notifs-apply">Filter</button>
+  {% if filtered %}<a class="btn ghost" href="{{ clear }}" data-testid="notifs-clear">Clear</a>{% endif %}
 </form>
 {% if empty %}
 <p class="empty" data-testid="notifications-empty">{% if filtered %}No notifications match the filter.{% else %}No notifications yet.{% endif %}</p>

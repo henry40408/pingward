@@ -1357,6 +1357,29 @@ filters survive) and anchoring on the section. Ownership/admin resolution runs
 **before** the redirect decision, so the fallback never becomes a cheap way to
 confirm that someone else's check exists.
 
+Each section's filter is a **real GET form** submitting to the page that
+embeds it (`/checks/{id}`, `/admin`), with named controls and a `type="submit"`
+button, so it filters with no script at all — the page parses the very same
+query struct the fragment endpoint does. It had none of that: no `method`, no
+`action`, no `name` on any control and a `type="button"` Filter, four separate
+reasons a scriptless click did nothing. With script, `wireSection`'s
+`data-apply` handler cancels the submit and swaps the fragment in place
+instead, and `data-nosubmit` stops a stray Enter navigating away.
+
+Two consequences worth knowing:
+
+- A GET submission replaces the **whole** query string, so the check page's two
+  sections would clear each other's filter. Each form re-sends the other's
+  half as hidden inputs (`web::carry_fields`), and each Clear link keeps them
+  (`web::clear_href`). Clear still points at the *fragment* endpoint, not the
+  page: with script `wireSection` intercepts it and expects a partial back, and
+  without script that endpoint redirects to the page carrying the query.
+- The `datetime-local` controls hold the viewer's **local** wall clock.
+  `app.js` converts to UTC before fetching; submitted raw they are read as UTC
+  (`web::parse_date_bound` already accepted the naive form). The two modes
+  disagree by design, and each agrees with what it *shows*: timestamps are
+  localized by `app.js` and rendered as UTC when it is not running.
+
 The client half is `pw.wireSection` in `base.html`: it delegates clicks inside
 the section, turning a pager/Clear link or the Filter button into a `fetch` of
 the fragment endpoint whose response replaces the section body, then re-runs
