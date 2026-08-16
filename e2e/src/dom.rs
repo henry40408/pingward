@@ -178,6 +178,10 @@ pub trait Dom {
     /// Is some element rendering `text` displayed, as the page stands?
     async fn has_text_somewhere(&self, text: &str) -> Result<bool>;
 
+    /// Waits for some element whose whole text is `text` to be displayed,
+    /// `getByText(text, { exact: true })`.
+    async fn expect_exact_text_somewhere(&self, text: &str) -> Result<()>;
+
     /// The link with this accessible name, if the page has one.
     async fn link_named(&self, name: &str) -> Result<Option<WebElement>>;
 
@@ -290,6 +294,48 @@ pub async fn submit_element(driver: &WebDriver, element: &WebElement) -> Result<
         .stale()
         .await
         .context("the click did not navigate anywhere")?;
+    Ok(())
+}
+
+/// Clicks a control that *may* raise a `confirm()` before it submits, answers
+/// it yes if it does, and waits for the navigation.
+///
+/// `/admin`'s per-row controls are the awkward case: delete always confirms,
+/// revoke-admin and disable confirm only when they would actually change
+/// state, and promote and enable never do. Waiting unconditionally for a
+/// prompt would stall for the full timeout on the paths that raise none, so
+/// this races the two outcomes instead — a prompt appearing, or the document
+/// being replaced.
+///
+/// # Errors
+///
+/// Fails when neither happens before the timeout.
+pub async fn submit_element_confirming(driver: &WebDriver, element: &WebElement) -> Result<()> {
+    let document = driver.find(By::Tag("html")).await?;
+    click_when_ready(element).await?;
+
+    let deadline = std::time::Instant::now() + WAIT_TIMEOUT;
+    loop {
+        if driver.get_alert_text().await.is_ok() {
+            driver.accept_alert().await?;
+            break;
+        }
+        if document.is_present().await.is_ok_and(|present| !present) {
+            // Already gone — the control submitted without confirming.
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("the control neither confirmed nor navigated within {WAIT_TIMEOUT:?}");
+        }
+        tokio::time::sleep(WAIT_INTERVAL).await;
+    }
+
+    document
+        .wait_until()
+        .wait(WAIT_TIMEOUT, WAIT_INTERVAL)
+        .stale()
+        .await
+        .context("the confirmed control did not submit")?;
     Ok(())
 }
 
@@ -734,6 +780,16 @@ impl Dom for WebDriver {
             return Ok(false);
         };
         Ok(element.is_displayed().await.unwrap_or(false))
+    }
+
+    async fn expect_exact_text_somewhere(&self, text: &str) -> Result<()> {
+        let xpath = format!(
+            "//*[normalize-space(.)={0}][not(.//*[normalize-space(.)={0}])]",
+            xpath_literal(text)
+        );
+        displayed(self, By::XPath(xpath), &format!("exactly {text:?}"))
+            .await
+            .map(|_| ())
     }
 
     async fn link_named(&self, name: &str) -> Result<Option<WebElement>> {

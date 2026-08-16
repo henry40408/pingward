@@ -5,9 +5,18 @@
 //! time, so a module only has to be reachable from the crate root to
 //! contribute its steps; nothing here is called directly.
 
+pub mod account;
+pub mod admin;
+pub mod assets;
 pub mod auth;
+pub mod authz;
 pub mod check_create;
 pub mod edit_flows;
+pub mod live_tail;
 pub mod monitoring;
+pub mod ping_kinds;
 pub mod settings;
+pub mod theme;
+pub mod time_states;
+pub mod users;
 pub mod validation;

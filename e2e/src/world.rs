@@ -222,6 +222,79 @@ impl PingwardWorld {
         .await
     }
 
+    /// The status of a request made *by the page*, with its own credentials.
+    ///
+    /// `WebDriver` never reports an HTTP status — `goto` either lands or
+    /// errors — while `page.goto()` and `page.request.post()` both handed the
+    /// JavaScript suite one. Issuing the request from inside the document is
+    /// what keeps the session cookie, the origin and the CSP the same as the
+    /// navigation's, which matters for both callers: the authorization
+    /// scenarios need the 404 to come from the ownership guard rather than
+    /// from being signed out, and the CSRF scenario needs a request that is
+    /// authenticated in every respect *except* its missing token.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the script cannot run or the fetch throws.
+    pub async fn fetch_status(&self, method: &str, path: &str) -> Result<u16> {
+        let status = self
+            .driver()?
+            .execute_async(
+                "const [path, method, done] = arguments;\
+                 const init = { method, credentials: 'same-origin' };\
+                 if (method !== 'GET') { init.body = new URLSearchParams(); }\
+                 fetch(path, init).then((r) => done(r.status)).catch(() => done(0));",
+                vec![
+                    serde_json::json!(format!("{}{path}", self.base_url()?)),
+                    serde_json::json!(method),
+                ],
+            )
+            .await?;
+        let status = status
+            .json()
+            .as_u64()
+            .context("the fetch probe did not return a status")?;
+        anyhow::ensure!(status != 0, "the request to {path} never completed");
+        Ok(status as u16)
+    }
+
+    /// POSTs a form as the signed-in browser, reporting the status and
+    /// following no redirects.
+    ///
+    /// `page.request.post(..., { maxRedirects: 0 })` in the JavaScript suite.
+    /// [`PingwardWorld::fetch_status`] cannot answer this: `fetch` with
+    /// `redirect: 'manual'` yields an opaque response whose status reads 0, so
+    /// a 303 is indistinguishable from a failure — and a 303 is exactly what
+    /// the self-guard scenarios need to see, since a 403 from `csrf_guard`
+    /// would leave the state unchanged too and pass for the wrong reason.
+    ///
+    /// The cookie jar is copied out of the browser, so the request is the same
+    /// session; the caller supplies the CSRF token it read off the page.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the cookies cannot be read or the request cannot be sent.
+    pub async fn post_form_as_user(&self, path: &str, form: &[(&str, &str)]) -> Result<u16> {
+        let jar = self
+            .driver()?
+            .get_all_cookies()
+            .await?
+            .iter()
+            .map(|cookie| format!("{}={}", cookie.name, cookie.value))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let response = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?
+            .post(format!("{}{path}", self.base_url()?))
+            .header(reqwest::header::COOKIE, jar)
+            .form(form)
+            .send()
+            .await
+            .with_context(|| format!("posting {path} as the signed-in user"))?;
+        Ok(response.status().as_u16())
+    }
+
     /// Resizes the viewport.
     ///
     /// # Errors
