@@ -1,7 +1,11 @@
+/target
+.tmp/
+
+# Left behind by the Playwright suite this crate replaces; removed once the
+# port lands.
 node_modules/
 .features-gen/
 test-results/
 playwright-report/
 blob-report/
 playwright/.cache/
-.tmp/

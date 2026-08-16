@@ -1,0 +1,96 @@
+[package]
+name = "pingward-e2e"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Browser E2E tests, README screenshots and icon rendering for pingward"
+
+# Deliberately its own workspace, not a member of the one at the repository
+# root. `cargo nextest run` and the coverage job run `--workspace`, which would
+# otherwise compile thirtyfour and drive a real browser on every unit-test run.
+# `e2e/` was already a self-contained sub-project when it was JavaScript; this
+# keeps that boundary.
+[workspace]
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = "0.4"
+chrono-tz = "0.10"
+cucumber = "0.23.0"
+regex = "1.12"
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "charset",
+] }
+# Renders `assets/apple-touch-icon.png` from `assets/favicon.svg`, replacing the
+# Chromium screenshot `render-icon.mjs` took. Pulling the rasteriser in directly
+# means the icon no longer depends on a browser being installed.
+resvg = "0.48"
+serde_json = "1.0.151"
+# The screenshot pipeline seeds a *stopped* database, which the JavaScript
+# version shelled out to the `sqlite3` CLI for. Doing it in-process drops that
+# undeclared dependency.
+sqlx = { version = "0.9.0", default-features = false, features = [
+  "runtime-tokio",
+  "sqlite",
+] }
+tempfile = "3.26.0"
+# Pinned exactly: 0.37.5 was published 2026-08-12, inside the seven-day cooldown
+# this project applies to fresh releases. Relax to a caret once it has aged out.
+#
+# Deliberately **not** the `bidi` feature. Every emulation this suite needs goes
+# through CDP — `Emulation.setScriptExecutionDisabled` is what replaces
+# Playwright's `javaScriptEnabled: false`, and `Emulation.setEmulatedMedia` is
+# the only route to `prefers-color-scheme` — so a second protocol stack would
+# buy nothing. `cdp-events` is not needed either: no scenario intercepts a
+# request, it only *observes* deliveries, which the mock receiver records.
+thirtyfour = "=0.37.4"
+tokio = { version = "1.53.1", features = [
+  "macros",
+  "net",
+  "process",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
+# Stands in for the hand-rolled `support/mock-http.js` receiver the webhook
+# delivery scenarios asserted against. Already a dev-dependency of the root
+# crate, so it is not a new name in the tree.
+wiremock = "0.6"
+
+[[test]]
+name = "e2e"
+harness = false
+
+# `cargo run --bin icons`, the old `npm run icons`.
+[[bin]]
+name = "icons"
+path = "src/bin/icons.rs"
+
+# Mirrors the root crate's lint set, minus the entries that only apply to the
+# server. Being a separate workspace means none of it is inherited, and test
+# code that lints differently from the code it tests drifts.
+[lints.rust]
+unexpected_cfgs = "deny"
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+cast_lossless = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+items_after_statements = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+needless_pass_by_value = "allow"
+return_self_not_must_use = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
