@@ -68,6 +68,53 @@ pub trait Dom {
     /// Waits for the element's text to contain `needle`, `toContainText`.
     async fn expect_text(&self, id: &str, needle: &str) -> Result<()>;
 
+    /// Waits for the element's text to be exactly `text`, `toHaveText`.
+    ///
+    /// A distinction worth keeping: `toHaveText("up")` must not be satisfied
+    /// by a status chip reading `paused`, and `toContainText` would be.
+    async fn expect_exact_text(&self, id: &str, text: &str) -> Result<()>;
+
+    /// Waits for the element's text to be anything but `text`,
+    /// `not.toHaveText`.
+    async fn expect_not_exact_text(&self, id: &str, text: &str) -> Result<()>;
+
+    /// [`Dom::expect_visible`] addressed by a CSS selector.
+    ///
+    /// Many pingward controls carry an `id` but no `data-testid` — the flash
+    /// banners, the settings fields, `#cron_expr` — so the JavaScript suite
+    /// addressed them with `page.locator("#…")`, and so does this.
+    async fn expect_visible_css(&self, selector: &str) -> Result<()>;
+
+    /// [`Dom::expect_hidden`] addressed by a CSS selector.
+    async fn expect_hidden_css(&self, selector: &str) -> Result<()>;
+
+    /// [`Dom::expect_exact_text`] addressed by a CSS selector.
+    async fn expect_exact_text_css(&self, selector: &str, text: &str) -> Result<()>;
+
+    /// [`Dom::expect_text`] addressed by a CSS selector.
+    async fn expect_text_css(&self, selector: &str, needle: &str) -> Result<()>;
+
+    /// Waits for a control's value to be exactly `value`, `toHaveValue`.
+    async fn expect_value(&self, id: &str, value: &str) -> Result<()>;
+
+    /// [`Dom::expect_value`] addressed by a CSS selector.
+    async fn expect_value_css(&self, selector: &str, value: &str) -> Result<()>;
+
+    /// Elements carrying `data-testid` whose text contains `text` —
+    /// Playwright's `.filter({ hasText })`.
+    async fn test_ids_with_text(&self, id: &str, text: &str) -> Result<Vec<WebElement>>;
+
+    /// Elements matching a CSS selector whose text contains `text`.
+    async fn css_with_text(&self, selector: &str, text: &str) -> Result<Vec<WebElement>>;
+
+    /// The one element matching a CSS selector whose text contains `text`,
+    /// once it is there.
+    async fn css_row(&self, selector: &str, text: &str) -> Result<WebElement>;
+
+    /// Chooses an `<option>` by its visible label, Playwright's
+    /// `selectOption({ label })`.
+    async fn select_label(&self, id: &str, label: &str) -> Result<()>;
+
     /// The element's text, once it is displayed.
     async fn text_of(&self, id: &str) -> Result<String>;
 
@@ -472,6 +519,92 @@ impl Dom for WebDriver {
         }
     }
 
+    async fn expect_exact_text(&self, id: &str, text: &str) -> Result<()> {
+        crate::wait::eventually_eq(&format!("testid `{id}` text"), text.to_owned(), || {
+            self.text_of(id)
+        })
+        .await
+    }
+
+    async fn expect_not_exact_text(&self, id: &str, text: &str) -> Result<()> {
+        crate::wait::eventually(&format!("testid `{id}` stops reading {text:?}"), || async {
+            Ok(self.text_of_test_id(id).await?.as_deref() != Some(text))
+        })
+        .await
+    }
+
+    async fn expect_visible_css(&self, selector: &str) -> Result<()> {
+        self.css(selector).await.map(|_| ())
+    }
+
+    async fn expect_hidden_css(&self, selector: &str) -> Result<()> {
+        crate::wait::eventually(&format!("`{selector}` is hidden"), || async {
+            match self.css_opt(selector).await? {
+                None => Ok(true),
+                Some(element) => Ok(!element.is_displayed().await.unwrap_or(false)),
+            }
+        })
+        .await
+    }
+
+    async fn expect_exact_text_css(&self, selector: &str, text: &str) -> Result<()> {
+        crate::wait::eventually_eq(&format!("`{selector}` text"), text.to_owned(), || async {
+            Ok(self.text_of_css(selector).await?.unwrap_or_default())
+        })
+        .await
+    }
+
+    async fn expect_text_css(&self, selector: &str, needle: &str) -> Result<()> {
+        crate::wait::eventually(
+            &format!("`{selector}` text contains {needle:?}"),
+            || async {
+                Ok(self
+                    .text_of_css(selector)
+                    .await?
+                    .is_some_and(|text| text.contains(needle)))
+            },
+        )
+        .await
+    }
+
+    async fn expect_value(&self, id: &str, value: &str) -> Result<()> {
+        crate::wait::eventually_eq(&format!("testid `{id}` value"), value.to_owned(), || {
+            self.value_of(id)
+        })
+        .await
+    }
+
+    async fn expect_value_css(&self, selector: &str, value: &str) -> Result<()> {
+        crate::wait::eventually_eq(&format!("`{selector}` value"), value.to_owned(), || {
+            self.value_of_css(selector)
+        })
+        .await
+    }
+
+    async fn test_ids_with_text(&self, id: &str, text: &str) -> Result<Vec<WebElement>> {
+        with_text(self.test_ids(id).await?, text).await
+    }
+
+    async fn css_with_text(&self, selector: &str, text: &str) -> Result<Vec<WebElement>> {
+        with_text(self.css_all(selector).await?, text).await
+    }
+
+    async fn css_row(&self, selector: &str, text: &str) -> Result<WebElement> {
+        crate::wait::eventually_some(&format!("`{selector}` containing {text:?}"), || async {
+            Ok(self.css_with_text(selector, text).await?.into_iter().next())
+        })
+        .await
+    }
+
+    async fn select_label(&self, id: &str, label: &str) -> Result<()> {
+        let select = SelectElement::new(&self.test_id(id).await?).await?;
+        select
+            .select_by_exact_text(label)
+            .await
+            .with_context(|| format!("`{id}` has no option labelled `{label}`"))?;
+        Ok(())
+    }
+
     async fn text_of(&self, id: &str) -> Result<String> {
         self.test_id(id).await?.normalized_text().await
     }
@@ -811,6 +944,24 @@ async fn displayed(driver: &WebDriver, by: By, what: &str) -> Result<WebElement>
 /// error.
 async fn all(driver: &WebDriver, by: By) -> Result<Vec<WebElement>> {
     Ok(driver.query(by).nowait().all_from_selector().await?)
+}
+
+/// Keeps the elements whose text contains `text`, Playwright's
+/// `.filter({ hasText })`.
+///
+/// An element that goes stale mid-read is dropped rather than failing the
+/// filter: these lists are usually read while a fragment swap is in flight,
+/// and "it is no longer there" is a legitimate answer to "does it match?".
+async fn with_text(elements: Vec<WebElement>, text: &str) -> Result<Vec<WebElement>> {
+    let mut matched = Vec::new();
+    for element in elements {
+        if let Ok(content) = element.normalized_text().await
+            && content.contains(text)
+        {
+            matched.push(element);
+        }
+    }
+    Ok(matched)
 }
 
 /// An `XPath` for "the innermost element whose text contains `text`".

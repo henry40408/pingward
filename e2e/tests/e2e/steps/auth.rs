@@ -37,12 +37,18 @@ async fn admin_exists(world: &mut PingwardWorld, username: String, password: Str
     world.api()?.bootstrap_admin(&username, &password).await
 }
 
+// Also a `Then` in `authz.feature`, where signing in *is* the assertion's
+// setup and the scenario reads as one sentence. cucumber-rs matches on the
+// keyword, unlike cucumber-js, so every keyword a step is written under has to
+// be declared.
 #[when(expr = "I sign in as {string} with password {string}")]
+#[then(expr = "I sign in as {string} with password {string}")]
 async fn sign_in_as(world: &mut PingwardWorld, username: String, password: String) -> Result<()> {
     sign_in(world, &username, &password).await
 }
 
 #[given(expr = "I am signed in as {string} with password {string}")]
+#[when(expr = "I am signed in as {string} with password {string}")]
 async fn signed_in_as(world: &mut PingwardWorld, username: String, password: String) -> Result<()> {
     sign_in(world, &username, &password).await?;
     world.expect_path("/").await
@@ -54,6 +60,7 @@ async fn login_error(world: &mut PingwardWorld, message: String) -> Result<()> {
     world.driver()?.expect_text("login-error", &message).await
 }
 
+#[given("I sign out")]
 #[when("I sign out")]
 async fn sign_out(world: &mut PingwardWorld) -> Result<()> {
     world.driver()?.submit("logout-button").await
