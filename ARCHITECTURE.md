@@ -24,7 +24,7 @@ surfaces share one `AppState` (a `Store` plus the parsed `Config`) and one
 | `migrations/sqlite/`   | SQLite schema migrations                                          |
 | `migrations/postgres/` | The same migrations, hand-duplicated for Postgres syntax          |
 | `tests/`                | Rust integration tests (one file per feature area), run with `cargo nextest run` |
-| `e2e/`                 | Playwright + playwright-bdd browser tests (`.feature` + `.steps.js`) |
+| `e2e/`                 | cucumber + thirtyfour browser tests (`.feature` + Rust steps), its own workspace |
 
 ## Module map
 
@@ -1471,17 +1471,21 @@ is set, and `tests/smtp_e2e.rs` skips unless `PINGWARD_TEST_SMTP_HOST` is
 set (with `PINGWARD_TEST_SMTP_PORT` and `PINGWARD_TEST_MAILPIT_API` for a
 local mailpit relay). `docker compose up -d` starts both backends.
 
-`e2e/` is a Playwright + playwright-bdd harness: `.feature` files paired
-with `.steps.js` step definitions, run via `cd e2e && npm test` (which runs
-`bddgen` to generate specs, then `playwright test`). A `global-setup`
-ensures the binary is built; each scenario then spawns its own fresh
-`pingward` binary against a temporary SQLite database on a random port, so
-scenarios don't share state.
+`e2e/` is a cucumber + thirtyfour harness: `.feature` files paired with Rust
+step definitions under `tests/e2e/steps/`, run via
+`cd e2e && cargo test --test e2e`. It is a **cargo workspace of its own**, so
+a `--workspace` build or coverage run at the root never compiles it or drives
+a browser. Each scenario spawns its own fresh `pingward` binary against a
+temporary SQLite database on a random port, so scenarios don't share state —
+which is not merely tidiness here: `POST /setup` creates the first admin once
+and almost every scenario walks through it.
 
-There are **two Playwright projects**. `chromium` runs everything except
-`no_js.feature`; the `no-js` project runs only that file, in a context with
-`javaScriptEnabled: false`. Scripting is a browser capability rather than
-something a page can be asked to give up, so it needs its own context — and
+`no_js.feature` carries an **`@nojs` tag**, and a `before` hook reads it to
+open that scenario's session with `Emulation.setScriptExecutionDisabled` —
+which is what Playwright's `javaScriptEnabled: false` did underneath. It
+applies to the *next* document, so sessions are per-scenario rather than
+shared. Scripting is a browser capability rather than something a page can be
+asked to give up, so it needs its own session — and
 without one the whole suite is structurally blind to anything the UI has
 quietly started depending on `app.js` for, which is how a dashboard with no
 route to a check page, pager links rendering a bare fragment, and captured

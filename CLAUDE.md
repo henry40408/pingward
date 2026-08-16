@@ -43,25 +43,42 @@ Rust tests (use `cargo nextest`, not `cargo test` — CI does):
   then export `TEST_DATABASE_URL`, `PINGWARD_TEST_SMTP_HOST=localhost`,
   `PINGWARD_TEST_SMTP_PORT=1025`, `PINGWARD_TEST_MAILPIT_API=http://localhost:8025`.
 
-Browser E2E (Playwright + playwright-bdd, in `e2e/`):
-- `cd e2e && npm test` — runs `bddgen` then `playwright test`. A `global-setup`
-  runs `cargo build` first; each scenario spawns a **fresh binary + temp SQLite
-  DB** on a random port. Selectors use `data-testid`.
-- Single feature/scenario: `cd e2e && npx bddgen && npx playwright test ping_kinds -g "POST body"`.
-- **Two projects**: `chromium` runs everything but `no_js.feature`; `no-js`
-  runs only that file with `javaScriptEnabled: false`
-  (`npx playwright test --project=no-js`). Anything `app.js` must not be the
-  sole provider of belongs there — the rest of the suite cannot see it. Where
-  both directions matter (open without script, collapsed with it), pair the
-  scenario across `no_js.feature` and the JS-on suite.
+Browser E2E (cucumber + thirtyfour, in `e2e/`) — its **own cargo workspace**,
+so `--workspace` at the root never compiles it or drives a browser:
+- `cd e2e && cargo test --test e2e` — the whole suite. `harness = false`:
+  cucumber runs the scenarios itself, concurrently, one per core up to four.
+  Each scenario spawns a **fresh binary + temp SQLite DB** on a random port,
+  because `POST /setup` creates the first admin once and almost every scenario
+  walks through it. Selectors use `data-testid`.
+- Single feature or scenario: `cargo test --test e2e -- -i features/ping_kinds.feature`,
+  or `--name "POST body"`. `--tags` also works.
+- A **local Chrome or Chromium is a prerequisite**: thirtyfour's driver manager
+  downloads the *driver*, never the browser
+  (`brew install --cask ungoogled-chromium`).
+- `cargo fmt` / `cargo clippy` at the root stop at the workspace boundary, so
+  run them inside `e2e/` too — CI does.
+- **Tags select the environment** (`tests/e2e/main.rs` + `server::Options`):
+  `@nojs` disables the page's own scripts (`no_js.feature`, and only that
+  file); `@fast-scan` shortens `PINGWARD_SCAN_INTERVAL`; `@smtp-env` and
+  `@trusted-proxy` add env the scenario needs. Anything `app.js` must not be
+  the sole provider of belongs under `@nojs` — the rest of the suite cannot see
+  it. Where both directions matter (open without script, collapsed with it),
+  pair the scenario across `no_js.feature` and the JS-on suite.
+- Two translations to keep in mind when adding steps. cucumber-rs matches on
+  the **Gherkin keyword**, unlike cucumber-js, so a step written under both
+  `Given` and `When` needs both attributes. And a `{string}` argument arrives
+  with its backslash escaping **intact** — put it through
+  `pingward_e2e::unescape` when the expected text contains a quote.
 
-README assets (Playwright's Chromium, no extra deps; both commit their output):
-- `cd e2e && npm run screenshots` — rebuilds `docs/screenshots/*.png` by seeding
-  backdated demo data against a *stopped* throwaway DB, then rebooting.
-  `screenshots/seed.mjs` must keep every seeded check's timestamps inside its
-  schedule budget — the boot `scan_once` would otherwise rewrite the status the
-  shot is meant to show (cron checks anchor on a real fire time; see the cron
-  helper there).
+README assets (both commit their output):
+- `cd e2e && cargo run --bin screenshots` — rebuilds `docs/screenshots/*.png`
+  by seeding backdated demo data against a *stopped* throwaway DB, then
+  rebooting. `e2e/src/seed.rs` must keep every seeded check's timestamps inside
+  its schedule budget — the boot `scan_once` would otherwise rewrite the status
+  the shot is meant to show. Cron checks anchor on a real fire time, and its
+  evaluator numbers weekdays the way the `cron` crate does (**Sunday = 1**); a
+  0-based convention silently anchors a weekly check a day out and the boot
+  scan downs it.
   **Decide whether a change makes these stale, and say so without being
   asked.** They are committed artefacts of the UI, so nothing fails when they
   drift — the README simply keeps advertising a version of the app that no
@@ -71,8 +88,9 @@ README assets (Playwright's Chromium, no extra deps; both commit their output):
   in frame. The version stamp in the footer is part of the shot, so build from
   a clean tree (or pass `GIT_VERSION` explicitly) — `build.rs` will happily
   reuse a stale `-dirty` stamp naming a commit a rebase has since replaced.
-- `cd e2e && npm run icons` — re-renders `assets/apple-touch-icon.png` from
-  `assets/favicon.svg`. Run after editing the SVG.
+- `cd e2e && cargo run --bin icons` — re-renders `assets/apple-touch-icon.png`
+  from `assets/favicon.svg` with resvg. Run after editing the SVG; it needs no
+  browser.
 
 ## Architecture
 

@@ -431,33 +431,36 @@ Postgres integration tests (`tests/pg_store.rs`) and SMTP delivery tests
 
 ### End-to-end tests
 
-Browser E2E (Playwright + playwright-bdd) lives in `e2e/`; each scenario spawns a
-fresh compiled binary against a temporary SQLite database:
+Browser E2E (cucumber + thirtyfour) lives in `e2e/`, a cargo workspace of its
+own; each scenario spawns a fresh compiled binary against a temporary SQLite
+database:
 
 ```sh
-cd e2e && npm test
+cd e2e && cargo test --test e2e
 ```
+
+A local Chrome or Chromium is the only prerequisite — the driver is downloaded
+and supervised for you, but the browser is not
+(`brew install --cask ungoogled-chromium` on macOS).
 
 ### Regenerating the screenshots and the app icon
 
 The images in `docs/screenshots/` come from a repeatable pipeline: it wipes a
 throwaway SQLite database, creates the first admin through the product's own
-`/setup` form, seeds backdated demo history with the `sqlite3` CLI, boots
-`pingward` on a throwaway port, and re-captures every framed shot with
-Playwright. Re-run it after a UI change and commit the updated PNGs:
+`/setup` form, seeds backdated demo history, boots `pingward` on a throwaway
+port, and re-captures every framed shot. Re-run it after a UI change and commit
+the updated PNGs:
 
 ~~~sh
-cargo build                                  # the UI is compiled into the binary
-cd e2e
-npm ci && npx playwright install chromium    # first time only
-npm run screenshots
+cargo build            # the UI is compiled into the binary
+cd e2e && cargo run --bin screenshots
 ~~~
 
-`assets/apple-touch-icon.png` is rendered from `assets/favicon.svg` by the same
-Chromium. Re-run it after editing the SVG:
+`assets/apple-touch-icon.png` is rendered from `assets/favicon.svg` with resvg,
+which needs no browser at all. Re-run it after editing the SVG:
 
 ~~~sh
-cd e2e && npm run icons
+cd e2e && cargo run --bin icons
 ~~~
 
 ## License

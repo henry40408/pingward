@@ -1,8 +1,7 @@
 /target
-/e2e/node_modules
-/e2e/test-results
-/e2e/playwright-report
-/e2e/.features-gen
+# The whole browser E2E sub-project: its own workspace, its own target/, and
+# nothing the image needs.
+/e2e
 **/*.sqlite3
 **/*.sqlite3-*
 .git

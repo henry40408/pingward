@@ -149,50 +149,50 @@ jobs:
           fail_ci_if_error: ${{ github.actor != 'dependabot[bot]' }}
 
   e2e-tests:
-    name: e2e (playwright)
+    name: e2e (cucumber)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Its own key, and both workspaces named: `e2e/` is deliberately outside
+      # the root workspace, so its artefacts live in `e2e/target` and would
+      # otherwise be invisible to the cache — and sharing a key with the
+      # unit-test job would have the two evict each other.
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: e2e
+          workspaces: |
+            .
+            e2e
 
+      # The suite spawns this binary once per scenario; without this step the
+      # first scenario would build it while the rest waited.
       - name: Build pingward
         run: cargo build
 
-      - name: Set up Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: e2e/package-lock.json
-
-      - name: Install npm dependencies
-        working-directory: e2e
-        run: npm ci
-
-      - name: Cache Playwright browsers
+      # thirtyfour's driver manager downloads and supervises a matching
+      # chromedriver itself, so nothing is installed here — but it downloads
+      # only the *driver*. The browser is the runner image's own Google Chrome.
+      - name: Cache chromedriver
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+          path: ~/.cache/thirtyfour/drivers
+          key: thirtyfour-drivers-${{ runner.os }}-${{ hashFiles('e2e/Cargo.lock') }}
+          restore-keys: thirtyfour-drivers-${{ runner.os }}-
 
-      - name: Install Chromium
+      # The root job's `--all` and `--all-targets` stop at the workspace
+      # boundary, so the E2E crate's own lint set is only enforced here.
+      - name: Check formatting
         working-directory: e2e
-        run: npx playwright install --with-deps chromium
+        run: cargo fmt --all --check
 
+      - name: Clippy
+        working-directory: e2e
+        run: cargo clippy --all-targets -- -D warnings
+
+      # No sharding: cucumber runs the scenarios concurrently in one process,
+      # sized to the runner's cores.
       - name: Run E2E tests
         working-directory: e2e
-        run: npx bddgen && npx playwright test --shard=${{ matrix.shard }}/2
-
-      - name: Upload Playwright report
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: playwright-report-shard-${{ matrix.shard }}
-          path: e2e/playwright-report/
-          retention-days: 7
+        run: cargo test --test e2e

@@ -1,8 +1,10 @@
+@nojs
 Feature: The UI with JavaScript switched off
 
-  Runs in the `no-js` project (playwright.config.js), the only context in the
-  suite with scripting disabled. Everything the rest of the suite exercises is
-  seen through a browser running `app.js`, which makes it structurally blind to
+  The `@nojs` tag is what opens this file's sessions with scripting disabled
+  (`Emulation.setScriptExecutionDisabled`), and it is the only context in the
+  suite that runs that way. Everything the rest of the suite exercises is seen
+  through a browser running `app.js`, which makes it structurally blind to
   anything the UI has quietly started depending on script for.
 
   The rule these scenarios encode: `app.js` may make the UI nicer, never
