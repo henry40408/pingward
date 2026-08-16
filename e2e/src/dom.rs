@@ -924,7 +924,10 @@ impl Dom for WebDriver {
             .map(|value| value.as_f64().unwrap_or_default())
             .collect::<Vec<_>>();
         let [x, y, width, height] = values[..] else {
-            bail!("the rect probe returned {} values, expected 4", values.len());
+            bail!(
+                "the rect probe returned {} values, expected 4",
+                values.len()
+            );
         };
         Ok((x, y, width, height))
     }

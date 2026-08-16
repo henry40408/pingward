@@ -15,7 +15,10 @@ use thirtyfour::WebElement;
 /// selectors unambiguous even when a username collides with another row's
 /// role-pill text ("member").
 async fn user_row(world: &PingwardWorld, username: &str) -> Result<WebElement> {
-    world.driver()?.test_id(&format!("user-row-{username}")).await
+    world
+        .driver()?
+        .test_id(&format!("user-row-{username}"))
+        .await
 }
 
 /// An element's tag name.
@@ -77,7 +80,10 @@ async fn submit_row_action(
         let status = world
             .post_form_as_user(&format!("{base}/{action}"), &[("_csrf", csrf.as_str())])
             .await?;
-        ensure!(status == 303, "the self-targeted {action} answered {status}");
+        ensure!(
+            status == 303,
+            "the self-targeted {action} answered {status}"
+        );
         world.goto("/admin").await?;
         return Ok(());
     }
@@ -89,7 +95,7 @@ async fn submit_row_action(
 
 /// Fills the "Add user" form and submits it.
 ///
-/// With `admin` set the is_admin checkbox is ticked, so the created account is
+/// With `admin` set the `is_admin` checkbox is ticked, so the created account is
 /// an admin. The new row's visibility is awaited, so the step only returns once
 /// the user has actually rendered.
 async fn add_user(
@@ -270,11 +276,7 @@ async fn user_not_listed(world: &mut PingwardWorld, username: String) -> Result<
 }
 
 #[when(expr = "I try to add a user {string} with password {string}")]
-async fn try_add_user(
-    world: &mut PingwardWorld,
-    username: String,
-    password: String,
-) -> Result<()> {
+async fn try_add_user(world: &mut PingwardWorld, username: String, password: String) -> Result<()> {
     // Unlike `add_user`, this expects the submission to be *refused*: the
     // handler re-renders `/admin` with an error instead of redirecting, so no
     // new row is expected.
@@ -286,7 +288,10 @@ async fn try_add_user(
 
 #[then(expr = "the user form shows the error {string}")]
 async fn user_form_error(world: &mut PingwardWorld, message: String) -> Result<()> {
-    world.driver()?.expect_exact_text("user-error", &message).await
+    world
+        .driver()?
+        .expect_exact_text("user-error", &message)
+        .await
 }
 
 #[when(expr = "I try to grant admin to {string}")]

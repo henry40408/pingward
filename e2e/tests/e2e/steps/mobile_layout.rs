@@ -34,6 +34,18 @@ fn number(value: &serde_json::Value, field: &str) -> f64 {
         .unwrap_or_default()
 }
 
+/// Reads a whole number out of a probe's result object.
+///
+/// Line-box counts and rect counts are integers, and comparing them as floats
+/// would be an equality test on a `f64` — accurate here, but the kind of thing
+/// that stops being accurate the moment somebody divides by something.
+fn count(value: &serde_json::Value, field: &str) -> u64 {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default()
+}
+
 /// Reads a string out of a probe's result object.
 fn text(value: &serde_json::Value, field: &str) -> String {
     value
@@ -126,9 +138,9 @@ async fn environment_rows_do_not_wrap(world: &mut PingwardWorld) -> Result<()> {
                };"#,
         )
         .await?;
-    let lines = number(&measured, "valueLines");
+    let lines = count(&measured, "valueLines");
     ensure!(
-        lines == 1.0,
+        lines == 1,
         "the DATABASE_URL value spans {lines} lines — it is wrapping"
     );
     let (height, id) = (
@@ -263,16 +275,10 @@ async fn heartbeat_legend_below_captions(world: &mut PingwardWorld) -> Result<()
         .cloned()
         .unwrap_or_default()
     {
-        let (caption, lines) = (text(&edge, "text"), number(&edge, "lines"));
-        ensure!(
-            lines == 1.0,
-            "{caption:?} spans {lines} lines — it wrapped"
-        );
+        let (caption, lines) = (text(&edge, "text"), count(&edge, "lines"));
+        ensure!(lines == 1, "{caption:?} spans {lines} lines — it wrapped");
     }
-    let (key_top, edge_bottom) = (
-        number(&measured, "keyTop"),
-        number(&measured, "edgeBottom"),
-    );
+    let (key_top, edge_bottom) = (number(&measured, "keyTop"), number(&measured, "edgeBottom"));
     ensure!(
         key_top >= edge_bottom,
         "the legend starts at y={key_top}, above the edge captions' bottom edge \
@@ -357,10 +363,10 @@ async fn group_header_labels_unwrapped(world: &mut PingwardWorld) -> Result<()> 
         "the description is not being truncated, so the header is not under width pressure \
          and the checks below prove nothing"
     );
-    let count = number(&measured, "count");
-    ensure!(count == 1.0, "\"N checks\" spans {count} lines — it wrapped");
-    let link = number(&measured, "link");
-    ensure!(link == 1.0, "\"Manage →\" spans {link} lines — it wrapped");
+    let lines = count(&measured, "count");
+    ensure!(lines == 1, "\"N checks\" spans {lines} lines — it wrapped");
+    let link = count(&measured, "link");
+    ensure!(link == 1, "\"Manage →\" spans {link} lines — it wrapped");
     // Pinning the labels must not be paid for out of the project name: the
     // description shrinks to nothing before the name gives up a character.
     ensure!(
@@ -418,12 +424,12 @@ async fn name_stays_beside_chip(world: &mut PingwardWorld, chip: String) -> Resu
         "the {chip:?} chip is in the DOM but has no box — it is still display:none at this width"
     );
     let (lines, rects, name) = (
-        number(&measured, "lines"),
-        number(&measured, "rects"),
+        count(&measured, "lines"),
+        count(&measured, "rects"),
         text(&measured, "name"),
     );
     ensure!(
-        lines == 1.0,
+        lines == 1,
         "the check name {name:?} spans {lines} lines ({rects} client rects) — \
          the chip squeezed .cmeta until it wrapped"
     );

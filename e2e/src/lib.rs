@@ -34,8 +34,7 @@ pub fn unescape(value: &str) -> String {
             continue;
         }
         match chars.next() {
-            Some('"') => out.push('"'),
-            Some('\\') => out.push('\\'),
+            Some(escaped @ ('"' | '\\')) => out.push(escaped),
             Some(other) => {
                 out.push('\\');
                 out.push(other);

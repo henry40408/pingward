@@ -46,7 +46,10 @@ async fn captured_output_displayed(
 ) -> Result<()> {
     let driver = world.driver()?;
     pingward_e2e::wait::eventually(
-        &format!("the captured output is {}", if expected { "shown" } else { "hidden" }),
+        &format!(
+            "the captured output is {}",
+            if expected { "shown" } else { "hidden" }
+        ),
         || async {
             for panel in driver.css_with_text("#pings-section .out", output).await? {
                 if panel.is_displayed().await.unwrap_or(false) == expected {
@@ -162,14 +165,20 @@ async fn background_luminance(world: &PingwardWorld) -> Result<f64> {
 #[then("the page background is light")]
 async fn background_is_light(world: &mut PingwardWorld) -> Result<()> {
     let luminance = background_luminance(world).await?;
-    ensure!(luminance > 0.5, "the background's luminance is {luminance:.3}");
+    ensure!(
+        luminance > 0.5,
+        "the background's luminance is {luminance:.3}"
+    );
     Ok(())
 }
 
 #[then("the page background is dark")]
 async fn background_is_dark(world: &mut PingwardWorld) -> Result<()> {
     let luminance = background_luminance(world).await?;
-    ensure!(luminance < 0.5, "the background's luminance is {luminance:.3}");
+    ensure!(
+        luminance < 0.5,
+        "the background's luminance is {luminance:.3}"
+    );
     Ok(())
 }
 

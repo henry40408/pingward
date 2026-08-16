@@ -291,7 +291,10 @@ async fn capture_with(browser: &mut Browser, base: &str, out: &Path) -> Result<(
             )
             .await?;
         driver
-            .execute_async("const done = arguments[0]; document.fonts.ready.then(() => done(true));", vec![])
+            .execute_async(
+                "const done = arguments[0]; document.fonts.ready.then(() => done(true));",
+                vec![],
+            )
             .await?;
 
         let clip = frame_clip(&driver, shot).await?;
@@ -373,13 +376,17 @@ async fn settle(driver: &WebDriver, settle: Settle) -> Result<()> {
         Settle::AuditExpanded => {
             driver.expect_visible("audit-row").await?;
             driver.click_css("#audit-section tr.toggle").await?;
-            driver.expect_visible_css("#audit-section tr.exp .out").await
+            driver
+                .expect_visible_css("#audit-section tr.exp .out")
+                .await
         }
     }
 }
 
 async fn open_down_check(driver: &WebDriver) -> Result<()> {
-    driver.expect_exact_text_somewhere("home-nas-snapshot").await?;
+    driver
+        .expect_exact_text_somewhere("home-nas-snapshot")
+        .await?;
     let link = driver
         .link_named("home-nas-snapshot")
         .await?
@@ -460,7 +467,10 @@ async fn region_box(driver: &WebDriver, region: Region) -> Result<(f64, f64, f64
         .map(|value| value.as_f64().unwrap_or_default())
         .collect();
     let [x, y, width, height] = values[..] else {
-        bail!("the rect probe returned {} values, expected 4", values.len());
+        bail!(
+            "the rect probe returned {} values, expected 4",
+            values.len()
+        );
     };
     Ok((x, y, width, height))
 }
@@ -550,7 +560,10 @@ async fn start_pingward(db: &Path, port: u16, base: &str) -> Result<Child> {
     }
     let child = Command::new(&binary)
         .current_dir(repo_root())
-        .env("DATABASE_URL", format!("sqlite://{}?mode=rwc", db.display()))
+        .env(
+            "DATABASE_URL",
+            format!("sqlite://{}?mode=rwc", db.display()),
+        )
         .env("PINGWARD_BIND", format!("127.0.0.1:{port}"))
         // The rendered ping URLs come from this, not from the bind address.
         .env("PINGWARD_BASE_URL", PUBLIC_BASE_URL)

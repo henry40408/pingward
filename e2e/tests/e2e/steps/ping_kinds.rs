@@ -11,10 +11,7 @@ use pingward_e2e::world::PingwardWorld;
 #[when(expr = "I send an exit code {int} ping")]
 async fn send_exit_code_ping(world: &mut PingwardWorld, code: i32) -> Result<()> {
     let ping_url = read_ping_url(world).await?;
-    world
-        .api()?
-        .ping(&ping_url, PingKind::ExitCode(code))
-        .await
+    world.api()?.ping(&ping_url, PingKind::ExitCode(code)).await
 }
 
 #[when(expr = "I send a {string} ping with body {string}")]
@@ -40,8 +37,9 @@ async fn ping_unknown_uuid(world: &mut PingwardWorld) -> Result<()> {
     Ok(())
 }
 
+// Reads what an earlier step recorded, so there is nothing to await.
 #[then(expr = "the ping response status is {int}")]
-async fn ping_response_status(world: &mut PingwardWorld, status: u16) -> Result<()> {
+fn ping_response_status(world: &mut PingwardWorld, status: u16) -> Result<()> {
     let seen = world
         .ping_status
         .ok_or_else(|| anyhow::anyhow!("no step recorded a ping response"))?;

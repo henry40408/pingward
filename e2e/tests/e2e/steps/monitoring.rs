@@ -95,7 +95,10 @@ async fn visit_project_page(world: &mut PingwardWorld, project: String) -> Resul
 
 #[then(expr = "the check status is {string}")]
 async fn check_status_is(world: &mut PingwardWorld, status: String) -> Result<()> {
-    world.driver()?.expect_exact_text("check-status", &status).await
+    world
+        .driver()?
+        .expect_exact_text("check-status", &status)
+        .await
 }
 
 #[then(expr = "the check status is not {string}")]
@@ -121,7 +124,10 @@ async fn send_ping(world: &mut PingwardWorld, kind: String) -> Result<()> {
     // The page's rendered URL points at this scenario's server, because the
     // harness sets PINGWARD_BASE_URL to it.
     let ping_url = read_ping_url(world).await?;
-    world.api()?.ping(&ping_url, PingKind::parse(&kind)?).await?;
+    world
+        .api()?
+        .ping(&ping_url, PingKind::parse(&kind)?)
+        .await?;
     world.ping_url = Some(ping_url);
     Ok(())
 }
@@ -157,7 +163,10 @@ async fn resume(world: &mut PingwardWorld) -> Result<()> {
 #[when("I regenerate the ping URL")]
 async fn regenerate_ping_url(world: &mut PingwardWorld) -> Result<()> {
     let before = read_ping_url(world).await?;
-    world.driver()?.confirm_and_submit("regenerate-button").await?;
+    world
+        .driver()?
+        .confirm_and_submit("regenerate-button")
+        .await?;
     // Regenerating mints a *new* credential, and the redirect back lands on a
     // fresh render — so on the admin route it is withheld again until asked
     // for, which is the point: taking the new URL is its own disclosure.
@@ -223,7 +232,9 @@ async fn filter_dashboard(world: &mut PingwardWorld, term: String) -> Result<()>
 async fn filter_dashboard_by_status(world: &mut PingwardWorld, label: String) -> Result<()> {
     world.goto("/").await?;
     let driver = world.driver()?;
-    driver.select_label("dashboard-status-filter", &label).await?;
+    driver
+        .select_label("dashboard-status-filter", &label)
+        .await?;
     driver.submit("dashboard-filter-submit").await?;
     // Asserting the URL carries the canonical `status=` value proves the
     // select round-tripped through the server.
@@ -242,7 +253,9 @@ async fn clear_dashboard_filter(world: &mut PingwardWorld) -> Result<()> {
 async fn click_dashboard_row(world: &mut PingwardWorld, name: String) -> Result<()> {
     world.goto("/").await?;
     let driver = world.driver()?;
-    let rows = driver.test_ids_with_text("dashboard-check-row", &name).await?;
+    let rows = driver
+        .test_ids_with_text("dashboard-check-row", &name)
+        .await?;
     let row = rows
         .first()
         .ok_or_else(|| anyhow::anyhow!("no dashboard row for {name:?}"))?;

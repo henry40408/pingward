@@ -52,8 +52,9 @@ async fn navigate_to(world: &mut PingwardWorld, path: String) -> Result<()> {
     Ok(())
 }
 
+// Reads what an earlier step recorded, so there is nothing to await.
 #[then(expr = "the response status is {int}")]
-async fn response_status(world: &mut PingwardWorld, status: u16) -> Result<()> {
+fn response_status(world: &mut PingwardWorld, status: u16) -> Result<()> {
     let seen = world
         .status
         .ok_or_else(|| anyhow::anyhow!("no step recorded a response status"))?;

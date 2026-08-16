@@ -54,7 +54,10 @@ impl Options {
         if tagged("smtp-env") {
             options.extra_env.extend([
                 ("PINGWARD_SMTP_HOST".to_owned(), "smtp.e2e.test".to_owned()),
-                ("PINGWARD_SMTP_FROM".to_owned(), "alerts@e2e.test".to_owned()),
+                (
+                    "PINGWARD_SMTP_FROM".to_owned(),
+                    "alerts@e2e.test".to_owned(),
+                ),
                 (
                     "PINGWARD_SMTP_PASSWORD".to_owned(),
                     "e2e-secret-password".to_owned(),

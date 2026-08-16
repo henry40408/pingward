@@ -81,7 +81,10 @@ async fn check_name_is(world: &mut PingwardWorld, name: String) -> Result<()> {
 async fn timezone_field_shows(world: &mut PingwardWorld, timezone: String) -> Result<()> {
     // The check page has no timezone display, so persistence is verified by
     // reopening the edit form and reading the pre-filled value back out.
-    world.driver()?.expect_value_css("#timezone", &timezone).await
+    world
+        .driver()?
+        .expect_value_css("#timezone", &timezone)
+        .await
 }
 
 #[then(expr = "the check period field shows {string}")]
@@ -129,7 +132,10 @@ async fn description_bold(world: &PingwardWorld, id: &str, text: &str) -> Result
         .await?
         .ok_or_else(|| anyhow::anyhow!("`{id}` rendered no <strong>"))?;
     let rendered = strong.normalized_text().await?;
-    ensure!(rendered == text, "the bold run reads {rendered:?}, not {text:?}");
+    ensure!(
+        rendered == text,
+        "the bold run reads {rendered:?}, not {text:?}"
+    );
     Ok(())
 }
 
@@ -141,9 +147,7 @@ async fn truncated_description(world: &mut PingwardWorld) -> Result<()> {
     // the whole description simply fitting.
     let driver = world.driver()?;
     driver.expect_visible("check-description-summary").await?;
-    driver
-        .expect_text("check-description-summary", "…")
-        .await?;
+    driver.expect_text("check-description-summary", "…").await?;
     let summary = driver.text_of("check-description-summary").await?;
     ensure!(
         !summary.contains("**"),

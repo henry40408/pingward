@@ -53,13 +53,22 @@ impl Mulberry32 {
         self.0 = self.0.wrapping_add(0x6d2b_79f5);
         let seed = self.0;
         let mut t = (seed ^ (seed >> 15)).wrapping_mul(1 | seed);
-        t = (t.wrapping_add((t ^ (t >> 7)).wrapping_mul(61 | t))) ^ t;
+        t = (t.wrapping_add((t ^ (t >> 7)).wrapping_mul(0x3d | t))) ^ t;
         f64::from(t ^ (t >> 14)) / 4_294_967_296.0
     }
 
     /// A value in `[low, high)`.
     fn range(&mut self, low: f64, high: f64) -> f64 {
         low + (high - low) * self.next()
+    }
+
+    /// An index into a slice of `len` elements, `Math.floor(rand() * len)`.
+    fn index(&mut self, len: usize) -> usize {
+        // `next()` is in `[0, 1)`, so the product is non-negative and below
+        // `len`; the modulo only guards the rounding edge at 0.999…
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let raw = (self.next() * len as f64) as usize;
+        raw % len
     }
 }
 
@@ -144,7 +153,9 @@ fn field_matches(spec: &str, value: u32) -> bool {
             return true;
         }
         if let Some(step) = part.strip_prefix("*/") {
-            return step.parse::<u32>().is_ok_and(|step| step != 0 && value % step == 0);
+            return step
+                .parse::<u32>()
+                .is_ok_and(|step| step != 0 && value.is_multiple_of(step));
         }
         part.parse::<u32>() == Ok(value)
     })
@@ -478,6 +489,31 @@ const FAIL_BODIES: [&str; 3] = [
 
 const SOURCE_IPS: [&str; 3] = ["10.4.2.15", "10.4.2.31", "192.168.20.8"];
 
+/// One seeded delivery record. The two id fields hold the `SELECT` sub-queries
+/// that resolve the check and channel by name, since the seed never sees the
+/// ids the database assigns.
+struct Notification {
+    check: String,
+    channel: String,
+    event: &'static str,
+    status: &'static str,
+    error: Option<&'static str>,
+    at: f64,
+}
+
+/// One seeded audit entry.
+struct Audit {
+    actor: &'static str,
+    action: &'static str,
+    target_type: &'static str,
+    target_id: i64,
+    method: &'static str,
+    path: &'static str,
+    detail: Option<&'static str>,
+    /// How long before now it was written, in seconds.
+    ago: f64,
+}
+
 /// 34 runs, oldest first: enough to fill the heartbeat strip.
 const RUNS: i64 = 34;
 
@@ -505,21 +541,13 @@ fn last_finish_offset(check: &Check, rand: &mut Mulberry32) -> f64 {
 /// The URLs are rendered verbatim on the check page, so a fresh random one per
 /// run would make otherwise identical screenshots differ.
 fn uuid_for(rand: &mut Mulberry32) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut hex = |count: usize| -> String {
         (0..count)
-            .map(|_| {
-                b"0123456789abcdef"[(rand.next() * 16.0) as usize % 16] as char
-            })
+            .map(|_| DIGITS[rand.index(DIGITS.len())] as char)
             .collect()
     };
-    format!(
-        "{}-{}-4{}-a{}-{}",
-        hex(8),
-        hex(4),
-        hex(3),
-        hex(3),
-        hex(12)
-    )
+    format!("{}-{}-4{}-a{}-{}", hex(8), hex(4), hex(3), hex(3), hex(12))
 }
 
 fn ping_sql(check: &str, kind: &str, at_ms: f64, body: &str, ip: &str) -> String {
@@ -619,7 +647,7 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
     // Ping ids are assigned in insertion order; the heartbeat pairs each finish
     // with the preceding `start` by timestamp, so inserting each check's runs
     // oldest-first is enough.
-    let mut notifications: Vec<(String, String, &str, &str, Option<&str>, f64)> = Vec::new();
+    let mut notifications: Vec<Notification> = Vec::new();
 
     for check in &CHECKS {
         let tz: Tz = check
@@ -648,7 +676,7 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
         // `running` is a display status: an in-flight `start` newer than the
         // last finish, kept well inside max_runtime so the scan loop does not
         // down it.
-        let running_start = (check.state == State::Running).then(|| now - 6.0 * 60.0 * 1000.0);
+        let running_start = (check.state == State::Running).then_some(now - 6.0 * 60.0 * 1000.0);
         let last_start = running_start.unwrap_or(finish_at - 60.0 * 1000.0);
 
         stmts.push(format!(
@@ -660,7 +688,11 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
             qs(check.name),
             qs(check.description),
             qs(&uuid_for(&mut rand)),
-            qs(if check.cron.is_some() { "cron" } else { "period" }),
+            qs(if check.cron.is_some() {
+                "cron"
+            } else {
+                "period"
+            }),
             num(period),
             check.grace,
             q(check.cron),
@@ -702,14 +734,14 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
                 duration = max_runtime as f64 * (0.82 + 0.1 * rand.next());
             }
             let start = end - duration * 1000.0;
-            let ip = SOURCE_IPS[(rand.next() * SOURCE_IPS.len() as f64) as usize % SOURCE_IPS.len()];
+            let ip = SOURCE_IPS[rand.index(SOURCE_IPS.len())];
             stmts.push(ping_sql(&check_sql, "start", start, "", ip));
             stmts.push(ping_sql(
                 &check_sql,
                 if failed { "fail" } else { "success" },
                 end,
                 if failed {
-                    FAIL_BODIES[(index as usize) % FAIL_BODIES.len()]
+                    FAIL_BODIES[usize::try_from(index).unwrap_or_default() % FAIL_BODIES.len()]
                 } else {
                     ""
                 },
@@ -717,7 +749,13 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
             ));
         }
         if let Some(running_start) = running_start {
-            stmts.push(ping_sql(&check_sql, "start", running_start, "", SOURCE_IPS[0]));
+            stmts.push(ping_sql(
+                &check_sql,
+                "start",
+                running_start,
+                "",
+                SOURCE_IPS[0],
+            ));
         }
 
         // Notification history: the down check's alert chain, and one earlier
@@ -737,44 +775,40 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
                 ("reminder", "oncall-pushover", "ok", None, 32.0 * 60.0),
             ];
             for (event, channel, status, error, ago) in chain {
-                notifications.push((
-                    check_sql.clone(),
-                    channel_sql(channel)?,
+                notifications.push(Notification {
+                    check: check_sql.clone(),
+                    channel: channel_sql(channel)?,
                     event,
                     status,
                     error,
-                    now - ago * 1000.0,
-                ));
+                    at: now - ago * 1000.0,
+                });
             }
         }
         if check.key == "s3-sync" {
-            notifications.push((
-                check_sql.clone(),
-                channel_sql("ops-slack")?,
-                "down",
-                "ok",
-                None,
-                now - 26.0 * HOUR as f64 * 1000.0,
-            ));
-            notifications.push((
-                check_sql.clone(),
-                channel_sql("ops-slack")?,
-                "up",
-                "ok",
-                None,
-                now - 25.4 * HOUR as f64 * 1000.0,
-            ));
+            for (event, ago) in [("down", 26.0), ("up", 25.4)] {
+                notifications.push(Notification {
+                    check: check_sql.clone(),
+                    channel: channel_sql("ops-slack")?,
+                    event,
+                    status: "ok",
+                    error: None,
+                    at: now - ago * HOUR as f64 * 1000.0,
+                });
+            }
         }
     }
 
-    for (check, channel, event, status, error, at) in notifications {
+    for notification in notifications {
         stmts.push(format!(
             "INSERT INTO notifications (check_id, channel_id, event, status, error, created_at)\n  \
-             VALUES ({check}, {channel}, {}, {}, {}, {});",
-            qs(event),
-            qs(status),
-            q(error),
-            qs(&iso(at)),
+             VALUES ({}, {}, {}, {}, {}, {});",
+            notification.check,
+            notification.channel,
+            qs(notification.event),
+            qs(notification.status),
+            q(notification.error),
+            qs(&iso(notification.at)),
         ));
     }
 
@@ -788,59 +822,69 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
     // Oldest first: the table pages by `id` (monotonic, index-backed), which
     // only reads as newest-first because real inserts arrive in time order.
     // Seeding out of order would put the ids and the timestamps at odds.
-    let audits: [(&str, &str, &str, i64, &str, &str, Option<&str>, f64); 5] = [
-        (
-            "demo",
-            "user.create",
-            "user",
-            3,
-            "POST",
-            "/admin/users",
-            Some("username=sam is_admin=false"),
-            30.0 * DAY as f64,
-        ),
-        (
-            "demo",
-            "user.set_admin",
-            "user",
-            2,
-            "POST",
-            "/admin/users/2/admin",
-            Some("is_admin=true"),
-            26.0 * DAY as f64,
-        ),
-        (
-            "maya",
-            "user.password_reset",
-            "user",
-            3,
-            "POST",
-            "/admin/users/3/password",
-            None,
-            6.0 * DAY as f64,
-        ),
-        (
-            "maya",
-            "admin.access",
-            "project",
-            1,
-            "GET",
-            "/admin/projects/1",
-            None,
-            2.5 * HOUR as f64,
-        ),
-        (
-            "maya",
-            "admin.access",
-            "check",
-            3,
-            "GET",
-            "/admin/checks/3",
-            None,
-            2.4 * HOUR as f64,
-        ),
+    let audits: [Audit; 5] = [
+        Audit {
+            actor: "demo",
+            action: "user.create",
+            target_type: "user",
+            target_id: 3,
+            method: "POST",
+            path: "/admin/users",
+            detail: Some("username=sam is_admin=false"),
+            ago: 30.0 * DAY as f64,
+        },
+        Audit {
+            actor: "demo",
+            action: "user.set_admin",
+            target_type: "user",
+            target_id: 2,
+            method: "POST",
+            path: "/admin/users/2/admin",
+            detail: Some("is_admin=true"),
+            ago: 26.0 * DAY as f64,
+        },
+        Audit {
+            actor: "maya",
+            action: "user.password_reset",
+            target_type: "user",
+            target_id: 3,
+            method: "POST",
+            path: "/admin/users/3/password",
+            detail: None,
+            ago: 6.0 * DAY as f64,
+        },
+        Audit {
+            actor: "maya",
+            action: "admin.access",
+            target_type: "project",
+            target_id: 1,
+            method: "GET",
+            path: "/admin/projects/1",
+            detail: None,
+            ago: 2.5 * HOUR as f64,
+        },
+        Audit {
+            actor: "maya",
+            action: "admin.access",
+            target_type: "check",
+            target_id: 3,
+            method: "GET",
+            path: "/admin/checks/3",
+            detail: None,
+            ago: 2.4 * HOUR as f64,
+        },
     ];
-    for (actor, action, target_type, target_id, method, path, detail, ago) in audits {
+    for Audit {
+        actor,
+        action,
+        target_type,
+        target_id,
+        method,
+        path,
+        detail,
+        ago,
+    } in audits
+    {
         stmts.push(format!(
             "INSERT INTO audit_log (actor_user_id, actor_username, action, target_type, \
              target_id, target_owner_id, method, path, detail, created_at)\n  \

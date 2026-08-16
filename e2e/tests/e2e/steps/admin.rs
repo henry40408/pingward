@@ -279,7 +279,10 @@ async fn audit_has_rows(world: &mut PingwardWorld, count: usize) -> Result<()> {
 async fn audit_shows_entry(world: &mut PingwardWorld, action: String) -> Result<()> {
     let driver = world.driver()?;
     pingward_e2e::wait::eventually(&format!("an `{action}` audit entry"), || async {
-        Ok(!driver.test_ids_with_text("audit-row", &action).await?.is_empty())
+        Ok(!driver
+            .test_ids_with_text("audit-row", &action)
+            .await?
+            .is_empty())
     })
     .await
 }

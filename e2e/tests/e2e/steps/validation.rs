@@ -43,7 +43,10 @@ async fn project_form_error(world: &mut PingwardWorld, message: String) -> Resul
 
 #[then(expr = "the project name field shows {string}")]
 async fn project_name_shows(world: &mut PingwardWorld, name: String) -> Result<()> {
-    world.driver()?.expect_value("project-name-input", &name).await
+    world
+        .driver()?
+        .expect_value("project-name-input", &name)
+        .await
 }
 
 #[when(expr = "I fill the check max runtime with {string}")]

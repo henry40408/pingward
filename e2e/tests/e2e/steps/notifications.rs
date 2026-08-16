@@ -82,11 +82,7 @@ async fn bind_checkbox(world: &PingwardWorld, name: &str) -> Result<WebElement> 
 // `Given I create a webhook channel …`.
 #[given(expr = "I create a {word} channel named {string}")]
 #[when(expr = "I create a {word} channel named {string}")]
-async fn create_named_channel(
-    world: &mut PingwardWorld,
-    kind: String,
-    name: String,
-) -> Result<()> {
+async fn create_named_channel(world: &mut PingwardWorld, kind: String, name: String) -> Result<()> {
     create_channel(world, &kind, &name, None).await
 }
 
@@ -237,7 +233,9 @@ async fn kind_is_static(world: &mut PingwardWorld, kind: String) -> Result<()> {
     // The kind is immutable on edit, so it renders as static text and the
     // create form's `<select>` is absent entirely.
     let driver = world.driver()?;
-    driver.expect_exact_text("channel-kind-static", &kind).await?;
+    driver
+        .expect_exact_text("channel-kind-static", &kind)
+        .await?;
     driver.expect_count("#kind", 0).await
 }
 
@@ -266,7 +264,10 @@ async fn channel_is_bound(world: &mut PingwardWorld, name: String) -> Result<()>
 
 #[then(expr = "a {string} confirmation is shown")]
 async fn confirmation_shown(world: &mut PingwardWorld, message: String) -> Result<()> {
-    world.driver()?.expect_exact_text("check-flash", &message).await
+    world
+        .driver()?
+        .expect_exact_text("check-flash", &message)
+        .await
 }
 
 #[then("the confirmation is gone after reloading")]
@@ -340,8 +341,8 @@ async fn payload_is_enriched(
         field("cause")
     );
     let url = field("url");
-    let links_check = regex::Regex::new(&format!(r"^{}/checks/\d+$", regex::escape(&base_url)))?
-        .is_match(&url);
+    let links_check =
+        regex::Regex::new(&format!(r"^{}/checks/\d+$", regex::escape(&base_url)))?.is_match(&url);
     ensure!(links_check, "the payload links {url:?}");
     ensure!(
         field("schedule") == "every 1h (grace 5m)",
@@ -419,15 +420,15 @@ async fn channel_state(world: &PingwardWorld, name: &str, on: bool) -> Result<()
 }
 
 #[then(expr = "the dashboard shows a {string} chip for the check {string}")]
-async fn dashboard_shows_chip(
-    world: &mut PingwardWorld,
-    chip: String,
-    name: String,
-) -> Result<()> {
+async fn dashboard_shows_chip(world: &mut PingwardWorld, chip: String, name: String) -> Result<()> {
     // The "no channel" chip renders only on a dashboard row for a check with
     // zero bound channels.
     let row = dashboard_row(world, &name).await?;
-    let rendered = row.test_id("check-no-channel").await?.normalized_text().await?;
+    let rendered = row
+        .test_id("check-no-channel")
+        .await?
+        .normalized_text()
+        .await?;
     ensure!(
         rendered == chip,
         "the check {name:?} has no bound channel, so its row must carry the {chip:?} chip; \
@@ -437,11 +438,7 @@ async fn dashboard_shows_chip(
 }
 
 #[then(expr = "the dashboard shows no {string} chip for the check {string}")]
-async fn dashboard_hides_chip(
-    world: &mut PingwardWorld,
-    chip: String,
-    name: String,
-) -> Result<()> {
+async fn dashboard_hides_chip(world: &mut PingwardWorld, chip: String, name: String) -> Result<()> {
     // `dashboard_row` failing is the non-vacuity guard: both assertions below
     // are trivially satisfied by a row that does not exist, so a scenario that
     // never created the check would otherwise pass.
