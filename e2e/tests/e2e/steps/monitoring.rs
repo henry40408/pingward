@@ -67,6 +67,7 @@ async fn create_check(world: &PingwardWorld, name: &str, period: i64) -> Result<
     world.expect_path_matching(CHECK_PATH).await
 }
 
+#[given(expr = "I create a check named {string} with period {int}")]
 #[when(expr = "I create a check named {string} with period {int}")]
 #[given(expr = "a check named {string} with period {int}")]
 async fn a_check_named(world: &mut PingwardWorld, name: String, period: i64) -> Result<()> {
