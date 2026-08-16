@@ -14,6 +14,8 @@ description = "Browser E2E tests, README screenshots and icon rendering for ping
 
 [dependencies]
 anyhow = "1.0.104"
+# CDP hands a captured screenshot back base64-encoded.
+base64 = "0.23"
 chrono = "0.4"
 chrono-tz = "0.10"
 cucumber = "0.23.0"
@@ -62,7 +64,12 @@ wiremock = "0.6"
 name = "e2e"
 harness = false
 
-# `cargo run --bin icons`, the old `npm run icons`.
+# `cargo run --bin screenshots` / `--bin icons`, the old `npm run screenshots`
+# and `npm run icons`.
+[[bin]]
+name = "screenshots"
+path = "src/bin/screenshots.rs"
+
 [[bin]]
 name = "icons"
 path = "src/bin/icons.rs"

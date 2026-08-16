@@ -7,6 +7,7 @@ pub mod api;
 pub mod browser;
 pub mod dom;
 pub mod mock;
+pub mod seed;
 pub mod server;
 pub mod wait;
 pub mod world;

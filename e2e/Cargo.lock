@@ -1856,6 +1856,7 @@ name = "pingward-e2e"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "chrono",
  "chrono-tz",
  "cucumber",
