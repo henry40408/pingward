@@ -17,13 +17,15 @@ pub struct SmtpConfig {
     pub tls: SmtpTls,
 }
 
-/// How log lines are formatted at startup. `Text` is the human-readable console
-/// format; `Json` emits one JSON object per line for ingestion by a log
-/// aggregator.
+/// How log lines are formatted at startup. `Full`, `Compact` and `Pretty` are
+/// the human-readable console renderers; `Json` emits one JSON object per line
+/// for ingestion by a log aggregator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogFormat {
     #[default]
-    Text,
+    Full,
+    Compact,
+    Pretty,
     Json,
 }
 
@@ -120,8 +122,11 @@ impl Config {
     pub fn from_map(get: impl Fn(&str) -> Option<String>) -> Self {
         let scan_interval_secs = env_duration_secs(get("PINGWARD_SCAN_INTERVAL"), 30);
         let prune_interval_secs = env_duration_secs(get("PINGWARD_PRUNE_INTERVAL_SECS"), 3600);
-        // Log format: only "json" (any case) switches to structured output; an
-        // unset or unrecognized value keeps the human-readable text format.
+        // Log format: "json" (any case) switches to structured output and
+        // "compact"/"pretty" pick the other two console renderers; an unset or
+        // unrecognized value keeps the default `full` one. Note that "text",
+        // this crate's former name for `full`, therefore still lands on the
+        // same renderer it always did.
         let log_format = match get("PINGWARD_LOG_FORMAT")
             .unwrap_or_default()
             .trim()
@@ -129,7 +134,9 @@ impl Config {
             .as_str()
         {
             "json" => LogFormat::Json,
-            _ => LogFormat::Text,
+            "compact" => LogFormat::Compact,
+            "pretty" => LogFormat::Pretty,
+            _ => LogFormat::Full,
         };
         let trusted_proxies = get("PINGWARD_TRUSTED_PROXIES")
             .map(|v| {
@@ -267,8 +274,29 @@ mod tests {
     }
 
     #[test]
-    fn log_format_defaults_to_text() {
-        assert_eq!(Config::from_map(|_| None).log_format, LogFormat::Text);
+    fn log_format_defaults_to_full() {
+        assert_eq!(Config::from_map(|_| None).log_format, LogFormat::Full);
+    }
+
+    #[test]
+    fn log_format_accepts_the_other_console_renderers() {
+        let c = Config::from_map(|k| (k == "PINGWARD_LOG_FORMAT").then(|| "compact".into()));
+        assert_eq!(c.log_format, LogFormat::Compact);
+        let c = Config::from_map(|k| (k == "PINGWARD_LOG_FORMAT").then(|| "  PRETTY  ".into()));
+        assert_eq!(c.log_format, LogFormat::Pretty);
+    }
+
+    /// `text` was this crate's name for what `tracing-subscriber` calls `full`,
+    /// and the two render identically. The name is retired from the docs, but
+    /// the value is not rejected: it falls through to the very renderer it used
+    /// to select, so an existing `PINGWARD_LOG_FORMAT=text` keeps producing
+    /// byte-identical output and needs no action. It was never a matched value
+    /// to begin with — the old parser recognised only `json` and sent
+    /// everything else, `text` included, down the same fallback arm.
+    #[test]
+    fn log_format_text_still_selects_the_renderer_it_named() {
+        let c = Config::from_map(|k| (k == "PINGWARD_LOG_FORMAT").then(|| "text".into()));
+        assert_eq!(c.log_format, LogFormat::Full);
     }
 
     #[test]
@@ -280,9 +308,9 @@ mod tests {
     }
 
     #[test]
-    fn log_format_unrecognized_falls_back_to_text() {
+    fn log_format_unrecognized_falls_back_to_full() {
         let c = Config::from_map(|k| (k == "PINGWARD_LOG_FORMAT").then(|| "yaml".into()));
-        assert_eq!(c.log_format, LogFormat::Text);
+        assert_eq!(c.log_format, LogFormat::Full);
     }
 
     #[test]

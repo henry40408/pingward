@@ -132,7 +132,8 @@ All configuration is via environment variables:
 | `PINGWARD_BASE_URL` | `http://localhost:8080` | Base URL used to render ping URLs in the UI. |
 | `PINGWARD_SCAN_INTERVAL` | `30s` | How often the scan loop re-evaluates checks. Accepts raw seconds or a duration (`5m`, `1h30m`). |
 | `PINGWARD_PRUNE_INTERVAL_SECS` | — | How often the prune loop runs. |
-| `PINGWARD_LOG_FORMAT` | `text` | Log renderer: `text` (human-readable) or `json` (one JSON object per line for a log aggregator). Verbosity is set with `RUST_LOG`. |
+| `PINGWARD_LOG_FORMAT` | `full` | Log renderer: `full`, `compact` or `pretty` (human-readable) or `json` (one JSON object per line for a log aggregator). Verbosity is set with `RUST_LOG`. |
+| `RUST_LOG` | `error,pingward=info` | Log level filter, e.g. `pingward=debug` or `info,pingward::session=warn`. When unset, pingward's own INFO events are visible while dependencies stay at ERROR. Filters on targets and levels only — not on spans or fields. |
 | `PINGWARD_TRUSTED_PROXIES` | — | Comma-separated addresses or CIDR blocks whose `X-Forwarded-For` (and forward-auth header) is believed. See below. |
 | `PINGWARD_FORWARD_AUTH_HEADER` | — | Header carrying a pre-authenticated username; honoured only from a trusted proxy. |
 | `PINGWARD_FORWARD_AUTH_LOGOUT_URL` | — | Where **Log out** sends the browser. Point it at your gateway's sign-out endpoint so signing out ends the SSO session too. Unset means `/login`. |
@@ -143,7 +144,7 @@ All configuration is via environment variables:
 
 Session creation, renewal and destruction are logged as `pingward::session`
 events (timestamp, a truncated hash of the session — never the raw id —
-source IP, user agent) and are visible at the **default** `info` filter. To
+source IP, user agent) and are visible at the **default** `error,pingward=info` filter. To
 keep those but quiet everything else down, or vice versa, scope `RUST_LOG` to
 the target, e.g. `RUST_LOG=info,pingward::session=warn` silences them without
 touching the rest of the `info` output.

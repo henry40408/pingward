@@ -5718,7 +5718,9 @@ enum EnvValue {
 /// running, not just what's documented as a default.
 fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSetting>)> {
     let log_format = match config.log_format {
-        crate::config::LogFormat::Text => "text",
+        crate::config::LogFormat::Full => "full",
+        crate::config::LogFormat::Compact => "compact",
+        crate::config::LogFormat::Pretty => "pretty",
         crate::config::LogFormat::Json => "json",
     };
     let server = vec![
@@ -5743,8 +5745,8 @@ fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSet
         EnvSetting {
             var: "PINGWARD_LOG_FORMAT",
             value: EnvValue::Set(log_format.to_string()),
-            default: "text",
-            description: "Log line format (text or json); applied at process startup — changing it requires a restart.",
+            default: "full",
+            description: "Log line format (full, compact, pretty or json); applied at process startup — changing it requires a restart.",
         },
         EnvSetting {
             var: "PINGWARD_HSTS_MAX_AGE",

@@ -16,6 +16,10 @@ use pingward::{
     store::Store,
 };
 use std::time::Duration;
+use tracing_subscriber::{
+    Layer as _, Registry, filter::Targets, fmt::format::FmtSpan, layer::Filter,
+    layer::SubscriberExt, util::SubscriberInitExt,
+};
 
 /// How long the drain waits for the pool's connections to come back before
 /// giving up. Fire-and-forget notification deliveries (`tokio::spawn` in
@@ -25,17 +29,57 @@ use std::time::Duration;
 /// SIGKILL anyway. Well inside Docker's default 10s stop grace period.
 const POOL_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Install the global tracing subscriber. `RUST_LOG` (via `EnvFilter`) controls
-/// verbosity; `format` selects the human-readable text renderer or line-delimited
-/// JSON for a log aggregator.
+/// What is logged when `RUST_LOG` says nothing: pingward's own events at INFO,
+/// everything else at ERROR. Previously a bare `info`, which let every
+/// dependency talk at INFO too.
+const DEFAULT_FILTER: &str = "error,pingward=info";
+
+/// Install the global tracing subscriber. `RUST_LOG` controls verbosity;
+/// `format` selects one of the three human-readable renderers or
+/// line-delimited JSON for a log aggregator.
 fn init_tracing(format: LogFormat) {
-    let filter =
-        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    match format {
-        LogFormat::Json => builder.json().init(),
-        LogFormat::Text => builder.init(),
-    }
+    // `Targets` and not `EnvFilter`. Both read the same `pingward=debug` out of
+    // the same `RUST_LOG`, but `EnvFilter` matches its directives with a regex
+    // engine that nothing else in this binary needs. What `Targets` gives up is
+    // filtering on spans and fields, and nothing here writes either.
+    //
+    // A `RUST_LOG` whose *level* will not parse (`pingward=nonsense`) falls back
+    // to the default rather than refusing to start, which is what
+    // `EnvFilter::try_from_default_env` did too: a typo should cost a log level,
+    // not a startup. A mistyped *target* is not caught by that and never can be —
+    // a bare word is a target name at TRACE, so `RUST_LOG=nonsense` parses
+    // cleanly into a filter nothing matches and the log goes silent. Measured
+    // against `EnvFilter` on the same input: byte-identical behaviour, so this
+    // is not something the move to `Targets` introduced.
+    let filter: Targets = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|directives| directives.parse().ok())
+        .unwrap_or_else(|| DEFAULT_FILTER.parse().expect("the default filter parses"));
+    let span_events =
+        <Targets as Filter<Registry>>::max_level_hint(&filter).map_or(FmtSpan::CLOSE, |l| {
+            if l >= tracing::Level::DEBUG {
+                FmtSpan::CLOSE
+            } else {
+                FmtSpan::NONE
+            }
+        });
+    // Per no-color.org `NO_COLOR` disables colour when set *and non-empty*, so an
+    // empty value is not a setting.
+    let use_ansi = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    // `log_internal_errors(true)` is not a default of `fmt::layer()` the way it
+    // is of the `fmt()` builder this replaced; without it a subscriber that
+    // fails to write would do so silently.
+    let layer = tracing_subscriber::fmt::layer()
+        .with_span_events(span_events)
+        .with_ansi(use_ansi)
+        .log_internal_errors(true);
+    let layer = match format {
+        LogFormat::Full => layer.with_filter(filter).boxed(),
+        LogFormat::Compact => layer.compact().with_filter(filter).boxed(),
+        LogFormat::Pretty => layer.pretty().with_filter(filter).boxed(),
+        LogFormat::Json => layer.json().with_filter(filter).boxed(),
+    };
+    tracing_subscriber::registry().with(layer).init();
 }
 
 /// Warn once at startup when the session/CSRF secret is not configured, since
