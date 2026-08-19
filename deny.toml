@@ -15,6 +15,12 @@ ignore = [
     # spin 0.9.8 is yanked but pulled in transitively via flume -> sqlx-sqlite;
     # we don't control the version and there is no non-yanked 0.9.x to move to.
     "spin@0.9.8",
+    # RUSTSEC-2026-0258: h2 accepts and queues empty DATA frames without limit,
+    # which can grow memory unboundedly or panic if the length overflows. Low
+    # severity, and h2 is reached only transitively via hyper. Fixed in h2
+    # 0.4.16, published 2026-08-17 — too new to adopt under the 7-day hold on
+    # fresh releases, which clears on 2026-08-24. Remove this then; see #153.
+    "RUSTSEC-2026-0258",
 ]
 
 [licenses]
