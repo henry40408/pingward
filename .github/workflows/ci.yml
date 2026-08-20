@@ -15,6 +15,17 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# Every `uses:` is pinned to a full commit SHA, and the version comment names
+# an exact release tag — never a floating major like `v2`. Dependabot works
+# out what a SHA pin currently is by finding the tag that points at it, so a
+# pin taken from a floating tag stops being recognisable the moment that tag
+# moves on. Swatinem/rust-cache did exactly that: `v2` briefly sat on an
+# untagged post-release changelog fixup, we pinned that commit, and once v2.9.2
+# moved the tag away our pin matched no tag at all. Dependabot then stopped
+# offering versions and started offering whatever master's HEAD happened to be
+# that morning — an unreviewed, unreleased commit running with full job
+# permissions, which is the opposite of what SHA pinning is for.
+
 jobs:
   test:
     name: fmt + clippy + test
@@ -40,10 +51,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: cargo-nextest
 
@@ -77,7 +88,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: cargo-deny@0.18.9
 
@@ -111,15 +122,15 @@ jobs:
       # toolchain needs no extra declaration beyond rust-toolchain.toml.
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: cargo-llvm-cov
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2
+        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: cargo-nextest
 
@@ -159,7 +170,7 @@ jobs:
       # otherwise be invisible to the cache — and sharing a key with the
       # unit-test job would have the two evict each other.
       - name: Cache cargo
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: e2e
           workspaces: |
