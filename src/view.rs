@@ -216,6 +216,38 @@ pub fn timezones() -> &'static [chrono_tz::Tz] {
     &chrono_tz::TZ_VARIANTS
 }
 
+/// The suggestions behind the `<datalist>` on every interval-shaped duration
+/// field: the check form's period, grace, scan interval, max runtime and nag
+/// interval, the same two overrides on the project form, and `/admin`'s two
+/// global intervals. Called straight from the templates, like [`timezones`].
+///
+/// A hint, not a constraint — nothing here narrows what the field takes.
+/// `duration::parse_duration` still accepts any value it can parse and the
+/// server still validates it, exactly as the timezone field works. What the
+/// list is for is the unit suffixes: the help text under each field has always
+/// said `5m` is allowed, but a field holding `3600` reads as one that wants
+/// seconds, and the suffixes are only discoverable by trusting the help text
+/// over the value.
+///
+/// The scale spans all five uses on purpose (a scan interval is measured in
+/// seconds, a nag interval in hours), because one list every duration field
+/// shares is the thing that says they are one kind of field. Every entry must
+/// round-trip through `parse_duration` — `durations_all_parse` holds that.
+pub fn durations() -> &'static [&'static str] {
+    &[
+        "30s", "1m", "5m", "15m", "30m", "1h", "6h", "12h", "1d", "7d",
+    ]
+}
+
+/// The same idea for `/account`'s API key expiry, which is a duration field
+/// with the same parser but not the same scale: a key that lasts 30 seconds is
+/// not a thing anyone wants offered, and the field's own placeholder already
+/// points at `30d`. Kept separate rather than folded into [`durations`] so
+/// neither list has to carry entries that are noise in the other.
+pub fn expiries() -> &'static [&'static str] {
+    &["7d", "30d", "90d", "365d"]
+}
+
 pub fn fmt_secs(secs: i64) -> String {
     let s = secs.max(0);
     if s < 60 {
@@ -583,5 +615,43 @@ mod tests {
         assert_eq!(fmt_until(now + Duration::hours(3), now), "in 3h");
         assert_eq!(fmt_until(now + Duration::days(2), now), "in 2d");
         assert_eq!(fmt_until(now - Duration::hours(1), now), "in 0s");
+    }
+
+    /// A suggestion the field would reject is worse than no suggestion: the
+    /// user picks it from the browser's own dropdown and the form comes back
+    /// with an error. Both lists are held to the parser the handlers use, and
+    /// to `> 0` — the strictest bound any field carrying them applies (the
+    /// period, the three overrides and the key expiry all demand it; only
+    /// grace is looser, at `>= 0`), so one check covers every field.
+    #[test]
+    fn every_suggested_duration_is_one_the_forms_accept() {
+        for raw in durations().iter().chain(expiries().iter()) {
+            let parsed = crate::duration::parse_duration(raw);
+            assert!(parsed.is_some(), "{raw:?} does not parse as a duration");
+            assert!(
+                parsed.unwrap() > 0,
+                "{raw:?} parses but is not the positive duration the forms require"
+            );
+        }
+    }
+
+    /// The lists are ordered shortest-first and carry no repeats, because a
+    /// browser renders a datalist in document order: an unsorted list makes
+    /// the dropdown read as arbitrary rather than as a scale.
+    #[test]
+    fn suggested_durations_are_sorted_and_distinct() {
+        for list in [durations(), expiries()] {
+            let secs: Vec<i64> = list
+                .iter()
+                .map(|raw| crate::duration::parse_duration(raw).unwrap())
+                .collect();
+            let mut sorted = secs.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(
+                secs, sorted,
+                "{list:?} is not sorted shortest-first, or repeats"
+            );
+        }
     }
 }

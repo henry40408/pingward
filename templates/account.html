@@ -133,7 +133,14 @@
         </div>
         <div class="field">
           <label for="expires_in">Expires in (optional)</label>
-          <input id="expires_in" name="expires_in" data-testid="api-key-expires-input" placeholder="30d — blank = never">
+          {# Its own list rather than the `dur-list` the check and project forms
+             share: the parser is the same, the scale is not — see
+             `view::expiries`. Blank still means never, which is why the field
+             is not `required` and the list has no entry for it. #}
+          <input id="expires_in" name="expires_in" list="expiry-list" autocomplete="off" data-testid="api-key-expires-input" placeholder="30d — blank = never">
+          <datalist id="expiry-list">
+            {% for e in crate::view::expiries() %}<option value="{{ e }}">{% endfor %}
+          </datalist>
         </div>
       </div>
       {% if has_password %}

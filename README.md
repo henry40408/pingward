@@ -169,7 +169,11 @@ so programmatic clients keep working across restarts and key changes.
 
 Duration-valued settings (scan/nag/prune intervals and per-check period, grace,
 max-runtime) accept either raw seconds or a human-readable string (`5m`,
-`1h30m`, `2d`).
+`1h30m`, `2d`). In the web UI every one of those fields offers the common
+values as browser suggestions, so the suffixes are visible without reading the
+help text; they are suggestions only, and any value the parser accepts is still
+accepted whether or not it is on the list. The API key expiry field on
+**Account** works the same way, on its own scale.
 
 ### Running behind a reverse proxy
 
