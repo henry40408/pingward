@@ -44,3 +44,8 @@ Feature: Server-side form validation
     Given a project named "Nightly jobs"
     And I open the new check form
     Then the timezone field offers a list of zones
+
+  Scenario: The duration fields offer a shared list of durations
+    Given a project named "Nightly jobs"
+    And I open the new check form
+    Then every check duration field offers the same list of durations

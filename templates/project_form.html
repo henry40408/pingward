@@ -6,6 +6,11 @@
   <div class="cb">
     <form method="post" action="{{ action }}">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
+      {# The same suggestions the check form offers, from the same source, for
+         the same two fields. See `view::durations`. #}
+      <datalist id="dur-list">
+        {% for d in crate::view::durations() %}<option value="{{ d }}">{% endfor %}
+      </datalist>
       <div class="field">
         <label for="name">Name</label>
         <input id="name" name="name" value="{{ name }}" data-testid="project-name-input" required>
@@ -17,12 +22,12 @@
       </div>
       <div class="field">
         <label for="scan_interval_secs">Scan interval</label>
-        <input id="scan_interval_secs" name="scan_interval_secs" value="{{ scan_interval_secs }}">
+        <input id="scan_interval_secs" name="scan_interval_secs" value="{{ scan_interval_secs }}" list="dur-list" autocomplete="off">
         <div class="help">Leave blank to inherit the default scan interval. Seconds, or a duration like 5m, 1h30m.</div>
       </div>
       <div class="field">
         <label for="nag_interval_secs">Nag interval</label>
-        <input id="nag_interval_secs" name="nag_interval_secs" value="{{ nag_interval_secs }}">
+        <input id="nag_interval_secs" name="nag_interval_secs" value="{{ nag_interval_secs }}" list="dur-list" autocomplete="off">
         <div class="help">Leave blank to inherit, or to turn off nagging. Seconds, or a duration like 5m, 1h30m.</div>
       </div>
       <div class="btnrow">

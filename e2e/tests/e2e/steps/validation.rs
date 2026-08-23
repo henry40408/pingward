@@ -75,3 +75,26 @@ async fn timezone_offers_zones(world: &mut PingwardWorld) -> Result<()> {
         .expect_count(r#"#tz-list option[value="Asia/Taipei"]"#, 1)
         .await
 }
+
+#[then("every check duration field offers the same list of durations")]
+async fn duration_fields_offer_suggestions(world: &mut PingwardWorld) -> Result<()> {
+    let driver = world.driver()?;
+    // One list, shared: every duration field points at the same id, which is
+    // what stops the five fields drifting into five different vocabularies.
+    for field in [
+        "#period_secs",
+        "#grace_secs",
+        "#scan_interval_secs",
+        "#max_runtime_secs",
+        "#nag_interval_secs",
+    ] {
+        driver.expect_attr(field, "list", Some("dur-list")).await?;
+    }
+    // Non-vacuity guard: an empty `<datalist>` would satisfy the above on its
+    // own, exactly as it would for the zone list.
+    let count = driver.count_css("#dur-list option").await?;
+    ensure!(count > 3, "the duration list offers only {count} options");
+    driver
+        .expect_count(r#"#dur-list option[value="5m"]"#, 1)
+        .await
+}
