@@ -8,16 +8,14 @@ use pingward::{
 
 mod common;
 
-/// After a session exists, configure the `TestServer` to send that session's
-/// CSRF synchronizer token as a default `X-CSRF-Token` header so protected
-/// POSTs are not rejected by `csrf_guard`. Call after every (re)login.
+/// Sends the current session's CSRF token as a default `X-CSRF-Token` header,
+/// so protected POSTs are not rejected by `csrf_guard`. Call after every login.
 async fn set_csrf(server: &mut TestServer, store: &Store) {
     let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
 }
 
-/// A `TestServer` on a fresh in-memory DB, signed in as a newly created user
-/// and ready to POST. Returns the user's id.
+/// A `TestServer` on a fresh in-memory DB, signed in as a new user (id returned).
 async fn server_as(username: &str, is_admin: bool) -> (TestServer, Store, i64) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -51,9 +49,8 @@ async fn admin_server() -> (TestServer, Store, i64) {
     server_as("admin", true).await
 }
 
-/// Creating a project with a padded name must store it trimmed — the form
-/// validation in `validate_project` checks `trim().is_empty()`, but a
-/// reverted handler could still hand the raw, untrimmed name to the store.
+/// `validate_project` only checks `trim().is_empty()`, so a handler could still
+/// hand the raw, untrimmed name to the store.
 #[tokio::test]
 async fn project_create_stores_a_trimmed_name() {
     let (server, store, _uid) = logged_in_server().await;
@@ -79,8 +76,6 @@ async fn project_create_stores_a_trimmed_name() {
     assert_eq!(stored.name, "Nightly jobs");
 }
 
-/// Creating a check with a padded name must store it trimmed, mirroring the
-/// project test above.
 #[tokio::test]
 async fn check_create_stores_a_trimmed_name() {
     let (server, store, uid) = logged_in_server().await;
@@ -116,9 +111,8 @@ async fn check_create_stores_a_trimmed_name() {
     assert_eq!(stored.name, "backup");
 }
 
-/// Updating a check with a padded name must store it trimmed. The
-/// `check_update_core` handler uses `validate_check`, which trims the name —
-/// but a reverted handler could still hand the raw, untrimmed name to the store.
+/// `check_update_core` validates via `validate_check`, which trims the name — a
+/// reverted handler could still hand the raw one to the store.
 #[tokio::test]
 async fn check_update_stores_a_trimmed_name() {
     let (server, store, uid) = logged_in_server().await;
@@ -159,8 +153,6 @@ async fn check_update_stores_a_trimmed_name() {
     assert_eq!(stored.name, "renamed");
 }
 
-/// Updating a project with a padded name must store it trimmed, mirroring the
-/// check update test above.
 #[tokio::test]
 async fn project_update_stores_a_trimmed_name() {
     let (server, store, uid) = logged_in_server().await;
@@ -182,9 +174,8 @@ async fn project_update_stores_a_trimmed_name() {
     assert_eq!(stored.name, "Renamed jobs");
 }
 
-/// Admin updating a project with a padded name must store it trimmed. The
-/// `admin_project_update` handler is a separate route (`POST /admin/projects/{id}`)
-/// and requires an admin user, but uses the same `validate_project` logic.
+/// `admin_project_update` is a separate, admin-only route that shares
+/// `validate_project`.
 #[tokio::test]
 async fn admin_project_update_stores_a_trimmed_name() {
     let (server, store, admin_id) = admin_server().await;

@@ -1,19 +1,14 @@
 //! Regression test for the `pingward::auth` failure-logging control
-//! (`web::log_login_failure` for the unauthenticated login form, and
-//! `web::log_reauth_failure` for every re-authentication gate).
+//! (`web::log_login_failure` for the login form, `web::log_reauth_failure` for
+//! the re-authentication gates).
 //!
-//! OWASP's Authentication Cheat Sheet asks for every authentication failure and
-//! lockout to be logged and reviewed. For a self-hosted pingward this log is
-//! the *only* signal that the login page is being sprayed: the audit table
-//! records what succeeded, the rate limiter keeps its counters in memory and
-//! tells nobody, and nothing else observes a rejected attempt. Delete the
-//! `tracing::warn!` calls and every other test in the suite still passes — the
-//! same blind spot `tests/session_logging.rs` was written to close for the
-//! session events, so this borrows that file's capturing-subscriber harness.
-//!
-//! Two halves are asserted, as there: the events are actually emitted with the
-//! `reason` that discriminates them, and the submitted **password never
-//! appears** in the captured output.
+//! This log is the only signal that the login page is being sprayed: the audit
+//! table records what succeeded, the rate limiter keeps its counters in memory,
+//! and nothing else observes a rejected attempt — delete the `tracing::warn!`
+//! calls and the rest of the suite still passes. Borrows the
+//! capturing-subscriber harness from `tests/session_logging.rs` and asserts both
+//! halves: the events are emitted with the discriminating `reason`, and the
+//! submitted password never appears.
 
 use axum_test::TestServer;
 use pingward::{app, db, state::AppState, store::Store};
@@ -23,8 +18,7 @@ use std::sync::{Arc, Mutex};
 mod common;
 
 /// See `tests/session_logging.rs` — a `Write` sink whose clones all append into
-/// one shared buffer, which is what `tracing_subscriber::fmt`'s `MakeWriter`
-/// contract (a clone per event) requires.
+/// one shared buffer, as `tracing_subscriber::fmt`'s `MakeWriter` requires.
 #[derive(Clone, Default)]
 struct SharedBuf(Arc<Mutex<Vec<u8>>>);
 
@@ -44,13 +38,11 @@ impl SharedBuf {
     }
 }
 
-/// The password every fixture account is created with. Short on purpose: the
-/// length policy governs the surfaces that *set* a password, never `/login`,
-/// so an account whose hash predates the policy must still be able to sign in.
+/// Short on purpose: the length policy governs the surfaces that *set* a
+/// password, never `/login`, so a hash predating the policy must still sign in.
 const FIXTURE_PW: &str = "pw";
 
-/// A wrong password, distinctive enough that finding it in the log output is
-/// unambiguous rather than a coincidental substring match.
+/// Distinctive, so finding it in the log is never a coincidental substring match.
 const WRONG_PW: &str = "zzz-never-log-this-zzz";
 
 async fn server_with_user(username: &str, disabled: bool) -> (TestServer, Store) {
@@ -71,10 +63,9 @@ async fn server_with_user(username: &str, disabled: bool) -> (TestServer, Store)
     (server, store)
 }
 
-/// Install a capturing subscriber for the duration of `f`. Scoped rather than
-/// global for the reason `tests/session_logging.rs` gives: it cannot clash with
-/// a subscriber another test in this binary installs, and `#[tokio::test]`'s
-/// current-thread runtime keeps every task this drives on the guarded thread.
+/// Installs a capturing subscriber for the duration of `f`. Scoped rather than
+/// global: it cannot clash with another test in this binary, and
+/// `#[tokio::test]`'s current-thread runtime keeps every task on this thread.
 async fn captured<F, Fut>(f: F) -> String
 where
     F: FnOnce() -> Fut,
@@ -119,9 +110,8 @@ async fn a_wrong_password_is_logged_without_the_password() {
     assert!(log.contains("login.failed"), "{log}");
     assert!(log.contains("reason=\"bad_credentials\""), "{log}");
     assert!(log.contains("alice"), "{log}");
-    // The whole point of the control is that it is safe to keep: a log that
-    // carried the attempted password would be a credential store of its own,
-    // and a near-miss guess in it is worth as much as the real thing.
+    // A log carrying the attempted password would be a credential store of its
+    // own; a near-miss guess is worth as much as the real thing.
     assert!(
         !log.contains(WRONG_PW),
         "the submitted password must never be logged: {log}"
@@ -129,10 +119,9 @@ async fn a_wrong_password_is_logged_without_the_password() {
 }
 
 /// An unknown username logs the same event as a wrong password. `user_exists`
-/// is what separates a typo from a spray, and it is safe to record because the
-/// log is not a response — the *reply* to both stays identical, which is what
-/// `auth::verify_password_or_dummy` exists to keep true of the response time
-/// as well.
+/// separates a typo from a spray and is safe to record because the log is not a
+/// response — the *reply* stays identical, as does the response time
+/// (`auth::verify_password_or_dummy`).
 #[tokio::test]
 async fn an_unknown_username_is_logged_and_marked_as_such() {
     let (mut server, _store) = server_with_user("alice", false).await;
@@ -149,8 +138,7 @@ async fn an_unknown_username_is_logged_and_marked_as_such() {
 #[tokio::test]
 async fn a_disabled_account_logs_its_own_reason() {
     let (mut server, _store) = server_with_user("banned", true).await;
-    // Correct credentials — the rejection is the account state, and that is a
-    // materially different event for whoever reads the log.
+    // Correct credentials: the rejection is the account state, a different event.
     let log = captured(|| async {
         attempt_login(&mut server, "banned", FIXTURE_PW).await;
     })
@@ -160,9 +148,8 @@ async fn a_disabled_account_logs_its_own_reason() {
     assert!(log.contains("reason=\"account_disabled\""), "{log}");
 }
 
-/// The lockout itself is logged, not just the attempts leading to it —
-/// otherwise the one event an operator most needs to see is the one the log
-/// stops at.
+/// The lockout itself is logged, not just the attempts leading to it — otherwise
+/// the one event an operator most needs is the one the log stops at.
 #[tokio::test]
 async fn hitting_the_rate_limit_is_logged() {
     let (mut server, _store) = server_with_user("alice", false).await;
@@ -175,15 +162,13 @@ async fn hitting_the_rate_limit_is_logged() {
     .await;
 
     assert!(log.contains("reason=\"rate_limited\""), "{log}");
-    // The bucket the limiter counted against is named, since it can legitimately
-    // differ from the attribution address behind a proxy.
+    // The bucket is named: behind a proxy it can differ from the attribution address.
     assert!(log.contains("bucket=127.0.0.1"), "{log}");
 }
 
-/// A username is attacker-chosen input. `auth::log_username` truncates it and
-/// the call site renders it with `Debug`, so an embedded newline is escaped
-/// rather than closing the line and opening a forged one — which in `text`
-/// format would otherwise let an attacker write arbitrary entries.
+/// A username is attacker-chosen input. `auth::log_username` truncates it and the
+/// call site renders it with `Debug`, so an embedded newline is escaped rather
+/// than closing the line and opening a forged one.
 #[tokio::test]
 async fn a_forged_newline_in_the_username_cannot_open_a_second_log_line() {
     let (mut server, _store) = server_with_user("alice", false).await;
@@ -195,10 +180,8 @@ async fn a_forged_newline_in_the_username_cannot_open_a_second_log_line() {
 
     assert!(log.contains("login.failed"), "{log}");
     assert!(log.contains("eve"), "{log}");
-    // The forged text is still *present* — it is the username that was tried,
-    // and suppressing it would defeat the point of logging the attempt. What
-    // matters is that it stays inside one quoted field: a single entry, so a
-    // reader (or a log parser) can never mistake it for a second record.
+    // The forged text is still *present* — it is the username that was tried.
+    // What matters is that it stays inside one quoted field: a single entry.
     assert!(log.contains("\\n"), "the newline must be escaped: {log}");
     assert_eq!(
         log.trim_end().lines().count(),
@@ -247,19 +230,17 @@ async fn a_wrong_current_password_on_account_is_logged() {
     })
     .await;
 
-    // One event for every re-authentication gate, discriminated by `surface`,
-    // so an operator alerting on "someone is guessing a password" does not
-    // have to know which forms exist.
+    // One event for every re-auth gate, discriminated by `surface`, so one alert
+    // rule need not know which forms exist.
     assert!(log.contains("reauth.failed"), "{log}");
     assert!(log.contains("surface=\"password_change\""), "{log}");
     assert!(log.contains("reason=\"bad_current_password\""), "{log}");
     assert!(!log.contains(WRONG_PW), "{log}");
 }
 
-/// An account lockout is a materially different event from an address
-/// throttle: it means somebody is working on one *specific* account, quite
-/// possibly from many addresses. It gets its own `reason` so an operator can
-/// alert on it separately, rather than being folded into `rate_limited`.
+/// An account lockout differs from an address throttle: somebody is working on
+/// one *specific* account, possibly from many addresses. Its own `reason` lets an
+/// operator alert on it separately.
 #[tokio::test]
 async fn locking_an_account_logs_its_own_reason() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -290,9 +271,8 @@ async fn locking_an_account_logs_its_own_reason() {
     assert!(!log.contains(WRONG_PW), "{log}");
 }
 
-/// The API-key gate logs under the same event as the password-change one,
-/// distinguished by `surface`. Two event names for "somebody is guessing this
-/// account's password" would mean two alert rules for one thing.
+/// The API-key gate logs the same event as the password-change one,
+/// distinguished by `surface` — two names would mean two alert rules for one thing.
 #[tokio::test]
 async fn a_refused_api_key_re_authentication_is_logged() {
     let (mut server, store) = server_with_user("alice", false).await;

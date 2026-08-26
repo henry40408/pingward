@@ -1,12 +1,7 @@
-//! `/api/v1` handlers (reads and writes). Every resource is resolved through an
-//! ownership choke point ([`resolve_project`]/[`resolve_check`]/
-//! [`resolve_channel`]) that returns 404 for a resource the caller neither owns
-//! nor (as an admin) may reach — hiding existence — and records an audit entry
-//! whenever an admin key crosses into another user's data, mirroring the web
-//! UI's `admin_*` choke points. Writes reuse the web UI's own validators
-//! ([`crate::web::validate_project`]/[`crate::web::validate_check`]/
-//! [`crate::web::validate_channel`]) so the API and the browser agree on what a
-//! valid resource is.
+//! `/api/v1` handlers. [`resolve_project`]/[`resolve_check`]/[`resolve_channel`]
+//! are the ownership choke point: 404 for a resource the caller may not reach
+//! (existence hidden), plus an audit entry when an admin key crosses into
+//! another user's data. Writes reuse the web UI's own validators.
 
 use crate::api::dto::{
     ApiKeyDto, BoundChannels, ChannelDto, CheckDto, NotificationPage, PingPage, ProjectDto,
@@ -29,13 +24,11 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use utoipa::IntoParams;
 
-/// Default and maximum page size for the paginated ping/notification lists.
 const DEFAULT_PAGE_LIMIT: i64 = 20;
 const MAX_PAGE_LIMIT: i64 = 100;
 
-/// Keyset pagination query for the ping/notification lists. `before`/`after`
-/// carry a boundary item id (mutually exclusive; `before` wins if both are
-/// given). `limit` is clamped to `1..=100`, defaulting to 20.
+/// Keyset pagination for the ping/notification lists. `before` and `after` are
+/// mutually exclusive; `before` wins if both are given.
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct PageParams {
     /// Return items older than this id (page toward older).
@@ -62,10 +55,9 @@ impl PageParams {
     }
 }
 
-/// Record an admin key reaching a resource it does not own. Only called from the
-/// admin branch of a resolver, so an admin touching their own data never logs.
-/// `method` is the request verb (`GET` for reads, `POST`/`PATCH`/`DELETE`/`PUT`
-/// for writes) so the audit trail distinguishes a cross-user read from a write.
+/// Record an admin key reaching a resource it does not own. Called only from the
+/// admin branch of a resolver, so an admin touching their own data never logs;
+/// `method` is what distinguishes a cross-user read from a write.
 async fn audit_cross_user(
     state: &AppState,
     admin: &User,
@@ -96,8 +88,7 @@ async fn audit_cross_user(
 }
 
 /// Resolve a project the caller may act on: owner-scope first, else an audited
-/// admin cross-user access, else 404 (existence hidden). `method` labels the
-/// audit entry (the caller's HTTP verb).
+/// admin cross-user access, else 404 (existence hidden).
 async fn resolve_project(
     state: &AppState,
     id: i64,
@@ -332,8 +323,8 @@ pub async fn list_check_notifications(
     Ok(Json(NotificationPage::from_page(page)))
 }
 
-/// List the caller's own API keys (metadata only — the secret token is never
-/// returned). Always self-scoped: an admin key sees only its owner's keys.
+/// List the caller's own API keys; the secret token is never returned.
+/// Always self-scoped — an admin key sees only its owner's keys.
 #[utoipa::path(
     get, path = "/api/v1/keys", tag = "keys",
     security(("api_key" = [])),
@@ -371,8 +362,6 @@ pub async fn get_channel(
 // Writes
 // ----------------------------------------------------------------------------
 
-/// Re-fetch a check and map it to its DTO. Used by the action endpoints
-/// (pause/resume/ack/regenerate) to return the check's new state.
 async fn reload_check(state: &AppState, id: i64) -> Result<Json<CheckDto>, ApiError> {
     let c = state
         .store
@@ -412,7 +401,7 @@ pub async fn create_project(
 }
 
 /// Replace a project's editable fields (name + overrides). Send the full
-/// representation — this is not a partial patch.
+/// representation, not a partial patch.
 #[utoipa::path(
     patch, path = "/api/v1/projects/{id}", tag = "projects",
     security(("api_key" = [])),
@@ -467,12 +456,9 @@ pub async fn delete_project(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Create a check under a project. A fresh ping UUID is generated server-side,
-/// and the new check is bound to every notification channel the project already
-/// has, so a check created through the API is wired up exactly like one created
-/// in the web UI instead of starting with no channel and silently alerting
-/// nobody. Replace the binding set explicitly with
-/// `PUT /api/v1/checks/{id}/channels`.
+/// Create a check under a project. The ping UUID is generated server-side, and
+/// the check is bound to every channel the project already has (replace that set
+/// with `PUT /api/v1/checks/{id}/channels`).
 #[utoipa::path(
     post, path = "/api/v1/projects/{id}/checks", tag = "checks",
     security(("api_key" = [])),
@@ -522,7 +508,7 @@ pub async fn create_check(
 }
 
 /// Replace a check's editable fields (schedule + grace + overrides). Send the
-/// full representation — this is not a partial patch.
+/// full representation, not a partial patch.
 #[utoipa::path(
     patch, path = "/api/v1/checks/{id}", tag = "checks",
     security(("api_key" = [])),
@@ -607,8 +593,7 @@ pub async fn pause_check(
     reload_check(&state, id).await
 }
 
-/// Resume a paused check (returns it to the `new` state; the next ping or scan
-/// re-establishes its status).
+/// Resume a paused check: back to `new` until the next ping or scan.
 #[utoipa::path(
     post, path = "/api/v1/checks/{id}/resume", tag = "checks",
     security(("api_key" = [])),
@@ -629,8 +614,8 @@ pub async fn resume_check(
     reload_check(&state, id).await
 }
 
-/// Acknowledge a check's current down incident (silences its reminders until
-/// the next status change).
+/// Acknowledge a check's down incident, silencing reminders until its status
+/// changes.
 #[utoipa::path(
     post, path = "/api/v1/checks/{id}/ack", tag = "checks",
     security(("api_key" = [])),
@@ -675,8 +660,8 @@ pub async fn regenerate_check(
     reload_check(&state, id).await
 }
 
-/// Replace the set of channels bound to a check. Ids that do not belong to the
-/// check's own project are ignored. Returns the resulting bound-channel ids.
+/// Replace the set of channels bound to a check, returning the resulting ids.
+/// Ids outside the check's own project are ignored.
 #[utoipa::path(
     put, path = "/api/v1/checks/{id}/channels", tag = "checks",
     security(("api_key" = [])),
@@ -759,11 +744,9 @@ pub async fn create_channel(
 
 /// Update a notification channel's name and credentials.
 ///
-/// A **merge**, not a replacement: an omitted or blank field keeps the stored
-/// value, so one credential can be rotated without re-sending the others (the
-/// API never returns a stored secret, so a client could not echo them back
-/// anyway). `kind` is immutable and ignored here. Send `ntfy_token_clear: true`
-/// to remove a stored ntfy token.
+/// A merge, not a replacement: an omitted or blank field keeps the stored value,
+/// so one credential can be rotated without re-sending the others. `kind` is
+/// immutable and ignored here; send `ntfy_token_clear: true` to clear a token.
 #[utoipa::path(
     patch, path = "/api/v1/channels/{id}", tag = "channels",
     security(("api_key" = [])),

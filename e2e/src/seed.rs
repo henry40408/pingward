@@ -1,25 +1,18 @@
 //! Deterministic demo data for the README screenshot pipeline.
 //!
-//! A port of `screenshots/seed.mjs`. Pure data: [`seed_sql`] returns one SQL
-//! script, run against a *stopped* pingward whose only existing row is the
-//! admin created through `POST /setup` (so the argon2 hash is the product's
-//! own).
+//! Pure data: [`seed_sql`] returns one SQL script, run against a *stopped*
+//! pingward whose only existing row is the admin created through `POST /setup`.
+//! Timestamps are RFC3339 text, matching every `*_at` column.
 //!
-//! Timestamps are RFC3339 text, matching every `*_at` column
-//! (`store::parse_ts` parses them with `DateTime::parse_from_rfc3339`).
+//! `scheduler::scan_once` runs a pass the moment the server boots, so seeded
+//! rows must stay inside their budgets or it rewrites the statuses this seed
+//! exists to show:
 //!
-//! Two invariants the seeded rows must respect, because the scan loop runs a
-//! pass the moment the server boots (`scheduler::scan_once`) and would
-//! otherwise rewrite the very statuses this seed exists to show:
+//! * an `up`/`new` check is downed when `last_ping_at + period + grace <= now`;
+//! * an in-flight run is downed when `last_start_at + max_runtime <= now`.
 //!
-//! * an `up`/`new` check is downed when `last_ping_at + period + grace <= now`
-//!   — so every non-down check's last finish stays inside its budget;
-//! * an in-flight run is downed when `last_start_at + max_runtime <= now` — so
-//!   the "running" check's start is well under its max runtime.
-//!
-//! `next_due_at` is seeded to the same `last_ping_at + period + grace` the
-//! scheduler computes, since `view::display_status` reads that column to
-//! decide `late`.
+//! `next_due_at` is seeded to the `last_ping_at + period + grace` the scheduler
+//! computes, since `view::display_status` reads that column to decide `late`.
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
@@ -37,11 +30,9 @@ const DAY: i64 = 24 * HOUR;
 
 /// `mulberry32`, reproduced bit for bit.
 ///
-/// Not merely "a seeded PRNG": the sequence decides every jitter, duration and
-/// ping UUID in the seed, so a different one would change every committed PNG
-/// for no reason anybody reviewing the diff could act on. JavaScript's
-/// `Math.imul` and `>>>` are 32-bit operations, which is what the wrapping
-/// arithmetic here reproduces.
+/// The sequence decides every jitter, duration and ping UUID, so a different
+/// one changes every committed PNG. JavaScript's `Math.imul` and `>>>` are
+/// 32-bit, which the wrapping arithmetic reproduces.
 struct Mulberry32(u32);
 
 impl Mulberry32 {
@@ -65,7 +56,7 @@ impl Mulberry32 {
     /// An index into a slice of `len` elements, `Math.floor(rand() * len)`.
     fn index(&mut self, len: usize) -> usize {
         // `next()` is in `[0, 1)`, so the product is non-negative and below
-        // `len`; the modulo only guards the rounding edge at 0.999…
+        // `len`; the modulo only guards the rounding edge.
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let raw = (self.next() * len as f64) as usize;
         raw % len
@@ -85,9 +76,8 @@ fn qs(value: &str) -> String {
     q(Some(value))
 }
 
-/// An epoch-millisecond instant as the RFC3339 text every `*_at` column holds.
-///
-/// Always three fractional digits, matching JavaScript's `toISOString`.
+/// An epoch-millisecond instant as the RFC3339 text every `*_at` column holds,
+/// always three fractional digits to match JavaScript's `toISOString`.
 fn iso(ms: f64) -> String {
     let millis = ms.round() as i64;
     DateTime::from_timestamp_millis(millis)
@@ -103,12 +93,10 @@ fn num(value: Option<i64>) -> String {
 
 // ---- a minimal cron evaluator ----------------------------------------------
 //
-// A cron check's due time is `next_fire_after(last_ping) + grace`, so anchoring
-// its last ping anywhere other than an actual fire time can leave a fire
-// between the anchor and now — which the boot scan would read as overdue and
-// turn the check down. These helpers put the anchor exactly on the last fire.
-// Only the subset of the 6-field syntax this seed uses is supported: `*`,
-// `*/n`, and plain numbers.
+// A cron check's due time is `next_fire_after(last_ping) + grace`, so an anchor
+// off a real fire time leaves a fire between it and now that the boot scan
+// reads as overdue. These helpers put the anchor exactly on the last fire.
+// Only the subset used here is supported: `*`, `*/n`, and plain numbers.
 
 const MINUTE_MS: i64 = 60_000;
 
@@ -117,14 +105,10 @@ const SCAN_LIMIT_MINUTES: i64 = 400 * 24 * 60;
 
 /// The cron-relevant fields of an instant, read in `tz`.
 ///
-/// `dow` follows the **`cron` crate's** convention — `number_from_sunday`, so
-/// Sunday is 1 and Monday is 2 — not the 0-based one `seed.mjs` used. That was
-/// a latent defect: with Sunday at 0, `0 0 4 * * 1` anchored `certbot-renew`
-/// on a Monday while pingward fires it on a Sunday, so the anchor sat a whole
-/// day *after* the real last fire and left an unserved fire between it and
-/// now. The boot scan reads that as overdue and downs the check — which is
-/// precisely what this evaluator exists to prevent, and which only surfaced
-/// when a capture happened to run after the mis-anchored due time had passed.
+/// `dow` follows the `cron` crate's convention (`number_from_sunday`: Sunday 1,
+/// Monday 2), not a 0-based one. With Sunday at 0, `0 0 4 * * 1` anchors a
+/// weekly check a day after its real last fire, leaving an unserved fire that
+/// the boot scan reads as overdue and downs the check on.
 struct Fields {
     sec: u32,
     min: u32,
@@ -175,10 +159,8 @@ fn cron_matches(expr: &str, tz: Tz, ms: i64) -> Result<bool> {
         && field_matches(dow, fields.dow))
 }
 
-/// The most recent fire at or before `from_ms`.
-///
-/// Every expression here has a zero seconds field, so stepping a minute at a
-/// time is exact.
+/// The most recent fire at or before `from_ms`. Every expression here has a
+/// zero seconds field, so stepping a minute at a time is exact.
 fn last_fire_at_or_before(expr: &str, tz: Tz, from_ms: i64) -> Result<i64> {
     let mut t = from_ms.div_euclid(MINUTE_MS) * MINUTE_MS;
     for _ in 0..SCAN_LIMIT_MINUTES {
@@ -205,9 +187,8 @@ fn next_fire_after(expr: &str, tz: Tz, from_ms: i64) -> Result<i64> {
 
 // ---- the dataset -----------------------------------------------------------
 
-/// Owners other than `demo`, so `/admin`'s "All users" and cross-user "All
-/// projects" cards have something to show. They reuse the admin's argon2 hash
-/// — this database is throwaway.
+/// Owners other than `demo`, so `/admin`'s cross-user cards have something to
+/// show. They reuse the admin's argon2 hash — this database is throwaway.
 const EXTRA_USERS: [(&str, bool); 2] = [("maya", true), ("sam", false)];
 
 struct Project {
@@ -278,9 +259,9 @@ struct Check {
     grace: i64,
     max_runtime: Option<i64>,
     state: State,
-    /// Runtimes are quoted as a band inside `max_runtime`: the heartbeat
-    /// scales bar height by `duration / max_runtime`, so a job that never uses
-    /// more than a few percent of its budget renders as a row of stubs.
+    /// A band inside `max_runtime`: the heartbeat scales bar height by
+    /// `duration / max_runtime`, so a job using a few percent of its budget
+    /// renders as a row of stubs.
     runtime: (f64, f64),
     channels: &'static [&'static str],
 }
@@ -489,9 +470,8 @@ const FAIL_BODIES: [&str; 3] = [
 
 const SOURCE_IPS: [&str; 3] = ["10.4.2.15", "10.4.2.31", "192.168.20.8"];
 
-/// One seeded delivery record. The two id fields hold the `SELECT` sub-queries
-/// that resolve the check and channel by name, since the seed never sees the
-/// ids the database assigns.
+/// One seeded delivery record. The two id fields hold `SELECT` sub-queries
+/// resolving by name, since the seed never sees the ids the database assigns.
 struct Notification {
     check: String,
     channel: String,
@@ -517,17 +497,15 @@ struct Audit {
 /// 34 runs, oldest first: enough to fill the heartbeat strip.
 const RUNS: i64 = 34;
 
-/// Where the most recent finished run sits, relative to now.
-///
-/// Expressed as a fraction of the check's cadence so a 30-minute job and a
-/// weekly one both look plausible.
+/// Where the most recent finished run sits, as a fraction of the check's
+/// cadence so a 30-minute job and a weekly one both look plausible.
 fn last_finish_offset(check: &Check, rand: &mut Mulberry32) -> f64 {
     let (cadence, grace) = (check.cadence as f64, check.grace as f64);
     match check.state {
-        // Comfortably past due — this is why the check is down.
+        // Comfortably past due.
         State::Down => cadence * 2.0 + grace + 900.0,
-        // Past the expected time but still inside the grace window, so the
-        // scan loop leaves it alone and `display_status` reports `late`.
+        // Inside the grace window, so the scan leaves it alone and
+        // `display_status` reports `late`.
         State::Late => cadence + grace * 0.5,
         // Finished one cadence ago; a fresh `start` is in flight.
         State::Running => cadence * 0.95,
@@ -536,10 +514,8 @@ fn last_finish_offset(check: &Check, rand: &mut Mulberry32) -> f64 {
     }
 }
 
-/// A stable-looking but deterministic ping UUID.
-///
-/// The URLs are rendered verbatim on the check page, so a fresh random one per
-/// run would make otherwise identical screenshots differ.
+/// A deterministic ping UUID: the URLs render verbatim on the check page, so a
+/// random one per run would make otherwise identical screenshots differ.
 fn uuid_for(rand: &mut Mulberry32) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut hex = |count: usize| -> String {
@@ -644,9 +620,8 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
 
     // ---- checks, their ping history, and channel bindings ------------------
     //
-    // Ping ids are assigned in insertion order; the heartbeat pairs each finish
-    // with the preceding `start` by timestamp, so inserting each check's runs
-    // oldest-first is enough.
+    // The heartbeat pairs each finish with the preceding `start` by timestamp,
+    // so inserting each check's runs oldest-first is enough.
     let mut notifications: Vec<Notification> = Vec::new();
 
     for check in &CHECKS {
@@ -654,8 +629,8 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
             .timezone
             .parse()
             .map_err(|_ignored| anyhow::anyhow!("unknown timezone `{}`", check.timezone))?;
-        // Cron checks anchor on a real fire time; period checks anchor
-        // wherever their state wants the last run to sit.
+        // Cron checks anchor on a real fire time; period checks wherever
+        // their state wants the last run to sit.
         let finish_at = match check.cron {
             Some(expr) => last_fire_at_or_before(expr, tz, now_ms)? as f64,
             None => now - last_finish_offset(check, &mut rand) * 1000.0,
@@ -674,8 +649,7 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
             _ => "up",
         };
         // `running` is a display status: an in-flight `start` newer than the
-        // last finish, kept well inside max_runtime so the scan loop does not
-        // down it.
+        // last finish, kept inside max_runtime so the scan does not down it.
         let running_start = (check.state == State::Running).then_some(now - 6.0 * 60.0 * 1000.0);
         let last_start = running_start.unwrap_or(finish_at - 60.0 * 1000.0);
 
@@ -722,9 +696,8 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
         for index in (0..RUNS).rev() {
             let jitter = (rand.next() - 0.5) * check.cadence as f64 * 0.06;
             let end = finish_at - (index * check.cadence) as f64 * 1000.0 + jitter * 1000.0;
-            // Every ninth run or so is slow enough to paint an amber bar; two
-            // runs of the down check failed outright, which is the red bar
-            // plus the captured-output row on the check page.
+            // Every ninth run paints an amber bar; two runs of the down check
+            // fail outright — red bar plus captured output on the check page.
             let slow = index % 9 == 4;
             let failed = check.state == State::Down && (index == 0 || index == 12);
             let mut duration = rand.range(low, high);
@@ -758,8 +731,8 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
             ));
         }
 
-        // Notification history: the down check's alert chain, and one earlier
-        // recovered incident on the hourly sync so the table shows a mixed log.
+        // The down check's alert chain, plus one recovered incident on the
+        // hourly sync, so the table shows a mixed log.
         if check.state == State::Down {
             let chain: [(&str, &str, &str, Option<&str>, f64); 5] = [
                 ("down", "ops-slack", "ok", None, 62.0 * 60.0),
@@ -814,14 +787,10 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
 
     // ---- audit trail -------------------------------------------------------
     //
-    // What the `/admin` audit card reads back. Mirrors the shape `record_audit`
-    // writes at its real call sites (a cross-user page open, and the user
-    // management mutations), so the screenshot shows the card doing its job
-    // rather than its empty state.
-    //
-    // Oldest first: the table pages by `id` (monotonic, index-backed), which
-    // only reads as newest-first because real inserts arrive in time order.
-    // Seeding out of order would put the ids and the timestamps at odds.
+    // What the `/admin` audit card reads back, in the shape `record_audit`
+    // writes at its real call sites. Oldest first: the table pages by `id`,
+    // which only reads as newest-first because real inserts arrive in time
+    // order, so seeding out of order puts ids and timestamps at odds.
     let audits: [Audit; 5] = [
         Audit {
             actor: "demo",
@@ -903,8 +872,7 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
 
     // ---- global settings ---------------------------------------------------
     //
-    // Retention comfortably exceeds the backdated history: `prune_once` runs a
-    // pass the moment the server boots.
+    // Retention exceeds the backdated history: `prune_once` runs a pass at boot.
     for (key, value) in [
         ("scan_interval", "30"),
         ("nag_interval", "1800"),
@@ -927,9 +895,9 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// The first values `mulberry32(20260722)` produces in JavaScript. Pinning
-    /// them is what keeps a "harmless" refactor of the 32-bit arithmetic from
-    /// silently reshuffling every committed screenshot.
+    /// The first values `mulberry32(20260722)` produces in JavaScript; pinning
+    /// them keeps a refactor of the 32-bit arithmetic from reshuffling every
+    /// committed screenshot.
     #[test]
     fn mulberry32_matches_the_javascript_sequence() {
         let mut rand = Mulberry32::new(20_260_722);
@@ -937,7 +905,6 @@ mod tests {
         for value in &drawn {
             assert!((0.0..1.0).contains(value), "{value} is out of range");
         }
-        // Deterministic across runs, which is the property the pipeline needs.
         let mut again = Mulberry32::new(20_260_722);
         let repeat: Vec<f64> = (0..4).map(|_| again.next()).collect();
         assert_eq!(drawn, repeat);

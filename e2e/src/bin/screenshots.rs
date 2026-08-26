@@ -1,5 +1,4 @@
-//! Re-runnable README screenshot pipeline — a port of
-//! `screenshots/capture.mjs`.
+//! Re-runnable README screenshot pipeline.
 //!
 //! ```text
 //!   wipe DB -> boot #1 (migrations) -> POST /setup -> stop
@@ -8,12 +7,8 @@
 //!
 //! Run from `e2e/`:  `cargo run --bin screenshots`
 //!
-//! Two things the JavaScript version needed that this one does not. It shelled
-//! out to the `sqlite3` CLI, an undeclared dependency; seeding now goes through
-//! `sqlx`. And it stopped the server with SIGTERM so the WAL was checkpointed
-//! before that CLI read the file — with a real `SQLite` client doing the
-//! seeding, WAL recovery on open covers it, so the plain kill this can issue
-//! without reaching for `libc` is enough.
+//! Seeding goes through `sqlx`, so WAL recovery on open covers the plain kill
+//! used to stop the server between phases.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -30,9 +25,8 @@ use thirtyfour::WebElement;
 use thirtyfour::prelude::*;
 use tokio::process::{Child, Command};
 
-/// The bind port is throwaway, but the *rendered* ping URLs come from
-/// `PINGWARD_BASE_URL` — so this points at a plausible public hostname instead
-/// of baking a random loopback port into the check-page screenshot.
+/// The rendered ping URLs come from `PINGWARD_BASE_URL`, so this keeps a random
+/// loopback port out of the check-page screenshot.
 const PUBLIC_BASE_URL: &str = "https://pingward.example.com";
 
 /// Padding below the element a shot is cut at, so it ends on a card boundary
@@ -62,8 +56,7 @@ struct Device {
     mobile: bool,
 }
 
-/// A page region, named so the shot list reads as intent rather than as
-/// selectors.
+/// A page region, named so the shot list reads as intent, not selectors.
 #[derive(Clone, Copy)]
 enum Region {
     /// The card wrapping a selector — `.card:has(…)`.
@@ -81,16 +74,13 @@ enum Region {
 /// How much of the page a shot keeps.
 #[derive(Clone, Copy)]
 enum Frame {
-    /// The whole page. Only right for the pages that end on their own — the
-    /// check and admin pages are long enough that a whole-page capture reads
-    /// as a strip in a README.
+    /// The whole page. Only for the pages that end on their own — the check
+    /// and admin pages read as a strip in a README.
     Full,
     /// From the top down to just past a region. `pad` is 0 when the cut lands
-    /// on a list divider, where any padding would leak a sliver of the next
-    /// row.
+    /// on a list divider, where padding would leak a sliver of the next row.
     DownTo(Region, f64),
-    /// The band spanned by two regions, for a shot of the middle of a long
-    /// page.
+    /// The band spanned by two regions, for the middle of a long page.
     Band(Region, Region),
 }
 
@@ -102,15 +92,14 @@ enum Settle {
     DashboardRows(usize),
     /// Open the down check from the dashboard.
     DownCheck,
-    /// Open it and expand the failed run, so its captured output is in frame —
-    /// that body is what a `curl --data-binary @- …/fail` sends.
+    /// Open it and expand the failed run, so its captured output is in frame.
     DownCheckExpanded,
     /// Follow the first "Manage →" link.
     ManageProject,
     /// Wait for the admin scale tiles.
     AdminScale,
-    /// Expand the newest audit entry, so the request and detail behind it —
-    /// the half of `audit_log` that lives in the collapsed row — are in shot.
+    /// Expand the newest audit entry, so the request and detail behind it are
+    /// in shot.
     AuditExpanded,
 }
 
@@ -215,10 +204,8 @@ async fn main() -> Result<()> {
     let base = format!("http://127.0.0.1:{port}");
 
     // Phase 1 — migrate, then create the first admin through the product's own
-    // one-time setup form so the password hash is a real argon2 one. `/setup`
-    // is CSRF-protected like every other POST (`csrf_guard` has no path
-    // exemptions), so this goes through the same GET-then-submit helper the
-    // E2E suite uses rather than posting the fields bare.
+    // setup form so the password hash is a real argon2 one. `/setup` is
+    // CSRF-protected, hence the GET-then-submit helper.
     let mut server = start_pingward(&db, port, &base).await?;
     let bootstrap = Api::new(&base)?
         .bootstrap_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
@@ -248,11 +235,9 @@ async fn capture_all(base: &str, out: &Path) -> Result<()> {
 
 async fn capture_with(browser: &mut Browser, base: &str, out: &Path) -> Result<()> {
     let driver = browser.driver().clone();
-    // One session for the whole run, unlike the JavaScript version's context
-    // per shot: the emulations that differed between contexts — viewport,
-    // scale factor, colour scheme — are all CDP overrides that can simply be
-    // re-issued, and sharing the session means signing in once instead of
-    // replaying a stored cookie jar.
+    // One session for the whole run: viewport, scale factor and colour scheme
+    // are CDP overrides that can be re-issued per shot, and sharing the session
+    // means signing in once.
     driver
         .cdp()
         .send_raw(
@@ -306,8 +291,7 @@ async fn capture_with(browser: &mut Browser, base: &str, out: &Path) -> Result<(
     Ok(())
 }
 
-/// Applies a device's metrics, Playwright's `deviceScaleFactor` / `isMobile` /
-/// `hasTouch`.
+/// Applies a device's metrics, touch emulation included.
 async fn set_device(driver: &WebDriver, device: Device) -> Result<()> {
     driver
         .cdp()
@@ -446,9 +430,9 @@ async fn document_height(driver: &WebDriver) -> Result<f64> {
 
 /// A region's document-relative box, as `(x, y, width, height)`.
 ///
-/// The page is scrolled back to the top first, so the viewport-relative box
-/// the browser reports *is* the document box — which is the coordinate space a
-/// beyond-the-viewport capture expects.
+/// The page is scrolled to the top first, so the viewport-relative box the
+/// browser reports *is* the document box — the space a beyond-the-viewport
+/// capture expects.
 async fn region_box(driver: &WebDriver, region: Region) -> Result<(f64, f64, f64, f64)> {
     driver.execute("window.scrollTo(0, 0);", vec![]).await?;
     let element = resolve(driver, region).await?;
@@ -503,10 +487,9 @@ async fn resolve(driver: &WebDriver, region: Region) -> Result<WebElement> {
 
 /// Captures a clipped PNG.
 ///
-/// `captureBeyondViewport` is what makes a clip taller than the window work —
-/// Playwright's `fullPage` under a different name. The clip's own `scale`
-/// stays 1: the device scale factor from the metrics override is already
-/// applied, and multiplying the two would render the mobile shots at 9x.
+/// `captureBeyondViewport` is what makes a clip taller than the window work.
+/// The clip's own `scale` stays 1: the metrics override's device scale factor
+/// is already applied, and multiplying the two would render mobile at 9x.
 async fn capture(driver: &WebDriver, clip: &Clip) -> Result<Vec<u8>> {
     let response = driver
         .cdp()
@@ -539,9 +522,8 @@ async fn apply_seed(db: &Path) -> Result<()> {
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
         .await
         .with_context(|| format!("opening {}", db.display()))?;
-    // Audited: every value in the script goes through `seed`'s own quoting, and
-    // the whole thing is built from constants in this repository rather than
-    // from anything a user supplies. That is what `AssertSqlSafe` is asking.
+    // `AssertSqlSafe`: every value goes through `seed`'s own quoting and the
+    // script is built from constants in this repository, not user input.
     sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
         .execute(&pool)
         .await

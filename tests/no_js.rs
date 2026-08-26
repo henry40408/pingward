@@ -4,21 +4,20 @@
 //! are pointed. Several things had quietly stopped being optional:
 //!
 //! 1. A check row's only route to the check page was the delegated `data-href`
-//!    click handler, so with no JS the dashboard led nowhere at all.
+//!    click handler, so with no JS the dashboard led nowhere.
 //! 2. The history sections' pager and Clear controls are real `<a href>`s
 //!    aimed at fragment endpoints, which answered a plain navigation with a
 //!    bare partial — no `<head>`, so no stylesheet, no nav, no way back.
 //! 3. Every irreversible action asked "are you sure?" through a `data-confirm`
-//!    attribute that only `app.js` reads, so with no JS a misclick deleted a
-//!    project outright.
+//!    attribute only `app.js` reads, so with no JS a misclick deleted a project
+//!    outright.
 //! 4. The filter forms had no method, no action, no field names and a
 //!    `type="button"` submit — four reasons one click did nothing.
 //! 5. `/admin`'s heartbeat tiles rendered an empty div where the age goes.
 //!
-//! Every one is invisible to the browser suite, which runs with JS on — except
-//! for the `no-js` Playwright project (`e2e/features/no_js.feature`), which
-//! covers the parts that are CSS or navigation rather than markup. These
-//! assertions are the server-side half of the same guard.
+//! All of it is invisible to the browser suite, which runs with JS on except for
+//! the `@nojs` scenarios (`e2e/features/no_js.feature`) covering the CSS and
+//! navigation halves. These assertions are the server-side half.
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
@@ -47,8 +46,8 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
             ("password", "pw"),
         ])
         .await;
-    // Destructive POSTs below go through `csrf_guard` like any other; send the
-    // session's token as a default header so a rejection here can only mean the
+    // Destructive POSTs go through `csrf_guard` like any other; sending the
+    // session's token by default means a rejection below can only be the
     // confirmation gate.
     let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
@@ -78,8 +77,8 @@ async fn check_for(store: &Store, owner: i64, uuid: &str) -> (i64, i64) {
 
 // --- rows reach their page without a click handler ---
 
-/// The dashboard's whole job is getting you to a check. The row is a `div`
-/// (a flex container three templates share), so the link has to be inside it.
+/// The row is a `div` (a flex container three templates share), so the link to
+/// the check has to sit inside it.
 #[tokio::test]
 async fn dashboard_check_rows_carry_a_real_link() {
     let (server, store, uid) = logged_in_server().await;
@@ -118,7 +117,7 @@ async fn admin_project_rows_carry_a_real_link() {
 
 /// The row must not go back to simulating a link with ARIA: `role="link"` plus
 /// `tabindex` buys a focus ring and Enter, and still leaves the row dead with
-/// JS off — which is exactly the state this file exists to prevent.
+/// JS off.
 #[tokio::test]
 async fn rows_do_not_simulate_a_link_with_aria() {
     let (server, store, uid) = logged_in_server().await;
@@ -148,9 +147,9 @@ async fn pings_fragment_redirects_a_real_navigation_to_the_check_page() {
     );
 }
 
-/// The pager cursor and the active filter live entirely in the query string,
-/// and the full check page parses the same `CheckPageQuery` — so carrying it
-/// across is what makes an unscripted "Older →" actually page.
+/// The pager cursor and the active filter live in the query string, and the
+/// check page parses the same `CheckPageQuery`, so carrying it across is what
+/// makes an unscripted "Older →" page.
 #[tokio::test]
 async fn the_redirect_carries_the_cursor_and_filter() {
     let (server, store, uid) = logged_in_server().await;
@@ -214,8 +213,7 @@ async fn audit_fragment_redirects_a_real_navigation_to_admin() {
     );
 }
 
-/// The redirect is presentation only: `app.js` still gets its partial, which
-/// is what keeps the in-place swap a swap.
+/// The redirect is presentation only: `app.js` still gets its partial.
 #[tokio::test]
 async fn a_fetch_caller_still_gets_the_bare_fragment() {
     let (server, store, uid) = logged_in_server().await;
@@ -261,11 +259,9 @@ async fn the_redirect_never_answers_for_another_users_check() {
 // --- absolute timestamps read as text, not as a machine stamp ----------------
 
 /// Every absolute time sits in a `.localtime[data-ts]` span that `app.js`
-/// rewrites into the viewer's zone. The text inside it is what a scriptless
-/// browser keeps, and on `/account` and `/admin` that was whatever chrono's
-/// `Display` produced — nanoseconds and all — or, for the heartbeat tiles, the
-/// raw RFC3339 string. The history tables already formatted theirs; these now
-/// share it.
+/// rewrites into the viewer's zone. The text inside is what a scriptless browser
+/// keeps, and on `/account` and `/admin` that was chrono's `Display` output,
+/// nanoseconds and all — or the raw RFC3339 string for the heartbeat tiles.
 #[tokio::test]
 async fn absolute_timestamps_fall_back_to_readable_utc() {
     let (server, store, _uid) = logged_in_server().await;
@@ -276,13 +272,11 @@ async fn absolute_timestamps_fall_back_to_readable_utc() {
 
     for path in ["/account", "/admin"] {
         let body = server.get(path).await.text();
-        // Split on the marker rather than by line: two spans can share a line,
-        // and the text is simply whatever sits between the tag's `>` and the
-        // next `<`. The `data-ts` attribute keeps RFC3339 for the script; the
-        // text must not, so no fractional seconds and no `T` separator.
-        // Split on the class *name*, not `class="localtime"`: the heartbeat
-        // tiles carry `class="hb-time localtime"`, so an exact-attribute match
-        // silently skips the only ones `/admin` has.
+        // Two spans can share a line, so the text is whatever sits between the
+        // tag's `>` and the next `<`. Split on the class *name*, not
+        // `class="localtime"`: the heartbeat tiles carry
+        // `class="hb-time localtime"`, so an exact-attribute match silently
+        // skips the only ones `/admin` has.
         let texts: Vec<&str> = body
             .split("localtime")
             .skip(1)
@@ -297,7 +291,7 @@ async fn absolute_timestamps_fall_back_to_readable_utc() {
         );
         for text in texts {
             // Not a `!contains('T')` check for the RFC3339 separator: "UTC"
-            // has one. The space at index 10 is what distinguishes
+            // has one. The space at index 10 distinguishes
             // `2026-08-13 17:54:27 UTC` from `2026-08-13T17:54:27+00:00`.
             assert!(
                 text.ends_with(" UTC") && !text.contains('.') && text.chars().nth(10) == Some(' '),
@@ -309,9 +303,9 @@ async fn absolute_timestamps_fall_back_to_readable_utc() {
 
 // --- the scheduler heartbeat states its own age ------------------------------
 
-/// `/admin`'s heartbeat tiles rendered an empty `.hb-ago` div for `app.js` to
-/// fill in every second, so with no script the one number an operator actually
-/// reads off them — how long ago the loop last ran — was simply blank.
+/// `/admin`'s heartbeat tiles used to render an empty `.hb-ago` div for `app.js`
+/// to fill in, so with no script the number an operator reads off them — how
+/// long ago the loop last ran — was blank.
 #[tokio::test]
 async fn the_scheduler_heartbeat_renders_its_age_server_side() {
     let (server, store, _uid) = logged_in_server().await;
@@ -371,10 +365,9 @@ fn palette_after(css: &str, marker: &str) -> Vec<(String, String)> {
 
 /// The light palette is written twice — once for the `data-theme` attribute
 /// `theme-init.js` sets, once inside a `prefers-color-scheme` query for a
-/// browser that never ran it. A selector list cannot span a media query, so
-/// the duplication is unavoidable; this is what stops the copies drifting.
-/// A token added or retuned in one block only is invisible until someone opens
-/// the app with script off, which is precisely the case nobody tests by hand.
+/// browser that never ran it — because a selector list cannot span a media
+/// query. A token added or retuned in one block only is invisible until someone
+/// opens the app with script off.
 #[test]
 fn the_two_light_palettes_are_identical() {
     let css = include_str!("../assets/app.css");
@@ -398,8 +391,7 @@ fn the_two_light_palettes_are_identical() {
 
 /// A GET submission replaces the whole query string, so the pings form has to
 /// re-send the notifications filter as hidden state or narrowing one section
-/// would silently clear the other. Asserted on the rendered page rather than
-/// through a browser because it is the server that has to emit them.
+/// would silently clear the other.
 #[tokio::test]
 async fn each_filter_form_carries_the_other_sections_filter() {
     let (server, store, uid) = logged_in_server().await;
@@ -410,18 +402,16 @@ async fn each_filter_form_carries_the_other_sections_filter() {
         .await
         .text();
 
-    // The pings form re-sends the notifications half...
     assert!(
         body.contains("<input type=\"hidden\" name=\"ne\" value=\"down\">"),
         "pings form drops the notifications filter: {body}"
     );
-    // ...and the notifications form re-sends the pings half.
     assert!(
         body.contains("<input type=\"hidden\" name=\"pk\" value=\"fail\">"),
         "notifications form drops the pings filter: {body}"
     );
-    // Neither re-sends its own keys as hidden state — the visible controls
-    // carry those, and a duplicate would submit the stale value alongside.
+    // Neither re-sends its own keys as hidden state: the visible controls carry
+    // those, and a duplicate would submit the stale value alongside.
     assert!(
         !body.contains("<input type=\"hidden\" name=\"pk\" value=\"fail\">\n  <input"),
         "a form re-sent its own filter as hidden state: {body}"
@@ -437,8 +427,8 @@ async fn each_filter_form_carries_the_other_sections_filter() {
     );
 }
 
-/// The forms post to the page, not to the fragment endpoint, and the button is
-/// a real submit — four separate reasons a scriptless click used to do nothing.
+/// The forms post to the page rather than the fragment endpoint, and the button
+/// is a real submit.
 #[tokio::test]
 async fn the_filter_forms_are_real_get_forms() {
     let (server, store, uid) = logged_in_server().await;
@@ -464,12 +454,10 @@ async fn the_filter_forms_are_real_get_forms() {
 // --- irreversible actions ask before they run --------------------------------
 //
 // With JS the question is a native `confirm()` driven by the form's
-// `data-confirm` attribute; the server never sees that happen and must not
-// assume it did. Every one of these actions therefore runs only when the
-// request carries `?confirmed=1`, and otherwise answers with the same question
-// as a page. Each test asserts *both* halves — that the unconfirmed POST
-// changed nothing, and that the confirmed one went through — because a gate
-// that refused everything would satisfy either half on its own.
+// `data-confirm` attribute, which the server never sees. Every one of these
+// actions therefore runs only when the request carries `?confirmed=1`, and
+// otherwise answers with the same question as a page. Each test asserts *both*
+// halves, since a gate that refused everything would satisfy either alone.
 
 /// The interstitial, identified by the button that goes through with it.
 fn is_confirmation_page(body: &str) -> bool {
@@ -576,8 +564,8 @@ async fn deleting_a_user_asks_first() {
 }
 
 /// The two toggles are gated in one direction only, matching what the template
-/// renders `data-confirm` for. Taking access away asks; handing it back does
-/// not, so an operator undoing a mistake is not made to confirm the undo.
+/// renders `data-confirm` for: taking access away asks, handing it back does
+/// not.
 #[tokio::test]
 async fn the_user_toggles_ask_only_in_the_direction_that_takes_access_away() {
     let (server, store, _uid) = logged_in_server().await;
@@ -608,10 +596,9 @@ async fn the_user_toggles_ask_only_in_the_direction_that_takes_access_away() {
         .assert_status(StatusCode::SEE_OTHER);
     assert!(!disabled(member).await);
 
-    // Promoting does not ask for a confirmation either — it is gated by the
-    // elevation check instead, which is a password and a stronger question than
-    // "are you sure?". Unlock first, or the redirect below is the elevation
-    // bounce rather than a completed promotion.
+    // Promoting is gated by the elevation check rather than a confirmation, so
+    // unlock first or the redirect below is the elevation bounce instead of a
+    // completed promotion.
     server
         .post("/admin/unlock")
         .form(&[("password", "pw")])
@@ -656,9 +643,8 @@ async fn revoking_an_api_key_asks_first() {
     assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
 }
 
-/// Signing a browser out is not undoable from that browser, so it asks too —
-/// including the "revoke every other session" bulk control, which is the one
-/// most likely to be hit by mistake.
+/// Signing a browser out is not undoable from that browser, so it asks too,
+/// including the "revoke every other session" bulk control.
 #[tokio::test]
 async fn revoking_sessions_asks_first() {
     let (server, store, uid) = logged_in_server().await;
@@ -702,7 +688,7 @@ async fn revoking_sessions_asks_first() {
 }
 
 /// The `/admin` twins share the owner templates but not the handlers, so each
-/// needs its own gate — and each needs its own assertion that it has one.
+/// needs its own gate.
 #[tokio::test]
 async fn the_admin_twins_ask_first_too() {
     let (server, store, _uid) = logged_in_server().await;

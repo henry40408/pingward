@@ -1,5 +1,4 @@
-//! The `/ping/*` endpoints other than plain success — a port of
-//! `ping_kinds.steps.js`.
+//! The `/ping/*` endpoints other than plain success.
 
 use anyhow::{Result, ensure};
 use cucumber::{then, when};
@@ -16,8 +15,7 @@ async fn send_exit_code_ping(world: &mut PingwardWorld, code: i32) -> Result<()>
 
 #[when(expr = "I send a {string} ping with body {string}")]
 async fn send_ping_with_body(world: &mut PingwardWorld, kind: String, body: String) -> Result<()> {
-    // The server records up to `ping::MAX_BODY` of the request body and
-    // renders it on the check page.
+    // The server records up to `ping::MAX_BODY` of the request body.
     let ping_url = read_ping_url(world).await?;
     world
         .api()?
@@ -27,8 +25,8 @@ async fn send_ping_with_body(world: &mut PingwardWorld, kind: String, body: Stri
 
 #[when("I ping an unknown UUID")]
 async fn ping_unknown_uuid(world: &mut PingwardWorld) -> Result<()> {
-    // An unknown uuid 404s without ever reaching a check page, so this drives
-    // the request directly and stashes the status for the assertion.
+    // An unknown uuid never reaches a check page, so the request is driven
+    // directly and the status stashed for the assertion.
     let url = format!(
         "{}/ping/00000000-0000-0000-0000-000000000000",
         world.base_url()?
@@ -49,8 +47,7 @@ fn ping_response_status(world: &mut PingwardWorld, status: u16) -> Result<()> {
 
 #[then("the ping help documents the fail and start endpoints")]
 async fn ping_help_documents_endpoints(world: &mut PingwardWorld) -> Result<()> {
-    // The collapsible "How do I ping this check?" card documents every ping
-    // signal. Its content is in the document but closed, so open it first.
+    // The help card's content is in the document but closed, so open it first.
     let driver = world.driver()?;
     let help = driver.test_id("ping-help").await?;
     let summary = help
@@ -62,8 +59,7 @@ async fn ping_help_documents_endpoints(world: &mut PingwardWorld) -> Result<()> 
     driver.expect_text("ping-help", "/start").await
 }
 
-/// The recent-pings kind cell renders as `.pill.{class}`; this maps the
-/// Gherkin label to that class.
+/// Maps a Gherkin kind label to the `.pill.{class}` the kind cell renders.
 fn pill_class(kind: &str) -> Result<&'static str> {
     Ok(match kind {
         "success" => "ok",
@@ -76,9 +72,8 @@ fn pill_class(kind: &str) -> Result<&'static str> {
 
 #[then(expr = "the recent pings table shows a {string} ping")]
 async fn pings_table_shows(world: &mut PingwardWorld, kind: String) -> Result<()> {
-    // Scoped to `#pings-section`: `.badge` is the status badge at the top of
-    // the page, and the "How do I ping" help renders `.pill` in its endpoint
-    // legend.
+    // Scoped to `#pings-section`, since the "How do I ping" help also renders
+    // `.pill` in its endpoint legend.
     world
         .driver()?
         .expect_visible_css(&format!("#pings-section .pill.{}", pill_class(&kind)?))
@@ -92,15 +87,14 @@ async fn pings_table_shows_exit(world: &mut PingwardWorld, exit: String) -> Resu
 
 #[when("I expand the latest ping row")]
 async fn expand_latest_ping_row(world: &mut PingwardWorld) -> Result<()> {
-    // Recent pings render newest-first, so the first `tr.toggle` is the row
-    // just created. Only rows with a non-empty body render as toggle rows.
+    // Newest-first, and only rows with a non-empty body are toggle rows, so
+    // the first `tr.toggle` is the row just created.
     world.driver()?.click_css("tr.toggle").await
 }
 
 #[then(expr = "the captured output shows {string}")]
 async fn captured_output_shows(world: &mut PingwardWorld, text: String) -> Result<()> {
-    // Scoped to the pings section: the ping-help card also renders an `.out`
-    // block.
+    // Scoped to the pings section, since the ping-help card also renders `.out`.
     let driver = world.driver()?;
     driver.expect_visible_css("#pings-section .out").await?;
     driver.expect_text_css("#pings-section .out", &text).await

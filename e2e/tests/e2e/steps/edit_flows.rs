@@ -1,16 +1,14 @@
 //! Renaming and re-scheduling existing projects and checks, and the markdown
-//! descriptions — a port of `edit_flows.steps.js`.
+//! descriptions.
 
 use anyhow::{Result, ensure};
 use cucumber::{given, then, when};
 use pingward_e2e::dom::{Dom, TextContent, Within, submit_element};
 use pingward_e2e::world::PingwardWorld;
 
-/// Follows the page's single uppercase `Edit` link.
-///
-/// Exact matching is load-bearing: a project with checks also renders a
-/// per-row lowercase `edit` link, which a case-insensitive substring match
-/// would reach first.
+/// Follows the page's single uppercase `Edit` link. Matched exactly: a project
+/// with checks also renders per-row lowercase `edit` links, which a
+/// case-insensitive substring match would reach first.
 async fn open_edit_form(world: &PingwardWorld, expected: &str) -> Result<()> {
     let driver = world.driver()?;
     let body = driver.find(thirtyfour::By::Tag("body")).await?;
@@ -79,8 +77,8 @@ async fn check_name_is(world: &mut PingwardWorld, name: String) -> Result<()> {
 
 #[then(expr = "the check timezone field shows {string}")]
 async fn timezone_field_shows(world: &mut PingwardWorld, timezone: String) -> Result<()> {
-    // The check page has no timezone display, so persistence is verified by
-    // reopening the edit form and reading the pre-filled value back out.
+    // The check page has no timezone display, so persistence is read back off
+    // the re-opened edit form.
     world
         .driver()?
         .expect_value_css("#timezone", &timezone)
@@ -122,9 +120,8 @@ async fn check_description_bold(world: &mut PingwardWorld, text: String) -> Resu
     description_bold(world, "check-description", &text).await
 }
 
-/// The description card renders through `markdown.rs` (escape first, then a
-/// small tag whitelist), so `**bold**` becomes a real `<strong>` element
-/// rather than escaped markers.
+/// The description card renders through `markdown.rs`, so `**bold**` becomes a
+/// real `<strong>` rather than escaped markers.
 async fn description_bold(world: &PingwardWorld, id: &str, text: &str) -> Result<()> {
     let card = world.driver()?.test_id(id).await?;
     let strong = card
@@ -141,10 +138,9 @@ async fn description_bold(world: &PingwardWorld, id: &str, text: &str) -> Result
 
 #[then("the check row shows a truncated description")]
 async fn truncated_description(world: &mut PingwardWorld) -> Result<()> {
-    // The project page's check row shows `markdown::truncate_plain` — markers
-    // stripped, no tags, capped at 120 characters with a trailing ellipsis.
-    // Asserting the ellipsis is what proves truncation happened, rather than
-    // the whole description simply fitting.
+    // The row shows `markdown::truncate_plain`: markers stripped, capped at 120
+    // characters. The ellipsis is what proves truncation, rather than the whole
+    // description fitting.
     let driver = world.driver()?;
     driver.expect_visible("check-description-summary").await?;
     driver.expect_text("check-description-summary", "…").await?;

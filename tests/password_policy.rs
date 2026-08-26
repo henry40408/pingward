@@ -1,16 +1,11 @@
-//! The password length policy (`auth::validate_password`) across every surface
-//! that *sets* a password.
+//! The password length policy (`auth::validate_password`) across the surfaces
+//! that *set* a password: `/setup`, `/admin/users` and
+//! `/admin/users/{id}/password` here, `/account/password` in
+//! `tests/account_web.rs`. Grouped because the failure mode is a *new* surface
+//! quietly not calling the validator, which no per-page test would notice.
 //!
-//! There are four: `/setup`, `/admin/users`, `/admin/users/{id}/password` and
-//! `/account/password`. The last is covered in `tests/account_web.rs` alongside
-//! the rest of that page's rejection paths; the other three are here, together,
-//! because the failure mode this guards against is a *new* surface (or a
-//! restored one) quietly not calling the validator — which no per-page test
-//! would notice.
-//!
-//! `/login` is deliberately absent, and must stay absent: validating on
-//! sign-in would lock out every account whose password predates the policy,
-//! and the length of a submitted password is not evidence of anything.
+//! `/login` is absent and must stay absent: validating on sign-in would lock out
+//! every account whose password predates the policy.
 
 use axum_test::TestServer;
 use pingward::{app, db, state::AppState, store::Store};
@@ -32,8 +27,7 @@ async fn server() -> (TestServer, Store) {
     (server, store)
 }
 
-/// A server signed in as an admin, with the session's CSRF token set as a
-/// default header so protected POSTs are not rejected by `csrf_guard`.
+/// Signed in as an admin, with the session CSRF token set as a default header.
 async fn admin_server() -> (TestServer, Store, i64) {
     let (mut server, store) = server().await;
     let phc = pingward::auth::hash_password("pw").unwrap();
@@ -86,8 +80,7 @@ async fn setup_refuses_a_password_under_the_floor() {
     );
 }
 
-/// The pair-wise message survives for a genuinely blank submission — the
-/// password policy only speaks once there is a username to go with it.
+/// The password policy only speaks once there is a username to go with it.
 #[tokio::test]
 async fn setup_still_reports_a_missing_username_as_a_pair() {
     let (mut server, store) = server().await;
@@ -146,9 +139,8 @@ async fn admin_user_creation_refuses_a_password_under_the_floor() {
     );
 }
 
-/// The reset path used to answer a bad password with a bare redirect back to
-/// `/admin`, which is indistinguishable from success — an admin would believe
-/// they had rotated a credential they had not. It now renders the reason.
+/// A bare redirect back to `/admin` is indistinguishable from success — an admin
+/// would believe they had rotated a credential they had not.
 #[tokio::test]
 async fn admin_password_reset_refuses_and_says_so_rather_than_redirecting() {
     let (server, store, _admin) = admin_server().await;
@@ -188,8 +180,7 @@ async fn admin_password_reset_refuses_and_says_so_rather_than_redirecting() {
     );
 }
 
-/// Over `auth::MAX_PASSWORD_CHARS` is a rejection, never a silent truncation —
-/// a truncated password would authenticate a shorter prefix than the user
+/// A silent truncation would authenticate a shorter prefix than the user
 /// believes they set.
 #[tokio::test]
 async fn an_over_long_password_is_refused_not_truncated() {

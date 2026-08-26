@@ -10,8 +10,7 @@ use pingward::{
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Base URL the tests run the scheduler with; notifications render check links
-/// against it.
+/// Notifications render their check links against this.
 const TEST_BASE_URL: &str = "https://pingward.test";
 
 async fn empty_store() -> Store {
@@ -51,7 +50,7 @@ async fn store_with_up_check(period: i64, grace: i64, last_ping_ago: i64) -> (St
     (store, id)
 }
 
-/// Seeds an Up check with a FIXED `last_ping_at` for precise boundary control.
+/// An Up check with a fixed `last_ping_at`, for boundary control.
 async fn store_with_up_check_at(
     period: i64,
     grace: i64,
@@ -119,7 +118,6 @@ async fn scan_once_is_idempotent() {
     let (store, _id) = store_with_up_check(60, 30, 200).await;
     let now = Utc::now();
 
-    // First scan: transitions the check to Down and emits exactly one event.
     let events = scan_once(&store, now, TEST_BASE_URL).await.unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(
@@ -132,8 +130,7 @@ async fn scan_once_is_idempotent() {
         CheckStatus::Down
     );
 
-    // Second scan with the same (or later) `now`: the check is already Down,
-    // so it's excluded from list_active_checks and must not be re-emitted.
+    // Already Down, so excluded from `list_active_checks`: no second event.
     let events = scan_once(&store, now, TEST_BASE_URL).await.unwrap();
     assert!(events.is_empty());
     assert_eq!(
@@ -175,7 +172,6 @@ async fn scan_once_does_not_down_check_one_second_before_due() {
     let due = t0 + Duration::seconds(90);
     let (store, _id) = store_with_up_check_at(60, 30, t0).await;
 
-    // now == due - 1s: still not due yet, must not emit or down the check.
     let events = scan_once(&store, due - Duration::seconds(1), TEST_BASE_URL)
         .await
         .unwrap();
@@ -200,7 +196,6 @@ async fn overdue_downs_and_delivers_to_bound_channel() {
         .mount(&mock)
         .await;
 
-    // build store with an overdue up check bound to a webhook channel
     let (store, id) = store_with_up_check(60, 30, 200).await;
     let now = Utc::now();
     let cid = store
@@ -227,23 +222,19 @@ async fn overdue_downs_and_delivers_to_bound_channel() {
     );
 }
 
-/// `run_scan_loop` publishes each `Down` transition's `check_id` to the
-/// live-tail bus, not just `scan_once`'s returned `NotificationEvent`s — this
-/// covers the loop's own publish site, which `tests/sse.rs` (the ping-side
-/// publish) doesn't exercise.
+/// Covers the loop's own publish site: `run_scan_loop` publishes each `Down`
+/// transition's `check_id` to the live-tail bus, which `tests/sse.rs` (the
+/// ping-side publish) does not exercise.
 #[tokio::test]
 async fn run_scan_loop_publishes_down_transition_to_live_tail() {
-    // period 60 + grace 30 = 90s; last ping 200s ago → already overdue when
-    // the loop's first scan pass runs.
+    // 90s window, last ping 200s ago → overdue on the loop's first pass.
     let (store, id) = store_with_up_check(60, 30, 200).await;
 
-    // Subscribe BEFORE spawning the loop. `run_scan_loop` gates its publish
-    // on `live_tx.receiver_count() > 0` (the same "free when nobody's
-    // watching" gate `ping::apply` uses) — subscribing first is what makes
-    // this deterministic instead of a race against the loop's first pass.
+    // Subscribe before spawning: the publish is gated on `receiver_count() > 0`,
+    // so subscribing later is a race against the loop's first pass.
     let (tx, mut rx) = tokio::sync::broadcast::channel(16);
-    // Hold `shutdown_tx` for the duration: dropping it is itself a shutdown
-    // request (see `shutdown::channel`), which would end the loop early.
+    // Hold `shutdown_tx`: dropping it is itself a shutdown request, which would
+    // end the loop early.
     let (_shutdown_tx, shutdown) = shutdown::channel();
     let handle = tokio::spawn(run_scan_loop(
         store.clone(),
@@ -264,14 +255,13 @@ async fn run_scan_loop_publishes_down_transition_to_live_tail() {
     handle.abort();
 }
 
-/// The shutdown flag actually ends the scan loop, and it ends by *returning* —
-/// `handle.await` yielding `Ok(())` is what proves the task ran to completion
-/// rather than being aborted, which is the property `main` relies on to close
-/// the pool with no query in flight.
+/// The loop ends by *returning*: `handle.await` yielding `Ok(())` proves it ran
+/// to completion rather than being aborted, which is what `main` relies on to
+/// close the pool with no query in flight.
 #[tokio::test]
 async fn run_scan_loop_returns_on_shutdown() {
-    // A long env-default interval: without the select on `shutdown`, the loop
-    // would sit in `sleep` far past this test's timeout.
+    // A long interval: without the select on `shutdown`, the loop would sit in
+    // `sleep` far past this test's timeout.
     let (store, _id) = store_with_up_check(60, 30, 200).await;
     let (tx, _rx) = tokio::sync::broadcast::channel(16);
     let (shutdown_tx, shutdown) = shutdown::channel();

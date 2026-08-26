@@ -1,4 +1,4 @@
-//! Integration tests for the read-only `/api/v1` bearer API (Stage B).
+//! Integration tests for the `/api/v1` bearer API.
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
@@ -131,7 +131,6 @@ async fn admin_key_reads_cross_user_and_writes_audit() {
     res.assert_status_ok();
     assert_eq!(res.json::<Value>()["name"], "theirs");
 
-    // The cross-user read is audited.
     let audits = store.list_audit(10).await.unwrap();
     assert_eq!(audits.len(), 1);
     assert_eq!(audits[0].action, "admin.api.access");
@@ -190,8 +189,8 @@ async fn check_pings_are_paginated_newest_first() {
     assert_eq!(page["items"].as_array().unwrap().len(), 20);
     assert_eq!(page["has_older"], true);
     assert_eq!(page["has_newer"], false);
-    // Cursor envelope: next_before points at the last (oldest) item on the
-    // page; there is no newer page, so next_after is null.
+    // `next_before` points at the last (oldest) item on the page; there is no
+    // newer page, so `next_after` is null.
     let last_id = page["items"].as_array().unwrap()[19]["id"]
         .as_i64()
         .unwrap();
@@ -239,7 +238,7 @@ async fn limit_is_clamped() {
             .await
             .unwrap();
     }
-    // limit=0 clamps up to 1; a huge limit clamps down but still returns all 3.
+    // limit=0 clamps up to 1.
     let res = server
         .get(&format!("/api/v1/checks/{cid}/pings?limit=0"))
         .add_header("authorization", format!("Bearer {token}"))
@@ -383,8 +382,8 @@ async fn keys_endpoint_is_self_scoped() {
 #[tokio::test]
 async fn docs_require_a_logged_in_session() {
     let (server, _store) = test_app().await;
-    // The spec and the Scalar page are gated behind a web session: an
-    // unauthenticated request redirects to /login rather than exposing them.
+    // Both are gated behind a web session, so an unauthenticated request
+    // redirects to /login.
     server
         .get("/api/openapi.json")
         .await
@@ -425,34 +424,24 @@ async fn docs_are_served_to_a_logged_in_user() {
 
 // --- /api/v1 route guard exhaustiveness ------------------------------------
 //
-// `api::routes()` guards every `/api/v1` handler individually via the
-// `ApiUser` bearer extractor — there is no router-level layer enforcing it.
-// The test below parses `src/api/mod.rs` to recover the exact list of
-// `/api/v1` (method, path) pairs the router registers — `axum::Router` does
-// not expose its route table at runtime, so source-parsing is the only way
-// to derive it — and asserts every single one rejects an unauthenticated
-// caller with 401. There is no per-route exception list: a new `/api/v1`
-// route that forgets its `ApiUser` extractor fails this test.
+// `api::routes()` guards every `/api/v1` handler individually via the `ApiUser`
+// bearer extractor; there is no router-level layer enforcing it.
 //
-// `/api/openapi.json` and `/api/docs` are deliberately excluded: they are
-// gated behind a logged-in web session (`CurrentUser`), not a bearer key
-// (see `docs_require_a_logged_in_session`/`docs_are_served_to_a_logged_in_user`
-// above), so they sit outside this invariant's scope. The `/api/v1` prefix
-// filter in `common::routes_in_router_source` excludes them automatically.
+// `/api/openapi.json` and `/api/docs` are excluded: they are gated behind a
+// logged-in web session (`CurrentUser`), not a bearer key, and the `/api/v1`
+// prefix filter drops them automatically.
 
 /// Every `/api/v1` route registered by `api::routes()` must reject an
 /// unauthenticated caller with 401, with no exceptions. The route list is
-/// derived from the router's own source (`common::routes_in_router_source`)
-/// rather than hand-maintained, so a newly added `/api/v1` route that forgets
-/// its `ApiUser` extractor fails this test and there is no way to silence it
-/// short of actually adding the extractor.
+/// derived from the router's own source rather than hand-maintained
+/// (`axum::Router` exposes no route table at runtime), so a new `/api/v1` route
+/// that forgets its `ApiUser` extractor fails this test.
 #[tokio::test]
 async fn every_api_v1_route_requires_a_bearer_key() {
     let (server, _store) = test_app().await;
 
     let routes = common::routes_in_router_source(include_str!("../src/api/mod.rs"), "/api/v1");
-    // A parser that (due to a bug) returns nothing would make the loop below
-    // pass vacuously. Guard against that explicitly.
+    // A parser bug returning nothing would make the loop below pass vacuously.
     assert!(
         routes.len() >= 20,
         "parsed only {} /api/v1 routes from src/api/mod.rs — the source parser \
@@ -462,12 +451,10 @@ async fn every_api_v1_route_requires_a_bearer_key() {
 
     for (method, raw_path) in &routes {
         let path = common::normalise_route_path(raw_path);
-        // No request body is sent, even for POST/PUT/PATCH — deliberately.
-        // `ApiUser` is a `FromRequestParts` extractor, so it runs *before*
-        // the `ApiJson` body extractor: auth must be rejected before the
-        // body is even looked at. If a handler ever extracted the body
-        // first, an unauthenticated request would surface `400 bad_request`
-        // instead of `401`, and this test would catch that regression.
+        // No body is sent, even for POST/PUT/PATCH: `ApiUser` is a
+        // `FromRequestParts` extractor and runs *before* the `ApiJson` body
+        // extractor, so a handler that took the body first would surface
+        // `400 bad_request` here instead of `401`.
         let status = match *method {
             "GET" => server.get(&path).await.status_code(),
             "POST" => server.post(&path).await.status_code(),
@@ -487,50 +474,35 @@ async fn every_api_v1_route_requires_a_bearer_key() {
 // --- /api/v1 cross-user ownership scoping -----------------------------------
 //
 // `resolve_project`/`resolve_check`/`resolve_channel` in `src/api/v1.rs` are
-// the single choke point every parameterised `/api/v1` handler routes an id
-// through: owner-scope first, else an audited admin cross-user access, else
-// `404` (not `403`) — existence is hidden from a caller who neither owns the
-// resource nor is an admin. The test below derives every `/api/v1` route
-// that carries a path parameter the same source-parsing way as the
-// exhaustiveness test above, substitutes another user's resource id into it,
-// and asserts every single one 404s for a non-admin caller. There is no
-// per-route exception list: a new `/api/v1` route that resolves an id
-// without going through one of those three choke points fails this test.
+// the choke point every parameterised `/api/v1` handler routes an id through:
+// owner-scope first, else an audited admin cross-user access, else `404` (not
+// `403`), so existence is hidden from a caller who neither owns the resource
+// nor is an admin.
 
-/// Every parameterised `/api/v1` route is checked BOTH ways: a non-admin
-/// non-owner caller ("B") must get `404 Not Found` (not `403`) —
-/// `resolve_project`/`resolve_check`/`resolve_channel` hide existence from a
-/// caller who neither owns the resource nor is an admin — AND the owner
-/// ("A"), hitting the exact same route against the exact same resource id,
-/// must get anything *other than* 404. That second half is what stops the
-/// test from passing vacuously: without it, a 404 from B is indistinguishable
-/// from "that id never existed in the first place" (e.g. broken seeding, an
-/// off-by-one id, a future refactor), and every route would still show green
-/// even though the test would no longer be exercising ownership scoping at
-/// all. The route list is derived from the router's own source
-/// (`common::routes_in_router_source`) rather than hand-maintained, so a
-/// newly added `/api/v1` route that resolves an id without going through one
-/// of those three choke points fails this test.
+/// Every parameterised `/api/v1` route is checked both ways: a non-admin
+/// non-owner caller ("B") gets `404` (not `403`), and the owner ("A") gets
+/// anything *other than* 404 for the same route and id. Without that second
+/// half a 404 from B is indistinguishable from "that id never existed" (broken
+/// seeding, an off-by-one id, a future refactor) and the test passes vacuously.
+/// The route list is derived from the router's own source, so a new route that
+/// resolves an id outside those three choke points fails this test.
 #[tokio::test]
 async fn member_cannot_reach_another_users_resource_on_any_api_route() {
     let (server, store) = test_app().await;
 
-    // User A: the owner whose resources B will try (and fail) to reach.
     let (owner, owner_token) = user_with_key(&store, "alice", false).await;
 
-    // User B: a different NON-admin caller. An admin is *allowed* cross-user
-    // access (and it's audited) — that's a separate invariant, not this one.
+    // B is a *non-admin*: an admin is allowed cross-user access, a separate
+    // invariant.
     let (_member, token) = user_with_key(&store, "mallory", false).await;
 
     let routes = common::routes_in_router_source(include_str!("../src/api/mod.rs"), "/api/v1");
-    // A route with no path parameter has no cross-user surface to test
-    // (`/api/v1/projects` GET/POST, `/api/v1/keys` GET are excluded here).
+    // A route with no path parameter has no cross-user surface to test.
     let param_routes: Vec<(&str, String)> = routes
         .into_iter()
         .filter(|(_, raw_path)| raw_path.contains('{'))
         .collect();
-    // A parser bug that returns nothing would make the loop below pass
-    // vacuously. Guard against that explicitly.
+    // A parser bug returning nothing would make the loop below pass vacuously.
     assert!(
         param_routes.len() >= 15,
         "parsed only {} parameterised /api/v1 routes from src/api/mod.rs — the \
@@ -540,12 +512,11 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
     );
 
     // (method, raw path) -> request body, verified against each DTO's
-    // `Deserialize` impl in `src/api/input.rs`. `ApiJson` is a `FromRequest`
-    // extractor that runs *before* the handler body calls `resolve_*`, so an
-    // absent/schema-invalid body on a route that needs one would 400 before
-    // the ownership check is ever reached. Every parameterised route must
-    // appear here exactly once, whether or not it takes a body — see the
-    // exhaustiveness assertion below.
+    // `Deserialize` impl in `src/api/input.rs`. `ApiJson` runs *before* the
+    // handler calls `resolve_*`, so an absent or schema-invalid body would 400
+    // before the ownership check is reached. Every parameterised route must
+    // appear here exactly once, body or not — see the exhaustiveness assertion
+    // below.
     let body_table: HashMap<(&str, &str), Option<Value>> = HashMap::from([
         (("GET", "/api/v1/projects/{id}"), None),
         (
@@ -586,9 +557,9 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
         (("DELETE", "/api/v1/channels/{id}"), None),
     ]);
 
-    // The table's keys must exactly match the derived routes — a new
-    // parameterised route missing from the table (or a stale entry for a
-    // removed one) fails here rather than silently skipping the invariant.
+    // The table's keys must exactly match the derived routes, so a new route
+    // missing from the table (or a stale entry for a removed one) fails here
+    // rather than silently skipping the invariant.
     let derived_keys: HashSet<(&str, &str)> = param_routes
         .iter()
         .map(|(method, path)| (*method, path.as_str()))
@@ -601,14 +572,10 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
     );
 
     for (i, (method, raw_path)) in param_routes.iter().enumerate() {
-        // Seed a fresh project + check + channel for the owner on *every*
-        // iteration rather than once before the loop. Several routes are
-        // destructive (`DELETE .../projects/{id}`, `.../checks/{id}`,
-        // `.../channels/{id}`); the owner's positive-control request below
-        // would consume/delete a shared resource and poison later
-        // iterations, so each iteration gets its own. Names/uuids are
-        // suffixed with the loop index — `ping_uuid` has a UNIQUE constraint,
-        // so `make_check`'s uuid argument in particular must not repeat.
+        // Seed per iteration, not once before the loop: several routes are
+        // destructive, so the owner's positive control below would consume a
+        // shared resource and poison later iterations. Names/uuids carry the
+        // loop index because `ping_uuid` is UNIQUE.
         let pid = store
             .create_project(
                 owner,
@@ -643,16 +610,11 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
             .get(&(*method, raw_path.as_str()))
             .unwrap_or_else(|| panic!("no body mapping for {method} {raw_path} — add one"));
 
-        // B's request MUST run before A's. B's request always 404s (that's
-        // the assertion), so it never mutates the seeded resource; A's
-        // request may be a DELETE that consumes it. Running A first would let
-        // a destructive owner request remove the row before B ever asks,
-        // which would make B's 404 pass vacuously again — exactly what this
-        // whole restructuring exists to rule out.
+        // B's request must run before A's: B always 404s and so never mutates
+        // the seeded resource, while A's may be a DELETE that consumes it —
+        // running A first would make B's 404 vacuous again.
         let member_res = build_request(&server, method, &path, &token, body.as_ref()).await;
-        // 404, not 403: `resolve_project`/`resolve_check`/`resolve_channel`
-        // hide existence from a caller who isn't the owner and isn't an
-        // admin, rather than revealing "it exists but you can't touch it".
+        // 404, not 403: existence is hidden from a non-owner non-admin.
         assert_eq!(
             member_res.status_code(),
             StatusCode::NOT_FOUND,
@@ -661,17 +623,12 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
             member_res.status_code()
         );
 
-        // Positive control: the SAME request, as the owner, against the SAME
-        // resource id. This proves the id was live and reachable, so B's 404
-        // above is genuinely ownership-driven rather than "that id doesn't
-        // exist at all". We assert merely "not 404", not an exact success
-        // status, because several routes legitimately return `400
-        // bad_request` for the owner too — the minimal bodies in
-        // `body_table` satisfy `serde`'s `Deserialize` but not the later
-        // `validate_*` calls (e.g. `POST /api/v1/projects/{id}/checks` with
-        // `{"name":"x"}`). That's fine: a 400 still proves the id resolved to
-        // a real, owned resource, which is the only thing this control needs
-        // to establish.
+        // Positive control: the same request as the owner against the same id,
+        // proving the id was live so B's 404 is ownership-driven. Only "not
+        // 404" is asserted — the minimal bodies in `body_table` satisfy
+        // `serde`'s `Deserialize` but not the later `validate_*` calls, so
+        // several routes return `400 bad_request` for the owner too; a 400
+        // still proves the id resolved to a real, owned resource.
         let owner_res = build_request(&server, method, &path, &owner_token, body.as_ref()).await;
         assert_ne!(
             owner_res.status_code(),
@@ -684,9 +641,8 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
 }
 
 /// Builds and sends one `/api/v1` request with the given bearer token and
-/// optional JSON body. Factored out so the (method, non-owner) and (method,
-/// owner) requests in the loop above share one code path instead of
-/// duplicating the method dispatch `match`.
+/// optional JSON body, shared by the non-owner and owner requests in the loop
+/// above.
 async fn build_request(
     server: &TestServer,
     method: &str,

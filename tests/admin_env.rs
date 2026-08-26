@@ -13,8 +13,8 @@ async fn admin_env_card_never_leaks_secrets() {
         "PINGWARD_SMTP_HOST" => Some("smtp.example.com".into()),
         "PINGWARD_SMTP_FROM" => Some("alerts@example.com".into()),
         "PINGWARD_SMTP_PASSWORD" => Some("hunter2-smtp".into()),
-        // Pinned so `common::anonymous_csrf` derives a token this server
-        // accepts — an unpinned secret is random per `Config`.
+        // Pinned so `common::anonymous_csrf` derives an accepted token; an
+        // unpinned secret is random per `Config`.
         "PINGWARD_SECRET" => Some(common::TEST_SECRET.into()),
         _ => None,
     });
@@ -45,8 +45,7 @@ async fn admin_env_card_never_leaks_secrets() {
     assert!(body.contains("configured"));
     assert!(body.contains("db.internal"));
     assert!(body.contains("smtp.example.com"));
-    // The username row is an identity (not a credential) and stays unset here
-    // since PINGWARD_SMTP_USERNAME was never provided.
+    // The username row is an identity, not a credential, and is unset here.
     assert!(body.contains(r#"data-testid="env-smtp-password""#));
 }
 
@@ -79,7 +78,6 @@ async fn admin_env_card_shows_unset_smtp_when_not_configured() {
     let body = res.text();
     assert!(body.contains("DATABASE_URL"));
     assert!(body.contains("PINGWARD_SCAN_INTERVAL"));
-    // No SMTP configured anywhere: the "configured" pill must never appear.
     assert!(body.contains(r#"data-testid="env-smtp-password""#));
     assert!(!body.contains(r#"<span class="pill ok">configured</span>"#));
 }

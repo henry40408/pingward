@@ -1,37 +1,25 @@
-//! Helpers shared between integration-test binaries. This directory (a
-//! `mod.rs` under `tests/common/`) is the standard Rust idiom for code shared
-//! between `tests/*.rs` files without itself being compiled as a separate
-//! test binary.
+//! Helpers shared between integration-test binaries.
 
-/// Fixed session/CSRF secret for tests.
-///
-/// `Config::from_map` generates a random secret when `PINGWARD_SECRET` is
-/// unset, which is right for production but would force every test to capture
-/// its `Config` just to derive one token. Tests pin it instead, via
-/// [`test_config`], so [`newest_session_csrf`] can derive without threading the
-/// secret through each call site. Tests that care about *rotation* build their
-/// own `Config` with a different secret rather than using this.
+/// Fixed session/CSRF secret for tests, pinned via [`test_config`] so helpers
+/// can derive tokens without threading a `Config` through every call site.
+/// Tests covering secret *rotation* build their own `Config` instead.
 #[allow(dead_code)]
 pub const TEST_SECRET: &str = "pingward-test-secret-32-bytes-xx";
 
 /// A default `Config` pinned to [`TEST_SECRET`].
 ///
-/// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — each
-/// `tests/*.rs` binary compiles its own copy of this module.
+/// `#[allow(dead_code)]`: see [`substitute_owner_id`].
 #[allow(dead_code)]
 pub fn test_config() -> pingward::config::Config {
     pingward::config::Config::from_map(|k| (k == "PINGWARD_SECRET").then(|| TEST_SECRET.into()))
 }
 
-/// The one-shot flash cookie (`name=value`) exactly as a server built with
-/// [`test_config`] would set it: signed under [`TEST_SECRET`], with the
-/// unprefixed name such a server uses (`cookie_secure` is false without a
-/// `https://` `PINGWARD_BASE_URL`).
+/// The one-shot flash cookie (`name=value`) as a [`test_config`] server sets
+/// it: signed under [`TEST_SECRET`], unprefixed name (`cookie_secure` is false
+/// without an `https://` `PINGWARD_BASE_URL`).
 ///
-/// Tests must go through this rather than writing `pingward_flash=<surface>`:
-/// an unsigned value is exactly what a sibling subdomain plants, so the server
-/// now ignores it — an assertion built on one would pass without exercising
-/// anything.
+/// Writing `pingward_flash=<surface>` directly exercises nothing — the server
+/// ignores unsigned values, as it must for one planted by a sibling subdomain.
 #[allow(dead_code)]
 pub fn signed_flash_cookie(value: &str) -> String {
     format!(
@@ -47,13 +35,10 @@ pub fn flash_payload(raw: &str) -> Option<String> {
     pingward::secret::verify_flash(TEST_SECRET.as_bytes(), raw)
 }
 
-/// The CSRF token for the newest session row in `pool`, derived exactly as a
-/// server built with [`test_config`] derives it.
-///
-/// There is no `sessions.csrf_token` column any more — the token is
-/// `HMAC(secret, session id)` (see `pingward::secret`). "Newest" is by `rowid`:
-/// every session in a test is created within the same second, so
-/// `created_at`/`expires_at` cannot order two rows apart.
+/// The CSRF token for the newest session row in `pool`, derived as a
+/// [`test_config`] server derives it: `HMAC(secret, session id)`, with no
+/// `sessions.csrf_token` column. "Newest" is by `rowid` — sessions in a test
+/// share a second, so `created_at`/`expires_at` cannot order two rows apart.
 #[allow(dead_code)]
 pub async fn newest_session_csrf(pool: &pingward::db::Pool) -> String {
     let id = sqlx::query_scalar::<_, String>("SELECT id FROM sessions ORDER BY rowid DESC LIMIT 1")
@@ -64,31 +49,18 @@ pub async fn newest_session_csrf(pool: &pingward::db::Pool) -> String {
 }
 
 /// Starts a fresh anonymous session on `server` and returns its CSRF token, for
-/// use as the `_csrf` field of a `POST /login` or `POST /setup`.
+/// the `_csrf` field of a `POST /login` or `POST /setup`. Neither is exempt
+/// from `csrf_guard`, and `TestServer` posts blind where a browser would first
+/// load the form carrying the hidden `_csrf`.
 ///
-/// Those two are no longer exempt from `csrf_guard`: `web::anonymous_session`
-/// hands even a logged-out visitor a signed cookie to derive a token from. A
-/// browser gets this for free — it loads the form first, and the form carries
-/// the hidden `_csrf`. `TestServer` posts blind, so it fetches the page once
-/// itself here.
+/// The token comes from the *cookie*: an anonymous session has no `sessions`
+/// row, so [`newest_session_csrf`] cannot see it — use this before logging in
+/// and that one after. Cookies are cleared first so the layer is guaranteed to
+/// mint on this request, since `TestServer` exposes no reader for its jar.
+/// Both cookie names are tried; a handful of callers build a `Secure`
+/// (`__Host-`-prefixed) server.
 ///
-/// The token comes from the *cookie*, not the database: an anonymous session
-/// has no `sessions` row (that is the whole point — see
-/// `web::anonymous_session`), so [`newest_session_csrf`] cannot see it. Use
-/// this before logging in and that one after.
-///
-/// Cookies are cleared first so the layer is guaranteed to mint — and hence
-/// `Set-Cookie` — on this request. `TestServer` exposes no reader for the jar
-/// it has saved, so the response is the only place the value can be read from.
-///
-/// Tries both session cookie names (P2-G): most callers build their server
-/// from [`test_config`] or an equivalent `PINGWARD_BASE_URL`-less `Config`, so
-/// `cookie_secure` is false and the cookie is unprefixed — but a handful build
-/// a `Secure` (`__Host-`-prefixed) server directly, so this does not assume
-/// either name and checks whichever one the response actually set.
-///
-/// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — each
-/// `tests/*.rs` binary compiles its own copy of this module.
+/// `#[allow(dead_code)]`: see [`substitute_owner_id`].
 #[allow(dead_code)]
 pub async fn anonymous_csrf(server: &mut axum_test::TestServer) -> String {
     server.clear_cookies();
@@ -102,25 +74,18 @@ pub async fn anonymous_csrf(server: &mut axum_test::TestServer) -> String {
     pingward::secret::derive_csrf(TEST_SECRET.as_bytes(), &id)
 }
 
-/// Parses the body of a router's `pub fn routes() -> Router<AppState> {`
-/// function straight out of its own source to recover every `(method, path)`
-/// pair it registers, filtered to those starting with `prefix`. This is a
-/// deliberate source-level check: `axum::Router` does not expose its route
-/// table for introspection at runtime, so reading the router's own source is
-/// the only way to recover the list without hand-maintaining a copy of it.
+/// Recovers every `(method, path)` pair a router registers by parsing the body
+/// of its `pub fn routes() -> Router<AppState> {` out of the source text,
+/// keeping those starting with `prefix`. `axum::Router` exposes no route table
+/// at runtime, so the source is the only alternative to a hand-maintained copy.
 /// Plain `str` methods only — no regex crate.
 ///
-/// Paths are returned **raw** (`{param}` segments intact, not normalised) —
-/// callers that just want to request the path as-is should run it through
-/// [`normalise_route_path`] themselves; callers that need to know which
-/// segment carries an id (e.g. to substitute a real one) need the raw form.
+/// Paths come back raw (`{param}` segments intact) for callers that need to
+/// know which segment carries an id; run them through [`normalise_route_path`]
+/// to request them as-is. `source` is the file text — callers pass
+/// `include_str!(...)` so the path resolves relative to their own file.
 ///
-/// `source` is the file text; callers pass `include_str!(...)` at the call
-/// site so the path resolves relative to the calling file. `prefix` selects
-/// which registered paths to keep (e.g. `"/admin"`, `"/api/v1"`).
-///
-/// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — most
-/// binaries pull this module in only for the CSRF helpers above.
+/// `#[allow(dead_code)]`: see [`substitute_owner_id`].
 #[allow(dead_code)]
 pub fn routes_in_router_source(source: &str, prefix: &str) -> Vec<(&'static str, String)> {
     let start_marker = "pub fn routes() -> Router<AppState> {";
@@ -187,19 +152,14 @@ pub fn routes_in_router_source(source: &str, prefix: &str) -> Vec<(&'static str,
 }
 
 /// Substitutes a raw route's first `{param}` segment with the id of the
-/// resource type named by the path segment immediately before it —
-/// `.../projects/{id}...` gets `project_id`, `.../checks/{id}...` gets
-/// `check_id`, `.../channels/{id}...` gets `channel_id`. Panics on an
+/// resource named by the segment before it — `projects` takes `project_id`,
+/// `checks` takes `check_id`, `channels` takes `channel_id`. Panics on an
 /// unrecognised resource segment so a future route with a new resource type
-/// fails loudly instead of being silently mis-targeted. Shared by the
-/// `/api/v1` and web-surface ownership-scoping tests, which both route ids
-/// through the same three resource types.
+/// fails loudly instead of being silently mis-targeted.
 ///
 /// `#[allow(dead_code)]`: each `tests/*.rs` binary compiles its own copy of
-/// this module, so rustc only sees the calls made from *that* binary — not
-/// every function in `tests/common/` is used by every consumer (e.g.
-/// `tests/admin.rs` has no cross-user id substitution to do), which would
-/// otherwise be flagged as dead code in the binaries that don't call it.
+/// this module, so a function no call site in *that* binary uses reads as dead
+/// there.
 #[allow(dead_code)]
 pub fn substitute_owner_id(
     raw_path: &str,
@@ -230,8 +190,7 @@ pub fn substitute_owner_id(
 /// Replaces every `{param}` path segment with `1` so the parsed path can be
 /// requested as-is.
 ///
-/// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — not every
-/// `tests/*.rs` binary that pulls in this module calls every function in it.
+/// `#[allow(dead_code)]`: see [`substitute_owner_id`].
 #[allow(dead_code)]
 pub fn normalise_route_path(raw: &str) -> String {
     let mut out = String::new();
@@ -252,17 +211,12 @@ pub fn normalise_route_path(raw: &str) -> String {
 
 /// Unlock `/admin`'s access-granting controls for this server's session.
 ///
-/// Creating a user, resetting a password and granting admin each hand out
-/// access that outlives the browser session, so they sit behind
-/// `elevate::Elevations` and need the admin's password re-asserted first. A
-/// test driving one of those does what an admin does: unlock once, then act.
+/// Creating a user, resetting a password and granting admin hand out access
+/// outliving the browser session, so they sit behind `elevate::Elevations` and
+/// need the admin's password re-asserted first. Requires the session's CSRF
+/// token to already be installed as a default header.
 ///
-/// Requires the session's CSRF token to already be installed as a default
-/// header, which every admin fixture in this suite does.
-///
-/// `#[allow(dead_code)]`: see the note on [`substitute_owner_id`] — each test
-/// binary compiles this module separately, so anything not used by *that*
-/// binary reads as dead there.
+/// `#[allow(dead_code)]`: see [`substitute_owner_id`].
 #[allow(dead_code)]
 pub async fn unlock_admin(server: &axum_test::TestServer, password: &str) {
     server

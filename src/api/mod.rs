@@ -1,18 +1,14 @@
 //! The programmatic REST API: a bearer-authenticated `/api/v1` surface (reads
 //! and writes) plus its `OpenAPI` document and Scalar reference UI.
 //!
-//! Mounted in [`crate::app`] as a sibling router **outside** the `csrf_guard`
-//! middleware. That is safe because every `/api/v1` handler authenticates via
-//! the [`extract::ApiUser`] bearer extractor and never reads the session
-//! cookie. The `/api/docs` and `/api/openapi.json` routes do read the session
-//! cookie ([`CurrentUser`]), but they are read-only `GET`s that render a schema
-//! and change no state, so there is still no ambient authority for a cross-site
-//! request to abuse. Because they read the session cookie, they are also
-//! session-authenticated responses in the caching sense, so this router
-//! layers [`crate::web::no_store`] around just those two routes — scoped
-//! narrowly rather than applied to the whole router, since `/api/v1` is
-//! bearer-only and changing its response headers would affect API consumers
-//! for no benefit. See [`crate::web::no_store`]'s doc comment.
+//! Mounted in [`crate::app`] as a sibling router outside `csrf_guard`: every
+//! `/api/v1` handler authenticates via the [`extract::ApiUser`] bearer
+//! extractor and never reads the session cookie. `/api/docs` and
+//! `/api/openapi.json` do read it ([`CurrentUser`]), but are read-only `GET`s,
+//! so there is no ambient authority for a cross-site request to abuse. They
+//! are session-authenticated responses, so [`crate::web::no_store`] is layered
+//! around just those two — `/api/v1` is bearer-only and changing its headers
+//! would only affect API consumers.
 
 pub mod dto;
 pub mod error;
@@ -107,10 +103,9 @@ impl utoipa::Modify for BearerAuth {
     }
 }
 
-/// Serve the raw `OpenAPI` document. Gated behind a logged-in web session
-/// ([`CurrentUser`]) — the reference describes the surface but is not itself
-/// public; unauthenticated requests redirect to `/login`. The `/api/v1` data
-/// endpoints keep their independent bearer authentication.
+/// Gated behind a logged-in web session ([`CurrentUser`]): the reference
+/// describes the surface but is not itself public. `/api/v1` keeps its
+/// independent bearer authentication.
 async fn openapi_json(_user: CurrentUser) -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
@@ -121,11 +116,8 @@ async fn scalar_docs(_user: CurrentUser) -> Html<String> {
     Html(Scalar::new(ApiDoc::openapi()).to_html())
 }
 
-/// The `/api/docs` and `/api/openapi.json` routes, split into their own
-/// sub-router so `no_store` can be layered around just these two —
-/// session-authenticated (`CurrentUser`) responses, unlike the bearer-only
-/// `/api/v1` surface — without touching `/api/v1`'s headers. Paths are
-/// unchanged; this is purely a layering seam.
+/// A sub-router purely so `no_store` covers just these two
+/// session-authenticated routes, without touching `/api/v1`'s headers.
 fn docs_routes() -> Router<AppState> {
     Router::new()
         .route("/api/openapi.json", get(openapi_json))
@@ -133,8 +125,6 @@ fn docs_routes() -> Router<AppState> {
         .layer(axum::middleware::from_fn(crate::web::no_store))
 }
 
-/// The API router: the read-only `/api/v1` endpoints (bearer auth) plus the
-/// `OpenAPI` document and Scalar docs UI (gated behind a logged-in web session).
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(

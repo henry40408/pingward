@@ -75,8 +75,7 @@ pub fn routes() -> Router<AppState> {
             "/account/sessions/revoke-others",
             post(sessions_revoke_others),
         )
-        // --- admin cross-user route group (every handler guarded by
-        // AdminUser, no exceptions) ---
+        // --- admin cross-user routes (every handler guarded by AdminUser) ---
         .route("/admin", get(admin_page))
         .route("/admin/audit", get(admin_audit_fragment))
         .route("/admin/settings", post(settings_save))
@@ -155,29 +154,26 @@ struct DashboardTemplate {
     csrf: String,
     is_admin: bool,
     total: usize,
-    /// Checks whose display status is `Up` **or** `Running` — an in-flight run
-    /// is still up, so the two share one tile rather than splitting the count.
+    /// Checks displaying as `Up` or `Running` — an in-flight run is still up,
+    /// so the two share one tile.
     up: usize,
     late: usize,
     down: usize,
     groups: Vec<ProjectGroup>,
     /// The active filter term, trimmed, echoed back into the search box. Empty
-    /// means unfiltered — the template keys both the empty state and the
-    /// "clear" affordance off this rather than a separate flag.
+    /// means unfiltered, and keys both the empty state and the "clear" affordance.
     q: String,
-    /// The active status filter as its `?status=` value (`up`/`late`/`down`),
-    /// or empty for "all". Drives the `<select>`'s selected option and, with
-    /// `q`, whether the "clear" affordance and no-results state show.
+    /// The active status filter as its `?status=` value (`up`/`late`/`down`), or
+    /// empty for "all".
     status: String,
-    /// One-shot warning shown after a forward-auth Sign Out with no gateway
-    /// logout URL configured: the local session was cleared but the proxy will
-    /// re-authenticate, so the visitor must sign out at their proxy/SSO
-    /// provider. `None` on an ordinary dashboard load.
+    /// One-shot warning after a forward-auth Sign Out with no gateway logout URL
+    /// configured: the local session was cleared but the proxy will
+    /// re-authenticate, so the visitor must sign out at their proxy/SSO provider.
     forward_auth_logout: Option<String>,
 }
 
 /// Query params for the dashboard filter. Absent, blank, or whitespace-only
-/// means "no filter", so `/?q=` behaves exactly like `/`.
+/// means "no filter".
 #[derive(Deserialize, Default)]
 struct DashboardQuery {
     #[serde(default)]
@@ -186,10 +182,9 @@ struct DashboardQuery {
     status: Option<String>,
 }
 
-/// The dashboard's status filter. Deliberately narrower than [`DisplayStatus`]:
-/// it mirrors the summary tiles (`up`/`late`/`down`), and `Up` folds in
-/// `Running` the same way the Up tile does. `Paused`/`New` checks have no tile
-/// and no filter entry — they show only in the unfiltered list.
+/// The dashboard's status filter, narrower than [`DisplayStatus`]: it mirrors
+/// the summary tiles, so `Up` folds in `Running` and `Paused`/`New` have no
+/// entry at all.
 #[derive(Clone, Copy)]
 enum StatusFilter {
     Up,
@@ -198,9 +193,8 @@ enum StatusFilter {
 }
 
 impl StatusFilter {
-    /// Parse the `?status=` value. Anything outside `up`/`late`/`down` —
-    /// including `all`, empty, or garbage — is "no filter" (`None`), so a bad
-    /// value degrades to the full list rather than a 400 or an empty page.
+    /// Anything outside `up`/`late`/`down` is "no filter" (`None`), so a bad
+    /// value degrades to the full list rather than a 400.
     fn parse(s: &str) -> Option<Self> {
         match s {
             "up" => Some(Self::Up),
@@ -220,8 +214,7 @@ impl StatusFilter {
         }
     }
 
-    /// Does a check's display status fall in this bucket? `Up` matches an
-    /// in-flight `Running` check too, matching the merged Up tile.
+    /// `Up` matches an in-flight `Running` check too, matching the merged tile.
     fn matches(self, ds: crate::view::DisplayStatus) -> bool {
         use crate::view::DisplayStatus;
         match self {
@@ -235,30 +228,22 @@ impl StatusFilter {
 /// Case-insensitive substring test backing the dashboard filter.
 ///
 /// `needle` must already be lowercased by the caller — it is the same for every
-/// row, so lowercasing it once per request rather than once per field keeps the
-/// scan linear in the data actually being searched.
-///
-/// Matching runs in Rust over the rows the dashboard already loads, not in SQL:
-/// `LIKE` is ASCII-case-insensitive on `SQLite` but case-sensitive on Postgres,
-/// and `ILIKE` is Postgres-only and untranslated by the `Any` driver, so a
-/// portable SQL version would need two dialects for no gain.
+/// row. Matching runs in Rust rather than SQL: `LIKE` is case-insensitive on
+/// `SQLite` but not on Postgres, and `ILIKE` is untranslated by the `Any` driver.
 fn matches_term(haystack: &str, needle: &str) -> bool {
     haystack.to_lowercase().contains(needle)
 }
 
 /// A check's most recent activity: the later of its last finished ping and its
-/// last start. `Option`'s ordering does the work — `Some(_) > None`, and
-/// `max` between two `Some`s picks the later instant — which is the same trick
-/// `view::display_status` uses to spot an in-flight run. A check that has never
-/// been pinged yields `None`.
+/// last start, relying on `Option`'s ordering (`Some(_) > None`) — the same
+/// trick `view::display_status` uses to spot an in-flight run. `None` if never
+/// pinged.
 fn last_activity_at(c: &Check) -> Option<DateTime<Utc>> {
     c.last_ping_at.max(c.last_start_at)
 }
 
-/// Order a project's checks for display: most recent activity first, so a job
-/// that just ran (or just started) surfaces at the top. Never-pinged checks
-/// sort last (`None` is the smallest key, reversed here), and checks sharing a
-/// timestamp fall back to creation order so the list is deterministic.
+/// Order a project's checks by most recent activity first. Never-pinged checks
+/// sort last, and ties fall back to creation order so the list is deterministic.
 fn sort_checks_by_activity(checks: &mut [Check]) {
     checks.sort_by(|a, b| {
         last_activity_at(b)
@@ -267,9 +252,9 @@ fn sort_checks_by_activity(checks: &mut [Check]) {
     });
 }
 
-/// Order the dashboard's project groups by name, case-insensitively so `Web`
-/// and `api` interleave the way a reader expects rather than splitting on byte
-/// value. Equal names fall back to creation order for a deterministic list.
+/// Order project groups by name, case-insensitively so `Web` and `api`
+/// interleave rather than splitting on byte value. Ties fall back to creation
+/// order.
 fn sort_projects_by_name(projects: &mut [Project]) {
     projects.sort_by(|a, b| {
         a.name
@@ -287,9 +272,8 @@ struct CheckRow {
     last: String,         // fmt_relative or "—"
     bars: Vec<crate::view::Bar>,
     description: String, // markdown::truncate_plain, single-line summary
-    /// True when the check has zero bound notification channels — rendered as
-    /// a "no channel" chip so a check nobody would be alerted for is visible
-    /// at a glance rather than silent.
+    /// Zero bound notification channels — rendered as a "no channel" chip so a
+    /// check nobody would be alerted for is visible.
     no_channel: bool,
 }
 
@@ -301,9 +285,8 @@ struct ProjectGroup {
     description: String, // markdown::truncate_plain, single-line summary
 }
 
-/// Human-readable schedule summary shown under a check's name (dashboard rows,
-/// the project page, and the check detail page). Uses `duration::fmt_duration`
-/// so the displayed interval matches what the check form accepts and renders.
+/// Human-readable schedule summary shown under a check's name. Uses
+/// `duration::fmt_duration`, so it matches what the check form accepts.
 pub(crate) fn schedule_label(c: &Check) -> String {
     let grace = crate::duration::fmt_duration(c.grace_secs);
     match c.schedule_kind {
@@ -343,9 +326,8 @@ async fn setup_page(State(state): State<AppState>, jar: CookieJar) -> Result<Res
     .into_response())
 }
 
-// Deliberately not rate-limited, unlike `login_submit`: `/setup` only ever
-// accepts requests while `count_users() == 0`, so there is no credential yet
-// to brute-force.
+// Not rate-limited, unlike `login_submit`: `/setup` only accepts requests while
+// `count_users() == 0`, so there is no credential yet to brute-force.
 async fn setup_submit(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -358,8 +340,8 @@ async fn setup_submit(
     }
     let policy = crate::auth::validate_password(&creds.password);
     if creds.username.is_empty() || policy.is_err() {
-        // A missing username still reports the pair, as it always has; a
-        // present one lets the password policy speak for itself.
+        // A missing username reports the pair; a present one lets the password
+        // policy speak for itself.
         let error = if creds.username.is_empty() {
             "username and password are required".to_string()
         } else {
@@ -373,14 +355,12 @@ async fn setup_submit(
         })?
         .into_response());
     }
-    // `argon2::password_hash::Error` does not implement `std::error::Error`,
-    // so it cannot be boxed directly into `AppError::Other`'s
-    // `Box<dyn Error + Send + Sync>` payload; go through its `Display` text.
+    // `argon2::password_hash::Error` does not implement `std::error::Error`, so
+    // it cannot be boxed into `AppError::Other`; go through its `Display` text.
     let phc = hash_password(&creds.password).map_err(|e| AppError::Other(e.to_string().into()))?;
-    // Normally unreachable — this handler returns above unless the table is
-    // empty — but two visitors racing the very first `/setup` both pass that
-    // check, and the loser must be told to pick another name rather than shown
-    // a blank 500 on the app's first screen.
+    // Normally unreachable, but two visitors racing the very first `/setup` both
+    // pass the check above, and the loser must be told to pick another name
+    // rather than shown a blank 500 on the app's first screen.
     let uid = match state
         .store
         .create_user(&creds.username, Some(&phc), true, Utc::now())
@@ -406,12 +386,10 @@ async fn setup_submit(
 /// Renders the login form — or bounces an already-signed-in visitor to the
 /// dashboard.
 ///
-/// That bounce is load-bearing under forward auth. `logout` clears the session
-/// and lands here, but `forward_auth_session` runs first and, seeing the
-/// gateway's identity header still present, immediately mints a fresh one. The
-/// visitor would otherwise be shown a login form while already signed in as the
-/// very account they just tried to leave. Sending them to `/` is the honest
-/// outcome: only the gateway can end that identity (see
+/// The bounce matters under forward auth: `logout` clears the session and lands
+/// here, but `forward_auth_session` runs first and mints a fresh one from the
+/// gateway's identity header, so the visitor would be shown a login form while
+/// already signed in. Only the gateway can end that identity (see
 /// `PINGWARD_FORWARD_AUTH_LOGOUT_URL`).
 async fn login_page(
     State(state): State<AppState>,
@@ -435,22 +413,16 @@ async fn login_page(
 
 /// Record a rejected sign-in attempt.
 ///
-/// OWASP's Authentication Cheat Sheet asks for every authentication failure,
-/// password failure and lockout to be logged and reviewed. For a self-hosted
-/// instance this log is the *only* way an operator ever learns their login
-/// page is being sprayed — nothing else in pingward observes a failed attempt,
-/// and the audit table records only what succeeded.
+/// OWASP's Authentication Cheat Sheet asks for every authentication failure and
+/// lockout to be logged. Nothing else in pingward observes a failed attempt, so
+/// this is an operator's only signal that the login page is being sprayed.
 ///
 /// One event name for all three reasons, discriminated by `reason`, so a single
-/// query catches them; splitting them across event names is how a lockout stops
-/// being noticed. Two addresses are recorded because they can legitimately
-/// differ: `ip` is the attribution address (`ping::ClientIp`, the same value
-/// stamped on `sessions.ip`), while `bucket` is the key the rate limiter
-/// counts against — see `ratelimit::rate_limit_key` for why those diverge.
-///
-/// `username` is attacker-chosen input, so it goes through
-/// [`crate::auth::log_username`] and is rendered with `Debug`; the password is
-/// never touched.
+/// query catches them. `ip` is the attribution address (the value stamped on
+/// `sessions.ip`), `bucket` the key the rate limiter counts against — see
+/// `ratelimit::rate_limit_key` for why they differ. `username` is attacker-chosen
+/// input, so it goes through [`crate::auth::log_username`] and renders with
+/// `Debug`; the password is never touched.
 fn log_login_failure(
     username: &str,
     ip: Option<&str>,
@@ -469,10 +441,8 @@ fn log_login_failure(
 
 /// The outcome of re-authenticating the signed-in user for a sensitive action.
 enum Reauth {
-    /// Verified — or not required, because the account has no local password
-    /// to verify against.
+    /// Verified, or not required because the account has no local password.
     Passed,
-    /// The submitted password did not match the stored one.
     Failed,
     /// This account's password-guessing budget is spent.
     Throttled,
@@ -480,27 +450,21 @@ enum Reauth {
 
 /// Demand the signed-in user's own password again before a sensitive action.
 ///
-/// A session cookie proves who opened the browser, not who is at it now.
-/// OWASP's Authentication Cheat Sheet asks for the current credential before
-/// anything that mints or replaces one, precisely for the borrowed-laptop case:
-/// pingward's CSRF token is derived and exempts no path, and its CSP admits no
-/// inline script, so a *stolen or borrowed session* is the residual threat this
-/// answers — not CSRF, and not XSS.
+/// A session cookie proves who opened the browser, not who is at it now; OWASP's
+/// Authentication Cheat Sheet asks for the current credential before anything that
+/// mints or replaces one. The residual threat is a stolen or borrowed session —
+/// not CSRF (the token is derived and exempts no path) and not XSS (the CSP admits
+/// no inline script).
 ///
-/// **A passwordless forward-auth account passes without a check.** There is no
-/// stored credential to verify against; its authority lives at the gateway, and
-/// pingward has no protocol for asking the gateway to re-assert it. So a
-/// borrowed forward-auth session can still do these actions unchallenged — a
-/// real asymmetry, recorded in ARCHITECTURE.md rather than papered over. It is
-/// not the same case as `account_password`'s 403, which refuses because setting
-/// a *local* password on a gateway account would create a second way in.
+/// A passwordless forward-auth account passes without a check: nothing is stored
+/// to verify, and there is no protocol for asking the gateway to re-assert it, so
+/// a borrowed forward-auth session is unchallenged (see ARCHITECTURE.md). Not the
+/// same as `account_password`'s 403, which refuses because a *local* password on a
+/// gateway account would create a second way in.
 ///
-/// Attempts are charged to the **account** limiter — the same bucket
-/// `login_submit` uses, keyed the same way — because this is the same activity
-/// as guessing at the login form, just from an authenticated seat. Without it a
-/// stolen session would be an unmetered password oracle against its owner,
-/// which is what `/account/password` was before this existed. A success clears
-/// the bucket, exactly as a successful login does.
+/// Attempts are charged to the account limiter — the same bucket `login_submit`
+/// uses — or a stolen session would be an unmetered password oracle against its
+/// owner. A success clears the bucket.
 fn reauthenticate(state: &AppState, user: &User, submitted: &str, surface: &'static str) -> Reauth {
     let Some(stored) = user.password_hash.as_deref() else {
         return Reauth::Passed;
@@ -522,22 +486,18 @@ fn reauthenticate(state: &AppState, user: &User, submitted: &str, surface: &'sta
 /// The SHA-256 handle of the session this request carries, if any.
 ///
 /// The handle hashes the session *id*, so the cookie must be unwrapped and
-/// verified first — hashing the raw cookie value would never match anything.
-/// It is what identifies a session anywhere outside the cookie itself
-/// (`/account`'s rows, `elevate::Elevations`, the session log), because the id
-/// is the bearer secret and must not be copied around.
+/// verified first — hashing the raw cookie value would never match anything. The
+/// id is the bearer secret, so the handle is what identifies a session anywhere
+/// outside the cookie (`/account`'s rows, `elevate::Elevations`, the session log).
 fn current_session_handle(state: &AppState, jar: &CookieJar) -> Option<String> {
     secret::session_id_from_jar(jar, &state.config.secret, session_cookie_name(state))
         .map(|id| crate::apikey::hash_api_key(&id))
 }
 
-/// How the elevation gate stands for this request.
 struct Elevation {
     /// The account has no local password, so there is nothing to re-assert and
-    /// the gate cannot apply — see [`reauthenticate`], which passes such an
-    /// account for the same reason.
+    /// the gate cannot apply — see [`reauthenticate`].
     not_applicable: bool,
-    /// Seconds left on the unlock, when there is one.
     remaining_secs: Option<u64>,
 }
 
@@ -548,7 +508,6 @@ impl Elevation {
     }
 }
 
-/// Read this request's elevation state.
 fn elevation(state: &AppState, jar: &CookieJar, user: &User) -> Elevation {
     if user.password_hash.is_none() {
         return Elevation {
@@ -566,16 +525,11 @@ fn elevation(state: &AppState, jar: &CookieJar, user: &User) -> Elevation {
 /// Refuse an access-granting admin action that is not unlocked, by sending the
 /// admin to the page that explains why and asks for their password.
 ///
-/// An interstitial rather than a 403 or an inline error: the controls stay live
-/// in the table (they are one-button inline forms, and hiding them would make
-/// the page depend on a timer), so the honest answer to clicking one while
-/// locked is to explain the requirement and offer the way through it. The
-/// check is server-side regardless of what the page rendered.
-///
-/// The action itself is **not** replayed after confirming — the admin lands
-/// back on `/admin` and clicks again. Replaying would mean stashing a POST body
-/// across a redirect, and re-clicking one button is a smaller price than that
-/// machinery.
+/// An interstitial rather than a 403: the controls stay live in the table (hiding
+/// them would make the page depend on a timer), so the answer to clicking one
+/// while locked is to explain the requirement; the server checks regardless. The
+/// action is not replayed after confirming — the admin clicks again, rather than
+/// stashing a POST body across a redirect.
 fn admin_locked(config: &crate::config::Config, jar: CookieJar) -> Response {
     let jar = jar.add(flash_cookie(config, "admin_locked"));
     (jar, Redirect::to("/admin/unlock")).into_response()
@@ -583,38 +537,28 @@ fn admin_locked(config: &crate::config::Config, jar: CookieJar) -> Response {
 
 // --- confirming a destructive action -----------------------------------------
 //
-// Every irreversible control in the UI is a one-button inline form carrying a
-// `data-confirm` message, which `app.js` turns into a native `confirm()`. With
-// no script that attribute is inert and the click used to delete outright, so
-// the only thing standing between a misclick and a deleted project was a
-// feature the browser might not be running.
+// Every irreversible control is a one-button inline form carrying a `data-confirm`
+// message that `app.js` turns into a native `confirm()`. That attribute is inert
+// with no script, so it cannot be the gate.
 //
-// The gate is therefore server-side: a destructive handler runs only when the
-// request carries `?confirmed=1`, and otherwise renders [`ConfirmTemplate`] —
-// the same question as a page. `app.js` appends the flag after its dialog is
-// accepted, so a scripted browser still asks in place and still posts once.
-// Neither side trusts the other: the page cannot skip the flag, and the server
-// never assumes a dialog ran.
+// The gate is server-side: a destructive handler runs only when the request
+// carries `?confirmed=1`, and otherwise renders [`ConfirmTemplate`] — the same
+// question as a page. `app.js` appends the flag after its dialog is accepted, so a
+// scripted browser still asks in place and still posts once.
 //
-// The flag rides in the *query string* rather than the body so that adding the
-// gate costs each handler one infallible `Query` extractor. A body extractor
-// would reject the several destructive forms that legitimately post nothing at
-// all with a 415 before authorization ever ran, turning `owned_check`'s 404
-// into a content-type error.
+// The flag rides in the query string rather than the body so the gate costs each
+// handler one infallible `Query` extractor. A body extractor would 415 the several
+// destructive forms that post nothing at all, before authorization ever ran,
+// turning `owned_check`'s 404 into a content-type error.
 
 /// A destructive action's confirmation copy.
 ///
-/// Deliberately *not* the same string as the template's `data-confirm`: the
-/// dialog gets one terse line because that is all a `confirm()` can show, while
-/// the page has room to name the action and say what it takes with it. Same
-/// decision as `/admin/unlock`, which is a page rather than a field precisely
-/// because the requirement needs explaining.
+/// Not the same string as the template's `data-confirm`: the dialog gets one
+/// terse line because that is all a `confirm()` can show, while the page has room
+/// to name the action and say what it takes with it.
 struct Confirm {
-    /// Page heading, phrased as the question being asked.
     title: &'static str,
-    /// What the action does, including anything it takes with it.
     message: &'static str,
-    /// Label on the button that goes through with it.
     button: &'static str,
 }
 
@@ -674,9 +618,9 @@ const CONFIRM_DISABLE_USER: Confirm = Confirm {
 
 /// Whether a destructive request carries its confirmation.
 ///
-/// `#[serde(default)]` on the one field is what keeps this infallible: a
-/// request with no query string at all deserializes to "not confirmed" rather
-/// than a 400, which is exactly the unscripted first click.
+/// `#[serde(default)]` on the one field keeps this infallible: a request with no
+/// query string deserializes to "not confirmed" rather than a 400 — which is
+/// exactly the unscripted first click.
 #[derive(Deserialize, Default)]
 struct ConfirmQuery {
     #[serde(default)]
@@ -703,13 +647,11 @@ struct ConfirmTemplate {
 }
 
 /// Ask the question as a page, with `action` re-posting the identical request
-/// plus the confirmation flag and `cancel` going back where the click came
-/// from.
+/// plus the confirmation flag and `cancel` going back where the click came from.
 ///
-/// Call it **after** authorization and after any guard that would refuse the
-/// action anyway: a request that can never succeed should say so rather than
-/// demand a confirmation first, the same ordering `users_create` uses for its
-/// validation and elevation gate.
+/// Call it after authorization and after any guard that would refuse the action
+/// anyway: a request that can never succeed should say so rather than demand a
+/// confirmation first.
 fn confirmation_page(
     state: &AppState,
     jar: &CookieJar,
@@ -735,10 +677,10 @@ fn confirmation_page(
 /// Record a refused re-authentication.
 ///
 /// One event for every gated surface, discriminated by `surface`, for the same
-/// reason [`log_login_failure`] uses one for its three rejection paths: somebody
-/// guessing at a password is one thing to alert on, and an operator should not
-/// have to know which forms exist to catch it. `login.failed` stays separate —
-/// it is unauthenticated and carries an address instead of a `user_id`.
+/// reason [`log_login_failure`] uses one for its three rejection paths: an
+/// operator should not have to know which forms exist to catch somebody guessing
+/// at a password. `login.failed` stays separate — it is unauthenticated and
+/// carries an address instead of a `user_id`.
 fn log_reauth_failure(user: &User, surface: &'static str, reason: &'static str) {
     tracing::warn!(
         target: "pingward::auth",
@@ -752,11 +694,10 @@ fn log_reauth_failure(user: &User, surface: &'static str, reason: &'static str) 
 
 /// The 429 both login limiters answer with.
 ///
-/// Shared so the two cannot drift apart in what they disclose. The wording is
-/// the same for either limiter and mentions neither the account nor the
-/// address: which bucket ran out is not the visitor's business, and phrasing
-/// that implied "this account" would hint that the submitted username names a
-/// real one. Only `Retry-After` differs, because the windows do.
+/// Shared so the two cannot drift apart in what they disclose. The wording
+/// mentions neither the account nor the address: phrasing that implied "this
+/// account" would hint that the submitted username names a real one. Only
+/// `Retry-After` differs, because the windows do.
 fn throttled_login(
     state: &AppState,
     jar: &CookieJar,
@@ -783,29 +724,25 @@ async fn login_submit(
     PeerAddr(peer_ip): PeerAddr,
     Form(creds): Form<Credentials>,
 ) -> Result<Response, AppError> {
-    // Rate-limit key is deliberately not `conn` (`ping::ClientIp`, which
-    // stamps the session's `ip` column below) — see `ratelimit::rate_limit_key`
-    // for why attribution and the security control must diverge. Reserving
-    // the attempt before `find_user_by_username` means a throttled request
-    // never pays for the argon2 verification that follows.
+    // The rate-limit key is not `conn` (`ping::ClientIp`, which stamps the
+    // session's `ip` column below) — see `ratelimit::rate_limit_key` for why
+    // attribution and the security control diverge. Reserving the attempt before
+    // `find_user_by_username` means a throttled request never pays for argon2.
     let client = crate::ratelimit::rate_limit_key(peer_ip, &headers, &state.config.trusted_proxies);
     if !state.login_limiter.try_acquire(client) {
         log_login_failure(&creds.username, conn.0.as_deref(), client, "rate_limited");
         return throttled_login(&state, &jar, crate::ratelimit::WINDOW_SECS);
     }
     // Then the per-account budget, which the per-address one cannot substitute
-    // for: an attacker with N addresses gets `MAX_ATTEMPTS × N` guesses against
-    // one account, and every one of them looks unremarkable to a counter keyed
-    // on where it came from. Charged on the **submitted** username, before the
+    // for: an attacker with N addresses otherwise gets `MAX_ATTEMPTS × N`
+    // guesses against one account, each unremarkable to a counter keyed on
+    // where it came from. Charged on the *submitted* username, before the
     // account is looked up, so an invented username exhausts a budget exactly
-    // as a real one does — a limiter that only engaged for accounts that exist
-    // would be a username oracle, undoing at this layer what
-    // `verify_password_or_dummy` does at the next.
-    //
-    // Ordered after the address check so a single-source attacker spends their
-    // own budget first, and deliberately *not* recorded as an
-    // `account_disabled`-style outcome: `reason = "account_locked"` is the one
-    // failure that means somebody is working on one specific account.
+    // as a real one does — engaging only for accounts that exist would be a
+    // username oracle, undoing what `verify_password_or_dummy` does at the next
+    // layer. Ordered after the address check so a single-source attacker spends
+    // their own budget first; `reason = "account_locked"` means somebody is
+    // working on one specific account.
     let account = crate::ratelimit::account_key(&creds.username);
     if !state.account_limiter.try_acquire(account.clone()) {
         log_login_failure(&creds.username, conn.0.as_deref(), client, "account_locked");
@@ -813,10 +750,9 @@ async fn login_submit(
     }
     let user = state.store.find_user_by_username(&creds.username).await?;
     // `verify_password_or_dummy`, not a bare `verify_password` behind an
-    // `is_some_and`: an unknown username (or a forward-auth account with no
-    // local password) must still cost one argon2 verification, or the response
-    // time tells an attacker which usernames exist and the generic error
-    // message below buys nothing. See its doc comment.
+    // `is_some_and`: an unknown username (or a forward-auth account with no local
+    // password) must still cost one argon2 verification, or the response time
+    // tells an attacker which usernames exist. See its doc comment.
     let ok = crate::auth::verify_password_or_dummy(
         &creds.password,
         user.as_ref().and_then(|u| u.password_hash.as_deref()),
@@ -839,7 +775,7 @@ async fn login_submit(
     let user = user.unwrap();
     if user.disabled {
         // Not released: valid credentials for a disabled account are not a
-        // successful login. Releasing here would let an attacker holding one
+        // successful login. Releasing would let an attacker holding one
         // known-disabled credential probe this client's budget indefinitely.
         log_login_failure(
             &creds.username,
@@ -865,10 +801,9 @@ async fn login_submit(
         false,
     )
     .await?;
-    // A successful login hands the reservation back so signing in repeatedly
-    // (several devices, a test suite) never exhausts the window. The account
-    // bucket is *cleared* rather than refunded by one — see
-    // `RateLimiter::clear` for why the two differ.
+    // A success hands the reservation back, so signing in repeatedly (several
+    // devices, a test suite) never exhausts the window. The account bucket is
+    // *cleared* rather than refunded by one — see `RateLimiter::clear`.
     state.login_limiter.release(&client);
     state.account_limiter.clear(&account);
     Ok((jar, Redirect::to("/")).into_response())
@@ -877,31 +812,25 @@ async fn login_submit(
 /// Ends the local session, then sends the browser onward.
 ///
 /// Deleting the row is never enough behind an authentication gateway: the next
-/// request still carries the gateway's identity header, so
-/// `forward_auth_session` signs the visitor straight back in. Only the gateway
-/// can end that identity, which is what `PINGWARD_FORWARD_AUTH_LOGOUT_URL` is
-/// for — it points at the gateway's own sign-out endpoint. When configured, we
-/// hand the browser there regardless of how this request authenticated.
+/// request still carries the gateway's identity header, so `forward_auth_session`
+/// signs the visitor straight back in. Only the gateway can end that identity —
+/// that is what `PINGWARD_FORWARD_AUTH_LOGOUT_URL` is for, and when configured the
+/// browser goes there however this request authenticated.
 ///
-/// Left unset, the destination depends on whether the gateway's identity header
-/// is present on *this* request (the same trusted-proxy gate
-/// `forward_auth_session` uses):
-/// - present → a local logout is a no-op, since the next request re-mints the
-///   session. Rather than bounce to `/login` and silently sign the visitor
-///   straight back in, land on the dashboard with a one-shot flash telling them
-///   only their proxy/SSO provider can end the session.
-/// - absent → an ordinary password session; redirect to `/login` as before.
+/// Left unset, the destination depends on whether the identity header is present
+/// on *this* request (the same trusted-proxy gate `forward_auth_session` uses):
+/// - present → a local logout is a no-op, so land on the dashboard with a one-shot
+///   flash saying only the proxy/SSO provider can end the session, rather than
+///   bouncing to `/login` and signing the visitor straight back in.
+/// - absent → an ordinary password session; redirect to `/login`.
 ///
-/// The redirect target comes from the operator's environment or a fixed
-/// in-app path, never from the request, so it is not an open redirect.
+/// The redirect target comes from the operator's environment or a fixed in-app
+/// path, never from the request, so it is not an open redirect.
 ///
-/// Two of the three exits also send `Clear-Site-Data` (see
-/// [`CLEAR_SITE_DATA`]) so the browser drops this origin's cache. The
-/// forward-auth flash exit deliberately does not: it is not a credential
-/// teardown at all — the gateway re-mints the session on the very next
-/// request no matter what this response sends — and its whole job is
-/// delivering the `pingward_flash` cookie that renders the "only your
-/// proxy/SSO provider can end this session" notice.
+/// Two of the three exits also send `Clear-Site-Data` (see [`CLEAR_SITE_DATA`]).
+/// The forward-auth flash exit does not: it is not a credential teardown (the
+/// gateway re-mints the session on the next request regardless) and its job is
+/// delivering the `pingward_flash` cookie that renders the notice.
 async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -912,11 +841,10 @@ async fn logout(
         secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
     {
         state.store.delete_session(&id).await?;
-        // Drop any admin elevation with the row. The handle is derived from the
-        // session id, so a re-signed-in browser gets a fresh id and would never
-        // match a stale entry anyway — but leaving one behind would keep a dead
-        // session's privilege alive in the map until its window elapsed, and
-        // this map is the only place that state lives.
+        // Drop any admin elevation with the row. A re-signed-in browser gets a
+        // fresh id and would never match a stale entry anyway, but leaving one
+        // behind keeps a dead session's privilege alive in the map until its
+        // window elapses, and this map is the only place that state lives.
         state.elevations.revoke(&crate::apikey::hash_api_key(&id));
         tracing::info!(
             target: "pingward::session",
@@ -938,11 +866,11 @@ async fn logout(
             .into_response());
     }
 
-    // No gateway logout URL. If the trusted proxy identity header is present,
-    // clearing the local session cannot outlive the redirect — be honest about
-    // it instead of pretending logout succeeded.
+    // No gateway logout URL. With the trusted proxy identity header present,
+    // clearing the local session cannot outlive the redirect — be honest about it
+    // instead of pretending logout succeeded.
     if crate::auth::forward_auth_username(&headers, peer_ip, &state.config).is_some() {
-        // No Clear-Site-Data on this exit — deliberately, see the doc comment.
+        // No Clear-Site-Data on this exit — see the doc comment.
         let jar = jar.add(flash_cookie(&state.config, "forward_auth_logout"));
         return Ok((jar, Redirect::to("/")).into_response());
     }
@@ -958,27 +886,24 @@ async fn logout(
 /// Ask the browser to drop this origin's cache on logout.
 ///
 /// Every other directive is excluded on purpose:
-/// - `"cookies"` is scoped to the whole *registered domain*, subdomains
-///   included. On the SSO layout `PINGWARD_FORWARD_AUTH_LOGOUT_URL` exists for
-///   (pingward and its gateway as sibling subdomains) it would clear the
-///   gateway's own cookie before the browser follows the redirect, breaking
-///   the logout handoff and signing the user out of every other app on the
-///   domain. Nothing is lost: the removal `Set-Cookie` already ends the
-///   session cookie, and *is* origin- and path-scoped.
-/// - `"storage"` holds the theme preference (`localStorage['pw-theme']`, see
-///   `assets/app.js`) and nothing secret, so clearing it would reset the
-///   user's appearance setting for no gain.
-/// - `"executionContexts"` forces a reload, which fights with the redirect
-///   this response is already issuing.
+/// - `"cookies"` is scoped to the whole *registered domain*, subdomains included.
+///   On the SSO layout `PINGWARD_FORWARD_AUTH_LOGOUT_URL` exists for, it would
+///   clear the gateway's own cookie before the browser follows the redirect,
+///   breaking the handoff. Nothing is lost: the removal `Set-Cookie` already ends
+///   the session cookie, and *is* origin- and path-scoped.
+/// - `"storage"` holds the theme preference (`localStorage['pw-theme']`) and
+///   nothing secret.
+/// - `"executionContexts"` forces a reload, which fights with the redirect this
+///   response is already issuing.
 ///
-/// Browsers only honour the header on a trustworthy origin, so on a
-/// plain-HTTP deployment it is a harmless no-op rather than a control.
+/// Browsers only honour the header on a trustworthy origin, so on plain HTTP it is
+/// a harmless no-op rather than a control.
 const CLEAR_SITE_DATA: &str = r#""cache""#;
 
 /// The request's socket peer IP, or `None` when the router is driven without
 /// `ConnectInfo` (e.g. some tests) — the same fail-closed source
 /// `forward_auth_session` reads, so `logout`'s trusted-proxy check agrees with
-/// how the visitor was authenticated in the first place. Always succeeds.
+/// how the visitor was authenticated. Always succeeds.
 struct PeerAddr(Option<IpAddr>);
 
 impl FromRequestParts<AppState> for PeerAddr {
@@ -1003,9 +928,9 @@ async fn dashboard(
     let Some(user) = user else {
         return Ok(Redirect::to("/login").into_response());
     };
-    // One-shot notice set by `logout` when a forward-auth visitor signed out
-    // with no gateway logout URL configured; consumed here so the removal
-    // Set-Cookie rides back on this response.
+    // One-shot notice set by `logout` when a forward-auth visitor signed out with
+    // no gateway logout URL; consumed here so the removal Set-Cookie rides back
+    // on this response.
     let (jar, forward_auth_logout) = take_flash(&state.config, jar, "forward_auth_logout");
     let now = Utc::now();
     let q = query.q.unwrap_or_default().trim().to_string();
@@ -1018,9 +943,9 @@ async fn dashboard(
     let (mut total, mut up, mut late, mut down) = (0usize, 0, 0, 0);
     let mut groups = Vec::new();
     // Gather every project's checks first, then fetch all their recent pings in
-    // one batched query (avoids an N+1 of one `list_recent_pings` per check).
-    // Filtering happens here, before the ping fetch, so a narrow filter also
-    // narrows the batched query instead of loading pings for hidden rows.
+    // one batched query (avoids an N+1 of `list_recent_pings` per check).
+    // Filtering happens before the ping fetch, so a narrow filter also narrows
+    // the batched query instead of loading pings for hidden rows.
     let mut project_checks = Vec::new();
     let mut check_ids = Vec::new();
     // Display order is decided here rather than in the `Store` queries: those
@@ -1066,9 +991,9 @@ async fn dashboard(
         for c in &checks {
             let ds = crate::view::display_status(c, now);
             // Tiles count the whole `q`-filtered set, independent of the status
-            // selection — otherwise picking "Down" would zero the other tiles
-            // and there would be nothing left to switch back to. An in-flight
-            // `Running` check counts as up (one merged tile).
+            // selection — otherwise picking "Down" would zero the other tiles and
+            // leave nothing to switch back to. An in-flight `Running` check
+            // counts as up (one merged tile).
             total += 1;
             match ds {
                 crate::view::DisplayStatus::Up | crate::view::DisplayStatus::Running => up += 1,
@@ -1135,36 +1060,30 @@ async fn dashboard(
 
 /// Bars rendered into the check page's heartbeat strip.
 ///
-/// **More than fit on purpose.** How many bars a viewport has room for is a
-/// question only the browser can answer, so the server renders past the widest
-/// possible strip and `assets/app.css` clips the overflow from the *left* —
-/// oldest first, newest pinned to the right edge. A phone shows ~34 of these,
-/// a desktop ~100, with no JS, no media query and no second round trip.
+/// More than fit, on purpose: only the browser can answer how many bars a
+/// viewport has room for, so the server renders past the widest possible strip
+/// and `assets/app.css` clips the overflow from the *left*, newest pinned right.
+/// No JS, no media query, no second round trip.
 ///
-/// The ceiling is fixed rather than generous-and-arbitrary: `.beat i` is 7px
-/// wide with a 3px gap (10px per bar) and `.wrap` caps the page at 1080px, so
-/// the strip can never exceed ~1000px ≈ 100 bars. 120 keeps the strip full at
-/// every width the layout allows.
+/// The ceiling is not arbitrary: `.beat i` is 7px wide with a 3px gap (10px per
+/// bar) and `.wrap` caps the page at 1080px, so the strip can never exceed ~100
+/// bars.
 const HEARTBEAT_BARS: usize = 120;
 
 /// Pings read for the strip and for pairing run durations.
 ///
-/// Deliberately not a filtered `kind IN ('success','fail')` query, which would
-/// be the obvious way to guarantee [`HEARTBEAT_BARS`] runs: `view::heartbeat`
-/// sizes each bar from `view::run_durations`, which pairs every finish ping
-/// with the `start` that preceded it, so dropping the starts would flatten
-/// every bar. A plain window over all kinds keeps that pairing intact; the
-/// cost is that a check which also logs heavily fills fewer bars than a check
-/// that only reports start/finish. Sized for the latter (two rows per run)
-/// with headroom.
+/// Not a filtered `kind IN ('success','fail')` query, which would be the obvious
+/// way to guarantee [`HEARTBEAT_BARS`] runs: `view::heartbeat` sizes each bar
+/// from `view::run_durations`, which pairs every finish ping with the `start`
+/// before it, so dropping the starts would flatten every bar. The cost of a plain
+/// window over all kinds is that a heavily-logging check fills fewer bars; sized
+/// for two rows per run with headroom.
 const HEARTBEAT_WINDOW: i64 = 300;
 
 /// Column-bounding cap for a stored `user_agent` (raw browser headers can be
 /// arbitrarily long; the value is display-only, so it is simply truncated).
 const MAX_USER_AGENT_CHARS: usize = 300;
 
-/// Extract the `User-Agent` request header as a bounded, valid-UTF-8 string
-/// for storage alongside a session row.
 fn request_user_agent(headers: &HeaderMap) -> Option<String> {
     headers.get(axum::http::header::USER_AGENT).and_then(|v| {
         v.to_str().ok().map(|s| {
@@ -1177,9 +1096,6 @@ fn request_user_agent(headers: &HeaderMap) -> Option<String> {
     })
 }
 
-/// The session cookie name this process uses, resolved from `AppState`. A
-/// one-line wrapper around `auth::session_cookie_name` to cut the repetition
-/// at each of this file's several call sites.
 fn session_cookie_name(state: &AppState) -> &'static str {
     crate::auth::session_cookie_name(state.config.cookie_secure)
 }
@@ -1197,9 +1113,9 @@ fn session_cookie(config: &crate::config::Config, value: String) -> Cookie<'stat
     .same_site(SameSite::Lax)
     .path("/")
     .secure(config.cookie_secure)
-    // Deliberately no Max-Age/Expires: a non-persistent cookie is OWASP's
-    // explicit preference for an authenticated session. Do not add one —
-    // expiry is the server's job (`sessions.expires_at`).
+    // No Max-Age/Expires: a non-persistent cookie is OWASP's explicit preference
+    // for an authenticated session. Do not add one — expiry is the server's job
+    // (`sessions.expires_at`).
     .build()
 }
 
@@ -1262,22 +1178,20 @@ async fn start_session(
 
 /// Give every visitor a signed session cookie, logged in or not.
 ///
-/// The CSRF token is `HMAC(secret, "csrf:" + session id)` — it needs an id, not
-/// a database row. So an anonymous visitor can carry a perfectly good token
-/// with no `sessions` insert at all: this mints a random id, signs it, and
-/// writes nothing. Only a real login (or forward-auth) creates the row that
-/// turns that id into an authenticated session.
+/// The CSRF token is `HMAC(secret, "csrf:" + session id)` — it needs an id, not a
+/// database row, so an anonymous visitor can carry a perfectly good token with no
+/// `sessions` insert: this mints a random id, signs it, and writes nothing. Only a
+/// real login (or forward-auth) creates the row behind it.
 ///
-/// Two things fall out of that. Pages rendered before login — `/login`,
-/// `/setup` — can carry a real token, so [`csrf_guard`] needs no path
-/// exemptions and login itself is CSRF-protected. And `resolve_user` needs no
-/// change: an anonymous id simply matches no row, so the visitor stays
-/// anonymous.
+/// Two things fall out. Pages rendered before login (`/login`, `/setup`) carry a
+/// real token, so [`csrf_guard`] needs no path exemptions and login itself is
+/// CSRF-protected. And `resolve_user` needs no change: an anonymous id matches no
+/// row.
 ///
-/// Layered *inside* [`forward_auth_session`] (see `crate::app`) so that when
-/// both would mint, the forward-auth one wins — otherwise the outer layer's
-/// `Set-Cookie` would be appended last and shadow the real session with an
-/// anonymous id.
+/// Layered *inside* [`forward_auth_session`] (see `crate::app`) so the
+/// forward-auth one wins when both would mint — otherwise the outer layer's
+/// `Set-Cookie` is appended last and shadows the real session with an anonymous
+/// id.
 pub async fn anonymous_session(
     State(state): State<AppState>,
     mut req: Request,
@@ -1306,26 +1220,23 @@ pub async fn anonymous_session(
 /// Give a trusted forward-auth identity a real session, so the rest of the
 /// browser surface needs no special case for it.
 ///
-/// Without this, a forward-auth user is authenticated (`resolve_user` falls
-/// back to the header) but session-less, and everything keyed off the session
-/// silently degrades: forms render an empty `_csrf`, [`csrf_guard`] rejects
-/// every POST with 403, and the account page lists no sessions to review or
-/// revoke. Minting the session here means only this function knows that
-/// forward-auth is different.
+/// Without this a forward-auth user is authenticated (`resolve_user` falls back
+/// to the header) but session-less, and everything keyed off the session silently
+/// degrades: forms render an empty `_csrf`, [`csrf_guard`] rejects every POST
+/// with 403, and the account page lists no sessions to review or revoke.
 ///
-/// Layered *outside* [`anonymous_session`] and [`csrf_guard`] (see
-/// `crate::app`) so the guard sees the cookie on the same request that created
-/// it, and the newly signed cookie is injected into the request as well as set
-/// on the response — a handler rendering a form in this very request must be
-/// able to derive the matching token. Running first also means
-/// [`anonymous_session`] finds a cookie already in place and stays out of the
-/// way, so only one `Set-Cookie` is ever emitted.
+/// Layered *outside* [`anonymous_session`] and [`csrf_guard`] (see `crate::app`)
+/// so the guard sees the cookie on the same request that created it, and the new
+/// cookie is injected into the request as well as set on the response — a handler
+/// rendering a form in this very request must be able to derive the matching
+/// token. Running first also means [`anonymous_session`] finds a cookie already
+/// in place, so only one `Set-Cookie` is ever emitted.
 ///
-/// Requests that already carry a live session, and every deployment that has
-/// not configured `PINGWARD_FORWARD_AUTH_HEADER`, short-circuit before any
-/// database work. Note the liveness check is deliberate rather than a bare
-/// signature check: with [`anonymous_session`] in play, a valid signature no
-/// longer implies a session row exists.
+/// Requests that already carry a live session, and deployments that have not
+/// configured `PINGWARD_FORWARD_AUTH_HEADER`, short-circuit before any database
+/// work. The liveness check is not a bare signature check: with
+/// [`anonymous_session`] in play, a valid signature no longer implies a session
+/// row exists.
 pub async fn forward_auth_session(
     State(state): State<AppState>,
     mut req: Request,
@@ -1394,9 +1305,8 @@ fn replace_request_cookie(req: &mut Request, cookie: &Cookie<'static>) {
 
 /// Resolve the current session's CSRF synchronizer token from the request
 /// cookies, for embedding as a hidden `_csrf` field in rendered POST forms.
-/// Returns an empty string when the request carries no valid session (e.g. the
-/// pre-session `login`/`setup` pages, which carry exempt forms) — an empty
-/// token yields an unsubmittable form rather than a token-less bypass.
+/// Empty when the request carries no valid session — an empty token yields an
+/// unsubmittable form rather than a token-less bypass.
 fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
     secret::session_id_from_jar(jar, &state.config.secret, session_cookie_name(state))
         .map(|id| secret::derive_csrf(&state.config.secret, &id))
@@ -1404,29 +1314,25 @@ fn current_csrf(state: &AppState, jar: &CookieJar) -> String {
 }
 
 /// Upper bound on the buffered request body when reading the `_csrf` form field.
-/// Browser POSTs to `web::routes()` carry small urlencoded forms; 1 MiB is a
-/// generous ceiling that caps memory a malicious client could force us to buffer.
+/// Browser POSTs carry small urlencoded forms; 1 MiB caps the memory a malicious
+/// client could force us to buffer.
 const CSRF_MAX_BODY_BYTES: usize = 1 << 20;
 
 /// Record a [`csrf_guard`] rejection.
 ///
-/// One event name discriminated by `reason`, the way [`log_login_failure`] and
-/// [`log_reauth_failure`] each cover several rejection paths: an operator
-/// alerting on "CSRF started refusing things" must not have to know which
-/// branches the guard has.
+/// One event name discriminated by `reason`, as [`log_login_failure`] and
+/// [`log_reauth_failure`] do: an operator alerting on "CSRF started refusing
+/// things" must not have to know which branches the guard has.
 ///
 /// `noisy` marks the one reason an unauthenticated scanner produces in bulk.
-/// `csrf_guard` is layered *outside* every handler, so it answers before
-/// `login_submit` ever consults `login_limiter` — a bot sending `POST /login`
-/// is refused here, with nothing throttling it, and at `warn!` would write one
-/// line per request forever. Dropping *that* reason to `debug!` is what keeps
-/// the remaining ones worth reading: every other path means a token was
-/// actually presented and still failed to verify.
+/// `csrf_guard` is layered outside every handler, so it answers before
+/// `login_submit` consults `login_limiter` — a bot sending `POST /login` is
+/// refused here with nothing throttling it, and at `warn!` would write one line
+/// per request forever. Dropping that reason to `debug!` keeps the rest worth
+/// reading: they all mean a token was presented and still failed to verify.
 ///
-/// The session is identified by [`crate::auth::session_log_handle`], never the
-/// raw id — it is the bearer secret the cookie's signature is attached to, and
-/// the handle is the same value `/account` shows the user for the row they can
-/// revoke.
+/// The session is identified by [`crate::auth::session_log_handle`], never the raw
+/// id — the id is the bearer secret, and the handle is what `/account` shows.
 fn log_csrf_rejection(reason: &'static str, session_id: Option<&str>, noisy: bool) {
     let handle = session_id.map(crate::auth::session_log_handle);
     if noisy {
@@ -1437,25 +1343,22 @@ fn log_csrf_rejection(reason: &'static str, session_id: Option<&str>, noisy: boo
 }
 
 /// CSRF synchronizer-token guard, applied to `web::routes()` only (the machine
-/// `/ping/*` endpoints, assets, and `/healthz` live in sibling routers and are
-/// therefore structurally exempt).
+/// `/ping/*` endpoints, assets and `/healthz` live in sibling routers and are
+/// structurally exempt).
 ///
-/// Safe methods (GET/HEAD/OPTIONS) pass through untouched. Every other
-/// state-changing request — `POST /login` and `POST /setup` included, since
-/// [`anonymous_session`] gives even a logged-out visitor a token to embed —
-/// must present the session's token, taken from the `X-CSRF-Token`
-/// header or, failing that, the `_csrf` urlencoded form field (in which case
-/// the body is buffered and the request rebuilt so the downstream `Form<T>`
-/// extractor still works). The token is derived from the session id rather than
-/// stored, so this costs no database round trip; comparison is constant-time
-/// (`secret::verify_csrf`) because the token is now a MAC over a known input.
+/// Safe methods pass through untouched. Every other state-changing request — `POST
+/// /login` and `POST /setup` included, since [`anonymous_session`] gives even a
+/// logged-out visitor a token to embed — must present the session's token from the
+/// `X-CSRF-Token` header or the `_csrf` urlencoded form field (in which case the
+/// body is buffered and the request rebuilt so the downstream `Form<T>` extractor
+/// still works). The token is derived from the session id rather than stored, so
+/// this costs no database round trip; comparison is constant-time
+/// (`secret::verify_csrf`).
 ///
-/// Every refusal is recorded by [`log_csrf_rejection`]; see there for why one
-/// of the five reasons is deliberately quieter than the rest. The 403 itself
-/// stays bodyless — naming the missing field would only tell a scanner what to
-/// send next.
+/// Every refusal is recorded by [`log_csrf_rejection`]; see there for why one of
+/// the five reasons is quieter. The 403 stays bodyless — naming the missing field
+/// would only tell a scanner what to send next.
 pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
-    // Safe methods never change state.
     if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
         return next.run(req).await;
     }
@@ -1465,10 +1368,10 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
     let secret = &state.config.secret;
     let Some(session_id) = secret::session_id_from_jar(&jar, secret, session_cookie_name(&state))
     else {
-        // Unreachable in the composed app: `anonymous_session` runs outside
-        // this layer and either finds a signed cookie or mints one into the
-        // request. Kept, and logged loudly, precisely because only the layer
-        // ordering makes it so — if this ever fires, that ordering broke.
+        // Unreachable in the composed app: `anonymous_session` runs outside this
+        // layer and either finds a signed cookie or mints one into the request.
+        // Kept, and logged loudly, because only the layer ordering makes it so —
+        // if this ever fires, that ordering broke.
         log_csrf_rejection("no_session", None, false);
         return StatusCode::FORBIDDEN.into_response();
     };
@@ -1504,9 +1407,8 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
         return StatusCode::FORBIDDEN.into_response();
     };
     if !secret::verify_csrf(secret, &session_id, &submitted) {
-        // A token was presented and did not verify. This is the event worth
-        // alerting on — it is what a token drifting out of step with its
-        // session looks like from the server side.
+        // A token was presented and did not verify — the event worth alerting on,
+        // and what a token drifting out of step with its session looks like.
         log_csrf_rejection("token_mismatch", Some(&session_id), false);
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -1516,26 +1418,20 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
 
 /// Add `Cache-Control: no-store` to every browser response.
 ///
-/// Applied to the whole of `web::routes()`, not just authenticated pages:
-/// `/login` and `/setup` render a `_csrf` bound to that visitor's cookie (see
-/// `anonymous_session`), so they must not be cached either. The machine
-/// `/ping/*` endpoints, static assets and `/healthz` are sibling routers and
-/// are structurally unaffected — `src/assets.rs`'s immutable caching is
-/// untouched. `/api/*` is mostly exempt the same structural way, but not
-/// uniformly: `api::routes()` layers this same function a second time,
-/// scoped to just `/api/docs` and `/api/openapi.json`, because those two
-/// accept a logged-in web session (`CurrentUser`) alongside `/api/v1`'s
-/// bearer auth and are therefore session-authenticated responses too.
-/// `/api/v1` stays exempt on purpose: it is bearer-authenticated, was never
-/// going to carry a browser-cacheable session, and adding response headers
-/// there would affect API consumers for no benefit.
+/// Applied to the whole of `web::routes()`, not just authenticated pages: `/login`
+/// and `/setup` render a `_csrf` bound to that visitor's cookie (see
+/// `anonymous_session`), so they must not be cached either. `/ping/*`, static
+/// assets and `/healthz` are sibling routers and structurally unaffected.
+/// `api::routes()` layers this same function a second time, scoped to `/api/docs`
+/// and `/api/openapi.json`, which accept a logged-in web session alongside
+/// `/api/v1`'s bearer auth; `/api/v1` itself stays exempt.
 ///
-/// Only filled in when the response does not already carry a `Cache-Control`,
-/// so any handler that wants to override still can.
+/// Only filled in when the response does not already carry a `Cache-Control`, so a
+/// handler that wants to override still can.
 ///
-/// The legacy `Pragma: no-cache` / `Expires: 0` pair is deliberately not
-/// added: every modern browser honours `no-store`, and those two headers only
-/// ever meant anything to HTTP/1.0 caches.
+/// The legacy `Pragma: no-cache` / `Expires: 0` pair is not added: every modern
+/// browser honours `no-store`, and those two only meant anything to HTTP/1.0
+/// caches.
 pub async fn no_store(req: Request, next: Next) -> Response {
     let mut resp = next.run(req).await;
     if !resp.headers().contains_key(header::CACHE_CONTROL) {
@@ -1550,22 +1446,21 @@ pub async fn no_store(req: Request, next: Next) -> Response {
 /// `script-src 'self'` with no `'unsafe-inline'` and no nonce is the point of
 /// the whole arrangement: every script the UI runs is a file under `/assets`
 /// (see `assets/app.js`) and no template carries an `onclick=`/`onsubmit=`
-/// attribute, so an injected `<script>` — or an injected event attribute — has
-/// no way to execute. A policy that kept `'unsafe-inline'` would not stop the
-/// injection it exists to stop, and a nonce would have to be threaded through
-/// every template struct for the same result.
+/// attribute, so an injected `<script>` or event attribute has no way to
+/// execute. `'unsafe-inline'` would not stop the injection this exists to stop,
+/// and a nonce would have to be threaded through every template struct for the
+/// same result.
 ///
 /// `style-src` still allows inline styles: the heartbeat strips size each bar
 /// with `style="height:Npx"`, computed per ping. That is a `style` attribute
 /// rather than a `<style>` block, and CSS injection is a far weaker primitive
-/// than script injection, so it is the one concession here.
+/// than script injection.
 ///
 /// `frame-ancestors 'none'` (clickjacking), `form-action 'self'` (a POST's
-/// destination cannot be rewritten to an attacker's host) and `base-uri
-/// 'none'` (a `<base>` tag cannot re-point every relative URL on the page) are
-/// the directives that carry weight even on a page with no injection at all.
-/// `connect-src` must stay `'self'`: the live tail's `EventSource` is
-/// same-origin.
+/// destination cannot be rewritten to an attacker's host) and `base-uri 'none'`
+/// (a `<base>` tag cannot re-point every relative URL) carry weight even on a
+/// page with no injection at all. `connect-src` must stay `'self'`: the live
+/// tail's `EventSource` is same-origin.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
      script-src 'self'; \
      style-src 'self' 'unsafe-inline'; \
@@ -1578,15 +1473,12 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; \
      frame-ancestors 'none'";
 
 /// CSP for the browser UI. Scoped to `web::routes()` for the same reason
-/// [`no_store`] is: it is a statement about pages this app renders. `/api/docs`
-/// is deliberately outside it — the Scalar reference loads its bundle from
-/// `cdn.jsdelivr.net`, so `script-src 'self'` would leave that page blank, and
-/// widening the policy app-wide to admit one CDN would cost every other page
-/// the guarantee above. It is still covered by [`security_headers`] below,
-/// including `X-Frame-Options`.
-///
-/// Only filled in when the response does not already carry one, so a handler
-/// can still override.
+/// [`no_store`] is. `/api/docs` is outside it — the Scalar reference loads its
+/// bundle from `cdn.jsdelivr.net`, so `script-src 'self'` would leave that page
+/// blank, and widening the policy app-wide to admit one CDN would cost every
+/// other page the guarantee above. It is still covered by [`security_headers`],
+/// including `X-Frame-Options`. Only filled in when the response does not
+/// already carry one.
 pub async fn content_security_policy(req: Request, next: Next) -> Response {
     let mut resp = next.run(req).await;
     if !resp.headers().contains_key(header::CONTENT_SECURITY_POLICY) {
@@ -1598,20 +1490,18 @@ pub async fn content_security_policy(req: Request, next: Next) -> Response {
     resp
 }
 
-/// The response headers that are safe to send from every route, browser page
-/// or not — layered app-wide in `crate::app` alongside [`hsts`].
+/// The response headers safe to send from every route, browser page or not —
+/// layered app-wide in `crate::app` alongside [`hsts`].
 ///
 /// - `X-Content-Type-Options: nosniff` — stops a browser second-guessing a
 ///   declared `Content-Type`. It matters most where the body is attacker-ish
-///   text served as JSON (`/api/v1`) or as `text/plain` (a captured ping body),
-///   which is exactly the part of the app the CSP does not cover.
-/// - `X-Frame-Options: DENY` — the CSP's `frame-ancestors` says this for the
-///   browser UI already; this repeats it for the routers the CSP skips,
-///   `/api/docs` above all.
-/// - `Referrer-Policy: same-origin` — a check page's URL identifies a check;
-///   an outbound link should not hand that path to whatever it points at.
-/// - `Permissions-Policy` — pingward asks for none of these APIs, so the
-///   honest value is an empty allowlist for each.
+///   text served as JSON (`/api/v1`) or as `text/plain` (a captured ping body) —
+///   exactly the part of the app the CSP does not cover.
+/// - `X-Frame-Options: DENY` — repeats the CSP's `frame-ancestors` for the
+///   routers the CSP skips, `/api/docs` above all.
+/// - `Referrer-Policy: same-origin` — a check page's URL identifies a check; an
+///   outbound link should not hand that path to whatever it points at.
+/// - `Permissions-Policy` — pingward asks for none of these APIs.
 const STATIC_SECURITY_HEADERS: &[(&str, &str)] = &[
     ("x-content-type-options", "nosniff"),
     ("x-frame-options", "DENY"),
@@ -1634,25 +1524,21 @@ pub async fn security_headers(req: Request, next: Next) -> Response {
     resp
 }
 
-/// Adds `Strict-Transport-Security` when `PINGWARD_HSTS_MAX_AGE` is
-/// configured. A zero-cost no-op by default: pingward does not terminate TLS,
-/// so sending HSTS unconditionally would tell browsers "HTTPS only" on a
-/// deployment that may be plain HTTP behind an internal reverse proxy — the
-/// reverse proxy is the right place to set this header, and `README.md`'s
-/// "Running behind a reverse proxy" section documents that. This knob exists
-/// for operators who cannot edit proxy headers.
+/// Adds `Strict-Transport-Security` when `PINGWARD_HSTS_MAX_AGE` is configured;
+/// a no-op by default. pingward does not terminate TLS, so sending HSTS
+/// unconditionally would tell browsers "HTTPS only" on a deployment that may be
+/// plain HTTP behind an internal reverse proxy — the proxy is the right place
+/// to set this header (see README.md's "Running behind a reverse proxy"). This
+/// knob is for operators who cannot edit proxy headers.
 ///
-/// App-wide rather than `web`-only (unlike [`no_store`]): the point of HSTS is
-/// telling the browser the *origin* is HTTPS-only, which applies just as much
-/// to `/ping/*`, `/healthz` and static assets as to the browser UI. It is
-/// layered in `lib.rs` outside every `.merge(...)`, not inside the `web`
-/// router.
+/// App-wide rather than `web`-only (unlike [`no_store`]): HSTS is a statement
+/// about the *origin*, so it applies to `/ping/*`, `/healthz` and static assets
+/// too, and is layered in `lib.rs` outside every `.merge(...)`.
 ///
-/// Deliberately emits neither `includeSubDomains` nor `preload`: both are
-/// close to irreversible once a browser caches them (a wrong
-/// `includeSubDomains` takes out unrelated hosts on the same domain, and
-/// `preload` list removal can take months). An operator who wants either sets
-/// it on the reverse proxy.
+/// Emits neither `includeSubDomains` nor `preload`: both are close to
+/// irreversible once a browser caches them (a wrong `includeSubDomains` takes
+/// out unrelated hosts on the same domain, and `preload` list removal can take
+/// months). An operator who wants either sets it on the reverse proxy.
 pub async fn hsts(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let mut resp = next.run(req).await;
     let max_age = state.config.hsts_max_age_secs;
@@ -1695,29 +1581,25 @@ struct ProjectTemplate {
     test_result: Option<TestResult>,
 }
 
-/// Project page's per-check row: same idea as the dashboard's `CheckRow`
-/// (precompute `display_status` in the handler, since it needs `now` and the
-/// template has no clock), trimmed to the fields `project.html` renders.
+/// Project page's per-check row: like the dashboard's `CheckRow`, `display_status`
+/// is precomputed in the handler because it needs `now` and the template has no
+/// clock. Trimmed to the fields `project.html` renders.
 struct ProjectCheckRow {
     id: i64,
     name: String,
     status: &'static str, // view::DisplayStatus::as_str()
     schedule: String,
     description: String, // markdown::truncate_plain, single-line summary
-    /// True when the check has zero bound notification channels — rendered as
-    /// a "no channel" chip so a check nobody would be alerted for is visible
-    /// at a glance rather than silent.
+    /// Zero bound notification channels — rendered as a "no channel" chip so a
+    /// check nobody would be alerted for is visible.
     no_channel: bool,
 }
 
-/// Project page's per-channel row. Same reason [`ChannelEditView`] exists: a
-/// stored [`Channel`] carries `config_json`, which holds delivery secrets
-/// (webhook/Slack URLs, bot tokens, SMTP credentials). This page renders only a
-/// channel's name and kind, so handing the template the whole model would put
-/// those secrets in the render context of a page that has no use for them — one
-/// stray `{{ ch.config_json }}` away from a leak. Projecting to the three fields
-/// the template actually reads makes that impossible by construction rather than
-/// by review.
+/// Project page's per-channel row, projected for the same reason
+/// [`ChannelEditView`] exists: a stored [`Channel`] carries `config_json`, which
+/// holds delivery secrets (webhook/Slack URLs, bot tokens, SMTP credentials). This
+/// page renders only a name and kind, so handing the template the whole model
+/// would leave those secrets one stray `{{ ch.config_json }}` away from a leak.
 struct ProjectChannelRow {
     id: i64,
     name: String,
@@ -1737,11 +1619,10 @@ pub(crate) struct ProjectForm {
     pub(crate) nag_interval_secs: String,
 }
 
-/// Maximum length, in **characters** (not bytes), of a project/check
-/// description. Rendered through `markdown::render`, so this bounds the work
-/// that does on every page view, not just storage size. `markdown::render` is
-/// worst-case O(n²) (see its module doc); do not raise this without reading
-/// that note.
+/// Maximum length, in *characters* (not bytes), of a project/check description.
+/// Rendered through `markdown::render`, so this bounds the work that does on every
+/// page view too. `markdown::render` is worst-case O(n²) (see its module doc); do
+/// not raise this without reading that note.
 const MAX_DESCRIPTION_CHARS: usize = 2000;
 
 /// Trim a description form field and enforce [`MAX_DESCRIPTION_CHARS`],
@@ -1756,11 +1637,11 @@ fn validate_description(s: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-/// Parse an optional positive-integer form field. Blank/whitespace-only input
-/// is `Ok(None)` (the field is intentionally unset — inherit the default, or
-/// off). A non-blank value MUST parse to an integer strictly greater than zero;
-/// anything else is `Err(msg)` naming the field, so the caller can re-render
-/// the form instead of discarding what the user typed.
+/// Parse an optional positive-integer form field. Blank/whitespace-only input is
+/// `Ok(None)` (unset — inherit the default, or off). A non-blank value must parse
+/// to an integer strictly greater than zero; anything else is `Err(msg)` naming
+/// the field, so the caller can re-render the form instead of discarding what the
+/// user typed.
 fn parse_opt_positive(s: &str, field: &str) -> Result<Option<i64>, String> {
     let t = s.trim();
     if t.is_empty() {
@@ -1773,10 +1654,8 @@ fn parse_opt_positive(s: &str, field: &str) -> Result<Option<i64>, String> {
 }
 
 /// Parse an optional positive *duration* form field (raw seconds or a
-/// human-readable string like `5m` / `1h30m`). Blank/whitespace-only is
-/// `Ok(None)` (unset — inherit the default, or off); a non-blank value must
-/// parse and be strictly greater than zero, else `Err(msg)` naming the field so
-/// the caller can re-render the form instead of discarding what the user typed.
+/// human-readable string like `5m` / `1h30m`); otherwise as
+/// [`parse_opt_positive`].
 fn parse_opt_positive_duration(s: &str, field: &str) -> Result<Option<i64>, String> {
     let t = s.trim();
     if t.is_empty() {
@@ -1802,17 +1681,15 @@ async fn owned_project(store: &Store, id: i64, user_id: i64) -> Result<Project, 
 
 /// Whether a cross-user admin request should be audited on its own.
 ///
-/// A `GET` through `/admin/*` is a read: it renders names, schedules and
-/// history, none of which is a credential, and auditing every page open
-/// buried the entries that matter under browsing noise. Mutations still write
-/// an entry, and so does the one read that *does* hand over a credential —
-/// revealing a check's ping URL, which has its own explicit action
-/// (`admin.ping_url_reveal`) rather than riding on the resolver.
+/// A `GET` through `/admin/*` is a read: it renders names, schedules and history,
+/// none of which is a credential, and auditing every page open buried the entries
+/// that matter under browsing noise. Mutations still write an entry, and so does
+/// the one read that *does* hand over a credential — revealing a check's ping URL,
+/// which has its own explicit action (`admin.ping_url_reveal`).
 ///
-/// The resolvers below are the choke point for both reads and writes, so this
-/// gate lives here rather than at each call site: without it, dropping the
-/// read audit would silently take every admin pause/resume/delete/regenerate
-/// with it.
+/// The resolvers below are the choke point for both reads and writes, so this gate
+/// lives here rather than at each call site: without it, dropping the read audit
+/// would silently take every admin pause/resume/delete/regenerate with it.
 fn audits_as_mutation(method: &str) -> bool {
     !method.eq_ignore_ascii_case("GET")
 }
@@ -1932,11 +1809,9 @@ async fn admin_channel(
     Ok(ch)
 }
 
-/// Validate a project form's name, description, and optional duration
-/// override fields, returning the parsed
+/// Validate a project form, returning the parsed
 /// `(name, description, scan_interval_secs, nag_interval_secs)` or an error
-/// message. The name and description are returned trimmed — they are what
-/// must be stored.
+/// message. Name and description come back trimmed — that is what must be stored.
 pub(crate) fn validate_project(
     form: &ProjectForm,
 ) -> Result<(String, String, Option<i64>, Option<i64>), String> {
@@ -2209,10 +2084,10 @@ struct PingRow {
     body: String,
 }
 
-/// Maps a stored `PingKind` to the pill/output CSS class used on the
-/// check-detail page (the visible label instead uses `PingKind::as_str()`).
-/// `Exitcode` never reaches storage — `apply()` in `ping.rs` rewrites it to
-/// `Success`/`Fail` before insert — but is handled defensively.
+/// Pill/output CSS class for a stored `PingKind` (the visible label instead
+/// uses `PingKind::as_str()`). `Exitcode` never reaches storage — `apply()` in
+/// `ping.rs` rewrites it to `Success`/`Fail` before insert — but is handled
+/// defensively.
 fn ping_pill_class(k: crate::models::PingKind) -> &'static str {
     use crate::models::PingKind;
     match k {
@@ -2240,11 +2115,10 @@ struct NotificationRow {
     error: String,
 }
 
-/// Maps a notification `EventKind` to a pill CSS class, reusing the same
-/// palette as the ping-kind pills (`ping_pill_class`): a recovery is "ok"
-/// (green), a downtime alert is "fail" (red), a reminder is neutral, and a
-/// test uses the brand "log" tone. Test deliveries aren't recorded in the
-/// history table, but the match stays exhaustive.
+/// Pill CSS class for a notification `EventKind`, reusing `ping_pill_class`'s
+/// palette: a recovery is "ok", a downtime alert "fail", a reminder neutral, a
+/// test the brand "log" tone. Test deliveries aren't recorded in the history
+/// table, but the match stays exhaustive.
 fn notif_event_pill_class(e: crate::notify::EventKind) -> &'static str {
     use crate::notify::EventKind;
     match e {
@@ -2288,13 +2162,12 @@ struct CheckTemplate {
     project_name: String,
     status: &'static str,
     since: String,
-    /// When the next ping is expected — see [`crate::view::next_due`].
     next_due: crate::view::NextDue,
     schedule: String,
     ping_url: String,
     /// The ping URL is withheld pending an audited reveal — see
-    /// [`CheckPageViewer`]. The template renders the reveal control instead of
-    /// the URL and its usage help, both of which spell the credential out.
+    /// [`CheckPageViewer`]. The template renders the reveal control instead of the
+    /// URL and its usage help, both of which spell the credential out.
     ping_url_hidden: bool,
     bars: Vec<crate::view::Bar>,
     channel_boxes: Vec<ChannelBox>,
@@ -2432,10 +2305,9 @@ fn parse_date_bound(v: Option<&str>) -> Option<DateTime<Utc>> {
 /// How long ago a `settings`-table timestamp was, or `None` if it is unset or
 /// unparseable.
 ///
-/// The scheduler and prune loops stamp these as RFC3339 strings, so the value
-/// is text by the time it reaches here. An unparseable one renders no age
-/// rather than a wrong one — the absolute timestamp beside it is still shown
-/// either way.
+/// The scheduler and prune loops stamp these as RFC3339 strings, so the value is
+/// text by the time it reaches here. An unparseable one renders no age rather
+/// than a wrong one; the absolute timestamp beside it is still shown.
 fn relative_setting(raw: Option<&str>, now: DateTime<Utc>) -> Option<String> {
     let at = DateTime::parse_from_rfc3339(raw?).ok()?.with_timezone(&Utc);
     Some(crate::view::fmt_relative(at, now))
@@ -2453,10 +2325,8 @@ fn absolute_setting(raw: Option<&str>) -> Option<String> {
 ///
 /// A history section's filter is a real GET form submitting to the page that
 /// embeds it, which is what makes it work with no script. A GET submission
-/// replaces the whole query string, though, so the *other* section's active
-/// filter would be wiped by narrowing this one — filtering the pings on a
-/// check page would silently clear the notifications filter. These carry it
-/// across.
+/// replaces the whole query string, though, so narrowing one section would wipe
+/// the *other* section's active filter. These carry it across.
 struct HiddenField {
     name: &'static str,
     value: String,
@@ -2584,14 +2454,14 @@ pub(crate) struct ValidatedCheck {
     pub(crate) nag_interval_secs: Option<i64>,
 }
 
-/// Validate the check's IANA timezone. Blank means UTC — both the column
-/// default and the API's `default_timezone` already say so, and a form posted
-/// without the field should land on the same value rather than an error.
+/// Validate the check's IANA timezone. Blank means UTC — both the column default
+/// and the API's `default_timezone` already say so, and a form posted without the
+/// field should land on the same value rather than an error.
 ///
-/// A typo used to be stored verbatim and then silently ignored: `due_time`
-/// falls back to UTC (with a `tracing::warn!` nobody reads) and the check's
-/// cron simply fires on the wrong wall clock. Rejecting it here is the only
-/// place the operator finds out, so it returns the offending value.
+/// A typo used to be stored verbatim and then silently ignored: `due_time` falls
+/// back to UTC (with a `tracing::warn!` nobody reads) and the cron fires on the
+/// wrong wall clock. Rejecting here is the only place the operator finds out, so
+/// the offending value is returned.
 fn validate_timezone(raw: &str) -> Result<String, String> {
     let tz = raw.trim();
     if tz.is_empty() {
@@ -2749,9 +2619,9 @@ async fn check_create(
     check_create_core(&state, pid, form, false, user.is_admin, csrf).await
 }
 
-/// Name of the one-shot flash cookie set after a redirect (e.g. saving a
-/// check's notify channels) and cleared on the next render, when the cookie
-/// carries no `Secure` attribute.
+/// Name of the one-shot flash cookie set after a redirect (e.g. saving a check's
+/// notify channels) and cleared on the next render, when the cookie carries no
+/// `Secure` attribute.
 const FLASH_COOKIE_BASE: &str = "pingward_flash";
 
 /// `__Host-`-prefixed name of the flash cookie, used when
@@ -2763,14 +2633,13 @@ const FLASH_COOKIE_HOST_PREFIXED: &str = "__Host-pingward_flash";
 /// The flash cookie's name for this deployment.
 ///
 /// The cookie carries no authority — [`take_flash`] maps only known keys to a
-/// fixed message and the password-reset variant `u64`-parses its counts, so a
-/// forged value can neither elevate nor inject markup. What the `__Host-`
-/// prefix and the signature ([`secret::sign_flash`]) close is *provenance*: a
-/// response from a sibling subdomain could otherwise plant a flash this origin
-/// never set, showing the user — including an admin reading a residual-API-key
-/// count — a message the server never sent. The prefix stops a sibling writing
-/// the cookie at all under HTTPS; the signature covers the plain-HTTP
-/// deployment, where no prefix is available.
+/// fixed message and the password-reset variant `u64`-parses its counts — so a
+/// forged value can neither elevate nor inject markup. What the `__Host-` prefix
+/// and the signature ([`secret::sign_flash`]) close is *provenance*: a sibling
+/// subdomain could otherwise plant a flash this origin never set, showing the
+/// user a message the server never sent. The prefix stops a sibling writing the
+/// cookie at all under HTTPS; the signature covers the plain-HTTP deployment,
+/// where no prefix is available.
 fn flash_cookie_name(config: &crate::config::Config) -> &'static str {
     if config.cookie_secure {
         FLASH_COOKIE_HOST_PREFIXED
@@ -2779,13 +2648,12 @@ fn flash_cookie_name(config: &crate::config::Config) -> &'static str {
     }
 }
 
-/// Read and clear the one-shot flash cookie **if** it was set for `surface`,
-/// mapping it to that surface's fixed message. The cookie is path-scoped to
-/// `/`, so every page sees it — a flash set for another surface is therefore
-/// left in the jar for that page to consume rather than rendered here, which
-/// keeps a message from surfacing on the wrong page when a redirect is not
-/// followed or two tabs race. Only known keys map to a message, so a
-/// user-supplied cookie value never renders as arbitrary text.
+/// Read and clear the one-shot flash cookie if it was set for `surface`, mapping
+/// it to that surface's fixed message. The cookie is path-scoped to `/`, so a
+/// flash set for another surface is left in the jar for that page to consume
+/// rather than rendered here — which keeps a message from surfacing on the wrong
+/// page when a redirect is not followed or two tabs race. Only known keys map to
+/// a message, so a user-supplied cookie value never renders as arbitrary text.
 fn take_flash(
     config: &crate::config::Config,
     jar: CookieJar,
@@ -2809,14 +2677,12 @@ fn take_flash(
         "admin_locked" => {
             "That action wasn't performed — it grants access, so it needs confirming first."
         }
-        // Must not name the gated actions. Listing them here read as a report
-        // on the action the admin had just attempted — someone who clicked
-        // "add user", got bounced, and confirmed came back to "Creating a user
-        // … available" and reasonably concluded the user had been created.
-        // Nothing had: a refused action is dropped, not replayed. The wording
-        // now says that, and says it for both arrival paths (bounced here, or
-        // navigated here deliberately) so no extra state is needed to tell
-        // them apart. How long it lasts is on the page being landed on.
+        // Must not name the gated actions: listing them read as a report on the
+        // action the admin had just attempted, so someone who clicked "add user",
+        // got bounced and confirmed came back to "Creating a user … available" and
+        // reasonably concluded the user had been created. A refused action is
+        // dropped, not replayed. The wording says that for both arrival paths
+        // (bounced here, or navigated here) so nothing has to tell them apart.
         "admin_unlocked" => {
             "Confirmed. If an action was refused a moment ago it was not performed — do it again now."
         }
@@ -2866,52 +2732,42 @@ fn flash_cookie_raw(config: &crate::config::Config, raw: String) -> Cookie<'stat
 }
 
 /// Build a one-shot flash cookie carrying `surface`, path-scoped to `/` so any
-/// page can consume it via [`take_flash`]. The value is a fixed surface key,
-/// never user input — [`take_flash`] maps only known keys to a message.
-///
-/// Consistency tidy-up, not a security fix: the flash cookie carries no
-/// session material, but there is no reason for it to diverge from the
-/// session cookie's `Secure` behaviour.
+/// page can consume it via [`take_flash`]. The value is a fixed surface key, never
+/// user input — [`take_flash`] maps only known keys to a message.
 fn flash_cookie(config: &crate::config::Config, surface: &'static str) -> Cookie<'static> {
     flash_cookie_value(config, surface.to_string())
 }
 
-/// The empty-valued cookie used to clear the flash cookie; attributes are
-/// aligned with `flash_cookie` (see `session_removal_cookie` for why this
-/// matters).
+/// The empty-valued cookie used to clear the flash cookie; attributes are aligned
+/// with `flash_cookie` (see `session_removal_cookie` for why that matters).
 ///
 /// The value is left empty rather than signed: removal is carried by the
-/// attributes, and an unsigned value is rejected by [`flash_payload`] on read
-/// anyway, so signing one would only make the cleared cookie harder to read
-/// in a trace.
+/// attributes, and [`flash_payload`] rejects an unsigned value on read anyway.
 fn flash_removal_cookie(config: &crate::config::Config) -> Cookie<'static> {
     flash_cookie_raw(config, String::new())
 }
 
 /// Set the `users_blocked` flash cookie and redirect to `/admin`. Used by the
 /// self-guard and last-enabled-admin-guard branches in `users_delete`,
-/// `users_toggle_admin` and `users_set_disabled` — mirrors how
-/// `settings_save` sets `FLASH_COOKIE` for its own surface (~line 2413).
+/// `users_toggle_admin` and `users_set_disabled`.
 fn users_blocked(config: &crate::config::Config, jar: CookieJar) -> Response {
     let jar = jar.add(flash_cookie(config, "users_blocked"));
     (jar, Redirect::to("/admin")).into_response()
 }
 
 /// Prefix for the dynamic flash value [`password_reset_keys_flash`] sets and
-/// [`take_password_reset_keys_flash`] reads back: `"password_reset_keys:
-/// <revoked>:<keys>"`. A separate scheme from [`take_flash`]'s, because that
-/// helper maps a fixed cookie value to a fixed message — there is no room in
-/// it for a message with numbers baked in.
+/// [`take_password_reset_keys_flash`] reads back:
+/// `"password_reset_keys:<revoked>:<keys>"`. A separate scheme from
+/// [`take_flash`]'s, which maps a fixed cookie value to a fixed message and has no
+/// room for numbers baked in.
 const PASSWORD_RESET_KEYS_PREFIX: &str = "password_reset_keys:";
 
-/// Set the `password_reset_keys` flash cookie and redirect to `/admin`.
-/// Called by `users_set_password` only when the target still has at least
-/// one still-usable API key after the reset, to surface the gap its doc
-/// comment already notes: the reset revokes sessions but never API keys.
-/// `revoked` and `keys` are always server-computed (a `DELETE`'s row count
-/// and a count of `Store::list_api_keys_for_user`'s rows filtered to those
-/// not yet expired), never user input, so baking them into the cookie value
-/// carries no injection risk.
+/// Set the `password_reset_keys` flash cookie and redirect to `/admin`. Called by
+/// `users_set_password` only when the target still has at least one usable API key
+/// after the reset, to surface the gap its doc comment notes: the reset revokes
+/// sessions but never API keys. `revoked` and `keys` are always server-computed,
+/// never user input, so baking them into the cookie value carries no injection
+/// risk.
 fn password_reset_keys_flash(
     config: &crate::config::Config,
     jar: CookieJar,
@@ -2924,10 +2780,9 @@ fn password_reset_keys_flash(
 }
 
 /// Read and clear the one-shot flash cookie if it carries a
-/// [`PASSWORD_RESET_KEYS_PREFIX`] value set by [`password_reset_keys_flash`].
-/// Mirrors [`take_flash`]'s one-shot-cookie contract but, unlike that
-/// function, decodes two counts out of the value rather than mapping it to a
-/// fixed message.
+/// [`PASSWORD_RESET_KEYS_PREFIX`] value set by [`password_reset_keys_flash`]. Same
+/// one-shot contract as [`take_flash`], but decodes two counts out of the value
+/// rather than mapping it to a fixed message.
 fn take_password_reset_keys_flash(
     config: &crate::config::Config,
     jar: CookieJar,
@@ -2951,12 +2806,11 @@ fn take_password_reset_keys_flash(
         ("keys", "continue")
     };
     // Covers both a self-targeted and an other-targeted reset, since
-    // `users_set_password` allows both. Only the key's owner can revoke it,
-    // from their own /account page — true whether that owner is the acting
-    // admin or someone else. Disabling is offered as the admin's lever for
-    // *another* user's account only: `users_set_disabled` unconditionally
-    // refuses a self-targeted disable, so naming that option on a self-reset
-    // would point at a control the admin cannot actually use.
+    // `users_set_password` allows both. Only the key's owner can revoke it, from
+    // their own /account page. Disabling is named as the admin's lever for
+    // *another* user's account only: `users_set_disabled` unconditionally refuses
+    // a self-targeted disable, so naming it on a self-reset would point at a
+    // control the admin cannot use.
     let message = format!(
         "Password reset revoked {revoked} {sessions_word}, but this account still has {keys} API {keys_word} that {keys_verb} to work. An API key can only be revoked from its owner's own /account page — to cut off another user's access immediately, disable their account instead."
     );
@@ -2986,21 +2840,19 @@ async fn check_show(
     Ok((jar, resp).into_response())
 }
 
-/// Who is looking at a check page. Decides both the action-URL prefix and
-/// whether the ping URL may be printed, which is why it replaced the separate
-/// `admin: bool` — the two could otherwise be passed contradicting each other.
+/// Who is looking at a check page. Decides both the action-URL prefix and whether
+/// the ping URL may be printed, which is why it replaced a separate `admin: bool`
+/// — the two could otherwise be passed contradicting each other.
 ///
-/// The ping URL is a bearer credential — holding it is enough to mark the
-/// check up or down — so it is shown freely to the owner and withheld from an
-/// admin looking at someone else's check until they ask, which is audited
-/// (`admin.ping_url_reveal`). An admin viewing a check they own themselves is
-/// not gated: it is their own credential, and `viewer_id == owner_id` is what
-/// distinguishes that from a cross-user view.
+/// The ping URL is a bearer credential — holding it is enough to mark the check up
+/// or down — so it is shown freely to the owner and withheld from an admin looking
+/// at someone else's check until they ask, which is audited
+/// (`admin.ping_url_reveal`). An admin viewing a check they own is not gated;
+/// `viewer_id == owner_id` distinguishes that from a cross-user view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckPageViewer {
     /// An owner-route render: the URL is the page's whole point.
     Owner,
-    /// An `/admin`-route render.
     Admin {
         viewer_id: i64,
         ping_url_revealed: bool,
@@ -3046,11 +2898,11 @@ async fn render_check_page(
         .await?
         .ok_or(AppError::NotFound)?;
     let now = Utc::now();
-    // The ping URL is a bearer credential: anyone holding it can mark the
-    // check up or down. On the owner's own page that is the whole point of
-    // the page, but an admin opening someone else's check gets it behind an
-    // explicit, audited reveal — otherwise "just looking" silently hands over
-    // a way to falsify that check's status with nothing recorded anywhere.
+    // The ping URL is a bearer credential: anyone holding it can mark the check up
+    // or down. On the owner's own page that is the point of the page, but an admin
+    // opening someone else's check gets it behind an explicit, audited reveal —
+    // otherwise "just looking" silently hands over a way to falsify that check's
+    // status with nothing recorded anywhere.
     let show_ping_url = viewer.shows_url(project.user_id);
     let ping_url = if show_ping_url {
         format!(
@@ -3436,17 +3288,15 @@ fn wants_fragment(headers: &HeaderMap) -> bool {
 ///
 /// Every history section's pager and Clear controls are real `<a href>`s
 /// pointing at the fragment endpoint, because with JS on `wireSection` swaps
-/// the response in place. Followed as ordinary links they would otherwise
-/// render the partial as the whole document: no `<head>`, so no stylesheet, no
-/// nav, no way back — a page that reads as a broken site rather than as a
-/// missing feature. Redirecting to the page that *contains* the section keeps
-/// those links working unscripted, and the pager cursor and filters survive
-/// because the full page parses the very same query struct. The anchor lands
-/// the reader on the section they were paging instead of the top of a long
-/// page.
+/// the response in place. Followed as ordinary links they would render the
+/// partial as the whole document: no `<head>`, so no stylesheet, no nav, no way
+/// back. Redirecting to the page that *contains* the section keeps those links
+/// working unscripted, and the cursor and filters survive because the full page
+/// parses the very same query struct. The anchor lands the reader on the
+/// section they were paging.
 ///
-/// Not cached anywhere despite varying on a request header: the whole `web`
-/// router is wrapped in [`no_store`].
+/// Not cached anywhere despite varying on a request header: the whole `web` router
+/// is wrapped in [`no_store`].
 fn fragment_page_redirect(path: &str, anchor: &str, uri: &axum::http::Uri) -> Response {
     let query = uri.query().unwrap_or_default();
     let sep = if query.is_empty() { "" } else { "?" };
@@ -3784,17 +3634,15 @@ struct ChannelFormTemplate {
 }
 
 /// The non-secret half of a stored channel config, plus a `configured` flag per
-/// secret field. Constructing this is the **only** way the edit template sees a
-/// stored config, so a delivery secret cannot reach the rendered page even by
-/// accident — non-leakage is a property of the type rather than of template
+/// secret field. Constructing this is the only way the edit template sees a stored
+/// config, so non-leakage is a property of the type rather than of template
 /// discipline (`ChannelDto` keeps the same invariant for the API; see
 /// `src/api/dto.rs`).
 ///
-/// Which fields count as secret is a judgement call, not a mechanical one: a
-/// webhook or Slack URL *is* the capability to post to that room, so it is
-/// treated as a secret even though it reads like an address. A telegram chat
-/// id, an ntfy server/topic, and an email recipient are identifiers and are
-/// safe to pre-fill.
+/// Which fields count as secret is a judgement call: a webhook or Slack URL *is*
+/// the capability to post to that room, so it is treated as a secret even though
+/// it reads like an address. A telegram chat id, an ntfy server/topic and an email
+/// recipient are identifiers and safe to pre-fill.
 struct ChannelEditView {
     id: i64,
     kind: &'static str,
@@ -3893,17 +3741,16 @@ pub(crate) fn validate_channel(
 /// [`validate_channel`] generalized over an optional `existing` channel the
 /// form is editing.
 ///
-/// One rule governs every field: **a blank submission keeps the stored value.**
+/// One rule governs every field: a blank submission keeps the stored value.
 /// That is what lets the edit form render each secret as an empty
 /// `placeholder="unchanged"` input instead of printing the stored one back into
-/// the page (see [`ChannelEditView`]), while still reusing the exact same
-/// per-kind required-field checks as create — a required secret that is blank
-/// *and* unset is still an error. The one escape hatch is
-/// `ChannelForm::ntfy_token_clear`, for the single optional secret.
+/// the page (see [`ChannelEditView`]), while reusing create's per-kind
+/// required-field checks — a required secret that is blank *and* unset is still
+/// an error. The one escape hatch is `ChannelForm::ntfy_token_clear`, for the
+/// single optional secret.
 ///
-/// `existing.kind` always wins over the submitted `kind`: the kind is immutable
-/// once created (the edit form renders it as static text) because a stored
-/// config only has meaning for the kind that wrote it.
+/// `existing.kind` always wins over the submitted `kind`: the kind is
+/// immutable, and a stored config only has meaning for the kind that wrote it.
 pub(crate) fn validate_channel_update(
     form: &ChannelForm,
     existing: Option<&Channel>,
@@ -4118,8 +3965,7 @@ async fn channel_update_core(
         Ok(v) => v,
         Err(msg) => {
             // Re-render from the *stored* channel, not from the rejected
-            // submission: the secrets the user typed are deliberately not
-            // echoed back into the page.
+            // submission: the secrets the user typed are not echoed back.
             return Ok(render(&channel_form_template(
                 state,
                 pid,
@@ -4340,9 +4186,9 @@ struct SettingsForm {
     display_timezone: String,
 }
 
-/// How a settings field is validated. The settings table stores strings, so
-/// each variant only decides what a *valid* value looks like before it is
-/// written back as one.
+/// How a settings field is validated. The settings table stores strings, so each
+/// variant only decides what a *valid* value looks like before it is written back
+/// as one.
 #[derive(Clone, Copy)]
 enum SettingKind {
     /// Raw seconds or a human duration (`5m`, `1h30m`).
@@ -4392,9 +4238,9 @@ fn readable_setting_duration(raw: String) -> String {
 }
 
 /// The four global settings fields as currently persisted, rendered in their
-/// readable (duration-string) form. Shared by `render_admin`'s default path
-/// and by `users_create`'s error re-render, which needs the same fields but
-/// isn't otherwise touching settings.
+/// readable (duration-string) form. Shared by `render_admin`'s default path and by
+/// `users_create`'s error re-render, which needs the same fields without otherwise
+/// touching settings.
 async fn load_settings_fields(state: &AppState) -> Result<SettingsFields, AppError> {
     let scan_interval = state
         .store
@@ -4477,7 +4323,7 @@ async fn admin_page(
     // next to check.
     let (jar, settings_flash) = take_flash(&state.config, jar, "settings");
     let (jar, user_flash) = take_flash(&state.config, jar, "users_blocked");
-    // The `admin_locked` flash is deliberately *not* taken here — it belongs to
+    // The `admin_locked` flash is *not* taken here — it belongs to
     // `/admin/unlock`, which is where a refused action sends the admin.
     let (jar, elevation_flash) = take_flash(&state.config, jar, "admin_unlocked");
     let (jar, password_reset_flash) = take_password_reset_keys_flash(&state.config, jar);
@@ -4522,10 +4368,10 @@ struct AdminUnlockTemplate {
 
 /// Render the unlock page.
 ///
-/// A page rather than a field on `/admin`: the requirement needs explaining —
-/// why a signed-in admin is being asked again, which actions it covers, which
-/// it deliberately does not, and that this is the same password rather than a
-/// second factor. None of that fits beside a button in a table row.
+/// A page rather than a field on `/admin`: the requirement needs explaining — why
+/// a signed-in admin is being asked again, which actions it covers, which it does
+/// not, and that this is the same password rather than a second factor. None of
+/// that fits beside a button in a table row.
 fn render_admin_unlock(
     state: &AppState,
     jar: &CookieJar,
@@ -4563,25 +4409,24 @@ async fn admin_unlock_page(
     Ok((jar, resp).into_response())
 }
 
-/// Re-assert the admin's password to unlock the access-granting controls for
-/// `elevate::ELEVATION_TTL_SECS`.
-///
-/// Goes through the same [`reauthenticate`] gate `/account` uses, so a wrong
-/// password is charged to the account limiter here too — this form is reachable
-/// from an authenticated seat and would otherwise be a third password oracle
-/// alongside the two that gate closed.
 /// Start this request's session on an elevation window.
 ///
-/// A passwordless forward-auth admin reaches here without a password check at
-/// all (see [`reauthenticate`]), and there is no session handle to key on when
-/// the router is driven without a cookie; both are no-ops, which is harmless
-/// because `Elevation::not_applicable` already lets those accounts act.
+/// A passwordless forward-auth admin reaches here without a password check at all
+/// (see [`reauthenticate`]), and there is no session handle to key on when the
+/// router is driven without a cookie; both are no-ops, harmless because
+/// `Elevation::not_applicable` already lets those accounts act.
 fn grant_elevation(state: &AppState, jar: &CookieJar) {
     if let Some(handle) = current_session_handle(state, jar) {
         state.elevations.grant(&handle);
     }
 }
 
+/// Re-assert the admin's password to unlock the access-granting controls for
+/// `elevate::ELEVATION_TTL_SECS`.
+///
+/// Goes through the same [`reauthenticate`] gate `/account` uses, so a wrong
+/// password is charged to the account limiter here too — this form is reachable
+/// from an authenticated seat and would otherwise be a third password oracle.
 async fn admin_unlock(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -4592,10 +4437,9 @@ async fn admin_unlock(
     let outcome = reauthenticate(&state, &admin, &form.password, "admin_unlock");
     // The in-page dialog uses [`wants_fragment`]'s signal to get a status code
     // back instead of a rendered page, since it has a form waiting to submit
-    // and nowhere to put HTML.
-    // Everything about the decision itself is identical either way — the
-    // branch is presentation only, which is what keeps a scripted caller from
-    // being a second, weaker door.
+    // and nowhere to put HTML. The decision itself is identical either way —
+    // the branch is presentation only, which keeps a scripted caller from being
+    // a weaker door.
     if wants_fragment(&headers) {
         return Ok(match outcome {
             Reauth::Passed => {
@@ -4673,12 +4517,11 @@ async fn settings_save(
         ),
     ];
     // Atomic: validate every field before writing any. Blank clears the
-    // setting; scan/nag intervals accept a duration (raw seconds or e.g.
-    // `5m`), the retention fields are plain positive integers (days), and the
-    // display timezone is an IANA name. Any non-blank invalid value aborts the
-    // whole save and re-renders with the submitted values. Each field is
-    // reduced to the string that will be stored, so the change-detection and
-    // write passes below stay type-agnostic.
+    // setting; scan/nag intervals accept a duration (raw seconds or e.g. `5m`),
+    // the retention fields are plain positive integers (days), and the display
+    // timezone is an IANA name. Any non-blank invalid value aborts the whole
+    // save and re-renders with the submitted values. Each field is reduced to
+    // the string that will be stored, so the passes below stay type-agnostic.
     let mut parsed: Vec<(&str, String)> = Vec::with_capacity(fields.len());
     for (key, raw, label, kind) in fields {
         let result = match kind {
@@ -4732,10 +4575,9 @@ async fn settings_save(
     for (key, value) in parsed {
         state.store.set_setting(key, &value).await?;
     }
-    // A settings save is an admin action on the whole instance and had been
-    // going unrecorded. It matters most for `audit_retention_days`: shortening
-    // the window is how an admin would erase their own trail, and this is what
-    // leaves a mark when they do. A no-op save writes nothing.
+    // Shortening `audit_retention_days` is how an admin would erase their own
+    // trail, and this entry is what leaves a mark when they do. A no-op save
+    // writes nothing.
     if !changed.is_empty() {
         state
             .store
@@ -4765,11 +4607,10 @@ fn username_taken(username: &str) -> String {
 
 /// Re-render `/admin` with a message in the "All users" card.
 ///
-/// Every refusal from the user-management handlers lands here — a blank
-/// username, a password under the policy floor, a name already taken (whether
-/// caught by the pre-check or by the constraint) — so the shape of that
-/// response is written once. It had been copied per branch, which is how the
-/// constraint-race path ended up an untested duplicate of the pre-check path.
+/// Every refusal from the user-management handlers lands here — a blank username,
+/// a password under the policy floor, a name already taken (whether caught by the
+/// pre-check or by the constraint) — so the shape of that response is written
+/// once.
 async fn render_admin_user_error(
     state: &AppState,
     jar: &CookieJar,
@@ -4817,8 +4658,7 @@ async fn users_create(
     } else if taken {
         // Matched exactly, like the `UNIQUE` constraint and
         // `find_user_by_username` itself: `Admin` and `admin` are different
-        // accounts, and rejecting a name the database would accept would be
-        // its own bug.
+        // accounts, and rejecting a name the database would accept would be a bug.
         Some(username_taken(username))
     } else {
         None
@@ -4886,11 +4726,10 @@ async fn users_delete(
     let Some(target) = state.store.find_user_by_id(id).await? else {
         return Ok(Redirect::to("/admin").into_response());
     };
-    // Refuse to delete the last enabled admin. Provably unreachable today:
-    // the actor is always an enabled admin (AdminUser/resolve_user rejects
-    // disabled users), and the self-guard above already rules out
-    // target == actor, so a target that is a *different* enabled admin
-    // implies count_enabled_admins() is already >= 2. Kept as
+    // Refuse to delete the last enabled admin. Provably unreachable today: the
+    // actor is always an enabled admin (AdminUser/resolve_user rejects disabled
+    // users), and the self-guard above rules out target == actor, so a target that
+    // is a *different* enabled admin implies count_enabled_admins() >= 2. Kept as
     // defence-in-depth behind the self-guard.
     if target.is_admin && !target.disabled && state.store.count_enabled_admins().await? <= 1 {
         return Ok(users_blocked(&state.config, jar));
@@ -4947,10 +4786,9 @@ async fn users_set_password(
     if !elevation(&state, &jar, &admin).allows() {
         return Ok(admin_locked(&state.config, jar));
     }
-    // Rendered with the message rather than the silent `Redirect::to("/admin")`
-    // the empty-password case used to get: bouncing back to an unchanged page
-    // reads as success, and an admin who believes they reset a password when
-    // they did not is exactly the wrong failure for this control.
+    // Rendered with the message rather than a silent `Redirect::to("/admin")`:
+    // bouncing back to an unchanged page reads as success, and an admin who
+    // believes they reset a password when they did not is the wrong failure here.
     if let Err(msg) = crate::auth::validate_password(&form.password) {
         return render_admin_user_error(&state, &jar, &admin, msg).await;
     }
@@ -4959,19 +4797,15 @@ async fn users_set_password(
     };
     let phc = hash_password(&form.password).map_err(|e| AppError::Other(e.to_string().into()))?;
     state.store.set_user_password(id, &phc).await?;
-    // OWASP: a password change is a privilege level change, so existing
-    // sessions must be invalidated — otherwise resetting a password to evict
-    // an intruder leaves the intruder's cookie working. When the admin resets
-    // their *own* password (the reset form is not hidden behind `is_self` in
-    // `templates/admin.html`), the session they are currently operating from
-    // must survive — see `Store::delete_sessions_for_user`'s doc comment.
-    // Consequence: a self-targeted reset no longer evicts an attacker sharing
-    // that same session row (e.g. a shoulder-surfed or exported cookie) — it
-    // keeps the row exactly as `/account`'s "revoke others" does, and `logout`
-    // only ever deletes the row for the browser issuing it. Evicting that
-    // attacker therefore takes two steps: reset your password, then log out.
-    // API keys are untouched — see the flash below, which is what surfaces
-    // that gap to the operator.
+    // OWASP: a password change is a privilege level change, so existing sessions
+    // must be invalidated — otherwise resetting a password to evict an intruder
+    // leaves the intruder's cookie working. When the admin resets their *own*
+    // password (the reset form is not hidden behind `is_self` in
+    // `templates/admin.html`), the session they are operating from must survive —
+    // see `Store::delete_sessions_for_user`'s doc comment. Consequence: a
+    // self-targeted reset does not evict an attacker sharing that same session row
+    // (a shoulder-surfed or exported cookie), so that takes two steps: reset the
+    // password, then log out. API keys are untouched — see the flash below.
     let revoked = if id == admin.id {
         match secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state)) {
             Some(current) => {
@@ -5013,12 +4847,10 @@ async fn users_set_password(
         .await?;
     // Sessions are revoked above, but API keys are not — a `pw_…` key minted
     // before the reset keeps working indefinitely, and closing it means
-    // revoking it from `/account` or disabling the account. Surface that gap
-    // instead of leaving it silent: if the target still has a key, flash a
-    // warning naming the residual access.
-    // Count only keys that still resolve: `validate_api_key` already refuses
-    // an expired key, so including one here would claim residual access that
-    // does not exist.
+    // revoking it from `/account` or disabling the account. Flash a warning
+    // naming that residual access rather than leaving it silent. Count only
+    // keys that still resolve: `validate_api_key` already refuses an expired
+    // key, so including one would claim residual access that does not exist.
     let now = Utc::now();
     let key_count = state
         .store
@@ -5068,11 +4900,8 @@ async fn users_toggle_admin(
     if new_admin && !elevation(&state, &jar, &admin).allows() {
         return Ok(admin_locked(&state.config, jar));
     }
-    // Refuse to remove the last enabled admin. Provably unreachable today:
-    // see `users_delete`'s comment — the self-guard above already rules out
-    // target == actor, so a target that is a *different* enabled admin
-    // implies count_enabled_admins() is already >= 2. Kept as
-    // defence-in-depth behind the self-guard.
+    // Refuse to remove the last enabled admin. Provably unreachable today: see
+    // `users_delete`'s comment. Kept as defence-in-depth behind the self-guard.
     if !new_admin
         && target.is_admin
         && !target.disabled
@@ -5127,11 +4956,8 @@ async fn users_set_disabled(
         return Ok(Redirect::to("/admin").into_response());
     };
     let new_disabled = !target.disabled;
-    // Refuse to disable the last enabled admin. Provably unreachable today:
-    // see `users_delete`'s comment — the self-guard above already rules out
-    // target == actor, so a target that is a *different* enabled admin
-    // implies count_enabled_admins() is already >= 2. Kept as
-    // defence-in-depth behind the self-guard.
+    // Refuse to disable the last enabled admin. Provably unreachable today: see
+    // `users_delete`'s comment. Kept as defence-in-depth behind the self-guard.
     if new_disabled
         && target.is_admin
         && !target.disabled
@@ -5194,15 +5020,15 @@ async fn users_set_disabled(
     Ok(Redirect::to("/admin").into_response())
 }
 
-// --- account (session-authenticated self-service page for every logged-in
-// user: sessions, then API keys, merged onto a single `/account` page) ---
+// --- account (self-service page for every logged-in user: sessions, then API
+// keys, merged onto a single `/account` page) ---
 //
-// `sessions.id` is half of the session cookie — the signed half is derived
-// from it (see `crate::secret`), so it is still a bearer secret and must never
-// be rendered or appear in a URL. Rows are identified in the UI (and in the
-// revoke route) by `handle`, the SHA-256 hex of the id, computed with the same
-// helper the API-key hashing uses. Session lists are tiny, so resolving a
-// handle back to a row is a linear scan rather than an indexed lookup.
+// `sessions.id` is half of the session cookie — the signed half is derived from it
+// (see `crate::secret`), so it is still a bearer secret and must never be rendered
+// or appear in a URL. Rows are identified in the UI (and in the revoke route) by
+// `handle`, the SHA-256 hex of the id, computed with the same helper the API-key
+// hashing uses. Session lists are tiny, so resolving a handle back to a row is a
+// linear scan.
 #[derive(Template)]
 #[template(path = "account.html")]
 struct AccountTemplate {
@@ -5215,14 +5041,14 @@ struct AccountTemplate {
     /// others" control when there is nothing else to revoke.
     other_count: usize,
     /// False for a passwordless forward-auth account: there is no stored
-    /// password to verify against, and the credential it signs in with lives
-    /// at the gateway.
+    /// password to verify against, and the credential it signs in with lives at
+    /// the gateway.
     ///
     /// Gates two things, both above their own section rather than here: the
     /// "Change password" card (hidden rather than shown-and-refused) and the
-    /// re-authentication field on the API-key form (see [`reauthenticate`],
-    /// which passes such an account unchallenged — so rendering a field it
-    /// could never fill in would be a lie).
+    /// re-authentication field on the API-key form — [`reauthenticate`] passes
+    /// such an account unchallenged, so rendering a field it could never fill
+    /// in would be a lie.
     has_password: bool,
     // password section
     password_error: Option<String>,
@@ -5235,10 +5061,10 @@ struct AccountTemplate {
     key_error: Option<String>,
 }
 
-/// The optional inputs `render_account` needs beyond the data it always
-/// gathers itself, kept in one struct for the same reason [`AdminRender`]
-/// exists: the page has several independent sections, and threading one
-/// `Option` per section through a positional argument list stops scaling.
+/// The optional inputs `render_account` needs beyond the data it always gathers
+/// itself, kept in one struct for the same reason [`AdminRender`] exists: the page
+/// has several independent sections, and one `Option` per section in a positional
+/// argument list stops scaling.
 #[derive(Default)]
 struct AccountRender {
     new_token: Option<String>,
@@ -5295,9 +5121,9 @@ struct NewApiKeyForm {
     expires_in: String,
     /// The submitter's own password, re-asserted (see [`reauthenticate`]).
     ///
-    /// `serde(default)` is load-bearing, not tidiness: a passwordless
-    /// forward-auth account is not rendered the field at all, so the form it
-    /// posts genuinely has no such key and must still deserialize.
+    /// `serde(default)` matters here: a passwordless forward-auth account is not
+    /// rendered the field at all, so the form it posts genuinely has no such key
+    /// and must still deserialize.
     #[serde(default)]
     current_password: String,
 }
@@ -5399,19 +5225,17 @@ struct ChangePasswordForm {
 
 /// Change your own password.
 ///
-/// The current password is required, which is the one thing a session cookie
-/// alone cannot supply: without it a hijacked session could lock the account's
-/// owner out of their own account (OWASP's "reauthentication after risk
-/// events"). A passwordless forward-auth account has nothing to verify
-/// against, so it is refused here as well as having no form — its credential
-/// lives at the gateway, and setting a local one would create a second way in
-/// that the gateway's own sign-out could not end.
+/// The current password is required, which is the one thing a session cookie alone
+/// cannot supply: without it a hijacked session could lock the owner out of their
+/// own account (OWASP's "reauthentication after risk events"). A passwordless
+/// forward-auth account has nothing to verify against, so it is refused here as
+/// well as having no form — its credential lives at the gateway, and a local one
+/// would be a second way in that the gateway's own sign-out could not end.
 ///
 /// On success every *other* session of this user is revoked, matching what
-/// `users_set_password` does for an admin-driven reset: a password change is
-/// how you evict someone, so leaving their cookie working would defeat it.
-/// API keys are deliberately untouched — same as the admin reset, and
-/// `/account` lists them right below for anyone who wants them gone too.
+/// `users_set_password` does for an admin-driven reset: a password change is how
+/// you evict someone, so leaving their cookie working would defeat it. API keys
+/// are untouched — same as the admin reset, and `/account` lists them right below.
 async fn account_password(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -5442,9 +5266,8 @@ async fn account_password(
             return render_account(&state, &jar, &user, parts).await;
         }
     }
-    // Subsumes the old `is_empty` check. Ordered before the confirmation
-    // comparison so someone who typed a too-short password twice is told what
-    // is actually wrong with it.
+    // Ordered before the confirmation comparison so someone who typed a too-short
+    // password twice is told what is actually wrong with it.
     if let Err(msg) = crate::auth::validate_password(&form.new_password) {
         let parts = error(&msg);
         return render_account(&state, &jar, &user, parts).await;
@@ -5510,12 +5333,11 @@ async fn api_keys_create(
         ..Default::default()
     };
     // Before the name check, and before anything is written: an API key is a
-    // bearer credential that outlives the session which minted it — it is bound
-    // by neither `SESSION_IDLE_TTL_HOURS` nor `SESSION_ABSOLUTE_MAX_DAYS`, and
-    // `users_set_password` deliberately leaves it alone. So a borrowed browser
-    // would otherwise convert one session's access into permanent access, and
-    // this is the one gated action where not asking cannot be undone by
-    // signing out.
+    // bearer credential that outlives the session which minted it — bound by
+    // neither `SESSION_IDLE_TTL_HOURS` nor `SESSION_ABSOLUTE_MAX_DAYS`, and
+    // left alone by `users_set_password`. A borrowed browser would otherwise
+    // convert one session's access into permanent access, and this is the one
+    // gated action where not asking cannot be undone by signing out.
     match reauthenticate(&state, &user, &form.current_password, "api_key_create") {
         Reauth::Passed => {}
         Reauth::Failed => {
@@ -5712,10 +5534,10 @@ enum EnvValue {
     Secret(bool),
 }
 
-/// Group every env-configured setting (nothing in this DB) into the sections
-/// shown on the read-only `/admin` "Environment" card. Values are the
-/// process's *current effective* config, so this reflects what's actually
-/// running, not just what's documented as a default.
+/// Group every env-configured setting (nothing in this DB) into the sections shown
+/// on the read-only `/admin` "Environment" card. Values are the process's current
+/// effective config, so this reflects what is actually running, not just what is
+/// documented as a default.
 fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSetting>)> {
     let log_format = match config.log_format {
         crate::config::LogFormat::Full => "full",
@@ -5903,19 +5725,11 @@ fn redact_db_url(url: &str) -> String {
     }
 }
 
-/// `/admin` landing: one merged page — site-wide overview (scale, check
-/// health, notification health, scheduler heartbeat), global settings, user
-/// management, and every project across all users — stacked as ordinary
-/// cards (no tabs/sub-nav), mirroring how `/account` merges its sections.
-/// Field names are shared with the four templates this replaced where they
-/// don't collide; collisions get a section prefix (`settings_*`, `user_*`,
-/// and the overview's scale counters `user_count`/`project_count` to leave
-/// `users`/`projects` for the user-management and all-projects lists below).
 /// Cursor + filter params for the `/admin` audit table. Prefixed `a*` so they
-/// share the page's query string without colliding with anything else, and
-/// every field is optional — an unknown or malformed value falls back to the
-/// unfiltered latest page rather than 400ing the whole admin page. Accepted
-/// both on `GET /admin` (full page) and `GET /admin/audit` (fragment).
+/// share the page's query string without colliding with anything else, and every
+/// field is optional — an unknown or malformed value falls back to the unfiltered
+/// latest page rather than 400ing the whole admin page. Accepted both on
+/// `GET /admin` (full page) and `GET /admin/audit` (fragment).
 #[derive(Deserialize, Default)]
 struct AdminAuditQuery {
     #[serde(default)]
@@ -6002,6 +5816,10 @@ struct AuditRow {
     expandable: bool,
 }
 
+/// The one merged `/admin` page: overview, global settings, user management and
+/// every project across all users. Field names collide across the four templates
+/// this replaced, so those get a section prefix (`settings_*`, `user_*`, and
+/// `user_count`/`project_count`, leaving `users`/`projects` for the lists).
 #[derive(Template)]
 #[template(path = "admin.html")]
 struct AdminTemplate {
@@ -6026,15 +5844,13 @@ struct AdminTemplate {
     last_prune_at: Option<String>,
     /// "3m ago" for the two timestamps above, rendered server-side.
     ///
-    /// `app.js` retitles these every second from `data-ago`, but it used to be
-    /// the *only* thing that ever put text in them, so with no script the
-    /// heartbeat tiles showed an absolute timestamp and a blank line where the
-    /// age should be — the one number an operator actually reads at a glance.
+    /// `app.js` retitles these every second from `data-ago`, but with no script
+    /// the heartbeat tiles would show an absolute timestamp and a blank line
+    /// where the age should be — the one number an operator reads at a glance.
     last_scan_ago: Option<String>,
     last_prune_ago: Option<String>,
-    /// The same two stamps as readable UTC. The `data-ts`/`data-ago`
-    /// attributes keep the raw RFC3339 for `app.js`; this is the text beside
-    /// them, which used to be that raw string — `T` separator, offset and all.
+    /// The same two stamps as readable UTC. The `data-ts`/`data-ago` attributes
+    /// keep the raw RFC3339 for `app.js`; this is the text beside them.
     last_scan_utc: Option<String>,
     last_prune_utc: Option<String>,
     // settings
@@ -6055,13 +5871,12 @@ struct AdminTemplate {
     elevation_applies: bool,
     /// `Some(readable duration)` while the unlock is live, `None` when locked.
     elevation_remaining: Option<String>,
-    /// Applies *and* not currently confirmed — i.e. the next access-granting
-    /// action will be refused. The gated controls carry `data-reauth` only in
-    /// this state, so `app.js` knows to ask before submitting; when confirmed
-    /// they submit straight through, and when the gate cannot apply they are
-    /// never marked at all. The server re-checks regardless: if the window
-    /// lapses between render and click, the ordinary bounce to
-    /// `/admin/unlock` catches it.
+    /// Applies *and* not currently confirmed — the next access-granting action
+    /// will be refused. The gated controls carry `data-reauth` only in this
+    /// state, so `app.js` knows to ask before submitting; when confirmed they
+    /// submit straight through. The server re-checks regardless: if the window
+    /// lapses between render and click, the ordinary bounce to `/admin/unlock`
+    /// catches it.
     elevation_locked: bool,
     password_reset_flash: Option<String>,
     user_error: Option<String>,
@@ -6093,11 +5908,10 @@ impl UserRow {
     }
 }
 
-/// Gather every dataset the merged `/admin` page needs and render it. `r`
-/// carries the settings-section fields/error/flash and the add-user error —
-/// the only parts that vary across the page's three entry points (the plain
-/// GET, a rejected settings save, and a rejected add-user submission); every
-/// other section (overview stats, users list, projects list) is always
+/// Gather every dataset the merged `/admin` page needs and render it. `r` carries
+/// the settings-section fields/error/flash and the add-user error — the only parts
+/// that vary across the page's three entry points (the plain GET, a rejected
+/// settings save, a rejected add-user submission); every other section is always
 /// freshly loaded from the store.
 async fn render_admin(
     state: &AppState,
@@ -6391,14 +6205,13 @@ async fn admin_check_create(
     check_create_core(&state, pid, form, true, true, csrf).await
 }
 
-/// `POST /admin/checks/{id}/ping-url` — disclose a check's ping URL to an
-/// admin who does not own it, and record that disclosure.
+/// `POST /admin/checks/{id}/ping-url` — disclose a check's ping URL to an admin
+/// who does not own it, and record that disclosure.
 ///
-/// This is the one *read* under `/admin` that still audits, because it is the
-/// one that hands over a credential rather than a description. It is a POST
-/// rather than a query parameter on the page precisely so the disclosure
-/// cannot happen without passing through here: a `?reveal=1` would be a way
-/// to see the URL with nothing written down.
+/// The one *read* under `/admin` that still audits, because it hands over a
+/// credential rather than a description. A POST rather than a query parameter on
+/// the page, so the disclosure cannot happen without passing through here: a
+/// `?reveal=1` would be a way to see the URL with nothing written down.
 ///
 /// Re-submitting records the disclosure again, which is correct — it happened
 /// again.

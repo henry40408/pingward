@@ -4,17 +4,12 @@
 //! libtest harness collecting `#[test]` functions. Run it from `e2e/` with
 //! `cargo test --test e2e`.
 //!
-//! What `playwright.config.js` expressed as two projects — `chromium`, and a
-//! `no-js` project matching only `no_js.feature` — is expressed here as the
-//! feature's `@nojs` tag, read in a `before` hook. The other three tags the
-//! JavaScript fixtures read off `$tags` (`@fast-scan`, `@smtp-env`,
-//! `@trusted-proxy`) select the server's environment in the same hook; see
-//! [`pingward_e2e::server::Options`].
+//! A `before` hook reads the scenario's tags: `@nojs` decides whether the
+//! page's scripts run, and `@fast-scan` / `@smtp-env` / `@trusted-proxy` select
+//! the server's environment (see [`pingward_e2e::server::Options`]).
 //!
-//! Unlike the sibling ports, **every scenario gets its own server and its own
-//! database**. That is not conservatism: `POST /setup` creates the first admin
-//! once and only once, and almost every scenario here starts by walking through
-//! it.
+//! Every scenario gets its own server and database: `POST /setup` creates the
+//! first admin once and only once, and almost every scenario walks through it.
 
 mod steps;
 
@@ -33,11 +28,9 @@ const CONCURRENCY_CEILING: usize = 4;
 
 /// How many scenarios run at once, one per core up to [`CONCURRENCY_CEILING`].
 ///
-/// A fixed four was wrong in the sibling ports: it is fine on a developer's
-/// machine and too many for a two-core CI runner, where four browsers contend
-/// for two cores until pages take longer to settle than the steps wait for.
-/// Each scenario here also carries a whole pingward process, so the ceiling is
-/// if anything more load-bearing.
+/// A fixed four is too many for a two-core CI runner, where the browsers
+/// contend until pages take longer to settle than the steps wait for — and each
+/// scenario here also carries a whole pingward process.
 fn max_concurrent_scenarios() -> usize {
     std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
@@ -46,9 +39,8 @@ fn max_concurrent_scenarios() -> usize {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Before anything runs in parallel — see `Browser::prepare`. On a cold
-    // driver cache concurrent sessions contend on the same download and the
-    // run wedges rather than slows, and CI is cold every run.
+    // Before anything runs in parallel: on a cold driver cache (every CI run)
+    // concurrent sessions contend on the same download and the run wedges.
     Browser::prepare().await?;
 
     let writer = PingwardWorld::cucumber()
@@ -85,11 +77,9 @@ async fn main() -> anyhow::Result<()> {
 
 /// Every tag in scope for a scenario.
 ///
-/// Gherkin scopes tags by inheritance — `@fast-scan` sits on the whole of
-/// `time_states.feature`, `@smtp-env` on one scenario of `admin.feature` — but
-/// `Scenario::tags` reports only the ones written on the scenario itself. The
-/// union is what `playwright-bdd`'s `$tags` fixture handed the JavaScript
-/// suite, so it is what the options are read from here.
+/// Gherkin scopes tags by inheritance (`@fast-scan` sits on the whole of
+/// `time_states.feature`), but `Scenario::tags` reports only the ones written
+/// on the scenario itself, so the options are read from the union.
 fn tags_of(
     feature: &gherkin::Feature,
     rule: Option<&gherkin::Rule>,

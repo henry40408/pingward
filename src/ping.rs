@@ -31,24 +31,14 @@ fn truncate(bytes: &Bytes) -> String {
 /// or the client behind it when that peer is a trusted proxy
 /// (`auth::client_ip`). `None` when the peer is unknown — `ConnectInfo` is
 /// only populated by `into_make_service_with_connect_info`, so under
-/// `axum-test` there is no peer at all.
+/// `axum-test` there is no peer at all. `pub(crate)` so `web.rs` can reuse it
+/// when stamping a session's IP at login, keeping pings and sessions on one
+/// rule.
 ///
-/// The brief specifies `Option<ConnectInfo<SocketAddr>>` as the extractor. As
-/// of axum 0.8.9, `Option<T>` only implements `FromRequestParts` for
-/// extractors that explicitly opt in via the `OptionalFromRequestParts` trait,
-/// and `ConnectInfo` does not — so `Option<ConnectInfo<SocketAddr>>` does not
-/// implement `FromRequestParts` and the handlers fail to compile (confirmed
-/// with a minimal repro against the pinned axum 0.8.9). This local wrapper
-/// reads the extension manually and is infallible, preserving the brief's
-/// "optional connect info" behavior.
-///
-/// Resolving `X-Forwarded-For` *here* rather than in each handler is what keeps
-/// pings and sessions on the same rule: behind a reverse proxy the raw peer is
-/// the proxy's own address, which is the same value for every row and tells
-/// nobody anything.
-///
-/// `pub(crate)` so `web.rs` can reuse it for the same purpose (stamping a
-/// session's IP at login), rather than duplicating this extractor.
+/// A local wrapper rather than `Option<ConnectInfo<SocketAddr>>`: as of axum
+/// 0.8.9 `Option<T>` only implements `FromRequestParts` for extractors that
+/// opt into `OptionalFromRequestParts`, and `ConnectInfo` does not, so the
+/// handlers would not compile.
 pub(crate) struct ClientIp(pub(crate) Option<String>);
 
 impl<S> FromRequestParts<S> for ClientIp
@@ -219,15 +209,14 @@ async fn apply(
         .await?;
 
     // Signal the check page's live tail. Gated on receiver_count so a ping
-    // costs nothing when nobody is watching. A send error just means no
-    // subscribers, which is not an error condition here.
+    // costs nothing when nobody is watching; a send error just means no
+    // subscribers.
     if events.receiver_count() > 0 {
         let _ = events.send(check.id);
     }
 
-    // Spec §6: a paused check is excluded from monitoring. Its ping is
-    // still recorded above, but it must not be resurrected into up/down by
-    // an incoming ping.
+    // Spec §6: a paused check is excluded from monitoring. Its ping is still
+    // recorded above, but must not resurrect it into up/down.
     if check.status == CheckStatus::Paused {
         return Ok(StatusCode::OK);
     }
@@ -276,11 +265,10 @@ async fn apply(
 /// Spawn a fire-and-forget delivery so the ping response is not blocked by
 /// notification I/O. `store` is cheap to clone (holds an `Arc` pool).
 ///
-/// `check` is the snapshot from *before* this ping was applied, which is what
-/// makes `EventDetail::last_ping_at` the previous ping — on an `Up` event that
-/// is exactly the "previous ping" the message reports. Resolving the project
-/// name happens inside the spawned task, so the extra query stays off the ping
-/// response path.
+/// `check` must be the snapshot from *before* this ping was applied, so
+/// `EventDetail::last_ping_at` is the previous ping — what an `Up` message
+/// reports. The project-name lookup happens inside the spawned task, keeping
+/// that query off the ping response path.
 fn spawn_delivery(
     store: Store,
     check: &Check,

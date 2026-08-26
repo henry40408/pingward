@@ -50,9 +50,8 @@ async fn stylesheet_font_urls_are_cache_busted() {
     let res = server.get("/assets/app.css").await;
     res.assert_status_ok();
     let css = res.text();
-    // Name-agnostic on purpose: catches a placeholder rename in either
-    // `assets/app.css` or `FONT_PLACEHOLDER` that would silently skip
-    // substitution and ship a literal placeholder in every font URL.
+    // Name-agnostic: a rename in either `assets/app.css` or `FONT_PLACEHOLDER`
+    // would silently skip substitution and ship a literal placeholder.
     assert!(
         !css.contains("{{"),
         "unsubstituted placeholder in the served stylesheet"
@@ -75,8 +74,7 @@ async fn serves_the_app_icons() {
     let png = server.get("/apple-touch-icon.png").await;
     png.assert_status_ok();
     assert_eq!(png.header("content-type"), "image/png");
-    // The rendered raster must be the PNG magic number, not an SVG that was
-    // copied into place — `npm run icons` is the only thing that writes it.
+    // Guards against an SVG copied into place instead of a rendered raster.
     assert!(
         png.as_bytes().starts_with(b"\x89PNG\r\n\x1a\n"),
         "apple-touch-icon.png is not a PNG"
@@ -102,9 +100,8 @@ async fn pages_link_the_content_hashed_icons() {
     }
 }
 
-/// The footer sits outside `base.html`'s `show_nav` guard, so it must render
-/// even on a nav-less page — `/setup` is one, which the second assertion pins
-/// down so this cannot silently pass on a page that grew a nav.
+/// The footer sits outside `base.html`'s `show_nav` guard, so it must render on
+/// a nav-less page; the second assertion pins that `/setup` is still one.
 #[tokio::test]
 async fn nav_less_pages_still_render_the_build_version() {
     let server = server().await;

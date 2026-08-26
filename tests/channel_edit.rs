@@ -1,14 +1,11 @@
 //! Web-surface tests for editing a notification channel.
 //!
-//! The merge rules themselves (`web::validate_channel_update`: a blank field
-//! keeps its stored value, `kind` is immutable, `ntfy_token_clear` is the one
-//! escape hatch) are covered end-to-end over the API in
-//! `tests/api_v1_write.rs::patch_channel_*`, since both surfaces call the same
-//! validator. What is tested here is what only the browser surface can get
-//! wrong: **the edit page must never render a stored delivery secret**, which
-//! is the invariant the whole design exists to protect (`channels.config_json`
-//! holds webhook URLs and bot tokens in plaintext, and before this feature
-//! nothing ever read it back out to a user-visible surface).
+//! The merge rules (`web::validate_channel_update`: a blank field keeps its
+//! stored value, `kind` is immutable, `ntfy_token_clear` is the one escape hatch)
+//! are covered over the API in `tests/api_v1_write.rs::patch_channel_*`, since
+//! both surfaces call the same validator. Here: the edit page must never render
+//! a stored delivery secret — `channels.config_json` holds webhook URLs and bot
+//! tokens in plaintext.
 
 use axum_test::TestServer;
 use chrono::Utc;
@@ -44,7 +41,6 @@ async fn server_as(username: &str, is_admin: bool) -> (TestServer, Store, i64) {
     (server, store, uid)
 }
 
-/// Sign a signed-in server's POSTs with the session's CSRF token.
 async fn csrf(store: &Store) -> String {
     common::newest_session_csrf(&store.pool).await
 }
@@ -68,14 +64,12 @@ async fn stored_config(store: &Store, chid: i64) -> Value {
     serde_json::from_str(&ch.config_json).unwrap()
 }
 
-/// The core invariant, checked for every kind that stores a secret: the edit
-/// page renders a `configured` pill instead of the value.
+/// The core invariant, for every kind that stores a secret: the edit page renders
+/// a `configured` pill instead of the value.
 ///
-/// Asserted **both ways** — a page that 500'd, or one that rendered the wrong
-/// channel, would trivially "not contain the secret" and this test would pass
-/// while exercising nothing. So each case also asserts the page really is the
-/// edit form for *that* channel (its name is pre-filled, its immutable kind is
-/// shown, and a `configured` pill is rendered for the secret that is set).
+/// Asserted both ways — a page that 500'd, or rendered the wrong channel, would
+/// trivially not contain the secret, so each case also asserts this really is the
+/// edit form for that channel.
 #[tokio::test]
 async fn edit_form_never_renders_a_stored_secret() {
     let (server, store, uid) = server_as("alice", false).await;
@@ -147,8 +141,8 @@ async fn edit_form_never_renders_a_stored_secret() {
     }
 }
 
-/// The non-secret half: identifiers are safe to pre-fill, and must be, or an
-/// edit would silently need them re-typed.
+/// Identifiers are safe to pre-fill, and must be, or an edit would silently need
+/// them re-typed.
 #[tokio::test]
 async fn edit_form_prefills_non_secret_fields() {
     let (server, store, uid) = server_as("alice", false).await;
@@ -180,9 +174,8 @@ async fn edit_form_prefills_non_secret_fields() {
     );
 }
 
-/// A rename submitted from the browser keeps the stored secret, and the form's
-/// blank secret input is what proves the merge is load-bearing: the browser
-/// literally cannot send the current value back.
+/// The form's secret input is blank, so the browser cannot send the current
+/// value back: the merge is what keeps it.
 #[tokio::test]
 async fn edit_renames_without_resubmitting_the_secret() {
     let (server, store, uid) = server_as("alice", false).await;
@@ -206,8 +199,7 @@ async fn edit_renames_without_resubmitting_the_secret() {
     assert_eq!(stored_config(&store, chid).await["url"], secret);
 }
 
-/// A submitted secret overwrites, and the rendered page still never shows
-/// either the old or the new value.
+/// A submitted secret overwrites; the page still shows neither old nor new value.
 #[tokio::test]
 async fn edit_rotates_a_secret_without_rendering_it() {
     let (server, store, uid) = server_as("alice", false).await;
@@ -243,9 +235,8 @@ async fn edit_rotates_a_secret_without_rendering_it() {
     assert!(!body.contains("/OLD"));
 }
 
-/// The checkbox is the only way to remove an optional secret, so it has to
-/// actually reach the handler as a `true` — a `value` the form deserializer
-/// cannot parse as a bool would silently no-op.
+/// The checkbox is the only way to remove an optional secret, so its `value` must
+/// parse as a bool — anything else silently no-ops.
 #[tokio::test]
 async fn edit_clears_the_ntfy_token_via_the_checkbox() {
     let (server, store, uid) = server_as("alice", false).await;
@@ -259,8 +250,7 @@ async fn edit_clears_the_ntfy_token_via_the_checkbox() {
     .await;
     let token = csrf(&store).await;
 
-    // The form renders the checkbox only when a token is actually stored, and
-    // with the exact value the handler's `bool` field can parse.
+    // Rendered only when a token is stored, with a value the handler's bool parses.
     let body = server.get(&format!("/channels/{chid}/edit")).await.text();
     assert!(
         body.contains("name=\"ntfy_token_clear\" value=\"true\""),
@@ -283,14 +273,13 @@ async fn edit_clears_the_ntfy_token_via_the_checkbox() {
     let cfg = stored_config(&store, chid).await;
     assert_eq!(cfg["token"], "");
     assert_eq!(cfg["topic"], "alerts");
-    // With the token gone, the checkbox has nothing to clear and is not
-    // rendered — otherwise the form would offer a no-op control.
+    // With the token gone the checkbox is not rendered: it would be a no-op control.
     let body = server.get(&format!("/channels/{chid}/edit")).await.text();
     assert!(!body.contains("name=\"ntfy_token_clear\""));
 }
 
-/// A rejected edit re-renders the form with the error — and, critically, still
-/// does not print the stored secret into the page.
+/// A rejected edit re-renders with the error, still without printing the stored
+/// secret.
 #[tokio::test]
 async fn rejected_edit_re_renders_without_leaking_or_saving() {
     let (server, store, uid) = server_as("alice", false).await;
@@ -299,11 +288,9 @@ async fn rejected_edit_re_renders_without_leaking_or_saving() {
     let chid = channel(&store, pid, ChannelKind::Webhook, &json!({ "url": secret })).await;
     let token = csrf(&store).await;
 
-    // A whitespace-only name is not "blank means unchanged" — `validate_*`
-    // trims, so this is the same rejection the create form gives... except a
-    // blank name on an edit *is* legal (it keeps the stored one). Use an
-    // invalid *kind*-specific state instead: blank the stored URL by pointing
-    // the channel at a config that has none.
+    // A blank name on an edit is legal (it keeps the stored one), so the
+    // rejection has to come from a kind-specific field: a channel whose stored
+    // config has no URL, submitted blank.
     let empty = channel(&store, pid, ChannelKind::Webhook, &json!({})).await;
     let res = server
         .post(&format!("/channels/{empty}"))
@@ -322,8 +309,7 @@ async fn rejected_edit_re_renders_without_leaking_or_saving() {
         "a rejected edit must not have applied the name"
     );
 
-    // The other channel's secret is untouched and, in a re-rendered error
-    // form, still not printed.
+    // The other channel's secret is untouched.
     let res = server
         .post(&format!("/channels/{chid}"))
         .form(&[("_csrf", token.as_str()), ("name", ""), ("webhook_url", "")])
@@ -337,9 +323,8 @@ async fn rejected_edit_re_renders_without_leaking_or_saving() {
     assert_eq!(stored_config(&store, chid).await["url"], secret);
 }
 
-/// The create form offers a kind select; the edit form must not — the kind is
-/// immutable, and a submitted one is ignored rather than reinterpreting the
-/// stored config.
+/// `kind` is immutable: the edit form offers no select, and a submitted kind is
+/// ignored rather than reinterpreting the stored config.
 #[tokio::test]
 async fn edit_form_does_not_offer_a_kind_select() {
     let (server, store, uid) = server_as("alice", false).await;
@@ -402,9 +387,9 @@ async fn project_page_links_to_the_channel_edit_form() {
     );
 }
 
-/// The admin surface reuses the same template and core, so it gets the same
-/// non-leakage guarantee — and its form must post back to `/admin/...`, or
-/// saving would 404 (the bug PR #77 found in `admin_project_delete`).
+/// The admin surface reuses the template and core, so the non-leakage guarantee
+/// carries over — and its form must post back to `/admin/...`, or saving 404s
+/// (the bug PR #77 found in `admin_project_delete`).
 #[tokio::test]
 async fn admin_can_edit_another_users_channel_without_leaking() {
     let (server, store, _admin_uid) = server_as("root", true).await;

@@ -18,8 +18,7 @@ fn anchor(check: &Check) -> DateTime<Utc> {
 }
 
 /// The instant at/after which `check` is overdue, or `None` if it cannot be
-/// computed (e.g. a period check with no `period_secs`, or an invalid cron
-/// expression).
+/// computed (period check with no `period_secs`, invalid cron expression).
 pub fn due_time(check: &Check) -> Option<DateTime<Utc>> {
     let grace = Duration::seconds(check.grace_secs);
     match check.schedule_kind {
@@ -45,12 +44,10 @@ pub fn due_time(check: &Check) -> Option<DateTime<Utc>> {
     }
 }
 
-/// The instant at/after which an in-flight run is considered overrun, or
-/// `None` if overrun detection does not apply. A run is in flight when the
-/// check has a `max_runtime_secs > 0`, a `last_start_at`, and that start is
-/// newer than the last completion (`last_ping_at`) — i.e. a `start` ping
-/// arrived without a subsequent success/fail. The deadline is
-/// `last_start_at + max_runtime_secs`.
+/// Deadline (`last_start_at + max_runtime_secs`) after which an in-flight run
+/// counts as overrun, or `None` when overrun detection does not apply. In
+/// flight means `max_runtime_secs > 0` plus a `last_start_at` newer than the
+/// last completion (`last_ping_at`): a `start` ping with no success/fail after it.
 pub fn overrun_time(check: &Check) -> Option<DateTime<Utc>> {
     let max = check.max_runtime_secs?;
     if max <= 0 {
@@ -64,10 +61,9 @@ pub fn overrun_time(check: &Check) -> Option<DateTime<Utc>> {
     Some(start + Duration::seconds(max))
 }
 
-/// Scans every active check (status `new`/`up`), transitioning any whose
-/// `due_time` has passed, or whose in-flight run has exceeded
-/// `max_runtime_secs`, to `down`. Per-check failures (e.g. a DB error on
-/// `set_status`) are logged and skipped rather than aborting the round.
+/// Downs every active check (status `new`/`up`) whose `due_time` has passed or
+/// whose in-flight run has exceeded `max_runtime_secs`. Per-check failures are
+/// logged and skipped rather than aborting the round.
 pub async fn scan_once(
     store: &Store,
     now: DateTime<Utc>,
@@ -89,9 +85,8 @@ pub async fn scan_once(
         if let Err(e) = store.begin_down_alert(check.id, now).await {
             tracing::error!("failed to set alert baseline for {}: {e}", check.id);
         }
-        // Overrun is reported in preference to overdue: an in-flight run that
-        // blew its budget is the more specific story, and a long-running job
-        // is overdue almost by definition once it does.
+        // Overrun wins over overdue: it is the more specific cause, and a run
+        // that blew its budget is overdue almost by definition.
         let cause = match (overrun, check.max_runtime_secs, check.last_start_at) {
             (true, Some(max), Some(started_at)) => DownCause::Overrun {
                 max_runtime_secs: max,
@@ -117,10 +112,9 @@ pub async fn scan_once(
     Ok(events)
 }
 
-/// Emit a `Reminder` event for every down, un-acknowledged check whose nag
-/// interval has elapsed since its last alert, advancing each reminded check's
-/// `last_alert_at` so the next reminder is one interval later. `now` is
-/// injected so the function stays deterministic (mirrors `scan_once`).
+/// Emit a `Reminder` for every down, un-acknowledged check whose nag interval
+/// has elapsed since its last alert, advancing `last_alert_at` so the next
+/// reminder is one interval later. `now` is injected to stay deterministic.
 pub async fn nag_once(
     store: &Store,
     now: DateTime<Utc>,
@@ -171,9 +165,9 @@ pub async fn nag_once(
     Ok(events)
 }
 
-/// Compute the loop's sleep interval: the smallest effective scan interval
-/// across all active checks (spec §8 cascade), or `env_default` when there are
-/// no active checks. Bounded to `>= 1s`.
+/// The loop's sleep interval: the smallest effective scan interval across all
+/// active checks (spec §8 cascade), or `env_default` when there are none.
+/// Bounded to `>= 1s`.
 fn loop_interval_secs(
     checks: &[Check],
     project_intervals: &std::collections::HashMap<i64, Option<i64>>,
@@ -190,20 +184,16 @@ fn loop_interval_secs(
         .unwrap_or(env_default.max(1))
 }
 
-/// Runs the scan loop forever. On each iteration it re-reads active checks,
-/// resolves the cascade sleep interval, scans for overdue checks, and delivers
-/// each resulting `Down` event to that check's bound channels. `Utc::now()` is
-/// called only here so `scan_once` stays deterministic.
+/// Runs the scan loop until `shutdown`. Each pass re-reads active checks,
+/// resolves the cascade sleep interval, scans for overdue checks and delivers
+/// each `Down` event to that check's bound channels; `Utc::now()` is called
+/// only here so `scan_once` stays deterministic. Every transition also
+/// publishes its `check_id` on `live_tx`, the live-tail bus (see
+/// `state::AppState::events`), refreshing an open check-detail page.
 ///
-/// `live_tx` is the live-tail signal bus (see `state::AppState::events`): each
-/// transition produced by `scan_once` also publishes its `check_id` there, so
-/// a check-detail page open on an overdue check refreshes without a manual
-/// reload.
-///
-/// `shutdown` ends the loop: the check is at the sleep, so a pass already in
-/// flight finishes rather than being abandoned mid-scan. Returning (instead of
-/// being aborted at an arbitrary await point) is what lets `main` close the
-/// pool with no query outstanding — see `shutdown::os_signal`.
+/// `shutdown` is awaited at the sleep, so a pass in flight finishes and the
+/// loop returns rather than being aborted mid-await — that is what leaves no
+/// query outstanding for `main`'s pool close (see `shutdown::os_signal`).
 pub async fn run_scan_loop(
     store: Store,
     env_default_secs: u64,
@@ -239,7 +229,7 @@ pub async fn run_scan_loop(
             Err(e) => tracing::error!("scan_once failed: {e}"),
         }
 
-        // Heartbeat: record the last successful scan pass for the admin dashboard.
+        // Heartbeat read by the admin dashboard.
         let _ = store.set_setting("last_scan_at", &now.to_rfc3339()).await;
 
         match nag_once(&store, Utc::now(), &base_url).await {
@@ -262,7 +252,7 @@ pub async fn run_scan_loop(
             Err(e) => tracing::error!("nag_once failed: {e}"),
         }
 
-        // Resolve the next sleep from the cascade; failures fall back to the env default.
+        // Next sleep from the cascade; query failures fall back to the env default.
         let active = store.list_active_checks().await.unwrap_or_default();
         let projects = store.all_project_scan_intervals().await.unwrap_or_default();
         let global = store
@@ -286,7 +276,6 @@ pub async fn run_scan_loop(
 mod tests {
     use super::*;
 
-    /// Base URL the scheduler tests render check links against.
     const TEST_BASE_URL: &str = "https://pingward.test";
     use crate::models::{Check, CheckStatus, ScheduleKind};
     use crate::store::{NewCheck, UpdateCheck};
@@ -432,8 +421,6 @@ mod tests {
         assert_eq!(loop_interval_secs(&[], &intervals, None, 0), 1);
     }
 
-    // helper: a check that started at `start`, last completed at `last_ping`,
-    // with an optional max runtime.
     fn running_check(
         max_runtime: Option<i64>,
         start: DateTime<Utc>,
@@ -488,7 +475,6 @@ mod tests {
         let pool = db::connect("sqlite::memory:").await.unwrap();
         db::migrate(&pool, "sqlite::memory:").await.unwrap();
         let store = Store::new(pool);
-        // user+project+check
         store
             .create_user("u", Some("x"), false, Utc::now())
             .await

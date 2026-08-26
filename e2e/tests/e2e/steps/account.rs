@@ -1,5 +1,4 @@
-//! The per-user account page: sessions, password and API keys — a port of
-//! `account.steps.js`.
+//! The per-user account page: sessions, password and API keys.
 
 use anyhow::{Result, ensure};
 use cucumber::{given, then, when};
@@ -47,8 +46,7 @@ async fn password_change_rejected(world: &mut PingwardWorld) -> Result<()> {
 
 #[when(expr = "I create an API key named {string} with my password {string}")]
 async fn create_api_key(world: &mut PingwardWorld, name: String, password: String) -> Result<()> {
-    // The password is part of the step because it is part of the action:
-    // minting a key re-authenticates, since the key outlives the session that
+    // Minting a key re-authenticates, since the key outlives the session that
     // created it.
     let driver = world.driver()?;
     driver.fill("api-key-name-input", &name).await?;
@@ -92,9 +90,8 @@ async fn no_api_keys(world: &mut PingwardWorld) -> Result<()> {
 
 #[given(expr = "requests arrive through a trusted proxy as {string}")]
 async fn requests_through_proxy(world: &mut PingwardWorld, ip: String) -> Result<()> {
-    // Every request from here on carries the header a proxy would add. Paired
-    // with the `@trusted-proxy` tag, which is what makes the server honour it
-    // — an untrusted caller's `X-Forwarded-For` is ignored by design.
+    // Every later request carries the header a proxy would add. Only honoured
+    // alongside the `@trusted-proxy` tag.
     world
         .browser()?
         .set_extra_headers(serde_json::json!({ "x-forwarded-for": ip }))
@@ -103,10 +100,8 @@ async fn requests_through_proxy(world: &mut PingwardWorld, ip: String) -> Result
 
 #[then(expr = "the current session shows the IP {string}")]
 async fn current_session_shows_ip(world: &mut PingwardWorld, ip: String) -> Result<()> {
-    // Covers the wiring `auth::client_ip`'s unit tests cannot: that the login
-    // handler actually calls it and stores what it returns. Without this,
-    // reverting the call site to the raw socket peer would leave every test
-    // passing.
+    // Covers what `auth::client_ip`'s unit tests cannot: that the login handler
+    // calls it and stores the result, rather than the raw socket peer.
     let driver = world.driver()?;
     driver.expect_visible("session-current").await?;
     let row = driver

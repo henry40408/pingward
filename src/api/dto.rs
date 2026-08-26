@@ -1,11 +1,9 @@
-//! Serialization DTOs for the programmatic API. Kept separate from
+//! Serialization DTOs for the programmatic API, kept separate from
 //! [`crate::models`] so serde/utoipa derives never leak onto the domain types
-//! (whose string-backed enums are not `Serialize`). Each DTO owns a
-//! `From<Model>` and renders enum fields via their `as_str()` text.
+//! (whose string-backed enums are not `Serialize`).
 //!
-//! Note: [`ChannelDto`] deliberately omits `config_json` — a channel's config
-//! holds delivery secrets (webhook URLs, bot tokens, SMTP creds), which must
-//! never cross the API boundary.
+//! [`ChannelDto`] omits `config_json`: a channel's config holds delivery
+//! secrets, which must never cross the API boundary.
 
 use crate::models::{ApiKey, Channel, Check, Notification, Ping, Project};
 use chrono::{DateTime, Utc};
@@ -19,9 +17,8 @@ pub struct ProjectDto {
     pub owner_id: i64,
     #[schema(example = "Backups")]
     pub name: String,
-    /// Raw markdown (the minimal subset in `src/markdown.rs`) — never
-    /// rendered to HTML server-side; the API consumer decides how (or
-    /// whether) to render it.
+    /// Raw markdown (the subset in `src/markdown.rs`); never rendered
+    /// server-side.
     #[schema(example = "Nightly **offsite** backup jobs.")]
     pub description: String,
     /// Per-project scan-interval override in seconds, if set.
@@ -50,9 +47,8 @@ pub struct CheckDto {
     pub id: i64,
     pub project_id: i64,
     pub name: String,
-    /// Raw markdown (the minimal subset in `src/markdown.rs`) — never
-    /// rendered to HTML server-side; the API consumer decides how (or
-    /// whether) to render it.
+    /// Raw markdown (the subset in `src/markdown.rs`); never rendered
+    /// server-side.
     #[schema(example = "Runs nightly at 02:00 **UTC**.")]
     pub description: String,
     /// The per-check UUID embedded in this check's ping URL.
@@ -74,8 +70,7 @@ pub struct CheckDto {
     pub timezone: String,
     /// Per-check scan-interval override in seconds, if set.
     pub scan_interval_secs: Option<i64>,
-    /// Expected maximum runtime in seconds, if set — the budget a `start` ping
-    /// opens against, and the ceiling the heartbeat strip scales bars to.
+    /// Expected maximum runtime in seconds — the budget a `start` ping opens.
     pub max_runtime_secs: Option<i64>,
     /// Per-check nag-interval override in seconds, if set.
     pub nag_interval_secs: Option<i64>,
@@ -193,8 +188,8 @@ impl From<Notification> for NotificationDto {
     }
 }
 
-/// Metadata for one of the caller's API keys. The secret token is never
-/// included — only the non-secret display `prefix`.
+/// Metadata for one of the caller's API keys; the secret token is never
+/// included, only the display `prefix`.
 #[derive(Serialize, ToSchema)]
 pub struct ApiKeyDto {
     pub id: i64,
@@ -220,9 +215,7 @@ impl From<ApiKey> for ApiKeyDto {
 
 /// A keyset-paginated slice of pings, newest-first. `has_older`/`has_newer`
 /// report whether adjacent pages exist; `next_before`/`next_after` carry the
-/// boundary ids to fetch them — pass `next_before` as `?before=` for the next
-/// (older) page and `next_after` as `?after=` for the previous (newer) page.
-/// Each is `null` when there is no adjacent page in that direction.
+/// boundary ids to fetch them.
 #[derive(Serialize, ToSchema)]
 pub struct PingPage {
     pub items: Vec<PingDto>,
@@ -235,8 +228,6 @@ pub struct PingPage {
 }
 
 impl PingPage {
-    /// Build the response envelope from a store [`crate::store::Page`], deriving
-    /// the next/previous cursor ids from the (newest-first) item boundaries.
     pub fn from_page(page: crate::store::Page<Ping>) -> Self {
         let next_before = page
             .has_older
@@ -269,8 +260,6 @@ pub struct NotificationPage {
 }
 
 impl NotificationPage {
-    /// Build the response envelope from a store [`crate::store::Page`]. See
-    /// [`PingPage::from_page`].
     pub fn from_page(page: crate::store::Page<Notification>) -> Self {
         let next_before = page
             .has_older

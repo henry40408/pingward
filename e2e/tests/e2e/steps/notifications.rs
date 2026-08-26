@@ -1,9 +1,8 @@
-//! Notification channels: creating, editing, binding and actually delivering —
-//! a port of `notifications.steps.js`.
+//! Notification channels: creating, editing, binding and delivering.
 //!
 //! The channel form and the project's "Channels" section carry no
 //! `data-testid`, so everything here is driven by input ids, element classes
-//! and button text, exactly as the JavaScript suite drove them.
+//! and button text.
 
 use anyhow::{Result, ensure};
 use cucumber::{given, then, when};
@@ -18,10 +17,8 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Fills the channel form for `kind` with canned config and submits it.
 ///
-/// The kind `<select>` toggles which `.cfg` block is visible through `:has()`
-/// rules in `app.css`, and filling needs a visible target — so the kind is
-/// chosen *before* that kind's inputs are filled. A valid create redirects
-/// back to the project page.
+/// The kind `<select>` toggles which `.cfg` block `app.css` shows, and filling
+/// needs a visible target, so the kind is chosen before that kind's inputs.
 async fn create_channel(
     world: &PingwardWorld,
     kind: &str,
@@ -77,9 +74,8 @@ async fn bind_checkbox(world: &PingwardWorld, name: &str) -> Result<WebElement> 
         .ok_or_else(|| anyhow::anyhow!("the row for {name:?} has no bind checkbox"))
 }
 
-// A `Scenario Outline` writes this as `When I create a <kind> channel …`,
-// while the scenarios that only need a channel to exist write
-// `Given I create a webhook channel …`.
+// cucumber-rs matches on the Gherkin keyword, and this step is used under both
+// (`When` in a Scenario Outline, `Given` where a channel just has to exist).
 #[given(expr = "I create a {word} channel named {string}")]
 #[when(expr = "I create a {word} channel named {string}")]
 async fn create_named_channel(world: &mut PingwardWorld, kind: String, name: String) -> Result<()> {
@@ -89,7 +85,7 @@ async fn create_named_channel(world: &mut PingwardWorld, kind: String, name: Str
 #[given(expr = "a webhook channel named {string} targeting the mock server")]
 async fn webhook_channel_to_mock(world: &mut PingwardWorld, name: String) -> Result<()> {
     // Recorded so the edit-form scenarios can assert the stored URL is *not*
-    // rendered back into the page.
+    // rendered back.
     let url = format!("{}/hook", world.mock_webhook().await?.url());
     world.webhook_url = Some(url.clone());
     create_channel(world, "webhook", &name, Some(&url)).await
@@ -146,9 +142,8 @@ async fn kind_not_offered(world: &mut PingwardWorld, kind: String) -> Result<()>
 
 #[when(expr = "I delete the channel named {string}")]
 async fn delete_channel(world: &mut PingwardWorld, name: String) -> Result<()> {
-    // The row's delete form redirects back to the same `/projects/{id}` URL,
-    // so this waits on the document being replaced rather than on the URL,
-    // which never changes.
+    // The delete form redirects back to the same URL, so this waits on the
+    // document being replaced rather than on the URL.
     let driver = world.driver()?;
     let row = driver.css_row(".chk", &name).await?;
     let button = row
@@ -169,9 +164,8 @@ async fn project_shows_no_channels(world: &mut PingwardWorld) -> Result<()> {
 
 #[when(expr = "I open the edit form for the channel {string}")]
 async fn open_channel_edit_form(world: &mut PingwardWorld, name: String) -> Result<()> {
-    // Each channel row carries a lowercase `edit` link to
-    // `/channels/{id}/edit`. Scoped to `.chk`, which on the project page is a
-    // channel row.
+    // `.chk` on the project page is a channel row, each with a lowercase
+    // `edit` link.
     let driver = world.driver()?;
     let row = driver.css_row(".chk", &name).await?;
     let link = row
@@ -184,10 +178,9 @@ async fn open_channel_edit_form(world: &mut PingwardWorld, name: String) -> Resu
 
 #[then("the edit form hides the stored webhook URL")]
 async fn edit_form_hides_url(world: &mut PingwardWorld) -> Result<()> {
-    // The whole point of the edit form: a stored secret is replaced by a blank
-    // "unchanged" input plus a configured pill. The kind assertion is the
-    // non-vacuity guard — a page that failed to render this channel at all
-    // would satisfy every "absent" assertion on its own.
+    // A stored secret is replaced by a blank "unchanged" input plus a
+    // configured pill. The kind assertion is the non-vacuity guard: a page that
+    // rendered no channel would satisfy every "absent" assertion by itself.
     let driver = world.driver()?;
     driver
         .expect_exact_text("channel-kind-static", "webhook")
@@ -230,8 +223,7 @@ async fn change_channel_url_to_mock(world: &mut PingwardWorld) -> Result<()> {
 
 #[then(expr = "the kind is shown as static text {string}")]
 async fn kind_is_static(world: &mut PingwardWorld, kind: String) -> Result<()> {
-    // The kind is immutable on edit, so it renders as static text and the
-    // create form's `<select>` is absent entirely.
+    // The kind is immutable on edit, so the create form's `<select>` is absent.
     let driver = world.driver()?;
     driver
         .expect_exact_text("channel-kind-static", &kind)
@@ -242,9 +234,9 @@ async fn kind_is_static(world: &mut PingwardWorld, kind: String) -> Result<()> {
 #[given(expr = "I bind the channel {string} to the check")]
 #[when(expr = "I bind the channel {string} to the check")]
 async fn bind_channel(world: &mut PingwardWorld, name: String) -> Result<()> {
-    // On the check page the notify-channels form lists each project channel as
-    // a checkbox inside a `<label class="chk">`. Saving redirects to the same
-    // `/checks/{id}` URL, so this waits on the document being replaced.
+    // The notify-channels form lists each project channel as a checkbox inside
+    // a `<label class="chk">`. Saving redirects to the same URL, so this waits
+    // on the document being replaced.
     let checkbox = bind_checkbox(world, &name).await?;
     if !checkbox.is_selected().await? {
         click_when_ready(&checkbox).await?;
@@ -272,16 +264,15 @@ async fn confirmation_shown(world: &mut PingwardWorld, message: String) -> Resul
 
 #[then("the confirmation is gone after reloading")]
 async fn confirmation_gone_after_reload(world: &mut PingwardWorld) -> Result<()> {
-    // One-shot, backed by a flash cookie cleared on this render — so a reload
-    // must not show it again.
+    // One-shot: the flash cookie is cleared on the render that shows it.
     world.driver()?.refresh().await?;
     world.driver()?.expect_absent("check-flash").await
 }
 
 #[when(expr = "I send a test notification to the channel {string}")]
 async fn send_test_notification(world: &mut PingwardWorld, name: String) -> Result<()> {
-    // The "Send test" form re-renders the project page (200, no redirect) with
-    // a flash banner, so the assertion that follows is what waits for it.
+    // "Send test" re-renders the project page (200, no redirect), so the
+    // following assertion is what waits for the flash banner.
     let driver = world.driver()?;
     let row = driver.css_row(".chk", &name).await?;
     let button = row
@@ -316,11 +307,9 @@ async fn payload_is_enriched(
     project: String,
     cause: String,
 ) -> Result<()> {
-    // The enriched payload is only assertable end-to-end: the project name
-    // comes from a database lookup, the link from `PINGWARD_BASE_URL` (which
-    // the harness points at this scenario's server), and `cause` from
-    // whichever code path fired the event — none of which a unit test on
-    // `event_text` can prove reach the wire.
+    // Only assertable end-to-end: the project name comes from a database
+    // lookup, the link from `PINGWARD_BASE_URL`, and `cause` from whichever
+    // code path fired the event.
     let base_url = world.base_url()?.to_owned();
     let payload = world.mock_webhook().await?.wait_for_payload(&event).await?;
     let field = |name: &str| {
@@ -359,14 +348,14 @@ async fn payload_is_enriched(
 #[then("the check's notify channels show an empty state")]
 async fn check_channels_empty(world: &mut PingwardWorld) -> Result<()> {
     // With no channels on the check's project, the card shows an empty state
-    // (with a link to create one) instead of the bind form.
+    // instead of the bind form.
     world.driver()?.expect_visible("check-channels-empty").await
 }
 
 #[when(expr = "I visit the check page for {string}")]
 async fn visit_check_page_for(world: &mut PingwardWorld, name: String) -> Result<()> {
-    // Clicks the row body rather than the name link inside it, so this goes
-    // through `app.js`'s delegated `data-href` handler.
+    // Clicks the row body, not the name link, so this goes through `app.js`'s
+    // delegated `data-href` handler.
     let driver = world.driver()?;
     let row = driver.css_row(".check", &name).await?;
     submit_element(driver, &row).await?;
@@ -388,11 +377,9 @@ async fn channel_shows_off(world: &mut PingwardWorld, name: String) -> Result<()
     channel_state(world, &name, false).await
 }
 
-/// Each notify-channel row carries `data-testid="channel-state-N"` wrapping
-/// *both* the `.on` and `.off` spans — they are always both in the DOM, and
-/// CSS shows exactly one, keyed off the checkbox's live state. So this asserts
-/// each span's visibility directly: a text comparison reads `textContent` and
-/// would see "ONOFF" whichever one is displayed.
+/// `data-testid="channel-state-N"` wraps *both* the `.on` and `.off` spans;
+/// CSS shows one, keyed off the checkbox's live state. Visibility is asserted
+/// directly because `textContent` reads "ONOFF" either way.
 async fn channel_state(world: &PingwardWorld, name: &str, on: bool) -> Result<()> {
     let row = world.driver()?.css_row("label.chk", name).await?;
     let state = row
@@ -421,8 +408,7 @@ async fn channel_state(world: &PingwardWorld, name: &str, on: bool) -> Result<()
 
 #[then(expr = "the dashboard shows a {string} chip for the check {string}")]
 async fn dashboard_shows_chip(world: &mut PingwardWorld, chip: String, name: String) -> Result<()> {
-    // The "no channel" chip renders only on a dashboard row for a check with
-    // zero bound channels.
+    // The chip renders only for a check with zero bound channels.
     let row = dashboard_row(world, &name).await?;
     let rendered = row
         .test_id("check-no-channel")
@@ -440,15 +426,13 @@ async fn dashboard_shows_chip(world: &mut PingwardWorld, chip: String, name: Str
 #[then(expr = "the dashboard shows no {string} chip for the check {string}")]
 async fn dashboard_hides_chip(world: &mut PingwardWorld, chip: String, name: String) -> Result<()> {
     // `dashboard_row` failing is the non-vacuity guard: both assertions below
-    // are trivially satisfied by a row that does not exist, so a scenario that
-    // never created the check would otherwise pass.
+    // are trivially satisfied by a row that does not exist.
     let row = dashboard_row(world, &name).await?;
     ensure!(
         row.test_id_opt("check-no-channel").await?.is_none(),
         "the check {name:?} is bound to a channel, so its row must not carry the chip"
     );
-    // Also assert the wording itself is absent, so re-rendering the same
-    // warning under a different test id would still fail this scenario.
+    // The wording too, so the same warning under a different test id fails.
     let text = row.normalized_text().await?;
     ensure!(
         !text.contains(&chip),
@@ -469,8 +453,8 @@ async fn dashboard_row(world: &PingwardWorld, name: &str) -> Result<WebElement> 
 
 #[then(expr = "the check's recent notifications show a delivery to {string}")]
 async fn notifications_show_delivery(world: &mut PingwardWorld, channel: String) -> Result<()> {
-    // Delivery records the notification row *after* the webhook POST returns,
-    // so this polls by reloading until a "sent" row for the channel appears.
+    // The notification row is recorded after the webhook POST returns, so this
+    // reloads until a "sent" row for the channel appears.
     let driver = world.driver()?;
     eventually_within(
         DELIVERY_TIMEOUT,

@@ -1,5 +1,4 @@
-//! The three-state theme control and the palette it resolves — a port of
-//! `theme.steps.js`.
+//! The three-state theme control and the palette it resolves.
 
 use anyhow::{Result, ensure};
 use cucumber::{given, then, when};
@@ -9,8 +8,8 @@ use pingward_e2e::world::PingwardWorld;
 
 #[then(expr = "the resolved theme is {string}")]
 async fn resolved_theme_is(world: &mut PingwardWorld, theme: String) -> Result<()> {
-    // The applied theme is `data-theme` on `<html>`; it is always resolved to
-    // `light` or `dark`, never `system`.
+    // `data-theme` on `<html>` is always resolved to `light` or `dark`, never
+    // `system`.
     world
         .driver()?
         .expect_attr("html", "data-theme", Some(&theme))
@@ -38,8 +37,7 @@ async fn click_theme_toggle(world: &mut PingwardWorld) -> Result<()> {
 
 #[given(expr = "I set the theme preference to {string}")]
 async fn set_theme_preference(world: &mut PingwardWorld, preference: String) -> Result<()> {
-    // Seeds an explicit preference and reloads, so `theme-init.js` re-resolves
-    // it before first paint.
+    // Reloads, so `theme-init.js` re-resolves it before first paint.
     let driver = world.driver()?;
     driver
         .execute(
@@ -53,8 +51,8 @@ async fn set_theme_preference(world: &mut PingwardWorld, preference: String) -> 
 
 #[when("the OS prefers dark")]
 async fn os_prefers_dark(world: &mut PingwardWorld) -> Result<()> {
-    // The page's `matchMedia` change listener re-resolves the theme while the
-    // preference is `system`.
+    // The page's `matchMedia` listener re-resolves while the preference is
+    // `system`.
     world.browser()?.emulate_color_scheme("dark").await
 }
 
@@ -78,16 +76,16 @@ async fn hover_primary_action(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("its label contrasts with its background")]
 async fn label_contrasts(world: &mut PingwardWorld) -> Result<()> {
-    // WCAG relative-luminance contrast between the hovered element's own text
-    // and background colour. `filter` is not folded into computed colours, so
-    // this measures exactly the declarations a specificity clash would break.
+    // WCAG relative-luminance contrast between the element's own text and
+    // background. `filter` is not folded into computed colours, so this
+    // measures the declarations a specificity clash would break.
     //
     // The `rgb` helper normalises two spellings: Chromium resolves
-    // `color-mix()` to `color(srgb r g b)` with 0–1 floats, while plain
-    // declarations stay `rgb(r, g, b)` in 0–255. Without that, a mixed colour
-    // reads as near-black and fakes a passing contrast. The script carries no
-    // comments of its own — the line continuations below strip the newlines,
-    // so a `//` would comment out everything after it.
+    // `color-mix()` to `color(srgb r g b)` in 0–1 floats while plain
+    // declarations stay `rgb(r, g, b)` in 0–255, and without that a mixed
+    // colour reads as near-black and fakes a pass. The script itself carries no
+    // comments: the line continuations strip the newlines, so a `//` would
+    // comment out everything after it.
     let button = world.driver()?.css(".btn-primary").await?;
     let ratio = world
         .driver()?

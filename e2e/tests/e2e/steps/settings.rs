@@ -1,7 +1,4 @@
-//! The instance settings form — a port of `settings.steps.js`.
-//!
-//! The settings inputs have ids but no `data-testid`, so they are driven by
-//! id.
+//! The instance settings form, whose inputs have ids but no `data-testid`.
 
 use anyhow::Result;
 use cucumber::{then, when};
@@ -19,12 +16,10 @@ async fn fill_settings_field(
 
 #[when("I save the settings form")]
 async fn save_settings(world: &mut PingwardWorld) -> Result<()> {
-    // Saving POSTs to `/admin`. On success the handler 303-redirects back; on
-    // a validation error it re-renders inline. Either way the URL is
-    // unchanged, so an assertion that merely checked it would resolve against
-    // the stale pre-submit DOM — a false pass, since the just-typed values are
-    // still shown there. `submit_element` waits for the document to be
-    // replaced, which ties the step to the reloaded page.
+    // Success redirects and a validation error re-renders, but the URL is
+    // unchanged either way, so checking it would resolve against the stale
+    // pre-submit DOM still showing the typed values. `submit_element` waits for
+    // the document to be replaced.
     let driver = world.driver()?;
     let button = driver
         .button_named("Save changes")
@@ -47,8 +42,8 @@ async fn settings_field_shows(
 
 #[then(expr = "the settings form shows the error {string}")]
 async fn settings_error(world: &mut PingwardWorld, message: String) -> Result<()> {
-    // The unknown-timezone message quotes the offending name, so the feature
-    // file escapes those quotes — see `pingward_e2e::unescape`.
+    // The message quotes the offending name, so the feature file escapes those
+    // quotes and the `{string}` capture arrives with the backslashes intact.
     world
         .driver()?
         .expect_exact_text_css(".flash.err", &pingward_e2e::unescape(&message))
@@ -57,8 +52,7 @@ async fn settings_error(world: &mut PingwardWorld, message: String) -> Result<()
 
 #[then(expr = "the settings page shows the flash {string}")]
 async fn settings_flash(world: &mut PingwardWorld, message: String) -> Result<()> {
-    // A one-shot success flash, backed by a flash cookie cleared on this
-    // render — the same mechanism as the check page's notify-channels flash.
+    // A one-shot flash, backed by a cookie cleared on the render that shows it.
     world
         .driver()?
         .expect_exact_text("settings-flash", &message)
@@ -67,7 +61,6 @@ async fn settings_flash(world: &mut PingwardWorld, message: String) -> Result<()
 
 #[then("the settings page shows no flash")]
 async fn settings_no_flash(world: &mut PingwardWorld) -> Result<()> {
-    // One-shot means exactly that: a fresh render — a reload, or a rejected
-    // save that re-renders without ever setting the cookie — must not show it.
+    // A reload, or a rejected save that never sets the cookie, must not show it.
     world.driver()?.expect_absent("settings-flash").await
 }

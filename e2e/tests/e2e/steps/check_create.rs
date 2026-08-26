@@ -1,4 +1,4 @@
-//! The check-creation form's branches — a port of `check_create.steps.js`.
+//! The check-creation form's branches.
 
 use anyhow::{Result, ensure};
 use cucumber::{given, then, when};
@@ -20,9 +20,7 @@ async fn given_new_check_form(world: &mut PingwardWorld) -> Result<()> {
 
 #[when(expr = "I create a cron check named {string} with expression {string}")]
 async fn create_cron_check(world: &mut PingwardWorld, name: String, expr: String) -> Result<()> {
-    // Cron mode: pick the kind and supply a 6-field expression. `period_secs`
-    // is left blank, since it is ignored in cron mode. On success the handler
-    // redirects to the check page.
+    // `period_secs` is left blank, since cron mode ignores it.
     open_new_check_form(world).await?;
     let driver = world.driver()?;
     driver.fill("check-name-input", &name).await?;
@@ -67,15 +65,13 @@ async fn submit_check_form(world: &mut PingwardWorld) -> Result<()> {
 
 #[then(expr = "the check schedule shows {string}")]
 async fn schedule_shows(world: &mut PingwardWorld, text: String) -> Result<()> {
-    // The schedule label renders on the check page; for a cron check it is the
-    // raw expression.
+    // For a cron check the schedule label is the raw expression.
     world.driver()?.expect_text_somewhere(&text).await
 }
 
 #[then("I am still on the new check form")]
 async fn still_on_new_check_form(world: &mut PingwardWorld) -> Result<()> {
-    // Submitting with an empty name is blocked client-side by the input's
-    // `required` attribute, so no POST fires and the form stays put.
+    // The input's `required` attribute blocks the submit, so no POST fires.
     world
         .expect_path_matching(r"/projects/\d+/checks/new$")
         .await?;
@@ -84,9 +80,8 @@ async fn still_on_new_check_form(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("only the period field is shown")]
 async fn only_period_shown(world: &mut PingwardWorld) -> Result<()> {
-    // The kind select drives `:has()` rules in `app.css` — not script — which
-    // hide the field belonging to the other kind, so the two are never visible
-    // at once.
+    // The kind select drives `:has()` rules in `app.css`, not script, so the
+    // two fields are never visible at once.
     let driver = world.driver()?;
     driver.expect_visible("check-period-input").await?;
     driver.expect_hidden_css("#cron_expr").await
@@ -117,8 +112,8 @@ async fn name_field_required(world: &mut PingwardWorld) -> Result<()> {
 
 #[then(expr = "the check form shows the error {string}")]
 async fn check_form_error(world: &mut PingwardWorld, message: String) -> Result<()> {
-    // The unknown-timezone message quotes the offending name, so the feature
-    // file escapes those quotes — see `pingward_e2e::unescape`.
+    // The message quotes the offending name, so the feature file escapes those
+    // quotes and the `{string}` capture arrives with the backslashes intact.
     world
         .driver()?
         .expect_exact_text_css(".flash.err", &pingward_e2e::unescape(&message))

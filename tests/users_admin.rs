@@ -10,10 +10,9 @@ async fn set_csrf(server: &mut TestServer, store: &Store) {
     server.add_header("x-csrf-token", tok.as_str());
 }
 
-/// Log a fresh `TestServer` (its own cookie jar) into `store` as `username`,
-/// mirroring `account_web.rs`'s `login_server` — used so the target user's
-/// session lives on a separate `TestServer`/cookie jar from the admin's,
-/// letting a test check both after a privilege-level change on the target.
+/// Log a fresh `TestServer` (its own cookie jar) into `store` as `username`, so
+/// the target user's session sits on a separate jar from the admin's and a test
+/// can check both after a privilege-level change.
 async fn login_as(store: &Store, username: &str, password: &str) -> TestServer {
     let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
@@ -91,7 +90,7 @@ async fn deleting_user_is_audited() {
 async fn deleting_nonexistent_user_writes_no_audit() {
     let (server, store, _admin) = admin_server().await;
     let before = store.list_audit(50).await.unwrap().len();
-    server.post("/admin/users/99999/delete?confirmed=1").await; // nonexistent id
+    server.post("/admin/users/99999/delete?confirmed=1").await;
     let after = store.list_audit(50).await.unwrap();
     assert!(
         !after
@@ -125,13 +124,11 @@ async fn promote_and_demote_admin() {
         .create_user("erin", Some("p"), false, chrono::Utc::now())
         .await
         .unwrap();
-    // promote
     server
         .post(&format!("/admin/users/{uid}/admin?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(uid).await.unwrap().unwrap().is_admin);
-    // demote back
     server
         .post(&format!("/admin/users/{uid}/admin?confirmed=1"))
         .await;
@@ -150,9 +147,7 @@ async fn promote_and_demote_admin() {
 async fn cannot_demote_self() {
     let (server, store, admin_id) = admin_server().await;
     // Only one admin exists here, so this alone can't distinguish the
-    // self-guard from the (provably unreachable) last-admin guard; see
-    // `demoting_self_is_refused_with_flash_even_with_a_second_admin` below
-    // for a case that isolates the self-guard.
+    // self-guard from the last-admin guard; the test below isolates it.
     server
         .post(&format!("/admin/users/{admin_id}/admin?confirmed=1"))
         .await;
@@ -169,9 +164,8 @@ async fn cannot_demote_self() {
 #[tokio::test]
 async fn demoting_self_is_refused_with_flash_even_with_a_second_admin() {
     let (server, store, admin_id) = admin_server().await;
-    // A second enabled admin exists, so if the self-guard were absent,
-    // count_enabled_admins() would be >= 2 and the last-admin guard could
-    // not explain a refusal either — isolating the self-guard as the cause.
+    // With a second enabled admin, count_enabled_admins() is >= 2, so the
+    // last-admin guard cannot explain a refusal — isolating the self-guard.
     let phc = pingward::auth::hash_password("pw").unwrap();
     store
         .create_user("gale", Some(&phc), true, chrono::Utc::now())
@@ -223,8 +217,7 @@ async fn admin_resets_password_and_target_can_login() {
         .unwrap();
     let dave = store.find_user_by_username("dave").await.unwrap().unwrap();
 
-    // Dave establishes a session before the reset — this is the session an
-    // intruder using his old password would be sitting on.
+    // The session an intruder with the old password would be sitting on.
     let dave_server = login_as(&store, "dave", "original").await;
     dave_server.get("/account").await.assert_status_ok();
 
@@ -247,8 +240,8 @@ async fn admin_resets_password_and_target_can_login() {
             .any(|a| a.action == "user.password_reset" && a.target_id == Some(dave.id))
     );
 
-    // OWASP: the password reset must invalidate Dave's existing session, not
-    // just reject future logins with the old password.
+    // The reset must invalidate the existing session, not merely reject future
+    // logins with the old password.
     assert!(
         store
             .list_sessions_for_user(dave.id, chrono::Utc::now())
@@ -261,16 +254,14 @@ async fn admin_resets_password_and_target_can_login() {
     assert_eq!(res.header("location"), "/login");
 }
 
-/// Regression: `templates/admin.html` renders the password-reset form for
-/// every row, including the admin's own — unlike delete/toggle-admin/
-/// toggle-disabled it is not hidden behind `is_self`. Resetting your own
-/// password must not sign out the browser you are using to do it, only every
-/// *other* session belonging to the same account.
+/// Regression: `templates/admin.html` renders the password-reset form for every
+/// row, the admin's own included — unlike delete/toggle-admin/toggle-disabled it
+/// is not hidden behind `is_self`. Resetting your own password must revoke only
+/// the *other* sessions, not the browser doing it.
 #[tokio::test]
 async fn admin_resets_own_password_keeps_current_session() {
     let (server, store, admin_id) = admin_server().await;
-    // A second session for the same admin — e.g. another browser/device —
-    // must still be revoked by the reset.
+    // A second session for the same admin must still be revoked.
     let other_admin_session = login_as(&store, "admin", "pw").await;
     other_admin_session.get("/account").await.assert_status_ok();
     assert_eq!(
@@ -288,10 +279,9 @@ async fn admin_resets_own_password_keeps_current_session() {
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
 
-    // (a) the admin's own session, the one that issued the reset, still works.
+    // The session that issued the reset still works.
     server.get("/account").await.assert_status_ok();
 
-    // (b) the other session belonging to the same admin is gone.
     let res = other_admin_session.get("/account").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/login");
@@ -305,16 +295,13 @@ async fn admin_resets_own_password_keeps_current_session() {
         1
     );
 
-    // (c) the new password now logs in.
     let relogged = login_as(&store, "admin", "a brand new passphrase").await;
     relogged.get("/account").await.assert_status_ok();
 }
 
-/// Password reset revokes sessions but not API keys (see
-/// `users_set_password`'s doc comment) — an intruder who minted a `pw_…` key
-/// from a stolen session survives the reset indefinitely. When the target
-/// still has at least one key afterward, the admin page must flash a warning
-/// naming that residual access instead of leaving the gap silent.
+/// Password reset revokes sessions but not API keys, so an intruder who minted
+/// a `pw_…` key from a stolen session survives it. When the target still has a
+/// key afterward, the admin page must flash a warning naming that access.
 #[tokio::test]
 async fn password_reset_flashes_a_warning_when_target_has_api_keys() {
     let (server, store, _admin) = admin_server().await;
@@ -336,9 +323,8 @@ async fn password_reset_flashes_a_warning_when_target_has_api_keys() {
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     let flash = res.maybe_cookie("pingward_flash");
     let flash_value = flash.map(|c| c.value().to_string());
-    // The `:` separators come back percent-encoded (`%3A`) on the wire, same
-    // as the other flash surfaces' cookie values — decode them before checking
-    // the signature, which is taken over the decoded payload.
+    // The `:` separators come back percent-encoded (`%3A`) on the wire, and the
+    // signature is taken over the decoded payload, so decode before checking.
     let payload = flash_value
         .as_deref()
         .map(|v| v.replace("%3A", ":"))
@@ -357,7 +343,6 @@ async fn password_reset_flashes_a_warning_when_target_has_api_keys() {
     );
     assert!(body.contains("1 API key"), "{body}");
 
-    // One-shot: a second render must not repeat it.
     let body2 = server.get("/admin").await.text();
     assert!(
         !body2.contains("data-testid=\"password-reset-flash\""),
@@ -365,8 +350,6 @@ async fn password_reset_flashes_a_warning_when_target_has_api_keys() {
     );
 }
 
-/// The mirror case: a target with no API keys gets no warning at all, so the
-/// ordinary success path stays quiet as before.
 #[tokio::test]
 async fn password_reset_has_no_warning_when_target_has_no_api_keys() {
     let (server, store, _admin) = admin_server().await;
@@ -390,10 +373,8 @@ async fn password_reset_has_no_warning_when_target_has_no_api_keys() {
     );
 }
 
-/// An expired key is already dead — `Store::validate_api_key` refuses it —
-/// so it must not inflate the flash's count of keys that "continue to work".
-/// The target here has one expired key and one live one; the flash must
-/// report only the live one.
+/// An expired key is already dead (`validate_api_key` refuses it), so it must
+/// not inflate the flash's count of keys that "continue to work".
 #[tokio::test]
 async fn password_reset_flash_excludes_expired_api_keys_from_the_count() {
     let (server, store, _admin) = admin_server().await;
@@ -434,8 +415,6 @@ async fn password_reset_flash_excludes_expired_api_keys_from_the_count() {
     assert!(body.contains("1 API key that continues"), "{body}");
 }
 
-/// The mirror case: when the target's *only* key is already expired, the
-/// live count is zero and the flash must not appear at all.
 #[tokio::test]
 async fn password_reset_has_no_warning_when_only_key_is_expired() {
     let (server, store, _admin) = admin_server().await;
@@ -471,9 +450,9 @@ async fn password_reset_has_no_warning_when_only_key_is_expired() {
     );
 }
 
-/// A disabled target's keys are already inert — `api::extract::ApiUser`
-/// re-checks `disabled` on every request — so the flash must not claim
-/// residual access, even though the key itself is still live (not expired).
+/// `api::extract::ApiUser` re-checks `disabled` on every request, so a disabled
+/// target's keys are inert and the flash must not claim residual access, live
+/// (unexpired) though the key is.
 #[tokio::test]
 async fn password_reset_has_no_warning_when_target_is_disabled() {
     let (server, store, _admin) = admin_server().await;
@@ -511,7 +490,6 @@ async fn disable_and_enable_member() {
         .create_user("frank", Some(&phc), false, chrono::Utc::now())
         .await
         .unwrap();
-    // Frank has a session before he's disabled.
     login_as(&store, "frank", "pw").await;
     assert_eq!(
         store
@@ -527,7 +505,7 @@ async fn disable_and_enable_member() {
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert!(store.find_user_by_id(uid).await.unwrap().unwrap().disabled);
-    // OWASP: disabling revokes the existing session immediately.
+    // Disabling revokes the existing session immediately.
     assert!(
         store
             .list_sessions_for_user(uid, chrono::Utc::now())
@@ -540,7 +518,7 @@ async fn disable_and_enable_member() {
         .post(&format!("/admin/users/{uid}/disabled?confirmed=1"))
         .await;
     assert!(!store.find_user_by_id(uid).await.unwrap().unwrap().disabled);
-    // Core regression: re-enabling must NOT resurrect the old session.
+    // Regression: re-enabling must not resurrect the old session.
     assert!(
         store
             .list_sessions_for_user(uid, chrono::Utc::now())
@@ -581,9 +559,8 @@ async fn deleting_user_cascades_its_sessions() {
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
 
-    // The `sessions.user_id … ON DELETE CASCADE` FK (plus `PRAGMA foreign_keys
-    // = ON`, see `src/db.rs`) must have removed grace's session row — this
-    // pins the implicit cascade dependency against a future regression.
+    // Pins the implicit `sessions.user_id … ON DELETE CASCADE` FK, which only
+    // fires with `PRAGMA foreign_keys = ON` (see `src/db.rs`).
     assert!(
         store
             .list_sessions_for_user(uid, chrono::Utc::now())
@@ -597,8 +574,7 @@ async fn deleting_user_cascades_its_sessions() {
 async fn cannot_disable_self() {
     let (server, store, admin_id) = admin_server().await;
     // Only one admin exists here, so this alone can't distinguish the
-    // self-guard from the (provably unreachable) last-admin guard — see the
-    // comment on `cannot_demote_self` for the same caveat.
+    // self-guard from the last-admin guard — see `cannot_demote_self`.
     server
         .post(&format!("/admin/users/{admin_id}/disabled?confirmed=1"))
         .await;
@@ -612,11 +588,10 @@ async fn cannot_disable_self() {
     );
 }
 
-/// A flash cookie this origin never signed must not render. Under plain HTTP
-/// the `__Host-` prefix is unavailable, so a response from a sibling subdomain
-/// can still *write* `pingward_flash` — the signature is what stops the
-/// planted value from being read back as a message the server never sent, here
-/// a fabricated "99 API keys still work" count on the admin's own page.
+/// A flash cookie this origin never signed must not render. Under plain HTTP the
+/// `__Host-` prefix is unavailable, so a sibling subdomain can still *write*
+/// `pingward_flash`; the signature is what stops the planted value being read
+/// back as a message the server never sent.
 #[tokio::test]
 async fn a_planted_unsigned_flash_does_not_render() {
     let (mut server, _store, _admin) = admin_server().await;
@@ -633,8 +608,8 @@ async fn a_planted_unsigned_flash_does_not_render() {
     assert!(!body.contains("99 API keys"), "{body}");
 }
 
-/// The same for a fixed-surface flash: `users_blocked` renders a refusal
-/// notice that a planted cookie must not be able to fabricate.
+/// The same for a fixed-surface flash: a planted cookie must not fabricate the
+/// `users_blocked` refusal notice.
 #[tokio::test]
 async fn a_planted_unsigned_surface_flash_does_not_render() {
     let (mut server, _store, _admin) = admin_server().await;
@@ -650,12 +625,10 @@ async fn a_planted_unsigned_surface_flash_does_not_render() {
     );
 }
 
-/// The reported scenario, end to end: an admin submits the "Add user" form with
-/// a username that already exists.
-///
-/// It used to be a bare `500 internal error` — `users_create` never checked,
-/// the `UNIQUE` constraint on `users.username` raised a `sqlx::Error`, and
-/// `AppError::Db` rendered a blank page with no message and no form to correct.
+/// Regression: an "Add user" submission whose username already exists used to be
+/// a bare `500` — `users_create` never checked, the `UNIQUE` constraint raised a
+/// `sqlx::Error`, and `AppError::Db` rendered a blank page with no form to
+/// correct.
 #[tokio::test]
 async fn creating_a_user_with_a_taken_username_is_refused_with_a_message() {
     let (server, store, _admin) = admin_server().await;
@@ -666,7 +639,7 @@ async fn creating_a_user_with_a_taken_username_is_refused_with_a_message() {
         .form(&[("username", "admin"), ("password", "a long enough phrase")])
         .await;
 
-    res.assert_status_ok(); // /admin, re-rendered — not a 500
+    res.assert_status_ok(); // re-rendered, not a 500
     let body = res.text();
     assert!(body.contains("user-error"), "{body}");
     assert!(body.contains("already exists"), "{body}");
@@ -686,8 +659,6 @@ async fn creating_a_user_with_a_taken_username_is_refused_with_a_message() {
     );
 }
 
-/// The existing account is untouched — the reported scenario checked this by
-/// hand ("admin's password is still the same"), so it is worth pinning.
 #[tokio::test]
 async fn a_refused_duplicate_leaves_the_existing_account_alone() {
     let (server, store, admin_id) = admin_server().await;
@@ -712,7 +683,7 @@ async fn a_refused_duplicate_leaves_the_existing_account_alone() {
     assert!(after.is_admin, "and is still an admin");
 }
 
-/// Exact match, like the constraint: these are two different accounts.
+/// The `UNIQUE` constraint is an exact match: these are two different accounts.
 #[tokio::test]
 async fn a_username_differing_only_in_case_is_accepted() {
     let (server, store, _admin) = admin_server().await;

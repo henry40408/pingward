@@ -91,14 +91,12 @@ pub struct Ping {
     pub created_at: DateTime<Utc>,
 }
 
-/// The subset of a [`Ping`] the heartbeat strip and run-duration pairing
-/// actually read.
+/// The subset of a [`Ping`] the heartbeat strip and run-duration pairing read.
 ///
-/// The dashboard loads a 40-row window per check purely to draw those strips;
-/// selecting whole rows meant decoding every captured POST body (up to
-/// `ping::MAX_BODY`, 10 KiB each) only to drop it. At 50 checks that is ~20 MB
-/// of body text materialised per render in the worst case, and measurably most
-/// of the page's time — see `Store::list_recent_ping_summaries_for_checks`.
+/// Selecting whole rows for the dashboard's 40-row window per check decoded
+/// every captured POST body (up to `ping::MAX_BODY`, 10 KiB each) only to drop
+/// it — most of the page's render time. See
+/// `Store::list_recent_ping_summaries_for_checks`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PingSummary {
     pub id: i64,
@@ -129,9 +127,8 @@ pub struct Notification {
     pub created_at: DateTime<Utc>,
 }
 
-/// A stored API key's metadata. The secret token itself is never held here —
-/// only its SHA-256 hash lives in the database, and the plaintext is shown once
-/// at creation. `prefix` is a non-secret display fragment.
+/// A stored API key's metadata. The token itself is never held here — only its
+/// SHA-256 hash is persisted; `prefix` is a non-secret display fragment.
 #[derive(Debug, Clone)]
 pub struct ApiKey {
     pub id: i64,
@@ -143,9 +140,8 @@ pub struct ApiKey {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-/// One stored login session. `id` is the session cookie value (a bearer
-/// secret) and must never be rendered — the UI identifies a session by the
-/// SHA-256 hash of this id instead.
+/// One stored login session. `id` is the cookie's bearer secret and must never
+/// be rendered — the UI identifies a session by the SHA-256 hash of it.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub id: String,

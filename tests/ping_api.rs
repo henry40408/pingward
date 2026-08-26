@@ -24,9 +24,6 @@ async fn test_server() -> (TestServer, Store) {
         .unwrap();
     let store = Store::new(pool);
     let state = AppState::new(store.clone(), Config::from_map(|_| None));
-    // axum-test 21's `TestServer::new` returns `Self` directly (it panics
-    // internally on failure rather than returning a `Result`), unlike the
-    // brief's `.unwrap()` which assumed a `Result`.
     let server = TestServer::new(app(state));
     (server, store)
 }
@@ -218,8 +215,7 @@ async fn get_verb_works_for_success() {
     assert_eq!(c.status, pingward::models::CheckStatus::Up);
 }
 
-/// Spec §6: a paused check is excluded from monitoring, so a ping must not
-/// resurrect it into `up`/`down`. The ping is still recorded for history.
+/// Spec §6: a paused check is excluded from monitoring; the ping is still recorded.
 #[tokio::test]
 async fn paused_check_is_not_resurrected_by_a_ping() {
     let (server, store) = test_server().await;

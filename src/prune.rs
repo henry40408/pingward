@@ -3,19 +3,16 @@ use crate::store::Store;
 use chrono::{DateTime, Duration, Utc};
 use tokio::time::{Duration as TokioDuration, sleep};
 
-/// Parse a `settings` retention value into a positive day count, or `None`
-/// (retention off) when unset, blank, non-numeric, or non-positive.
+/// `None` (retention off) when unset, blank, non-numeric, or non-positive.
 fn parse_days(v: Option<String>) -> Option<i64> {
     v.and_then(|s| s.trim().parse::<i64>().ok())
         .filter(|&n| n > 0)
 }
 
-/// Resolve a retention setting into an RFC3339 cutoff: rows with
-/// `created_at < cutoff` should be deleted. Returns `None` when retention is
-/// off (unset/blank/non-numeric/≤0) or the day count is so large that
-/// `now - days` would overflow the representable range. In the overflow case a
-/// warning is logged and nothing is pruned — a fail-safe that keeps data
-/// rather than panicking the prune task.
+/// Resolve a retention setting into an RFC3339 cutoff; rows with
+/// `created_at < cutoff` are deleted. `None` when retention is off, or when
+/// `now - days` would overflow — that case warns and prunes nothing rather
+/// than panicking the prune task.
 fn retention_cutoff(now: DateTime<Utc>, setting: Option<String>) -> Option<String> {
     let days = parse_days(setting)?;
     if let Some(cutoff) = Duration::try_days(days).and_then(|d| now.checked_sub_signed(d)) {
@@ -26,8 +23,8 @@ fn retention_cutoff(now: DateTime<Utc>, setting: Option<String>) -> Option<Strin
     }
 }
 
-/// Which table a prune pass targets. Ties the retention setting key to the
-/// matching delete method so the two are impossible to mismatch.
+/// Which table a prune pass targets; ties each retention setting key to its
+/// delete method so the two cannot be mismatched.
 #[derive(Clone, Copy)]
 enum PruneTable {
     Pings,
@@ -45,8 +42,8 @@ impl PruneTable {
     }
 }
 
-/// Prune one table: resolve its retention cutoff and delete rows older than it,
-/// or return 0 when retention is off. Returns the number of rows deleted.
+/// Delete rows older than the table's retention cutoff, returning how many; 0
+/// when retention is off.
 async fn prune_table(
     store: &Store,
     now: DateTime<Utc>,
@@ -62,8 +59,7 @@ async fn prune_table(
     }
 }
 
-/// What one prune pass removed. A named struct rather than a tuple: with four
-/// counts, `(a, b, c, d)` at the call sites stops saying which is which.
+/// What one prune pass removed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PruneCounts {
     pub pings: u64,
@@ -73,24 +69,18 @@ pub struct PruneCounts {
 }
 
 impl PruneCounts {
-    /// Nothing was removed this pass — used to keep the loop quiet.
     fn is_empty(self) -> bool {
         self == Self::default()
     }
 }
 
 /// Delete `pings`, `notifications` and `audit_log` rows older than their
-/// configured retention, plus any `sessions` row that has already expired.
+/// configured retention, plus already-expired `sessions` rows.
 ///
-/// The three retention counts are each an independent global setting; a table
-/// whose retention is off is skipped (its count is 0). **All three default to
-/// off**, `audit_log` included — a default that started deleting a compliance
-/// record on upgrade would be exactly the wrong surprise, so the settings form
-/// says plainly that an unset field means "never pruned" instead.
-///
-/// Expired-session cleanup is unconditional — it does not participate in
-/// retention settings, since an expired session is already unusable regardless
-/// of how long its row is kept. `now` is injected for determinism.
+/// Each retention is an independent global setting, and all three default to
+/// off — `audit_log` included, so an upgrade never starts deleting compliance
+/// records. Expired-session cleanup is unconditional. `now` is injected for
+/// determinism.
 pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<PruneCounts, sqlx::Error> {
     Ok(PruneCounts {
         pings: prune_table(store, now, PruneTable::Pings).await?,
@@ -100,12 +90,10 @@ pub async fn prune_once(store: &Store, now: DateTime<Utc>) -> Result<PruneCounts
     })
 }
 
-/// Run the prune task until shutdown: prune once immediately, then every
-/// `interval_secs` (bounded to >= 1s). Errors are logged, never fatal.
-///
-/// `shutdown` is checked at the sleep, so a delete pass already in flight
-/// finishes instead of being abandoned. Returning lets `main` close the pool
-/// with no query outstanding (see `shutdown::os_signal`).
+/// Prune once immediately, then every `interval_secs` (bounded to >= 1s) until
+/// shutdown. Errors are logged, never fatal. `shutdown` is checked at the
+/// sleep, so an in-flight pass finishes; returning lets `main` close the pool
+/// with no query outstanding.
 pub async fn run_prune_loop(store: Store, interval_secs: u64, shutdown: Shutdown) {
     let interval = TokioDuration::from_secs(interval_secs.max(1));
     loop {
@@ -121,11 +109,9 @@ pub async fn run_prune_loop(store: Store, interval_secs: u64, shutdown: Shutdown
                     );
                 }
                 if c.sessions > 0 {
-                    // `delete_expired_sessions` returns only a row count, not
-                    // the ids of the sessions it removed, so this is one
-                    // aggregate `session.destroyed` event per prune pass
-                    // rather than one per expired session — per-row logging
-                    // would need a preceding SELECT.
+                    // `delete_expired_sessions` returns only a row count, so
+                    // this is one aggregate event per pass; per-session
+                    // logging would need a preceding SELECT.
                     tracing::info!(
                         target: "pingward::session",
                         reason = "expired",
@@ -213,12 +199,11 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 7, 13, 12, 0, 0).unwrap();
         assert_eq!(retention_cutoff(now, None), None);
         assert_eq!(retention_cutoff(now, Some("0".into())), None);
-        // sane value → cutoff = now - N days
         assert_eq!(
             retention_cutoff(now, Some("7".into())),
             Some((now - Duration::days(7)).to_rfc3339())
         );
-        // absurd value must NOT panic — fail-safe to None (overflow branch)
+        // An absurd value must not panic; the overflow branch fails safe.
         assert_eq!(
             retention_cutoff(now, Some("999999999999999999".into())),
             None
@@ -266,9 +251,8 @@ mod tests {
     }
 
     /// The audit trail is pruned by the same cascade as pings/notifications,
-    /// but only once someone sets a retention — the default is off, since a
-    /// default that silently started deleting a compliance record on upgrade
-    /// would be exactly the wrong surprise.
+    /// but defaults to off so an upgrade never starts deleting compliance
+    /// records.
     #[tokio::test]
     async fn prune_once_audit_retention_is_off_by_default_and_deletes_when_set() {
         let (store, _cid, _chan) = store_with_check_and_channel().await;
@@ -293,11 +277,11 @@ mod tests {
                 .unwrap();
         }
 
-        // Unset → nothing is touched, however old the entry is.
+        // Unset → nothing is touched, however old the entry.
         assert_eq!(prune_once(&store, now).await.unwrap().audit, 0);
         assert_eq!(store.list_audit(10).await.unwrap().len(), 2);
 
-        // Explicit 0 is "off" too, matching the other retention settings.
+        // Explicit 0 is "off" too, as for the other retention settings.
         store
             .set_setting("audit_retention_days", "0")
             .await
@@ -305,7 +289,7 @@ mod tests {
         assert_eq!(prune_once(&store, now).await.unwrap().audit, 0);
         assert_eq!(store.list_audit(10).await.unwrap().len(), 2);
 
-        // Set → only the entry older than the cutoff goes.
+        // Set → only the entry older than the cutoff.
         store
             .set_setting("audit_retention_days", "30")
             .await
@@ -354,15 +338,14 @@ mod tests {
         assert_eq!(store.list_recent_pings(cid, 10).await.unwrap().len(), 1);
     }
 
-    /// The shutdown flag ends the prune loop, and it ends by *returning* — a
-    /// completed `JoinHandle` (not an aborted one) is what lets `main` close
-    /// the pool knowing no delete pass is still in flight.
+    /// The shutdown flag ends the loop by returning: a completed `JoinHandle`
+    /// lets `main` close the pool knowing no delete pass is in flight.
     #[tokio::test]
     async fn run_prune_loop_returns_on_shutdown() {
         let (store, _cid, _chan) = store_with_check_and_channel().await;
         let (shutdown_tx, shutdown) = crate::shutdown::channel();
-        // A one-hour interval: without the select on `shutdown`, the loop would
-        // sit in `sleep` far past this test's timeout.
+        // A one-hour interval: without the select on `shutdown`, the loop
+        // would sit in `sleep` past this test's timeout.
         let handle = tokio::spawn(run_prune_loop(store, 3600, shutdown));
 
         shutdown_tx.trigger();
@@ -374,8 +357,7 @@ mod tests {
     }
 
     /// The other side: with the flag untouched the loop keeps running, so the
-    /// test above is proving the trigger works rather than that the loop always
-    /// exits.
+    /// test above proves the trigger works.
     #[tokio::test]
     async fn run_prune_loop_keeps_running_without_shutdown() {
         let (store, _cid, _chan) = store_with_check_and_channel().await;

@@ -13,8 +13,8 @@ const APP_CSS_TEMPLATE: &str = include_str!("../assets/app.css");
 /// `url("…")` string, so `assets/app.css` stays valid CSS on its own.
 const FONT_PLACEHOLDER: &str = "{{FONT_V}}";
 
-/// Every embedded font. One table so the version hash and the handler can
-/// never disagree about what is served.
+/// One table so the version hash and the handler cannot disagree about what
+/// is served.
 const FONTS: &[(&str, &[u8])] = &[
     (
         "inter-400.woff2",
@@ -46,18 +46,16 @@ const FONTS: &[(&str, &[u8])] = &[
     ),
 ];
 
-/// Every script the browser UI loads. They are files rather than inline
-/// `<script>` blocks so the CSP in `web::security_headers` can be
+/// Files rather than inline `<script>` blocks, so the CSP can stay
 /// `script-src 'self'` — see `assets/app.js`'s own header.
 const SCRIPTS: &[(&str, &str)] = &[
     ("app.js", include_str!("../assets/app.js")),
     ("theme-init.js", include_str!("../assets/theme-init.js")),
 ];
 
-/// The app icons. `favicon.svg` is the browser-tab icon (every current browser
-/// takes an SVG one); `apple-touch-icon.png` is the 180×180 raster iOS uses for
-/// a home-screen bookmark, rendered from that same SVG — regenerate it with
-/// `npm run icons` in `e2e/` after editing the SVG.
+/// `apple-touch-icon.png` is the 180×180 raster iOS uses for a home-screen
+/// bookmark, rendered from `favicon.svg` — regenerate it with
+/// `cargo run --bin icons` in `e2e/` after editing the SVG.
 const ICONS: &[(&str, &str, &[u8])] = &[
     (
         "favicon.svg",
@@ -71,14 +69,12 @@ const ICONS: &[(&str, &str, &[u8])] = &[
     ),
 ];
 
-/// Every asset is content-addressed — `app.css` via `?v=<css hash>`, the font
-/// URLs via `?v=<font hash>` baked into that stylesheet, and the icons via
-/// `?v=<icon hash>` — so none of them ever needs revalidation.
+/// Safe because every asset URL is content-addressed with a `?v=<hash>`, so
+/// none of them ever needs revalidation.
 const IMMUTABLE_CACHE: &str = "public, max-age=31536000, immutable";
 
 /// Content hash of every embedded font, baked into the stylesheet's font URLs
-/// so a font swap invalidates both the font and the stylesheet that points at
-/// it. Not cryptographic — see `CSS_VERSION`.
+/// so a font swap invalidates both. Not cryptographic — see `CSS_VERSION`.
 static FONT_VERSION: LazyLock<String> = LazyLock::new(|| {
     let mut hasher = DefaultHasher::new();
     for (name, bytes) in FONTS {
@@ -88,25 +84,23 @@ static FONT_VERSION: LazyLock<String> = LazyLock::new(|| {
     format!("{:x}", hasher.finish())
 });
 
-/// The stylesheet as served: the font-URL placeholder resolved to the current
-/// font version.
+/// The stylesheet as served, with the font-URL placeholder resolved.
 static APP_CSS: LazyLock<String> =
     LazyLock::new(|| APP_CSS_TEMPLATE.replace(FONT_PLACEHOLDER, FONT_VERSION.as_str()));
 
 /// Content hash of the rendered stylesheet, used to cache-bust
-/// `/assets/app.css`. The URL changes exactly when the rendered CSS content
-/// changes — which includes a font version bump, since the font URLs are
-/// baked into this text — which lets the response be cached immutably. Not
-/// cryptographic — collision resistance is irrelevant here, and an unstable
-/// hash across toolchains only ever costs one extra fetch.
+/// `/assets/app.css`. Changes exactly when the rendered CSS does, including on
+/// a font version bump, since the font URLs are baked into this text. Not
+/// cryptographic — collision resistance is irrelevant, and an unstable hash
+/// across toolchains only costs one extra fetch.
 static CSS_VERSION: LazyLock<String> = LazyLock::new(|| {
     let mut hasher = DefaultHasher::new();
     APP_CSS.as_str().hash(&mut hasher);
     format!("{:x}", hasher.finish())
 });
 
-/// Content hash of every embedded icon. One version for the whole set, so
-/// editing the SVG and re-rendering the PNG busts both `<link>`s at once.
+/// One version for the whole set, so editing the SVG and re-rendering the PNG
+/// busts both `<link>`s at once.
 static ICON_VERSION: LazyLock<String> = LazyLock::new(|| {
     let mut hasher = DefaultHasher::new();
     for (name, _, bytes) in ICONS {
@@ -116,9 +110,8 @@ static ICON_VERSION: LazyLock<String> = LazyLock::new(|| {
     format!("{:x}", hasher.finish())
 });
 
-/// Content hash of every script. One version for the whole set, like
-/// [`ICON_VERSION`]: the two files ship together and are never cached apart
-/// long enough for a finer grain to matter.
+/// One version for the whole set, like [`ICON_VERSION`]: the two files ship
+/// together, so a finer grain would not buy anything.
 static JS_VERSION: LazyLock<String> = LazyLock::new(|| {
     let mut hasher = DefaultHasher::new();
     for (name, body) in SCRIPTS {
@@ -145,10 +138,8 @@ pub fn routes() -> Router<AppState> {
         .route("/assets/app.css", get(app_css))
         .route("/assets/{file}", get(script))
         .route("/assets/fonts/{file}", get(font))
-        // Served from the root, not `/assets`: browsers and iOS probe these
-        // exact paths when a page omits the `<link>` (or when the URL is a
-        // bookmark rendered outside a page), so the conventional location is
-        // the useful one.
+        // Served from the root: browsers and iOS probe these exact paths when
+        // a page omits the `<link>`.
         .route("/favicon.svg", get(icon))
         .route("/apple-touch-icon.png", get(icon))
 }
@@ -163,9 +154,8 @@ async fn app_css() -> impl IntoResponse {
     )
 }
 
-/// Serve whichever icon the request path names. Both icon routes point here,
-/// so the table in `ICONS` stays the single place a name, its MIME type and
-/// its bytes are tied together.
+/// Serve whichever icon the request path names. Both icon routes point here so
+/// `ICONS` stays the only place a name, MIME type and bytes are tied together.
 async fn icon(uri: Uri) -> impl IntoResponse {
     let name = uri.path().trim_start_matches('/');
     match ICONS.iter().find(|(n, _, _)| *n == name) {
@@ -181,10 +171,9 @@ async fn icon(uri: Uri) -> impl IntoResponse {
     }
 }
 
-/// Serve whichever script the request path names. Registered as
-/// `/assets/{file}` rather than one route per script, which means it also
-/// answers `/assets/app.css` — axum prefers the literal route for that, so the
-/// stylesheet still reaches `app_css` and only unknown names land here as 404.
+/// Serve whichever script the request path names. `/assets/{file}` also
+/// matches `/assets/app.css`, but axum prefers the literal route, so the
+/// stylesheet still reaches `app_css` and only unknown names 404 here.
 async fn script(Path(file): Path<String>) -> impl IntoResponse {
     match SCRIPTS.iter().find(|(name, _)| *name == file) {
         Some((_, body)) => (

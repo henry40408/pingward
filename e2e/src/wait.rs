@@ -1,15 +1,10 @@
 //! Retrying assertions.
 //!
-//! Playwright's `expect(...)` polls until the assertion holds or a timeout
-//! expires, which is what let the old steps write
-//! `await expect(page).toHaveURL('/')` straight after a click. `WebDriver` has
-//! no such layer: a `find` that runs before the server's redirect has landed
-//! simply reports the old page.
-//!
-//! thirtyfour's `ElementQuery` filters cover the cases that are really "wait
-//! for an element matching X", and [`crate::dom`] uses them. These helpers
-//! cover the rest — a value that has to settle, like a check's status after a
-//! ping or the URL after a form post.
+//! `WebDriver` has no polling layer: a `find` that runs before the server's
+//! redirect has landed simply reports the old page. thirtyfour's `ElementQuery`
+//! filters cover "wait for an element matching X" and [`crate::dom`] uses them;
+//! these helpers cover a value that has to settle, like a check's status after
+//! a ping or the URL after a form post.
 
 use std::fmt::Debug;
 use std::future::Future;
@@ -22,15 +17,10 @@ use crate::browser::{WAIT_INTERVAL, WAIT_TIMEOUT};
 
 /// Is this the DOM having moved under the probe, rather than a real fault?
 ///
-/// The check page swaps its pings and notifications sections in place (the
-/// fragment endpoints, and the live tail), so an element found on one poll can
-/// be detached before the next line reads it. To a poll that is "not yet" — the
-/// answer it is there to wait for — and treating it as an error turns every
-/// assertion that spans a swap into a flake.
-///
-/// Only the stale-reference error is forgiven. A missing element, a bad
-/// selector or a dead session still fail immediately, which is what keeps a
-/// genuinely broken page from being waited on for the full timeout.
+/// The check page swaps its pings and notifications sections in place, so an
+/// element found on one poll can be detached before the next line reads it — to
+/// a poll that is "not yet". Only the stale-reference error is forgiven; a
+/// missing element, bad selector or dead session still fails immediately.
 fn is_stale(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause.downcast_ref::<WebDriverError>().is_some_and(|error| {
@@ -42,11 +32,8 @@ fn is_stale(error: &anyhow::Error) -> bool {
     })
 }
 
-/// Polls `probe` until it reports the expected value.
-///
-/// On timeout the failure names the last value seen, not merely that a wait
-/// expired — that is the difference between "the status never reached down" and
-/// a message you have to reproduce by hand to understand.
+/// Polls `probe` until it reports the expected value. On timeout the failure
+/// names the last value seen, not merely that a wait expired.
 ///
 /// # Errors
 ///
@@ -93,11 +80,9 @@ where
     eventually_within(WAIT_TIMEOUT, what, probe).await
 }
 
-/// [`eventually`] with a deadline of its own.
-///
-/// For the handful of waits that are not "the page is catching up" but "a
-/// background loop is getting to it" — chiefly the scan loop, which only
-/// transitions an overdue check on its next pass.
+/// [`eventually`] with a deadline of its own, for the waits on a background
+/// loop rather than on the page — chiefly the scan loop, which only transitions
+/// an overdue check on its next pass.
 ///
 /// # Errors
 ///
@@ -122,10 +107,8 @@ where
     }
 }
 
-/// Polls `probe` until it reports a value, handing it back.
-///
-/// The shape for "read something once it exists" — Playwright's
-/// `expect(locator).toBeVisible()` followed by a read, in one step.
+/// Polls `probe` until it reports a value, handing it back — "read something
+/// once it exists".
 ///
 /// # Errors
 ///

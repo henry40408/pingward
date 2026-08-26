@@ -43,16 +43,13 @@ async fn server_with_project() -> (TestServer, Store, i64) {
     (server, store, pid)
 }
 
-/// Read the current session's CSRF synchronizer token straight from the DB —
-/// mirrors `tests/csrf.rs::csrf_token`, needed here to authorize the
-/// description-round-trip POSTs below.
+/// The current session's CSRF token, read straight from the DB.
 async fn csrf_token(store: &Store) -> String {
     common::newest_session_csrf(&store.pool).await
 }
 
-/// The restyled channel form must keep the `.field` form-control class from
-/// `assets/app.css` (Task 1) while preserving every existing input name that
-/// the (unchanged) handler in `src/web.rs` depends on.
+/// The `.field` class from `assets/app.css`, plus every input name the handler
+/// in `src/web.rs` depends on.
 #[tokio::test]
 async fn channel_form_is_restyled_and_keeps_fields() {
     let (server, _store, pid) = server_with_project().await;
@@ -63,8 +60,7 @@ async fn channel_form_is_restyled_and_keeps_fields() {
     assert!(body.contains("name=\"webhook_url\""), "webhook field lost");
 }
 
-/// The restyled check form must keep the `.field` class and every field name
-/// the handler in `src/web.rs` reads via `CheckForm`.
+/// The `.field` class, plus every field name the handler reads via `CheckForm`.
 #[tokio::test]
 async fn check_form_is_restyled_and_keeps_fields() {
     let (server, _store, pid) = server_with_project().await;
@@ -91,8 +87,7 @@ async fn check_form_is_restyled_and_keeps_fields() {
     }
 }
 
-/// The restyled project form must keep the `.field` class and every field
-/// name the handler in `src/web.rs` reads via `ProjectForm`.
+/// The `.field` class, plus every field name the handler reads via `ProjectForm`.
 #[tokio::test]
 async fn project_form_is_restyled_and_keeps_fields() {
     let (server, _store, _uid) = logged_in_server().await;
@@ -113,10 +108,8 @@ async fn project_form_is_restyled_and_keeps_fields() {
     }
 }
 
-/// A description round-trips through create and edit: the create form
-/// accepts a `description` field, the stored value renders (escaped) into the
-/// edit form's textarea, and validation both rejects an over-length
-/// description with the exact spec'd message and accepts the boundary value.
+/// The stored description renders (escaped) into the edit form's textarea, and
+/// the length limit is checked at both boundary values.
 #[tokio::test]
 async fn project_description_round_trips_and_is_length_validated() {
     let (server, store, uid) = logged_in_server().await;
@@ -144,8 +137,7 @@ async fn project_description_round_trips_and_is_length_validated() {
         "edit form must round-trip the stored description into the textarea"
     );
 
-    // Exactly 2001 characters is rejected with the spec'd message; exactly
-    // 2000 is accepted.
+    // 2001 characters is rejected with the spec'd message, 2000 accepted.
     let too_long = "a".repeat(2001);
     let res = server
         .post(&format!("/projects/{pid}"))
@@ -188,8 +180,7 @@ async fn project_description_round_trips_and_is_length_validated() {
     );
 }
 
-/// Same round-trip + length-validation coverage as
-/// `project_description_round_trips_and_is_length_validated`, for checks.
+/// As `project_description_round_trips_and_is_length_validated`, for checks.
 #[tokio::test]
 async fn check_description_round_trips_and_is_length_validated() {
     let (server, store, pid) = server_with_project().await;
@@ -272,9 +263,8 @@ async fn check_description_round_trips_and_is_length_validated() {
     );
 }
 
-/// A check created through the web form in a project that already has
-/// channels comes out bound to all of them (`Store::bind_all_project_channels`,
-/// called from `check_create_core`).
+/// `Store::bind_all_project_channels`, called from `check_create_core`: a new
+/// check comes out bound to every channel the project already has.
 #[tokio::test]
 async fn check_created_via_web_form_is_bound_to_existing_channels() {
     let (server, store, pid) = server_with_project().await;
@@ -333,15 +323,12 @@ async fn check_created_via_web_form_is_bound_to_existing_channels() {
     );
 }
 
-/// Every credential field carries an `autocomplete` token, so a password
-/// manager can fill and store them (OWASP's Authentication Cheat Sheet asks
-/// applications not to make that job harder than necessary).
+/// Every credential field carries an `autocomplete` token, so a password manager
+/// can fill and store them.
 ///
-/// The tokens are not interchangeable: `current-password` on the login form is
-/// what makes a manager offer the *saved* credential, while `new-password` on a
-/// form that sets one is what stops it offering the same and prompts a
-/// generated value instead. Getting them the wrong way round is invisible until
-/// a user finds their manager unhelpful, which no other test would catch.
+/// The tokens are not interchangeable: `current-password` makes a manager offer
+/// the *saved* credential, `new-password` stops it and prompts a generated one.
+/// The wrong way round is invisible until a user finds their manager unhelpful.
 #[tokio::test]
 async fn credential_fields_declare_their_autocomplete_role() {
     let (server, _store) = server().await;
@@ -373,9 +360,8 @@ async fn credential_fields_declare_their_autocomplete_role() {
         "/login submits an existing credential: {login}"
     );
 
-    // /admin manages *other* people's accounts, so its username field opts out
-    // of autofill entirely — offering the signed-in admin's own username there
-    // is never right — and both password fields set a new credential.
+    // `/admin` manages *other* people's accounts, so its username field opts out
+    // of autofill entirely and both password fields set a new credential.
     let admin = server.get("/admin").await.text();
     assert!(
         admin.contains(r#"name="username" autocomplete="off""#),
@@ -398,13 +384,11 @@ async fn credential_fields_declare_their_autocomplete_role() {
 
 // --- duration suggestion lists ---------------------------------------------
 //
-// Every duration-valued field in the UI carries a `<datalist>` so the unit
-// suffixes its help text mentions are visible without being read. The list is
-// a hint and never a constraint, so these tests assert two separate things:
-// that the markup wires the fields to the list at all, and — the part that
-// actually matters — that everything the list offers is a value the handler
-// behind the field accepts. A suggestion the form would reject is worse than
-// no suggestion, because the user picks it out of the browser's own dropdown.
+// Every duration-valued field carries a `<datalist>` so the unit suffixes its
+// help text mentions are visible. These tests assert both that the markup wires
+// the fields to the list and that every value it offers is one the handler
+// accepts — a suggestion the form would reject is worse than none, since the
+// user picks it from the browser's own dropdown.
 
 /// The opening `<input …>` tag carrying `id="{id}"`, as raw markup.
 fn input_tag<'a>(body: &'a str, id: &str) -> &'a str {
@@ -465,8 +449,7 @@ async fn check_form_duration_fields_offer_the_shared_suggestions() {
     );
 }
 
-/// The project form's two overrides point at the same list, built from the
-/// same source, so the two forms cannot drift apart.
+/// The project form's two overrides point at the same shared list.
 #[tokio::test]
 async fn project_form_duration_fields_offer_the_shared_suggestions() {
     let (server, _store, _uid) = logged_in_server().await;
@@ -479,10 +462,9 @@ async fn project_form_duration_fields_offer_the_shared_suggestions() {
     );
 }
 
-/// `/admin`'s two global intervals are duration fields and get the list. The
-/// retention fields beside them are a count of days, handled by a different
-/// branch of `settings_save` (`SettingKind::Days`), so offering them `5m`
-/// would be offering a value the save rejects.
+/// `/admin`'s two global intervals get the list; the retention fields beside
+/// them are a count of days (`SettingKind::Days`), so offering them `5m` would
+/// offer a value the save rejects.
 #[tokio::test]
 async fn admin_settings_duration_fields_offer_the_shared_suggestions() {
     let (server, _store, _uid) = logged_in_server().await;
@@ -503,8 +485,7 @@ async fn admin_settings_duration_fields_offer_the_shared_suggestions() {
     }
 }
 
-/// The API key expiry is a duration field on a different scale, so it gets its
-/// own list rather than the shared one.
+/// The API key expiry is a duration on a different scale, so it gets its own list.
 #[tokio::test]
 async fn api_key_expiry_offers_its_own_suggestions() {
     let (server, _store, _uid) = logged_in_server().await;
@@ -517,11 +498,9 @@ async fn api_key_expiry_offers_its_own_suggestions() {
     );
 }
 
-/// The point of the whole change: every value the browser offers is one the
-/// form actually stores. Each suggestion is submitted into all five of the
-/// check form's duration fields at once and read back, so a future edit to
-/// `view::durations` adding something `parse_duration` cannot handle fails
-/// here rather than in a user's face.
+/// Every value the browser offers is one the form actually stores: each
+/// suggestion goes into all five duration fields at once and is read back, so a
+/// `view::durations` entry `parse_duration` cannot handle fails here.
 #[tokio::test]
 async fn every_suggested_duration_is_accepted_by_the_check_form() {
     let (server, store, pid) = server_with_project().await;
