@@ -58,13 +58,20 @@ where
 {
     type Rejection = Infallible;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+    fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         let config = Arc::<Config>::from_ref(state);
         let peer = parts
             .extensions
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ci| ci.0.ip());
-        Ok(Self(crate::auth::client_ip(&parts.headers, peer, &config)))
+        std::future::ready(Ok(Self(crate::auth::client_ip(
+            &parts.headers,
+            peer,
+            &config,
+        ))))
     }
 }
 
