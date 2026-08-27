@@ -1,11 +1,8 @@
 //! Out-of-band HTTP against the server under test.
 //!
-//! A port of `support/api.js`. pingward has no open registration: the only
-//! bootstrap path is the one-time `POST /setup` (first admin). It is
-//! CSRF-protected like every other POST — a logged-out visitor still gets a
-//! signed session cookie to derive a token from — so this does what a browser
-//! does: GET the page first, then submit its cookie and hidden `_csrf`
-//! together.
+//! The only bootstrap path is the one-time `POST /setup`, CSRF-protected like
+//! every other POST, so this does what a browser does: GET the page first, then
+//! submit its cookie and hidden `_csrf` together.
 
 use std::sync::OnceLock;
 
@@ -74,20 +71,16 @@ impl Api {
     pub fn new(base_url: &str) -> Result<Self> {
         Ok(Self {
             base_url: base_url.to_owned(),
-            // Redirects are followed by default, which the ping endpoints never
-            // issue and `POST /setup` always does — following it is what makes
-            // a failed bootstrap show up as a non-success status here rather
-            // than as a confusing 303.
+            // Redirects are followed by default, so a failed `POST /setup`
+            // surfaces as a non-success status rather than a 303.
             client: reqwest::Client::builder()
                 .build()
                 .context("building the HTTP client")?,
         })
     }
 
-    /// Creates the first admin through `POST /setup`.
-    ///
-    /// Used only against a fresh server, so the empty-field and
-    /// already-set-up re-render branches never fire here.
+    /// Creates the first admin through `POST /setup`. Only ever run against a
+    /// fresh server, so the re-render branches never fire.
     ///
     /// # Errors
     ///
@@ -134,11 +127,8 @@ impl Api {
         Ok(())
     }
 
-    /// Sends a ping, which must be accepted.
-    ///
-    /// Every valid ping answers 200, so a non-success status is a real failure
-    /// and is reported as one. Use [`Api::ping_status`] for the scenarios that
-    /// are *about* a refusal.
+    /// Sends a ping, which must be accepted. Every valid ping answers 200; use
+    /// [`Api::ping_status`] for the scenarios that are *about* a refusal.
     ///
     /// # Errors
     ///
@@ -205,10 +195,8 @@ impl Api {
         Ok(response.status().as_u16())
     }
 
-    /// POSTs a form and reports its status, following no redirects.
-    ///
-    /// The CSRF scenarios post without a token deliberately, so this attaches
-    /// neither a cookie nor one.
+    /// POSTs a form and reports its status, following no redirects. Attaches
+    /// neither a cookie nor a token — the CSRF scenarios need it that way.
     ///
     /// # Errors
     ///

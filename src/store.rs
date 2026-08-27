@@ -16,14 +16,10 @@ pub struct Store {
 
 /// Why a [`Store::create_user`] failed.
 ///
-/// `users.username` carries a `UNIQUE` constraint in both migration sets, so a
-/// duplicate is an ordinary outcome of a form submission — not a fault. It used
-/// to travel as a bare `sqlx::Error`, which `AppError::Db` turned into a blank
-/// `500 internal error`: an admin who typed a name already in the table got an
-/// error page with no message and no form to correct.
-///
-/// A distinct variant makes that impossible to route into the 500 path by
-/// accident — every caller now has to say what it does when a name is taken.
+/// `users.username` is `UNIQUE` on both backends, so a duplicate is an ordinary
+/// outcome of a form submission rather than a fault. A distinct variant keeps
+/// it out of `AppError::Db`'s blank 500: every caller has to say what it does
+/// when a name is taken.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateUserError {
     #[error("that username is already taken")]
@@ -33,13 +29,10 @@ pub enum CreateUserError {
 }
 
 impl From<sqlx::Error> for CreateUserError {
-    /// Classify the driver's error.
-    ///
-    /// `is_unique_violation` reads the backend's own code (`SQLite` 2067 /
-    /// Postgres 23505) rather than matching on a message, so it survives both
-    /// backends and any wording change. `users` has exactly one unique
-    /// constraint, so a violation can only be the username — if a second is
-    /// ever added, this needs to start distinguishing them.
+    /// Classify the driver's error. `is_unique_violation` reads the backend's
+    /// own code (`SQLite` 2067 / Postgres 23505) rather than matching a
+    /// message. `users` has exactly one unique constraint, so a violation can
+    /// only be the username; a second one would need distinguishing here.
     fn from(e: sqlx::Error) -> Self {
         match &e {
             sqlx::Error::Database(db) if db.is_unique_violation() => Self::UsernameTaken,
@@ -56,18 +49,15 @@ pub struct CheckStatusCounts {
     pub down: i64,
     pub paused: i64,
     /// Stored `up`/`new` checks with an in-flight `start` (mirrors
-    /// `view::DisplayStatus::Running`). Not part of the `GROUP BY status`
-    /// aggregate below — it's a display-status derivation, not a stored
-    /// status — so it comes from a second, portable query instead of a
-    /// `SUM(CASE ...)` folded into the first (whose result type differs
-    /// across `SQLite`/`PostgreSQL` on the `Any` driver).
+    /// `view::DisplayStatus::Running`). A display derivation rather than a
+    /// stored status, so it comes from a second query instead of a
+    /// `SUM(CASE ...)`, whose result type differs across backends on `Any`.
     pub running: i64,
 }
 
-/// A keyset cursor for paging the check-detail "recent pings"/"recent
-/// notifications" tables. `id` ordering is used (not `created_at`) since it is
-/// monotonic and covered by the `(check_id, id)` index — stable under
-/// concurrent inserts, unlike offset pagination.
+/// A keyset cursor for the check-detail "recent pings"/"recent notifications"
+/// tables. Ordered by `id`, not `created_at`: monotonic, covered by the
+/// `(check_id, id)` index, and stable under concurrent inserts.
 #[derive(Debug, Clone, Copy)]
 pub enum PageCursor {
     /// The newest page — no cursor.
@@ -89,11 +79,10 @@ pub struct Page<T> {
     pub has_older: bool,
 }
 
-/// Filters for the check-detail "recent pings" table. Empty `kinds` and `None`
-/// bounds mean "no constraint". The date bounds are compared against the
-/// RFC3339 `created_at` text; the caller supplies them as UTC `DateTime`s and
-/// they are re-serialized with `to_rfc3339()` here, so the lexicographic
-/// comparison stays chronological (same basis as [`Store::delete_pings_before`]).
+/// Filters for the check-detail "recent pings" table; empty `kinds` and `None`
+/// bounds mean no constraint. Date bounds are re-serialized with `to_rfc3339()`
+/// and compared against the RFC3339 `created_at` text, so the lexicographic
+/// comparison stays chronological (as in [`Store::delete_pings_before`]).
 #[derive(Debug, Clone, Default)]
 pub struct PingFilter {
     pub kinds: Vec<PingKind>,
@@ -102,7 +91,7 @@ pub struct PingFilter {
 }
 
 impl PingFilter {
-    /// True when no constraint is set — the default (unfiltered) page.
+    /// True when no constraint is set.
     pub fn is_empty(&self) -> bool {
         self.kinds.is_empty() && self.from.is_none() && self.to.is_none()
     }
@@ -125,10 +114,9 @@ impl PingFilter {
     }
 }
 
-/// Filters for the check-detail "recent notifications" table. `events` filters
-/// the notify event (up/down/reminder) and `statuses` the delivery result
-/// (ok/error); both empty means "no constraint". Date bounds behave as in
-/// [`PingFilter`].
+/// Filters for the check-detail "recent notifications" table: `events` filters
+/// the notify event, `statuses` the delivery result, both empty meaning no
+/// constraint. Date bounds behave as in [`PingFilter`].
 #[derive(Debug, Clone, Default)]
 pub struct NotifFilter {
     pub events: Vec<EventKind>,
@@ -138,7 +126,7 @@ pub struct NotifFilter {
 }
 
 impl NotifFilter {
-    /// True when no constraint is set — the default (unfiltered) page.
+    /// True when no constraint is set.
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
             && self.statuses.is_empty()
@@ -174,9 +162,9 @@ impl NotifFilter {
 }
 
 /// Filters for the `/admin` audit-log table. `actor` and `action` are exact
-/// matches on the stored token (the UI offers them as selects built from the
-/// values actually present, so there is nothing to fuzzy-match); `None` or an
-/// empty string means "no constraint". Date bounds behave as in [`PingFilter`].
+/// matches on the stored token (the UI offers selects built from the values
+/// actually present, so there is nothing to fuzzy-match); `None` or an empty
+/// string means no constraint. Date bounds behave as in [`PingFilter`].
 #[derive(Debug, Clone, Default)]
 pub struct AuditFilter {
     pub actor: Option<String>,
@@ -186,7 +174,7 @@ pub struct AuditFilter {
 }
 
 impl AuditFilter {
-    /// True when no constraint is set — the default (unfiltered) page.
+    /// True when no constraint is set.
     pub fn is_empty(&self) -> bool {
         self.actor.is_none() && self.action.is_none() && self.from.is_none() && self.to.is_none()
     }
@@ -238,8 +226,8 @@ pub struct NewCheck<'a> {
     pub nag_interval_secs: Option<i64>,
 }
 
-/// Not `#[derive(Default)]` like `NewAudit`: `ScheduleKind` is `str_enum!`-generated
-/// and has no `Default`. `Period` matches the new-check form's own default.
+/// Not `#[derive(Default)]` like `NewAudit`: `str_enum!`-generated
+/// `ScheduleKind` has no `Default`. `Period` matches the new-check form.
 impl Default for NewCheck<'_> {
     fn default() -> Self {
         Self {
@@ -259,10 +247,9 @@ impl Default for NewCheck<'_> {
     }
 }
 
-/// The new values for a check's schedule. Unlike [`NewCheck`], this has no
-/// `Default`: on an INSERT an unset field just means "no value", but on an
-/// UPDATE it would write the default over whatever is stored — defaulting
-/// `name` would blank the check's name. Every caller must spell out all of it.
+/// The new values for a check's schedule. No `Default`, unlike [`NewCheck`]:
+/// on an UPDATE an unset field would write the default over what is stored, so
+/// defaulting `name` would blank the check's name. Callers spell out all of it.
 #[derive(Debug, Clone)]
 pub struct UpdateCheck<'a> {
     pub name: &'a str,
@@ -289,10 +276,9 @@ fn decode_err(msg: impl Into<String>) -> sqlx::Error {
     sqlx::Error::Decode(Box::<dyn std::error::Error + Send + Sync>::from(msg.into()))
 }
 
-/// Fallible row mapping: a corrupt/unparsable enum or timestamp must surface
-/// as an `Err` rather than panic, since a panic here (e.g. via
-/// `list_active_checks` in the scan loop) would unwind and permanently kill
-/// the spawned scan task.
+/// Fallible row mapping: a corrupt enum or timestamp must surface as `Err`
+/// rather than panic — a panic here (via `list_active_checks` in the scan
+/// loop) would unwind and permanently kill the spawned scan task.
 fn row_to_check(row: &sqlx::any::AnyRow) -> Result<Check, sqlx::Error> {
     let schedule_kind_raw: String = row.get("schedule_kind");
     let schedule_kind = ScheduleKind::from_str(&schedule_kind_raw)
@@ -413,8 +399,8 @@ fn row_to_ping(row: &sqlx::any::AnyRow) -> Result<Ping, sqlx::Error> {
 }
 
 /// Narrow counterpart of [`row_to_ping`] for the heartbeat projection: the
-/// four columns `view::heartbeat`/`view::run_durations` read, and nothing
-/// else. Kept beside it so the two stay in step if `pings` gains a column.
+/// four columns `view::heartbeat`/`view::run_durations` read. Kept beside it
+/// so the two stay in step if `pings` gains a column.
 fn row_to_ping_summary(row: &sqlx::any::AnyRow) -> Result<PingSummary, sqlx::Error> {
     let kind_raw: String = row.get("kind");
     let kind = PingKind::from_str(&kind_raw)
@@ -464,9 +450,9 @@ fn row_to_audit(row: &sqlx::any::AnyRow) -> Result<AuditLog, sqlx::Error> {
     })
 }
 
-/// A value bound into a filtered keyset query. Columns, operators, and
-/// placeholders are always self-generated literals; only these values cross the
-/// query boundary as bound parameters, so the assembled SQL has no injection
+/// A value bound into a filtered keyset query. Columns, operators and
+/// placeholders are self-generated literals; only these values cross the query
+/// boundary as bound parameters, so the assembled SQL has no injection
 /// surface.
 enum QueryBind {
     Int(i64),
@@ -483,19 +469,16 @@ enum Predicate {
     TextIn(&'static str, Vec<String>),
 }
 
-/// Shared keyset-pagination core for `pings`/`notifications`/`audit_log`: all
-/// are paged the same way (by `id`), so the SQL shape and
-/// `has_newer/has_older` bookkeeping live here once. `table` and every predicate
-/// column/operator are fixed caller literals (never user input); all values —
-/// including filter values — are bound, so interpolating the assembled clause
-/// into the query text is safe. Uses a limit+1 fetch to detect another page in
-/// the queried direction rather than a separate `COUNT(*)`.
+/// Shared keyset-pagination core for `pings`/`notifications`/`audit_log`, all
+/// paged by `id`, so the SQL shape and `has_newer`/`has_older` bookkeeping live
+/// here once. `table` and every predicate column/operator are fixed caller
+/// literals and every value is bound, so interpolating the assembled clause is
+/// safe. A limit+1 fetch detects another page without a separate `COUNT(*)`.
 ///
 /// `scope` is the owning-row constraint the table is partitioned by
-/// (`("check_id", id)` for pings/notifications). `audit_log` belongs to the
-/// instance rather than to any one row, so it passes `None` and the query is
-/// unscoped — which is also why the `WHERE` clause is assembled conditionally:
-/// an unscoped, unfiltered page has no predicates at all.
+/// (`("check_id", id)` for pings/notifications). `audit_log` is instance-wide
+/// and passes `None`, which is why the `WHERE` clause is assembled
+/// conditionally: an unscoped, unfiltered page has no predicates at all.
 #[allow(
     clippy::cast_sign_loss,
     reason = "`limit` is a small positive page size supplied by callers, never negative"
@@ -563,8 +546,8 @@ async fn keyset_page<T>(
         "SELECT * FROM {table}{where_clause} ORDER BY id {order} LIMIT ${}",
         binds.len()
     );
-    // Safe: `table`, every column, operator, and placeholder are self-generated
-    // literals; all values (check_id, filter values, cursor, limit) are bound.
+    // Safe: `table`, every column, operator and placeholder is a
+    // self-generated literal; all values are bound.
     let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for b in &binds {
         q = match b {
@@ -574,9 +557,8 @@ async fn keyset_page<T>(
     }
     let mut rows = q.fetch_all(pool).await?;
 
-    // Interpret the limit+1 overflow row per direction. Before/After always
-    // came from an existing adjacent page, so the opposite-direction flag is
-    // known true regardless of the filter set.
+    // Interpret the limit+1 overflow row per direction. Before/After came from
+    // an adjacent page, so the opposite-direction flag is known true.
     match cursor {
         PageCursor::Latest => {
             let has_older = rows.len() as i64 > limit;
@@ -608,8 +590,7 @@ async fn keyset_page<T>(
             let has_newer = rows.len() as i64 > limit;
             if has_newer {
                 // Rows are ASC by id; the last row is the farthest-from-cursor
-                // (newest) overflow row — drop it, keeping the `limit` rows
-                // closest to the cursor.
+                // overflow row — drop it, keeping the rows nearest the cursor.
                 rows.pop();
             }
             let mut items = rows.iter().map(row_to).collect::<Result<Vec<T>, _>>()?;
@@ -636,9 +617,8 @@ impl Store {
         row.as_ref().map(row_to_check).transpose()
     }
 
-    /// One corrupt/unparsable row must never abort the whole scan: rows that
-    /// fail to decode are logged and skipped rather than propagated as an
-    /// error or allowed to panic.
+    /// One corrupt row must never abort the whole scan: rows that fail to
+    /// decode are logged and skipped rather than propagated or panicked on.
     pub async fn list_active_checks(&self) -> Result<Vec<Check>, sqlx::Error> {
         let rows = sqlx::query("SELECT * FROM checks WHERE status IN ('new','up')")
             .fetch_all(&self.pool)
@@ -921,9 +901,9 @@ impl Store {
         rows.iter().map(row_to_api_key).collect()
     }
 
-    /// Delete an API key, scoped to its owner. Returns `true` if a row was
-    /// removed — `false` means the key does not exist or belongs to another
-    /// user (existence is not distinguished, mirroring the 404-hiding model).
+    /// Delete an API key, scoped to its owner. `false` means the key does not
+    /// exist or belongs to another user — existence is not distinguished,
+    /// mirroring the 404-hiding model.
     pub async fn delete_api_key(&self, id: i64, user_id: i64) -> Result<bool, sqlx::Error> {
         let res = sqlx::query("DELETE FROM api_keys WHERE id = $1 AND user_id = $2")
             .bind(id)
@@ -933,10 +913,9 @@ impl Store {
         Ok(res.rows_affected() > 0)
     }
 
-    /// Resolve a token hash to its owning user id, honoring expiry. Returns
-    /// `None` for an unknown or expired key. On a successful match the key's
-    /// `last_used_at` is refreshed, but writes are throttled to at most once per
-    /// 60s so a hot key doesn't cause a write per request.
+    /// Resolve a token hash to its owning user id, honoring expiry. On a match
+    /// the key's `last_used_at` is refreshed, throttled to once per 60s so a
+    /// hot key does not cost a write per request.
     pub async fn validate_api_key(
         &self,
         token_hash: &str,
@@ -1001,15 +980,13 @@ impl Store {
     }
 
     /// Resolve a session to its owning user, honoring the idle window
-    /// (`expires_at`, checked in SQL) and the absolute cap (`created_at`,
-    /// checked in Rust — see below). On a match, `last_seen_at` is refreshed,
-    /// throttled to at most once per 60s (mirroring
-    /// [`Store::validate_api_key`]'s `last_used_at` throttle) so a hot session
-    /// doesn't cause a write per request; `expires_at` only slides once past
-    /// the half-life of the idle window (`auth::refreshed_expiry`), roughly
-    /// one write per 36 hours, not one per minute and certainly not one per
-    /// request. The two throttles are independent, but a single UPDATE covers
-    /// both when either fires.
+    /// (`expires_at`, in SQL) and the absolute cap (`created_at`, in Rust —
+    /// see below). On a match `last_seen_at` is refreshed, throttled to once
+    /// per 60s like [`Store::validate_api_key`]'s `last_used_at`, and
+    /// `expires_at` slides only past the half-life of the idle window
+    /// (`auth::refreshed_expiry`), roughly one write per 36 hours. The two
+    /// throttles are independent, but one UPDATE covers both when either
+    /// fires.
     pub async fn find_session_user(
         &self,
         session_id: &str,
@@ -1029,9 +1006,9 @@ impl Store {
         let Some(row) = row else {
             return Ok(None);
         };
-        // Checked here rather than in the WHERE clause: `created_at` may be ''
-        // (a pre-0010 row), and '' sorts below every RFC3339 string, so any SQL
-        // predicate over it would misjudge those rows.
+        // Checked here rather than in the WHERE clause: `created_at` may be
+        // '' (a pre-0010 row), which sorts below every RFC3339 string, so any
+        // SQL predicate over it would misjudge those rows.
         let created = parse_ts(row.get("session_created_at"));
         if crate::auth::is_past_absolute_cap(created, now) {
             return Ok(None);
@@ -1051,10 +1028,8 @@ impl Store {
                 let user_id: i64 = row.get("id");
                 let ip: Option<String> = row.get("session_ip");
                 let user_agent: Option<String> = row.get("session_user_agent");
-                // `renewal` separates the ordinary forward slide from a
-                // window pulled *backwards* to the current policy; without it
-                // a clamp — which only a stale writer or a policy change can
-                // produce — is indistinguishable from routine activity.
+                // Without `renewal`, a clamp — which only a stale writer or
+                // a policy change produces — reads as routine activity.
                 tracing::info!(
                     target: "pingward::session",
                     handle = %crate::auth::session_log_handle(session_id),
@@ -1102,30 +1077,26 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         let sessions: Vec<Session> = rows.iter().map(row_to_session).collect::<Result<_, _>>()?;
-        // `find_session_user` already refuses these; /account must not list
-        // them. Rows normally never reach this filter — `/account` reaps them
-        // first via [`Store::delete_capped_sessions_for_user`] — so it is a
-        // belt-and-braces guard for the other callers (the revoke handlers).
+        // `find_session_user` already refuses these and `/account` reaps them
+        // via [`Store::delete_capped_sessions_for_user`] before listing, so
+        // this guards the other callers (the revoke handlers).
         Ok(sessions
             .into_iter()
             .filter(|s| !crate::auth::is_past_absolute_cap(s.created_at, now))
             .collect())
     }
 
-    /// Delete `user_id`'s sessions that have passed the absolute cap
-    /// (`created_at + SESSION_ABSOLUTE_MAX_DAYS`), returning how many were
-    /// removed.
+    /// Delete `user_id`'s sessions past the absolute cap
+    /// (`created_at + SESSION_ABSOLUTE_MAX_DAYS`), returning how many went.
     ///
-    /// Such a row is already inert — `find_session_user` refuses it and
-    /// `list_sessions_for_user` hides it — but *hidden* is not *gone*: until
-    /// the next prune pass (hourly by default) the owner could neither see it
-    /// on `/account` nor revoke it. Reaping the caller's own rows when they
-    /// open that page makes the list truthful by construction: what it does
-    /// not show no longer exists.
+    /// Such a row is already inert, but hidden is not gone: until the next
+    /// prune pass (hourly by default) the owner could neither see it on
+    /// `/account` nor revoke it. Reaping the caller's own rows as they open
+    /// that page makes the list truthful by construction.
     ///
     /// `created_at <> ''` excludes pre-`0010` rows, which would otherwise look
-    /// infinitely old — the same exclusion
-    /// [`Store::delete_expired_sessions`] makes.
+    /// infinitely old — the same exclusion [`Store::delete_expired_sessions`]
+    /// makes.
     pub async fn delete_capped_sessions_for_user(
         &self,
         user_id: i64,
@@ -1143,10 +1114,9 @@ impl Store {
         Ok(res.rows_affected())
     }
 
-    /// Delete a session, scoped to its owner. Returns `true` if a row was
-    /// removed — `false` means the session does not exist or belongs to
-    /// another user (existence is not distinguished, mirroring
-    /// [`Store::delete_api_key`]'s 404-hiding model).
+    /// Delete a session, scoped to its owner. `false` means the session does
+    /// not exist or belongs to another user — existence is not distinguished,
+    /// as in [`Store::delete_api_key`].
     pub async fn delete_session_owned(&self, id: &str, user_id: i64) -> Result<bool, sqlx::Error> {
         let res = sqlx::query("DELETE FROM sessions WHERE id = $1 AND user_id = $2")
             .bind(id)
@@ -1171,16 +1141,14 @@ impl Store {
         Ok(res.rows_affected())
     }
 
-    /// Delete **all** of `user_id`'s sessions. Used when an admin resets a
-    /// password or disables an account — OWASP requires sessions to be
-    /// invalidated after a privilege level change.
+    /// Delete all of `user_id`'s sessions, for an admin password reset or a
+    /// disabled account — OWASP requires invalidation after a privilege
+    /// change.
     ///
-    /// Unlike [`Store::delete_other_sessions_for_user`] this keeps no row, so
-    /// it is only correct when the operator is a different user, whose own
-    /// sessions have a different `user_id` and are unaffected. When an admin
-    /// resets their *own* password, `web::users_set_password` calls
-    /// [`Store::delete_other_sessions_for_user`] instead, so the session they
-    /// are currently operating from survives the reset.
+    /// Keeping no row makes this correct only when the operator is a different
+    /// user. An admin resetting their *own* password goes through
+    /// [`Store::delete_other_sessions_for_user`] in `web::users_set_password`,
+    /// so the session they are operating from survives.
     pub async fn delete_sessions_for_user(&self, user_id: i64) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
             .bind(user_id)
@@ -1309,11 +1277,10 @@ impl Store {
             .collect())
     }
 
-    /// The instance-wide display timezone for notification timestamps, or
-    /// `None` when unset (blank included). A read failure is reported as unset
-    /// rather than propagated: a settings query going wrong must not stop a
-    /// down alert from going out — the worst case is a timestamp in the
-    /// check's own zone.
+    /// The instance-wide display timezone for notification timestamps, `None`
+    /// when unset or blank. A read failure reports unset rather than
+    /// propagating: a settings query must not stop a down alert going out, and
+    /// the worst case is a timestamp in the check's own zone.
     pub async fn display_timezone(&self) -> Option<String> {
         self.get_setting("display_timezone")
             .await
@@ -1323,9 +1290,8 @@ impl Store {
             .filter(|s| !s.is_empty())
     }
 
-    /// Every project's name, keyed by id. The scan/nag loops name the project
-    /// in each notification; one map per pass keeps that a fixed query count
-    /// no matter how many checks transition.
+    /// Every project's name, keyed by id. One map per scan/nag pass keeps
+    /// naming the project in each notification a fixed query count.
     pub async fn all_project_names(&self) -> Result<HashMap<i64, String>, sqlx::Error> {
         let rows = sqlx::query("SELECT id, name FROM projects")
             .fetch_all(&self.pool)
@@ -1373,10 +1339,9 @@ impl Store {
         rows.iter().map(row_to_channel).collect()
     }
 
-    /// Update a channel's name and config. `kind` is deliberately absent —
-    /// it is immutable once created, because a stored `config_json` only has
-    /// meaning for the kind that wrote it and there is no sensible way to
-    /// carry it across a kind change.
+    /// Update a channel's name and config. `kind` is absent because it is
+    /// immutable: a stored `config_json` only has meaning for the kind that
+    /// wrote it.
     pub async fn update_channel(
         &self,
         id: i64,
@@ -1402,10 +1367,9 @@ impl Store {
 
     // --- bindings ---
     pub async fn bind_channel(&self, check_id: i64, channel_id: i64) -> Result<(), sqlx::Error> {
-        // `INSERT OR IGNORE` is SQLite-only syntax and is a parse error on
-        // Postgres; `ON CONFLICT DO NOTHING` is portable to both backends and
-        // relies on the `(check_id, channel_id)` primary key as the conflict
-        // target.
+        // `ON CONFLICT DO NOTHING` (on the `(check_id, channel_id)` primary
+        // key) rather than SQLite-only `INSERT OR IGNORE`, which is a parse
+        // error on Postgres.
         sqlx::query(
             "INSERT INTO check_channels (check_id, channel_id) VALUES ($1,$2) \
              ON CONFLICT DO NOTHING",
@@ -1417,17 +1381,14 @@ impl Store {
         Ok(())
     }
 
-    /// Binds `check_id` to every channel already configured on `project_id` —
-    /// the equivalent of healthchecks' `Check.assign_all_channels()`, called
-    /// right after a check is created so a fresh check is never silently
-    /// unnotified. `ON CONFLICT DO NOTHING` (not `SQLite`'s `INSERT OR IGNORE`,
-    /// which is a parse error on `Postgres`) for the same reason [`Store::bind_channel`]
-    /// documents above. The `WHERE project_id = $2` on the SELECT is
-    /// load-bearing for `SQLite`, not just a filter: when an UPSERT clause is
-    /// attached to an `INSERT … SELECT`, `SQLite`'s parser cannot tell whether
-    /// `ON` opens the upsert clause or a join's `ON`, and requires the SELECT
-    /// to carry a WHERE clause to disambiguate — removing it turns this into a
-    /// syntax error on `SQLite` only.
+    /// Binds `check_id` to every channel already configured on `project_id`,
+    /// called right after a check is created so a fresh check is never
+    /// silently unnotified. `ON CONFLICT DO NOTHING` for the reason
+    /// [`Store::bind_channel`] gives. The `WHERE project_id = $2` on the
+    /// SELECT is not just a filter: with an UPSERT clause attached to an
+    /// `INSERT … SELECT`, `SQLite`'s parser cannot tell whether `ON` opens the
+    /// upsert or a join, and needs the WHERE to disambiguate — removing it is
+    /// a syntax error on `SQLite` only.
     pub async fn bind_all_project_channels(
         &self,
         check_id: i64,
@@ -1446,10 +1407,8 @@ impl Store {
     }
 
     /// Batched membership check: which of `check_ids` have at least one bound
-    /// channel. Mirrors [`Store::list_checks_for_projects`]'s `$N` placeholder
-    /// generation so the dashboard can answer "does this check have a
-    /// channel?" for every row in one round-trip instead of one query per
-    /// check.
+    /// channel, in one round-trip. Mirrors
+    /// [`Store::list_checks_for_projects`]'s `$N` placeholder generation.
     pub async fn checks_with_channels(
         &self,
         check_ids: &[i64],
@@ -1464,8 +1423,8 @@ impl Store {
         let sql = format!(
             "SELECT DISTINCT check_id FROM check_channels WHERE check_id IN ({placeholders})"
         );
-        // Safe: `sql` interpolates only self-generated `$N` placeholders — every
-        // value is bound below, so there is no injection surface.
+        // Safe: `sql` interpolates only self-generated `$N` placeholders;
+        // every value is bound below.
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for id in check_ids {
             q = q.bind(*id);
@@ -1524,11 +1483,11 @@ impl Store {
         rows.iter().map(row_to_check).collect()
     }
 
-    /// Batched form of [`Store::list_checks_for_project`]: every check belonging
-    /// to any of `project_ids`, in one round-trip, keyed by `project_id`. The
-    /// dashboard renders one group per project and would otherwise issue a
-    /// query per group. Projects with no checks are simply absent from the map;
-    /// each vector keeps the same id order the per-project query returns.
+    /// Batched form of [`Store::list_checks_for_project`]: every check of any
+    /// of `project_ids` in one round-trip, keyed by `project_id`, so the
+    /// dashboard does not issue a query per group. Projects with no checks are
+    /// absent from the map; each vector keeps the per-project query's id
+    /// order.
     pub async fn list_checks_for_projects(
         &self,
         project_ids: &[i64],
@@ -1543,8 +1502,8 @@ impl Store {
         let sql = format!(
             "SELECT * FROM checks WHERE project_id IN ({placeholders}) ORDER BY project_id, id"
         );
-        // Safe: `sql` interpolates only self-generated `$N` placeholders — every
-        // value is bound below, so there is no injection surface.
+        // Safe: `sql` interpolates only self-generated `$N` placeholders;
+        // every value is bound below.
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for id in project_ids {
             q = q.bind(*id);
@@ -1617,8 +1576,8 @@ impl Store {
 
     /// The heartbeat window for one check: the newest `limit` pings, narrowed
     /// to the columns the strip and its duration pairing read. See
-    /// [`Store::list_recent_ping_summaries_for_checks`] for why the body is
-    /// left in the database.
+    /// [`Store::list_recent_ping_summaries_for_checks`] for why the body stays
+    /// in the database.
     pub async fn list_recent_ping_summaries(
         &self,
         check_id: i64,
@@ -1636,25 +1595,15 @@ impl Store {
     }
 
     /// Batched heartbeat windows: the newest `per_check_limit` pings for each
-    /// of `check_ids` in one round-trip, narrowed to the four columns the
-    /// strip needs.
+    /// of `check_ids` in one round-trip, narrowed to the four columns the strip
+    /// needs.
     ///
-    /// This is the dashboard's hot query — one window per check on every
-    /// render. Selecting whole rows made it decode every captured POST body
-    /// (up to `ping::MAX_BODY`, 10 KiB) only for `view::heartbeat` to ignore
-    /// it. Measured on `SQLite` with a 40-row window (#116), the projection is
-    /// worth roughly a quarter to two-thirds of the whole dashboard render,
-    /// and the gap widens with both check count and body size:
-    ///
-    /// | checks | body/ping | wide  | narrow | `GET /` before |
-    /// |-------:|----------:|------:|-------:|---------------:|
-    /// |     50 |       0 B | 7.7ms |  5.5ms |          9.0ms |
-    /// |     50 |     1 KiB |15.3ms |  7.2ms |         14.3ms |
-    /// |     50 |    10 KiB |48.7ms | 13.9ms |         48.1ms |
-    /// |    200 |     1 KiB |64.4ms | 25.7ms |         57.3ms |
-    ///
-    /// Checks with no pings are simply absent from the map. Uses a
-    /// `ROW_NUMBER()` window (`SQLite` >= 3.25 / `PostgreSQL`).
+    /// This is the dashboard's hot query. Selecting whole rows decoded every
+    /// captured POST body (up to `ping::MAX_BODY`, 10 KiB) only for
+    /// `view::heartbeat` to drop it, which measured as a quarter to two-thirds
+    /// of the whole render (#116 records the numbers). Checks with no pings are
+    /// absent from the map. Uses a `ROW_NUMBER()` window (`SQLite` >= 3.25 /
+    /// `PostgreSQL`).
     pub async fn list_recent_ping_summaries_for_checks(
         &self,
         check_ids: &[i64],
@@ -1675,8 +1624,8 @@ impl Store {
              ) sub WHERE rn <= ${} ORDER BY check_id, id DESC",
             check_ids.len() + 1
         );
-        // Safe: `sql` interpolates only self-generated `$N` placeholders and a
-        // count — every value is bound below, so there is no injection surface.
+        // Safe: `sql` interpolates only self-generated `$N` placeholders and
+        // a count; every value is bound below.
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for id in check_ids {
             q = q.bind(*id);
@@ -1691,11 +1640,11 @@ impl Store {
         Ok(map)
     }
 
-    /// Batched form of [`list_recent_pings`]: fetch the most recent
-    /// `per_check_limit` pings (newest id first) for each of `check_ids` in a
-    /// single round-trip, keyed by `check_id`. Avoids the per-check N+1 the
-    /// dashboard would otherwise incur. Checks with no pings are simply absent
-    /// from the map. Uses a `ROW_NUMBER()` window (`SQLite` >= 3.25 / `PostgreSQL`).
+    /// Batched form of [`list_recent_pings`]: the most recent
+    /// `per_check_limit` pings (newest id first) for each of `check_ids` in one
+    /// round-trip, keyed by `check_id`, avoiding the dashboard's N+1. Checks
+    /// with no pings are absent. Uses a `ROW_NUMBER()` window (`SQLite` >=
+    /// 3.25 / `PostgreSQL`).
     pub async fn list_recent_pings_for_checks(
         &self,
         check_ids: &[i64],
@@ -1716,8 +1665,8 @@ impl Store {
              ) sub WHERE rn <= ${} ORDER BY check_id, id DESC",
             check_ids.len() + 1
         );
-        // Safe: `sql` interpolates only self-generated `$N` placeholders and a
-        // count — every value is bound below, so there is no injection surface.
+        // Safe: `sql` interpolates only self-generated `$N` placeholders and
+        // a count; every value is bound below.
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for id in check_ids {
             q = q.bind(*id);
@@ -1733,9 +1682,9 @@ impl Store {
     }
 
     /// Keyset-paginated page of a check's pings for the check-detail table
-    /// (newest-first), narrowed by `filter`. See [`PageCursor`]/[`Page`]/
-    /// [`PingFilter`]. Independent of [`Store::list_recent_pings`], which the
-    /// heartbeat strip uses and which must never be affected by table paging.
+    /// (newest-first), narrowed by `filter`. Independent of
+    /// [`Store::list_recent_pings`], which the heartbeat strip uses and which
+    /// table paging must never affect.
     pub async fn list_pings_page(
         &self,
         check_id: i64,
@@ -1756,8 +1705,7 @@ impl Store {
     }
 
     /// Keyset-paginated page of a check's notifications for the check-detail
-    /// table (newest-first), narrowed by `filter`. See [`PageCursor`]/[`Page`]/
-    /// [`NotifFilter`].
+    /// table (newest-first), narrowed by `filter`.
     pub async fn list_notifications_page(
         &self,
         check_id: i64,
@@ -1816,9 +1764,8 @@ impl Store {
         rows.iter().map(row_to_notification).collect()
     }
 
-    /// Delete pings older than `cutoff` (an RFC3339 timestamp). Returns the
-    /// number of rows removed. `created_at` is TEXT RFC3339 (UTC), so the
-    /// lexicographic `<` comparison is chronological on both backends.
+    /// Delete pings older than `cutoff`. `created_at` is TEXT RFC3339 (UTC),
+    /// so the lexicographic `<` is chronological on both backends.
     pub async fn delete_pings_before(&self, cutoff: &str) -> Result<u64, sqlx::Error> {
         let r = sqlx::query("DELETE FROM pings WHERE created_at < $1")
             .bind(cutoff)
@@ -1827,13 +1774,12 @@ impl Store {
         Ok(r.rows_affected())
     }
 
-    /// Delete audit-log rows older than `cutoff` (an RFC3339 timestamp).
-    /// Returns the number of rows removed.
+    /// Delete audit-log rows older than `cutoff`.
     ///
-    /// Unlike pings and notifications, this deletes a record of who did what —
-    /// so the retention behind it defaults to off, and the settings save that
-    /// changes it is itself audited (`settings.update`), leaving a trace when
-    /// someone shortens the window.
+    /// Unlike pings and notifications this deletes a record of who did what, so
+    /// its retention defaults to off and the settings save that changes it is
+    /// itself audited (`settings.update`), leaving a trace when someone
+    /// shortens the window.
     pub async fn delete_audit_before(&self, cutoff: &str) -> Result<u64, sqlx::Error> {
         let r = sqlx::query("DELETE FROM audit_log WHERE created_at < $1")
             .bind(cutoff)
@@ -1842,8 +1788,7 @@ impl Store {
         Ok(r.rows_affected())
     }
 
-    /// Delete notifications older than `cutoff` (an RFC3339 timestamp). Returns
-    /// the number of rows removed.
+    /// Delete notifications older than `cutoff`.
     pub async fn delete_notifications_before(&self, cutoff: &str) -> Result<u64, sqlx::Error> {
         let r = sqlx::query("DELETE FROM notifications WHERE created_at < $1")
             .bind(cutoff)
@@ -1852,19 +1797,16 @@ impl Store {
         Ok(r.rows_affected())
     }
 
-    /// Delete sessions that have expired for either reason: the idle window
-    /// lapsed (`expires_at <= now`) or the absolute cap was reached
-    /// (`created_at <= now - SESSION_ABSOLUTE_MAX_DAYS`). Both are already
-    /// unusable (`find_session_user` and `list_sessions_for_user` both refuse
-    /// them), so this is unconditional rather than retention-driven. Returns
-    /// the number of rows removed.
+    /// Delete sessions expired for either reason: the idle window lapsed
+    /// (`expires_at <= now`) or the absolute cap was reached (`created_at <=
+    /// now - SESSION_ABSOLUTE_MAX_DAYS`). Both are already unusable, so this is
+    /// unconditional rather than retention-driven.
     pub async fn delete_expired_sessions(&self, now: DateTime<Utc>) -> Result<u64, sqlx::Error> {
         let cap_before =
             (now - chrono::Duration::days(crate::auth::SESSION_ABSOLUTE_MAX_DAYS)).to_rfc3339();
         let r = sqlx::query(
-            // The second predicate excludes created_at = '' (pre-0010 rows, which
-            // 0012's DELETE should have removed) so they are not mistaken for
-            // infinitely old and deleted.
+            // The second predicate excludes created_at = '' (pre-0010 rows)
+            // so they are not mistaken for infinitely old and deleted.
             "DELETE FROM sessions WHERE expires_at <= $1 OR (created_at <> '' AND created_at <= $2)",
         )
         .bind(now.to_rfc3339())
@@ -1921,9 +1863,9 @@ impl Store {
         Ok(row.get::<i64, _>("id"))
     }
 
-    /// The newest `limit` audit rows, unfiltered and unpaged. The `/admin`
-    /// table goes through [`Store::list_audit_page`]; this stays as the
-    /// straight-line accessor assertions read the trail with.
+    /// The newest `limit` audit rows, unfiltered and unpaged: the
+    /// straight-line accessor assertions read the trail with. `/admin` goes
+    /// through [`Store::list_audit_page`].
     pub async fn list_audit(&self, limit: i64) -> Result<Vec<AuditLog>, sqlx::Error> {
         let rows = sqlx::query("SELECT * FROM audit_log ORDER BY id DESC LIMIT $1")
             .bind(limit)
@@ -1933,9 +1875,8 @@ impl Store {
     }
 
     /// Keyset-paginated page of the audit trail for the `/admin` table
-    /// (newest-first), narrowed by `filter`. Unlike the ping/notification
-    /// pages there is no owning row to scope to — the trail is instance-wide,
-    /// so the scope is `None`. See [`PageCursor`]/[`Page`]/[`AuditFilter`].
+    /// (newest-first), narrowed by `filter`. The trail is instance-wide, so
+    /// unlike the ping/notification pages there is no scope to pass.
     pub async fn list_audit_page(
         &self,
         cursor: PageCursor,
@@ -1954,10 +1895,9 @@ impl Store {
         .await
     }
 
-    /// The distinct actors and actions present in the trail, each sorted, for
-    /// the audit filter's two selects. Built from the data rather than from a
-    /// hardcoded list so a new `record_audit` call site shows up in the filter
-    /// without anyone remembering to register it. Both are index-backed
+    /// The distinct actors and actions present in the trail, sorted, for the
+    /// audit filter's two selects. Built from the data so a new `record_audit`
+    /// call site shows up without being registered. Both are index-backed
     /// (`idx_audit_actor`, `idx_audit_action`).
     pub async fn audit_filter_options(&self) -> Result<(Vec<String>, Vec<String>), sqlx::Error> {
         let actors = sqlx::query_scalar("SELECT DISTINCT actor_username FROM audit_log ORDER BY 1")
@@ -1987,9 +1927,8 @@ impl Store {
                 _ => {}
             }
         }
-        // `status IN ('up','new')` is what keeps this consistent with
-        // `view::display_status`'s precedence: Running only ever applies on
-        // top of a stored up/new check.
+        // `status IN ('up','new')` keeps this consistent with
+        // `view::display_status`: Running only applies on top of up/new.
         c.running = sqlx::query_scalar(
             "SELECT COUNT(*) FROM checks \
              WHERE status IN ('up','new') AND last_start_at IS NOT NULL \
@@ -2000,11 +1939,10 @@ impl Store {
         Ok(c)
     }
 
-    /// Every check currently `down`, paired with its project name and owner
-    /// username, for the admin cross-user incidents view. Ordered by
-    /// `last_ping_at` (oldest first, i.e. longest-down first), with
-    /// never-pinged checks (`NULL`) sorted last on both `SQLite` and
-    /// `PostgreSQL`, and `id` as a deterministic final tiebreaker.
+    /// Every check currently `down` with its project name and owner username,
+    /// for the admin incidents view. Ordered by `last_ping_at` (longest-down
+    /// first) with never-pinged checks last on both backends, and `id` as a
+    /// deterministic tiebreaker.
     pub async fn list_down_checks_with_owner(
         &self,
     ) -> Result<Vec<(Check, String, String)>, sqlx::Error> {
@@ -2048,10 +1986,9 @@ impl Store {
     }
 
     /// Per-channel `(channel_name, ok, error)` notification counts since
-    /// `cutoff`, ordered by most failures first. The conditional sums are
-    /// cast to `BIGINT` so they decode as `i64` on both `SQLite` and
-    /// `PostgreSQL` (a bare `SUM()` can come back as a wider/different type
-    /// on `PostgreSQL` and fail to decode as `i64`).
+    /// `cutoff`, most failures first. The conditional sums are cast to `BIGINT`
+    /// because a bare `SUM()` can come back as a wider type on `PostgreSQL` and
+    /// fail to decode as `i64`.
     pub async fn channel_failure_counts_since(
         &self,
         cutoff: DateTime<Utc>,
@@ -2114,11 +2051,11 @@ impl Store {
 mod tests {
     use super::*;
 
-    /// The classification `CreateUserError::from` depends on. If
-    /// `is_unique_violation` ever stopped seeing through the `Any` driver to
-    /// the backend's own error code, a duplicate username would silently go
-    /// back to being a blank 500 — and every handler test would still pass,
-    /// because they exercise the *pre-check*, not the constraint.
+    /// The classification `CreateUserError::from` depends on. Were
+    /// `is_unique_violation` to stop seeing the backend's error code through
+    /// the `Any` driver, a duplicate username would silently return to a blank
+    /// 500 with every handler test still passing — they exercise the
+    /// pre-check, not the constraint.
     #[tokio::test]
     async fn a_duplicate_username_is_classified_not_swallowed() {
         let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -2137,14 +2074,13 @@ mod tests {
             matches!(err, CreateUserError::UsernameTaken),
             "expected UsernameTaken, got {err:?}"
         );
-        // And it really did not write: a `Db` misclassification would have
-        // been caught above, but a silently-ignored insert would not.
+        // A `Db` misclassification would have been caught above, but a
+        // silently-ignored insert would not.
         assert_eq!(store.count_users().await.unwrap(), 1);
     }
 
-    /// Exact match, matching the `UNIQUE` constraint and
-    /// `find_user_by_username`. Changing this to case-insensitive is a
-    /// migration, not a validator tweak.
+    /// Exact match, as the `UNIQUE` constraint and `find_user_by_username` do.
+    /// Making this case-insensitive is a migration, not a validator tweak.
     #[tokio::test]
     async fn usernames_differing_only_in_case_are_distinct() {
         let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -2386,9 +2322,8 @@ mod tests {
         assert_eq!(found.next_due_at, None);
     }
 
-    /// Proves the DB-level CHECK constraint on `checks.status` (source-level
-    /// prevention added in migration 0001): an out-of-domain status must be
-    /// rejected at insert time, not merely handled defensively when read back.
+    /// The DB-level CHECK constraint on `checks.status` (migration 0001) must
+    /// reject an out-of-domain status at insert time, not merely on read.
     #[tokio::test]
     async fn bad_status_is_rejected_by_check_constraint() {
         let store = seeded().await;
@@ -2448,16 +2383,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(u.id, uid);
-        // The lookup above found sess-1 well under half its idle window
-        // (1h remaining vs. a 72h window), so it just slid `expires_at` to
-        // `now + SESSION_IDLE_TTL_HOURS` — checking it "expires two hours
-        // later" the way a fixed-TTL session would is no longer meaningful
-        // here. Idle expiry without any intervening activity is covered
-        // separately below (`sess-idle-expiry`).
+        // The lookup above found sess-1 well under half its idle window, so
+        // it slid `expires_at` to `now + SESSION_IDLE_TTL_HOURS`. Idle expiry
+        // with no intervening activity is covered by `sess-idle-expiry`.
 
-        // Listing surfaces the metadata stamped at creation, and the
-        // `last_seen_at` throttle stamped it on the first `find_session_user`
-        // lookup above (both happened "at now", so it reads back as `now`).
+        // Listing surfaces the metadata stamped at creation; the
+        // `last_seen_at` throttle stamped it on the first lookup, also at now.
         let rows = store.list_sessions_for_user(uid, now).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "sess-1");
@@ -2549,9 +2480,8 @@ mod tests {
                 .is_none()
         );
 
-        // `delete_sessions_for_user` removes every remaining session for the
-        // given user (unlike `delete_other_sessions_for_user`, it keeps
-        // none), and leaves other users' sessions untouched.
+        // `delete_sessions_for_user` keeps no row, unlike
+        // `delete_other_sessions_for_user`, and spares other users.
         let other_uid = store
             .create_user("carol", Some("phc"), false, now)
             .await
@@ -2610,9 +2540,8 @@ mod tests {
             1
         );
 
-        // Absolute cap: a session created 40 days ago is rejected even though
-        // its idle window (`expires_at`) has not lapsed, and does not appear
-        // in the listing.
+        // Absolute cap: a session created 40 days ago is rejected and unlisted
+        // even though its idle window has not lapsed.
         store
             .create_session(
                 "sess-abs-cap",
@@ -2779,10 +2708,9 @@ mod tests {
             )
             .await
             .unwrap();
-        // A pre-0010 row (created_at = '') must survive: it is not "infinitely
-        // old", it is simply unaged — only its idle window governs it, and
-        // that has not lapsed here. Inserted with a raw query because
-        // `create_session` always stamps a real `created_at`.
+        // A pre-0010 row (created_at = '') is unaged, not infinitely old, so
+        // only its idle window governs. Inserted raw because `create_session`
+        // always stamps a real `created_at`.
         sqlx::query(
             "INSERT INTO sessions (id, user_id, expires_at, created_at, sso) \
              VALUES ($1,$2,$3,'',0)",
@@ -3151,7 +3079,6 @@ mod tests {
             .unwrap();
         store.set_status(id, CheckStatus::Down).await.unwrap();
 
-        // down check appears in list_down_checks
         let down = store.list_down_checks().await.unwrap();
         assert_eq!(down.len(), 1);
         assert_eq!(down[0].id, id);
@@ -3214,7 +3141,6 @@ mod tests {
         let old = now - Duration::days(10);
         let recent = now - Duration::days(1);
 
-        // two pings: one old, one recent
         store
             .insert_ping(cid, PingKind::Success, None, "", None, old)
             .await
@@ -3223,7 +3149,6 @@ mod tests {
             .insert_ping(cid, PingKind::Success, None, "", None, recent)
             .await
             .unwrap();
-        // two notifications: one old, one recent
         store
             .record_notification(cid, chan, EventKind::Down, NotifyStatus::Ok, None, old)
             .await
@@ -3448,9 +3373,8 @@ mod tests {
     #[tokio::test]
     async fn status_counts_and_scale() {
         let store = seeded().await;
-        // `seeded()` already pre-seeds one user 'u' (id 1) and one project 'p'
-        // (id 1) with no checks, so `username` must be distinct here to avoid
-        // the UNIQUE constraint on `users.username`.
+        // `seeded()` pre-seeds user 'u' and project 'p', so `username` must
+        // be distinct here to clear the UNIQUE constraint.
         let uid = store
             .create_user("u2", Some("p"), false, Utc::now())
             .await
@@ -3533,9 +3457,8 @@ mod tests {
             .await
             .unwrap();
 
-        // `d` fails (stored `down`), then starts again: a `down` check with
-        // an in-flight start must NOT be counted as running — `Down` beats
-        // `Running` in the display-status precedence.
+        // `d` fails (stored `down`), then starts again: `Down` beats
+        // `Running`, so an in-flight start must not count as running.
         let did = store
             .create_check(&NewCheck {
                 project_id: pid,
@@ -3624,9 +3547,8 @@ mod tests {
 
     #[tokio::test]
     async fn channel_failure_counts_does_not_merge_same_named_channels() {
-        // Regression test: `channels.name` is NOT unique (only `channels.id`
-        // is). Two distinct channels that happen to share a name must be
-        // reported as two separate rows, not merged into one.
+        // `channels.name` is NOT unique (only `channels.id` is): two channels
+        // sharing a name must stay two rows, not merge into one.
         let store = seeded().await;
         let cid = store
             .create_check(&NewCheck {
@@ -3901,9 +3823,9 @@ mod tests {
         );
     }
 
-    /// The heartbeat projection must select the same rows in the same order as
-    /// the wide query it replaced — it is narrower, not different. A drift here
-    /// would silently redraw every heartbeat strip.
+    /// The heartbeat projection must select the same rows in the same order
+    /// as the wide query it replaced; a drift would silently redraw every
+    /// strip.
     #[tokio::test]
     async fn ping_summaries_match_the_wide_query_row_for_row() {
         let store = seeded().await;

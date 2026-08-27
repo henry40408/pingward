@@ -1,15 +1,10 @@
 //! The endpoint the webhook channels in a scenario are pointed at.
 //!
-//! Replaces `support/mock-http.js`, a hand-rolled `node:http` recorder, with
-//! `wiremock` — already a dev-dependency of the root crate, so it is not a new
-//! name in the tree. It answers 200 to everything, which is what makes the
-//! notifier record a successful send; the scenarios that want a *failed*
-//! delivery point the channel somewhere nothing is listening instead.
-//!
-//! Delivery is fire-and-forget in pingward (`notify::deliver_event` is spawned
-//! so a ping response is never blocked on notification I/O), so the POST lands
-//! shortly *after* the response the step was waiting on — hence
-//! [`MockWebhook::wait_for_payload`] polls rather than reads once.
+//! Answers 200 to everything, so the notifier records a successful send; the
+//! scenarios that want a *failed* delivery point the channel somewhere nothing
+//! is listening. Delivery is fire-and-forget, so the POST lands shortly after
+//! the response the step was waiting on — hence
+//! [`MockWebhook::wait_for_payload`] polls rather than reading once.
 
 use std::time::{Duration, Instant};
 
@@ -49,10 +44,8 @@ impl MockWebhook {
         self.server.uri()
     }
 
-    /// Every JSON body received so far, in arrival order.
-    ///
-    /// Bodies that are not JSON are skipped rather than failing the read: the
-    /// recorder is deliberately indiscriminate about what it accepts.
+    /// Every JSON body received so far, in arrival order. Non-JSON bodies are
+    /// skipped rather than failing the read.
     ///
     /// # Errors
     ///

@@ -1,11 +1,8 @@
 //! Real SMTP delivery test against a live relay (Mailpit).
 //!
-//! Gated on `PINGWARD_TEST_SMTP_HOST`: when unset — the default for a local
-//! `cargo nextest run` — the test prints a skip notice and returns. CI sets it
-//! to the Mailpit service container, so the full `build_email` + lettre
-//! transport path is exercised over the wire and the delivered message is
-//! asserted via Mailpit's REST API. This is the one path unit tests cannot
-//! cover: an actual message crossing an SMTP connection and arriving.
+//! Skipped unless `PINGWARD_TEST_SMTP_HOST` is set (CI points it at the Mailpit
+//! service container). It is the one path unit tests cannot cover: a message
+//! crossing a real SMTP connection, asserted back via Mailpit's REST API.
 
 use chrono::Utc;
 use pingward::config::{SmtpConfig, SmtpTls};
@@ -60,12 +57,10 @@ async fn email_channel_delivers_over_smtp_to_relay() {
         detail: EventDetail::default(),
     };
 
-    // Send through the real notifier path: notifier_for -> EmailNotifier
-    // -> build_email -> lettre transport -> SMTP connection.
+    // The real notifier path: notifier_for -> build_email -> lettre -> SMTP.
     let notifier = notifier_for(&channel, Some(&smtp)).expect("email notifier for configured SMTP");
     notifier.send(&ev).await.expect("email delivered to relay");
 
-    // Assert the relay actually received the message we built.
     let messages: serde_json::Value = reqwest::get(format!("{api}/api/v1/messages"))
         .await
         .expect("query mailpit")

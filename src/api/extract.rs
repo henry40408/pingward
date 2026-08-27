@@ -8,8 +8,6 @@ use axum::http::request::Parts;
 use chrono::Utc;
 use serde::de::DeserializeOwned;
 
-/// Extract a bearer token from the `Authorization` header, if present and
-/// well-formed (`Authorization: Bearer <token>`).
 fn bearer_token(parts: &Parts) -> Option<String> {
     let v = parts
         .headers
@@ -20,9 +18,8 @@ fn bearer_token(parts: &Parts) -> Option<String> {
 }
 
 /// An API caller authenticated by an `Authorization: Bearer <api key>` header —
-/// never the session cookie. Because this extractor only ever reads the bearer
-/// header, routes that depend on it are structurally CSRF-safe and are mounted
-/// as a sibling router outside the `csrf_guard` middleware (like `ping::routes`).
+/// never the session cookie. Reading only that header is what makes these
+/// routes structurally CSRF-safe, so they mount outside `csrf_guard`.
 ///
 /// The wrapped [`User`] carries `is_admin`, so downstream resolution can allow
 /// an admin key to reach cross-user resources through an audited choke point.
@@ -42,9 +39,8 @@ impl FromRequestParts<AppState> for ApiUser {
             .validate_api_key(&hash, Utc::now())
             .await?
             .ok_or_else(ApiError::unauthorized)?;
-        // A key can outlive its owner's account being disabled; re-check here so
-        // a disabled user's keys stop working immediately, matching the session
-        // path in `auth::resolve_user`.
+        // A key outlives its owner being disabled, so re-check here — matching
+        // the session path in `auth::resolve_user`.
         let user = state
             .store
             .find_user_by_id(user_id)
@@ -55,10 +51,9 @@ impl FromRequestParts<AppState> for ApiUser {
     }
 }
 
-/// A JSON body extractor that fails as an [`ApiError`] envelope instead of
-/// axum's default plain-text rejection, so malformed or schema-invalid request
-/// bodies return the same `{"error":{code,message}}` shape as every other API
-/// failure (`400 bad_request`).
+/// A JSON body extractor that rejects as an [`ApiError`] envelope instead of
+/// axum's plain-text default, so a malformed body returns the same
+/// `{"error":{code,message}}` shape as every other API failure.
 pub struct ApiJson<T>(pub T);
 
 impl<T> FromRequest<AppState> for ApiJson<T>

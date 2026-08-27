@@ -2,11 +2,9 @@ use crate::models::{Check, CheckStatus, PingKind, PingSummary};
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 
-/// Build version stamped in by `build.rs`, rendered in the global footer.
-///
-/// `git describe --tags --always --dirty`, so it reads as a release tag
-/// (`v1.2.0`), a tag plus distance (`v1.2.0-4-gabc1234`), or — before the
-/// first tag exists, or from a shallow CI checkout — a bare short SHA.
+/// Build version stamped in by `build.rs` from `git describe --tags --always
+/// --dirty`: a release tag, a tag plus distance, or — before the first tag, or
+/// from a shallow CI checkout — a bare short SHA.
 pub fn version() -> &'static str {
     env!("GIT_VERSION")
 }
@@ -35,27 +33,21 @@ impl DisplayStatus {
 }
 
 /// A `Start` ping has been recorded more recently than the last finish
-/// (success/fail). `store::mark_ping` stamps `last_ping_at`/`last_start_at`
-/// with `COALESCE`, and `ping::apply` only ever passes `last_start_at` for a
-/// `Start` ping and `last_ping_at` for a success/fail — a `Log` ping calls
-/// neither, so it cannot clear this. Rust's `Option` ordering makes
-/// `Some(_) > None` true and `None > None` false, so this one comparison
-/// covers both "started and never finished" and "started again after the
-/// last finish", with no separate `is_some()` check needed.
+/// (success/fail). A `Log` ping stamps neither column, so it cannot clear
+/// this. `Option`'s ordering (`Some(_) > None`, `None > None` false) makes
+/// this one comparison cover both "started and never finished" and "started
+/// again after the last finish".
 fn is_running(check: &Check) -> bool {
     check.last_start_at > check.last_ping_at
 }
 
-/// `next_due_at` already includes grace, so `next_due_at - grace` is the expected
-/// run time. A stored-Up check inside `(expected, due]` is "running late".
+/// `next_due_at` already includes grace, so `next_due_at - grace` is the
+/// expected run time. A stored-Up check inside `(expected, due]` is "late".
 ///
-/// Precedence is `Paused > Down > Running > Late > Up`: `Running` only
-/// applies to a stored `Up` or `New` check, and beats `Late` because a
-/// long-running job naturally drifts past its expected time while it is
-/// legitimately still executing — showing `late` there would be a false
-/// alarm. `Down`/`Paused` are unaffected by `is_running`, so a job that
-/// starts again after a failed run still shows `down`, and an in-flight run
-/// never masks an alert.
+/// Precedence is `Paused > Down > Running > Late > Up`. `Running` applies only
+/// to a stored `Up`/`New` check and beats `Late`, since a long-running job
+/// legitimately drifts past its expected time. `Down`/`Paused` ignore
+/// `is_running`, so an in-flight run never masks an alert.
 pub fn display_status(check: &Check, now: DateTime<Utc>) -> DisplayStatus {
     match check.status {
         CheckStatus::Down => DisplayStatus::Down,
@@ -143,7 +135,6 @@ pub fn heartbeat(
             .collect();
     }
     let durations = run_durations(pings);
-    // chronological runs = finish pings, oldest→newest, keep last n
     let mut runs: Vec<&PingSummary> = pings.iter().filter(|p| is_finish(p.kind)).collect();
     runs.sort_by_key(|p| (p.created_at, p.id));
     let start = runs.len().saturating_sub(n);
@@ -194,9 +185,8 @@ pub fn heartbeat(
                     let title = if failed {
                         "failed".into()
                     } else if dur.is_some() {
-                        // Duration was measured, but there's no ceiling (no
-                        // explicit max_runtime_secs and <2 measured runs in
-                        // the window) to render height as a fraction of.
+                        // Duration measured, but no ceiling to render it as a
+                        // fraction of.
                         "no runtime limit set".into()
                     } else {
                         "duration unknown".into()
@@ -208,42 +198,32 @@ pub fn heartbeat(
         .collect()
 }
 
-/// Every IANA timezone, for the `<datalist>` behind the check form's and
-/// `/admin`'s timezone fields. Called straight from the templates (like
-/// [`version`]) so neither template struct has to carry a 597-entry constant
-/// through every place it is built.
+/// Every IANA timezone, for the `<datalist>` behind the timezone fields.
+/// Called straight from the templates so no template struct has to carry a
+/// 597-entry constant.
 pub fn timezones() -> &'static [chrono_tz::Tz] {
     &chrono_tz::TZ_VARIANTS
 }
 
 /// The suggestions behind the `<datalist>` on every interval-shaped duration
-/// field: the check form's period, grace, scan interval, max runtime and nag
-/// interval, the same two overrides on the project form, and `/admin`'s two
-/// global intervals. Called straight from the templates, like [`timezones`].
+/// field (check/project overrides, `/admin`'s global intervals). Called
+/// straight from the templates, like [`timezones`].
 ///
-/// A hint, not a constraint — nothing here narrows what the field takes.
-/// `duration::parse_duration` still accepts any value it can parse and the
-/// server still validates it, exactly as the timezone field works. What the
-/// list is for is the unit suffixes: the help text under each field has always
-/// said `5m` is allowed, but a field holding `3600` reads as one that wants
-/// seconds, and the suffixes are only discoverable by trusting the help text
-/// over the value.
-///
-/// The scale spans all five uses on purpose (a scan interval is measured in
-/// seconds, a nag interval in hours), because one list every duration field
-/// shares is the thing that says they are one kind of field. Every entry must
-/// round-trip through `parse_duration` — `durations_all_parse` holds that.
+/// A hint, not a constraint: the handlers still parse and validate whatever is
+/// typed. The point is to make the unit suffixes discoverable — a field
+/// holding `3600` reads as one that wants seconds. One list spans every use
+/// (scan intervals in seconds, nag intervals in hours) so they read as one
+/// kind of field, and every entry must round-trip through `parse_duration`
+/// (`durations_all_parse`).
 pub fn durations() -> &'static [&'static str] {
     &[
         "30s", "1m", "5m", "15m", "30m", "1h", "6h", "12h", "1d", "7d",
     ]
 }
 
-/// The same idea for `/account`'s API key expiry, which is a duration field
-/// with the same parser but not the same scale: a key that lasts 30 seconds is
-/// not a thing anyone wants offered, and the field's own placeholder already
-/// points at `30d`. Kept separate rather than folded into [`durations`] so
-/// neither list has to carry entries that are noise in the other.
+/// The same for `/account`'s API key expiry: same parser, different scale, so
+/// kept separate from [`durations`] rather than carrying entries that are
+/// noise in the other list.
 pub fn expiries() -> &'static [&'static str] {
     &["7d", "30d", "90d", "365d"]
 }
@@ -259,18 +239,14 @@ pub fn fmt_secs(secs: i64) -> String {
     }
 }
 
-/// An absolute timestamp as the UI's plain-text fallback.
+/// An absolute timestamp as the UI's plain-text fallback: what stays on the
+/// page when `app.js` does not rewrite a `.localtime[data-ts]` span into the
+/// viewer's zone. Human-readable rather than machine-readable — no sub-second
+/// digits, no `T`, and the zone spelled out, since a bare number that might be
+/// local or might be UTC is worse than one that says which.
 ///
-/// Every absolute time in the UI is rendered inside a `.localtime[data-ts]`
-/// span that `app.js` rewrites into the viewer's own zone. This is what stays
-/// on the page when it does not — so it is a string a person reads, not a
-/// machine-readable stamp: no sub-second digits, no `T`, and the zone spelled
-/// out, because a bare number that might be local or might be UTC is worse
-/// than one that says which. The history tables have always formatted theirs
-/// this way; this is the same format, shared so `/account` and `/admin` stop
-/// falling back to chrono's `Display` (nanoseconds and all) instead.
 /// Takes a reference so Askama can call it on a field or a `Some(t)` binding
-/// alike — both give the template a `&DateTime`.
+/// alike.
 pub fn fmt_utc(at: &DateTime<Utc>) -> String {
     at.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
@@ -308,35 +284,29 @@ pub fn fmt_until(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
 pub struct NextDue {
     /// Visible text, e.g. `due in 57m`, `overdue by 12m`.
     pub label: String,
-    /// The deadline as RFC 3339, carried in the element's `title` so the exact
-    /// instant is one hover away. `None` whenever `label` names a state rather
-    /// than an instant (paused, unschedulable), so the template renders no
-    /// tooltip instead of an empty one.
+    /// The deadline as RFC 3339, carried in the element's `title`. `None`
+    /// whenever `label` names a state rather than an instant (paused,
+    /// unschedulable), so the template renders no tooltip.
     pub iso: Option<String>,
 }
 
 /// Describe a check's next deadline for display.
 ///
-/// The source is [`crate::scheduler::due_time`], **not** the stored
-/// `checks.next_due_at` column. The column is only ever stamped by
-/// `ping::apply`, so it is `NULL` for a check that has never pinged and for
-/// one downed by a `fail` ping — precisely the cases this line most needs to
-/// answer. `due_time` is what `scheduler::scan_once` itself evaluates to
-/// decide a check is overdue, so the rendered deadline is a truthful
-/// prediction of when the check will be marked down, and for an up check it
-/// equals the stored column (`ping::apply` stamps that same function's
-/// output).
+/// The source is [`crate::scheduler::due_time`], not the stored
+/// `checks.next_due_at` column: that column is only stamped by `ping::apply`,
+/// so it is `NULL` for a never-pinged check and for one downed by a `fail`
+/// ping. `due_time` is what `scan_once` evaluates, so the rendered deadline
+/// predicts when the check will actually be marked down.
 ///
-/// The deadline includes grace (see [`display_status`]); the expected run time
-/// is `grace_secs` earlier, which is why this says "due" rather than
-/// "expected" — the schedule line under the header carries the grace.
+/// The deadline includes grace (see [`display_status`]) — hence "due" rather
+/// than "expected", which is `grace_secs` earlier.
 pub fn next_due(check: &Check, now: DateTime<Utc>) -> NextDue {
     let unlabelled = |label: &str| NextDue {
         label: label.into(),
         iso: None,
     };
-    // A paused check is excluded from monitoring entirely (spec §6): no scan
-    // will down it, so any countdown here would be a deadline nothing enforces.
+    // Spec §6: a paused check is excluded from monitoring, so a countdown
+    // here would be a deadline nothing enforces.
     if check.status == CheckStatus::Paused {
         return unlabelled("not scheduled while paused");
     }
@@ -347,8 +317,8 @@ pub fn next_due(check: &Check, now: DateTime<Utc>) -> NextDue {
     let label = if now >= due {
         format!("overdue by {}", fmt_secs((now - due).num_seconds()))
     } else if check.last_ping_at.is_none() {
-        // Never pinged: the deadline is anchored on creation, and naming that
-        // keeps "due in 1h" from reading as a report about a run that happened.
+        // Never pinged: the deadline is anchored on creation, so say "first
+        // ping" rather than let "due in 1h" imply a run already happened.
         format!("first ping due {}", fmt_until(due, now))
     } else {
         format!("due {}", fmt_until(due, now))
@@ -508,16 +478,13 @@ mod tests {
         ];
         let bars = heartbeat(&pings, None, false, 6);
         assert!(bars.iter().all(|b| b.class == "none"));
-        // No start pings at all → duration is genuinely unknown for every bar.
         assert!(bars.iter().all(|b| b.title == "duration unknown"));
     }
 
     #[test]
     fn heartbeat_known_duration_without_ceiling_has_distinct_title() {
-        // A single measured run (start→success), no max_runtime_secs configured:
-        // ceiling stays None (window fallback needs >=2 measured durations), but
-        // the duration itself IS known — the tooltip must say so, not claim
-        // "duration unknown".
+        // One measured run and no max_runtime_secs leaves ceiling None, but
+        // the duration is known — the tooltip must not say "duration unknown".
         let t0 = Utc.with_ymd_and_hms(2026, 7, 14, 8, 0, 0).unwrap();
         let pings = vec![
             ping(1, PingKind::Start, t0),
@@ -569,8 +536,8 @@ mod tests {
         c.status = CheckStatus::New;
         c.last_ping_at = None;
         c.created_at = now - Duration::minutes(5);
-        // Anchored on creation, so the deadline is real (scan_once will down
-        // it) — but it is not a statement about any run that happened.
+        // Anchored on creation: the deadline is real (scan_once will down it)
+        // but says nothing about a run that happened.
         assert_eq!(next_due(&c, now).label, "first ping due in 1h");
     }
 
@@ -617,12 +584,10 @@ mod tests {
         assert_eq!(fmt_until(now - Duration::hours(1), now), "in 0s");
     }
 
-    /// A suggestion the field would reject is worse than no suggestion: the
-    /// user picks it from the browser's own dropdown and the form comes back
-    /// with an error. Both lists are held to the parser the handlers use, and
-    /// to `> 0` — the strictest bound any field carrying them applies (the
-    /// period, the three overrides and the key expiry all demand it; only
-    /// grace is looser, at `>= 0`), so one check covers every field.
+    /// A suggestion the field would reject is worse than no suggestion. Both
+    /// lists are held to the handlers' parser and to `> 0` — the strictest
+    /// bound any field carrying them applies (only grace is looser, at
+    /// `>= 0`), so one check covers every field.
     #[test]
     fn every_suggested_duration_is_one_the_forms_accept() {
         for raw in durations().iter().chain(expiries().iter()) {
@@ -635,9 +600,8 @@ mod tests {
         }
     }
 
-    /// The lists are ordered shortest-first and carry no repeats, because a
-    /// browser renders a datalist in document order: an unsorted list makes
-    /// the dropdown read as arbitrary rather than as a scale.
+    /// A browser renders a datalist in document order, so an unsorted list
+    /// reads as arbitrary rather than as a scale.
     #[test]
     fn suggested_durations_are_sorted_and_distinct() {
         for list in [durations(), expiries()] {

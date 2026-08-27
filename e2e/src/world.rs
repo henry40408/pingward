@@ -1,17 +1,12 @@
 //! The Cucumber world: one server, one database and one browser session per
 //! scenario.
 //!
-//! Neither the server nor the session can be opened in `World::new`, which
-//! never sees the scenario: the server's environment comes from the tags
-//! (`@fast-scan`, `@smtp-env`, `@trusted-proxy`) and whether the page's scripts
-//! run comes from `@nojs`. A `before` hook opens both instead, which is also
-//! the only order that works for scripting —
-//! `Emulation.setScriptExecutionDisabled` applies to the next document, so it
+//! Neither can be opened in `World::new`, which never sees the scenario: the
+//! server's environment comes from the tags (`@fast-scan`, `@smtp-env`,
+//! `@trusted-proxy`) and scripting from `@nojs`. A `before` hook opens both,
+//! which is also the only workable order —
+//! `Emulation.setScriptExecutionDisabled` applies to the *next* document, so it
 //! has to be issued before the first navigation.
-//!
-//! `support/fixtures.js` built the same state out of test-scoped Playwright
-//! fixtures, down to the scratch `world` object the steps hung remembered ids
-//! on; those are the public fields here.
 
 use anyhow::{Context, Result};
 use cucumber::World;
@@ -148,10 +143,8 @@ impl PingwardWorld {
     }
 
     /// The mock receiver every webhook channel in this scenario points at,
-    /// started on first use.
-    ///
-    /// Lazily, as the `mockWebhook` fixture was: most scenarios never deliver
-    /// anything, and a receiver costs a listening socket.
+    /// started on first use — most scenarios never deliver anything, and a
+    /// receiver costs a listening socket.
     ///
     /// # Errors
     ///
@@ -190,11 +183,8 @@ impl PingwardWorld {
         })
     }
 
-    /// Waits for the browser to land on `expected`, Playwright's `toHaveURL`.
-    ///
-    /// Compares path and query rather than the whole URL: the server's port is
-    /// ephemeral, so the old assertions' `${serverUrl}/…` has no stable form
-    /// here.
+    /// Waits for the browser to land on `expected`, comparing path and query
+    /// rather than the whole URL — the server's port is ephemeral.
     ///
     /// # Errors
     ///
@@ -206,10 +196,8 @@ impl PingwardWorld {
         .await
     }
 
-    /// Waits for the browser to land on a path matching `pattern`.
-    ///
-    /// The many `toHaveURL(/\/checks\/\d+$/)` assertions, which cannot name the
-    /// id they are waiting for.
+    /// Waits for the browser to land on a path matching `pattern`, for the
+    /// assertions that cannot name the id they are waiting for.
     ///
     /// # Errors
     ///
@@ -225,13 +213,11 @@ impl PingwardWorld {
     /// The status of a request made *by the page*, with its own credentials.
     ///
     /// `WebDriver` never reports an HTTP status — `goto` either lands or
-    /// errors — while `page.goto()` and `page.request.post()` both handed the
-    /// JavaScript suite one. Issuing the request from inside the document is
-    /// what keeps the session cookie, the origin and the CSP the same as the
-    /// navigation's, which matters for both callers: the authorization
-    /// scenarios need the 404 to come from the ownership guard rather than
-    /// from being signed out, and the CSRF scenario needs a request that is
-    /// authenticated in every respect *except* its missing token.
+    /// errors. Issuing the request from inside the document keeps the session
+    /// cookie, origin and CSP identical to the navigation's, so the
+    /// authorization scenarios get a 404 from the ownership guard rather than
+    /// from being signed out, and the CSRF scenario gets a request that is
+    /// authenticated except for its missing token.
     ///
     /// # Errors
     ///
@@ -261,12 +247,11 @@ impl PingwardWorld {
     /// POSTs a form as the signed-in browser, reporting the status and
     /// following no redirects.
     ///
-    /// `page.request.post(..., { maxRedirects: 0 })` in the JavaScript suite.
     /// [`PingwardWorld::fetch_status`] cannot answer this: `fetch` with
     /// `redirect: 'manual'` yields an opaque response whose status reads 0, so
-    /// a 303 is indistinguishable from a failure — and a 303 is exactly what
-    /// the self-guard scenarios need to see, since a 403 from `csrf_guard`
-    /// would leave the state unchanged too and pass for the wrong reason.
+    /// a 303 is indistinguishable from a failure — and the self-guard scenarios
+    /// must see the 303, since a 403 from `csrf_guard` would also leave the
+    /// state unchanged and pass for the wrong reason.
     ///
     /// The cookie jar is copied out of the browser, so the request is the same
     /// session; the caller supplies the CSRF token it read off the page.

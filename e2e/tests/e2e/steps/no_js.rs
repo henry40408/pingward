@@ -1,12 +1,10 @@
 //! Steps for `no_js.feature`, whose `@nojs` tag opens its sessions with the
 //! page's own scripts disabled. Nothing here may reach for a `data-testid`
-//! that only exists after `app.js` has run — that is the whole point of the
-//! file.
+//! that only exists after `app.js` has run.
 //!
-//! The two assertions about the ping-output panel are also used from
-//! `check_history.feature` with script *on*, where they assert the opposite: a
-//! fix that simply left every panel open would satisfy the no-JS scenario and
-//! break nothing else, so the collapse is pinned from both sides.
+//! The two ping-output-panel assertions are also used from
+//! `check_history.feature` with script on, where they assert the opposite —
+//! leaving every panel open would otherwise satisfy the no-JS scenario.
 
 use anyhow::{Result, ensure};
 use cucumber::{then, when};
@@ -17,9 +15,8 @@ use pingward_e2e::world::PingwardWorld;
 
 #[when(expr = "I send a failing ping with output {string}")]
 async fn send_failing_ping_with_output(world: &mut PingwardWorld, output: String) -> Result<()> {
-    // A finish ping carrying a body, which is what pingward captures and
-    // renders in the expandable panel. POST, because that is how a body
-    // reaches it.
+    // A finish ping carrying a body, which is what the expandable panel
+    // renders. POST, because that is how a body reaches it.
     let ping_url = read_ping_url(world).await?;
     world
         .api()?
@@ -29,8 +26,8 @@ async fn send_failing_ping_with_output(world: &mut PingwardWorld, output: String
 
 #[then(expr = "the captured output {string} is visible")]
 async fn captured_output_visible(world: &mut PingwardWorld, output: String) -> Result<()> {
-    // Visibility rather than a text match: the output has always been *in* the
-    // DOM, hidden by `tr.exp { display: none }`. Being rendered is the claim.
+    // Visibility, not a text match: the output is always in the DOM, hidden by
+    // `tr.exp { display: none }`.
     captured_output_displayed(world, &output, true).await
 }
 
@@ -65,8 +62,7 @@ async fn captured_output_displayed(
 #[then("the expand carets are invisible")]
 async fn carets_invisible(world: &mut PingwardWorld) -> Result<()> {
     // Carets are drawn with `opacity`, not `display`, so the column keeps its
-    // width — which makes "invisible" a computed-style assertion rather than a
-    // visibility one.
+    // width and "invisible" is a computed-style question.
     let carets = world.driver()?.css_all("#pings-section .caret").await?;
     ensure!(
         !carets.is_empty(),
@@ -104,12 +100,10 @@ async fn click_dashboard_check_link(world: &mut PingwardWorld, name: String) -> 
     click_when_ready(&link).await
 }
 
-// A plain form submission: pick the value, press the button, follow the
-// navigation. With script the same click is cancelled and the section swapped
-// in place, which is why `check_history.rs` keeps its own near-identically
-// worded step rather than sharing this one — waiting for a navigation that
-// never comes would hang there, and *not* waiting for one here reads the
-// pre-submit page.
+// A plain form submission. With script the same click is cancelled and the
+// section swapped in place, which is why `check_history.rs` keeps its own
+// near-identically worded step: waiting for a navigation that never comes would
+// hang there, and not waiting here reads the pre-submit page.
 #[when(expr = "I filter the pings by kind {string}")]
 async fn filter_pings_by_kind_unscripted(world: &mut PingwardWorld, kind: String) -> Result<()> {
     let driver = world.driver()?;
@@ -126,9 +120,8 @@ async fn filter_notifications_by_event(world: &mut PingwardWorld, event: String)
 
 #[then(expr = "the pings kind filter shows {string}")]
 async fn pings_kind_filter_shows(world: &mut PingwardWorld, kind: String) -> Result<()> {
-    // The selected value surviving a round trip is what proves the filter
-    // reached the server and came back rendered, rather than the page merely
-    // reloading.
+    // The selected value surviving the round trip proves the filter reached the
+    // server and came back rendered.
     world.driver()?.expect_value("pings-kind", &kind).await
 }
 
@@ -139,16 +132,12 @@ async fn notifs_event_filter_shows(world: &mut PingwardWorld, event: String) -> 
 
 #[when(expr = "my system prefers {string}")]
 async fn system_prefers(world: &mut PingwardWorld, scheme: String) -> Result<()> {
-    // A CDP-level media override, so it works with scripting disabled — the
-    // page never has to be asked anything.
+    // A CDP-level media override, so it works with scripting disabled.
     world.browser()?.emulate_color_scheme(&scheme).await
 }
 
-/// The body background's relative luminance.
-///
-/// Asserted by brightness rather than an exact token value: the claim is "this
-/// is a light page", and pinning `#f3f5f8` would turn any future palette tweak
-/// into a failure that says nothing about whether the theme still works.
+/// The body background's relative luminance. Brightness rather than an exact
+/// token, so a palette tweak does not fail a test about the theme working.
 async fn background_luminance(world: &PingwardWorld) -> Result<f64> {
     world
         .driver()?
@@ -184,9 +173,8 @@ async fn background_is_dark(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("the copy button is absent")]
 async fn copy_button_absent(world: &mut PingwardWorld) -> Result<()> {
-    // Hidden, not gone: `:root:not(.js)` hides these by CSS, so the elements
-    // are still in the DOM and a count assertion would fail for the wrong
-    // reason — and would keep failing even if the rule worked.
+    // Hidden, not gone: `:root:not(.js)` hides these by CSS, so they are still
+    // in the DOM and a count assertion would fail even with the rule working.
     world.driver()?.expect_hidden_css(".copy").await
 }
 
@@ -221,9 +209,8 @@ async fn start_creating_check(world: &mut PingwardWorld) -> Result<()> {
     driver.expect_visible("check-name-input").await
 }
 
-// "I choose the {string} schedule kind" is shared with `check_create.rs` — a
-// plain `<select>` change either way. With no script behind it, `:checked`
-// moves and the `:has()` rules in `app.css` re-evaluate on their own.
+// "I choose the {string} schedule kind" is shared with `check_create.rs`:
+// scriptless, `:checked` moves and `app.css`'s `:has()` rules re-evaluate.
 
 #[then("the period field is visible")]
 async fn period_visible(world: &mut PingwardWorld) -> Result<()> {
@@ -247,9 +234,8 @@ async fn cron_hidden(world: &mut PingwardWorld) -> Result<()> {
 
 #[when("I click the delete check button")]
 async fn click_delete_check(world: &mut PingwardWorld) -> Result<()> {
-    // Deliberately not monitoring's "I delete the check": that one answers a
-    // `confirm()` and expects to land back on the project page, which is the
-    // scripted path. Here the click is expected to reach an interstitial.
+    // Not monitoring's "I delete the check", which answers a `confirm()` and
+    // lands on the project page; scriptless, the click reaches an interstitial.
     let driver = world.driver()?;
     let button = driver.test_id("delete-check-button").await?;
     click_when_ready(&button).await

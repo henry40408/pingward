@@ -1,17 +1,14 @@
-//! Request bodies for the write API. Each input is normalized into the
-//! all-string web form structs ([`crate::web::ProjectForm`] etc.) so the write
-//! handlers reuse the exact same validators as the browser UI
-//! ([`crate::web::validate_project`] / [`crate::web::validate_check`] /
-//! [`crate::web::validate_channel`]) — one source of truth for what a valid
-//! project/check/channel is.
+//! Request bodies for the write API. Each input normalizes into the all-string
+//! web form structs ([`crate::web::ProjectForm`] etc.) so the write handlers
+//! reuse the browser UI's validators ([`crate::web::validate_project`] /
+//! [`crate::web::validate_check`] / [`crate::web::validate_channel`]).
 
 use crate::web::{ChannelForm, CheckForm, ProjectForm};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
-/// A duration field that accepts either a JSON string (`"5m"`, `"1h30m"`, or a
-/// bare-seconds string `"90"`) or a JSON integer (raw seconds). Both normalize
-/// to the raw string the web validators parse via `duration::parse_duration`.
+/// A JSON string (`"5m"`, `"1h30m"`, `"90"`) or integer (raw seconds). Both
+/// normalize to the string the web validators feed `duration::parse_duration`.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum DurationInput {
@@ -28,24 +25,23 @@ impl DurationInput {
     }
 }
 
-/// A blank string means "unset / inherit the default", exactly as an empty form
-/// field does — `validate_*` maps it to `None`.
+/// A blank string means "unset / inherit", as an empty form field does:
+/// `validate_*` maps it to `None`.
 fn opt_form(v: Option<DurationInput>) -> String {
     v.map(DurationInput::into_form_string).unwrap_or_default()
 }
 
-/// Create/replace body for a project. On `PATCH` this is a full replacement of
-/// the editable fields (mirrors the web edit form): send the complete
-/// representation, not a partial patch.
+/// Create/replace body for a project. On `PATCH` this replaces the editable
+/// fields in full — send the complete representation, not a partial patch.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ProjectInput {
     pub name: String,
-    /// Raw markdown (the minimal subset in `src/markdown.rs`), rendered to
-    /// HTML only by the web UI — API responses always carry it unrendered.
+    /// Raw markdown (the subset in `src/markdown.rs`); API responses carry it
+    /// unrendered.
     #[serde(default)]
     pub description: Option<String>,
-    /// Per-project scan-interval override: seconds (int) or a duration string
-    /// (`"5m"`). Omit or send `null` to inherit the global default.
+    /// Per-project scan-interval override: seconds or a duration string.
+    /// Omit or send `null` to inherit the global default.
     #[serde(default)]
     #[schema(value_type = Option<String>, example = "5m")]
     pub scan_interval_secs: Option<DurationInput>,
@@ -74,21 +70,21 @@ fn default_timezone() -> String {
     "UTC".to_string()
 }
 
-/// Create/replace body for a check. On `PATCH` this fully replaces the check's
-/// editable fields (mirrors the web edit form) — send the complete
-/// representation. The `ping_uuid`, status, and history are never set here.
+/// Create/replace body for a check. On `PATCH` this replaces the editable
+/// fields in full — send the complete representation. The `ping_uuid`, status
+/// and history are never set here.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CheckInput {
     pub name: String,
-    /// Raw markdown (the minimal subset in `src/markdown.rs`), rendered to
-    /// HTML only by the web UI — API responses always carry it unrendered.
+    /// Raw markdown (the subset in `src/markdown.rs`); API responses carry it
+    /// unrendered.
     #[serde(default)]
     pub description: Option<String>,
     /// Schedule type: `period` (default) or `cron`.
     #[serde(default = "default_schedule_kind")]
     pub schedule_kind: String,
-    /// Expected interval between pings (period schedules): seconds or duration
-    /// string. Required when `schedule_kind` is `period`.
+    /// Interval between pings: seconds or duration string. Required when
+    /// `schedule_kind` is `period`.
     #[serde(default)]
     #[schema(value_type = Option<String>, example = "1h")]
     pub period_secs: Option<DurationInput>,
@@ -97,7 +93,7 @@ pub struct CheckInput {
     #[serde(default)]
     pub cron_expr: Option<String>,
     /// Grace past the deadline before the check is marked down: seconds or a
-    /// duration string. Omitted defaults to `0`.
+    /// duration string; defaults to `0`.
     #[serde(default)]
     #[schema(value_type = Option<String>, example = "5m")]
     pub grace_secs: Option<DurationInput>,
@@ -127,8 +123,8 @@ impl From<CheckInput> for CheckForm {
             schedule_kind: i.schedule_kind,
             period_secs: opt_form(i.period_secs),
             cron_expr: i.cron_expr.unwrap_or_default(),
-            // An omitted grace parses as 0 (`parse_duration("0")`), a valid
-            // "no grace" — `validate_check` rejects a blank grace outright.
+            // `validate_check` rejects a blank grace, so an omitted one
+            // becomes "0" (a valid "no grace").
             grace_secs: i
                 .grace_secs
                 .map_or_else(|| "0".to_string(), DurationInput::into_form_string),
@@ -141,19 +137,16 @@ impl From<CheckInput> for CheckForm {
 }
 
 /// Create/patch body for a notification channel. The kind-specific credential
-/// fields are flat and optional; `validate_channel` enforces exactly which are
-/// required for the chosen `kind`.
+/// fields are flat and optional; `validate_channel` enforces which are required
+/// for the chosen `kind`.
 ///
-/// On `PATCH` this is a **merge**, not a replacement (unlike [`ProjectInput`] /
-/// [`CheckInput`]): an omitted or blank field keeps the channel's stored value,
-/// which is what makes it possible to rename a channel or rotate one credential
-/// without re-sending the others — the API never hands a stored secret back
-/// (`ChannelDto` omits `config_json`), so a client cannot echo one it does not
-/// have. `kind` is ignored on `PATCH`: a channel's kind is immutable.
+/// On `PATCH` this is a merge, not a replacement (unlike [`ProjectInput`] /
+/// [`CheckInput`]): an omitted or blank field keeps the stored value, so one
+/// credential can be rotated without re-sending the others. `kind` is ignored
+/// on `PATCH` — a channel's kind is immutable.
 #[derive(Debug, Default, Deserialize, ToSchema)]
 pub struct ChannelInput {
-    /// Required when creating; omit or leave blank on `PATCH` to keep the
-    /// stored name.
+    /// Required when creating; blank on `PATCH` keeps the stored name.
     #[serde(default)]
     pub name: String,
     /// One of `webhook`, `slack`, `telegram`, `ntfy`, `pushover`, `email`.
@@ -175,9 +168,8 @@ pub struct ChannelInput {
     pub ntfy_topic: String,
     #[serde(default)]
     pub ntfy_token: String,
-    /// Send `true` on `PATCH` to remove a stored ntfy token. Needed because a
-    /// blank `ntfy_token` means "keep", so the only optional secret would
-    /// otherwise be impossible to clear.
+    /// Send `true` on `PATCH` to remove a stored ntfy token — a blank
+    /// `ntfy_token` means "keep", so it could not be cleared otherwise.
     #[serde(default)]
     pub ntfy_token_clear: bool,
     #[serde(default)]

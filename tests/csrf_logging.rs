@@ -1,21 +1,15 @@
-//! Regression tests for the `csrf.rejected` audit event (`web::csrf_guard`,
-//! via `web::log_csrf_rejection`).
+//! Regression tests for the `csrf.rejected` audit event (`web::csrf_guard`, via
+//! `web::log_csrf_rejection`). Two properties pulling in opposite directions.
 //!
-//! Two properties, and they pull in opposite directions.
+//! A rejection must leave a trace: `csrf_guard` answers with a bodyless 403 that
+//! reaches no handler, so a refusal was otherwise indistinguishable from any
+//! other 403 (henry40408/rdrs#477: a token drifting out of step with its session
+//! took a browser down for a week).
 //!
-//! A rejection must leave a trace at all. `csrf_guard` answers with a bodyless
-//! 403 that reaches no handler, so before this event a refusal was
-//! indistinguishable from any other 403 the app can return — which is exactly
-//! the position rdrs was in when a CSRF token drifting out of step with its
-//! session took a browser down for a week (henry40408/rdrs#477).
-//!
-//! But the guard is layered *outside* every handler, so it also refuses before
-//! `login_submit` ever reaches `login_limiter`. An unauthenticated bot sending
-//! `POST /login` is rejected here with nothing throttling it. If that warns,
-//! the event drowns in scanner traffic and stops being read at all — so the
-//! tokenless case is deliberately quieter, and the test below locks that in.
-//! Without it, "promote everything to warn!" is a one-word change that looks
-//! like a tidy-up and silently costs the signal.
+//! But the guard sits outside every handler, so it refuses before `login_submit`
+//! reaches `login_limiter` — an unauthenticated bot's `POST /login` is rejected
+//! unthrottled. Warning on that drowns the event in scanner traffic, so the
+//! tokenless case stays quieter and the second test locks that in.
 
 use axum_test::TestServer;
 use pingward::{app, db, secret, state::AppState, store::Store};
@@ -24,10 +18,9 @@ use std::sync::{Arc, Mutex};
 
 mod common;
 
-/// A `Write` sink that appends into a shared buffer, as in
-/// `tests/session_logging.rs` — cloning shares the same `Vec<u8>` through the
-/// `Arc`, which is what `tracing_subscriber::fmt`'s clone-per-event
-/// `MakeWriter` contract needs.
+/// A `Write` sink appending into a shared buffer, as in
+/// `tests/session_logging.rs` — cloning shares the same `Vec<u8>`, which
+/// `tracing_subscriber::fmt`'s clone-per-event `MakeWriter` contract needs.
 #[derive(Clone, Default)]
 struct SharedBuf(Arc<Mutex<Vec<u8>>>);
 
@@ -49,9 +42,8 @@ impl SharedBuf {
 
 /// A server with one account, plus the buffer its logs land in.
 ///
-/// The subscriber is JSON and admits `DEBUG`, so a test can assert on the
-/// *level* an event was emitted at — the whole point of the second test — and
-/// match a field as `"name":"value"` rather than by groping through prose.
+/// The subscriber is JSON and admits `DEBUG`, so a test can assert on the *level*
+/// an event was emitted at and match fields as `"name":"value"`.
 async fn server_with_logs() -> (TestServer, SharedBuf) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -67,10 +59,10 @@ async fn server_with_logs() -> (TestServer, SharedBuf) {
     (server, SharedBuf::default())
 }
 
-/// Install `buf` as the default subscriber for as long as the guard lives.
-/// Thread-local rather than global: `#[tokio::test]` defaults to a
-/// current-thread runtime, so everything `TestServer` drives stays on the one
-/// thread this applies to, and it cannot clash with another test in the binary.
+/// Installs `buf` as the default subscriber for the guard's lifetime.
+/// Thread-local rather than global: `#[tokio::test]`'s current-thread runtime
+/// keeps everything `TestServer` drives here, and it cannot clash with another
+/// test in the binary.
 fn capture(buf: &SharedBuf) -> tracing::subscriber::DefaultGuard {
     let make_writer = {
         let buf = buf.clone();
@@ -85,17 +77,15 @@ fn capture(buf: &SharedBuf) -> tracing::subscriber::DefaultGuard {
     tracing::subscriber::set_default(subscriber)
 }
 
-/// A token that was presented and did not verify is the event worth alerting
-/// on: it is what a token drifting out of step with its session looks like
-/// from the server side. It must warn, and it must name the session by its
-/// `/account` handle rather than by the bearer secret behind it.
+/// A token that was presented and did not verify is the event worth alerting on:
+/// it must warn, and must name the session by its `/account` handle rather than
+/// the bearer secret behind it.
 #[tokio::test]
 async fn a_mismatched_token_warns_and_names_the_session_by_handle() {
     let (mut server, buf) = server_with_logs().await;
-    // What `common::anonymous_csrf` does, inlined to keep the raw session id
-    // the negative assertion below needs. It cannot simply GET twice: with
-    // `save_cookies()` the client already holds the cookie by then, so
-    // `anonymous_session` finds it valid and emits no second `Set-Cookie`.
+    // `common::anonymous_csrf` inlined, to keep the raw session id the negative
+    // assertion needs. A second GET would not do: with `save_cookies()` the
+    // client already holds the cookie, so no second `Set-Cookie` is emitted.
     server.clear_cookies();
     let res = server.get("/login").await;
     let cookie_value = res
@@ -137,26 +127,23 @@ async fn a_mismatched_token_warns_and_names_the_session_by_handle() {
         text.contains(&format!(r#""handle":"{expected_handle}""#)),
         "expected the /account handle {expected_handle} in: {text}"
     );
-    // The cookie's bearer secret must never reach a log line — the same
-    // invariant `tests/session_logging.rs` locks for the session events.
+    // The bearer secret must never reach a log line (as in `tests/session_logging.rs`).
     assert!(
         !text.contains(&raw_session_id),
         "the raw session id leaked into the log: {text}"
     );
 }
 
-/// The anti-spam lock. `csrf_guard` refuses ahead of `login_limiter`, so a bot
-/// sending `POST /login` is rejected here with nothing throttling it. That
-/// path must not warn, or the event is unreadable on any internet-facing
-/// deployment and the mismatch above is lost inside it.
+/// The anti-spam lock: `csrf_guard` refuses ahead of `login_limiter`, so a bot's
+/// `POST /login` is rejected unthrottled. Warning there would make the event
+/// unreadable on any internet-facing deployment.
 #[tokio::test]
 async fn a_tokenless_post_is_recorded_but_not_warned() {
     let (mut server, buf) = server_with_logs().await;
     let _ = common::anonymous_csrf(&mut server).await;
 
     let guard = capture(&buf);
-    // No `_csrf` field at all — what a client that never rendered the form
-    // sends, which is every scanner that finds the login path.
+    // No `_csrf` at all — what every scanner that finds the login path sends.
     let res = server
         .post("/login")
         .form(&[

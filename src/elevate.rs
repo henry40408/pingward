@@ -1,35 +1,23 @@
 //! Short-lived per-session elevation for admin actions that *grant* access.
 //!
-//! `/admin`'s access-granting controls are single-button inline forms in a
-//! table row (`users_toggle_admin` takes no body at all). A per-action password
-//! field — the shape `web::reauthenticate` uses on `/account` — does not fit
-//! there, so re-authentication is decoupled from the action: an admin unlocks
-//! once via `POST /admin/unlock`, and the gated handlers check that the unlock
-//! is still fresh.
+//! `/admin`'s access-granting controls are single-button inline forms with no
+//! room for a per-action password field (the shape `web::reauthenticate` uses
+//! on `/account`), so re-authentication is decoupled: an admin unlocks once via
+//! `POST /admin/unlock` and the gated handlers check that the unlock is fresh.
 //!
-//! State is in-memory and per-process, matching `crate::ratelimit` and
-//! `AppState::events`, and this is the one place where that carries **no**
-//! meaningful cost. Elevation is deliberately short-lived, so persisting it
-//! would buy at most the tail of one window; a restart or a second replica
-//! simply means entering the password again, which is the safe direction for a
-//! privilege gate. That is the whole reason this needs no migration.
+//! State is in-memory and per-process, which needs no migration: a restart or a
+//! second replica just means entering the password again.
 //!
-//! Keyed by the session's SHA-256 **handle** (`crate::apikey::hash_api_key`),
-//! never the raw session id — the same rule `auth::session_log_handle` and
-//! `/account`'s session rows follow, since the id is the bearer secret the
-//! cookie signature is attached to. Per *session*, not per user: elevating one
-//! browser must not elevate another that is signed in as the same admin.
+//! Keyed by the session's SHA-256 handle (`crate::apikey::hash_api_key`), never
+//! the raw session id — the id is the bearer secret. Per session, not per user:
+//! elevating one browser must not elevate another signed in as the same admin.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
 
-/// How long an unlock lasts.
-///
-/// Long enough to finish a batch of user administration without re-typing a
-/// password between each control, short enough that a browser walked away from
-/// re-locks itself — which is the case the gate exists for, since pingward's
-/// CSRF and CSP already close the other routes to a forged admin action.
+/// How long an unlock lasts: long enough for a batch of user administration,
+/// short enough that a browser walked away from re-locks itself.
 pub const ELEVATION_TTL_SECS: u64 = 900;
 
 /// Live elevations, keyed by session handle.
@@ -47,20 +35,16 @@ impl Elevations {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Instant>> {
-        // Recover from poisoning rather than `unwrap()`, exactly as
-        // `ratelimit::RateLimiter` does: one panicking request under this lock
-        // must not turn every later admin action into a 500.
+        // Recover from poisoning: one panicking request under this lock must
+        // not turn every later admin action into a 500.
         self.granted
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Start (or restart) `handle`'s window.
-    ///
-    /// Expired entries are dropped on the way through, which is all the pruning
-    /// this map needs: an entry requires a *successful* password check against a
-    /// real account, so its size is bounded by live sessions rather than by
-    /// anything an attacker chooses.
+    /// Start (or restart) `handle`'s window, sweeping expired entries. That is
+    /// all the pruning needed: an entry costs a successful password check, so
+    /// the map is bounded by live sessions.
     pub fn grant(&self, handle: &str) {
         let mut granted = self.lock();
         let ttl = self.ttl_secs;
@@ -98,9 +82,8 @@ mod tests {
 
     #[test]
     fn a_zero_ttl_never_counts_as_elevated() {
-        // The window boundary, without waiting for one: at ttl 0 the elapsed
-        // time is already >= the window, so `remaining_secs` must report
-        // nothing rather than `Some(0)`.
+        // The window boundary without waiting for one: at ttl 0 elapsed is
+        // already >= the window, so the answer must be None, not Some(0).
         let e = Elevations::new(0);
         e.grant("abc");
         assert_eq!(e.remaining_secs("abc"), None);
@@ -112,8 +95,8 @@ mod tests {
         e.grant("abc");
         e.revoke("abc");
         assert_eq!(e.remaining_secs("abc"), None);
-        // Revoking something untracked is a no-op, not a panic — `logout`
-        // calls it unconditionally.
+        // Revoking something untracked is a no-op; `logout` calls it
+        // unconditionally.
         e.revoke("never-seen");
     }
 
@@ -123,8 +106,7 @@ mod tests {
         e.grant("stale");
         e.grant("fresh");
         // The zero-length window means "stale" was already expired when
-        // "fresh" was granted, so it must have been swept rather than kept
-        // forever.
+        // "fresh" was granted, so it must have been swept.
         assert!(!e.lock().contains_key("stale"));
     }
 

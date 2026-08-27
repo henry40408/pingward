@@ -15,13 +15,7 @@ async fn server() -> (TestServer, Store) {
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
     let state = AppState::new(store.clone(), common::test_config());
-    // axum-test 21's `TestServer::new` returns `Self` directly (it panics
-    // internally on failure rather than returning a `Result`), matching the
-    // note in `tests/ping_api.rs`.
     let mut server = TestServer::new(app(state));
-    // axum-test 21 names this `save_cookies` (the brief's `do_save_cookies`
-    // does not exist on `TestServer` — that name is used by `TestRequest`
-    // instead). Persists Set-Cookie between requests.
     server.save_cookies();
     (server, store)
 }
@@ -30,12 +24,10 @@ async fn server() -> (TestServer, Store) {
 async fn setup_creates_admin_then_dashboard_loads() {
     let (mut server, store) = server().await;
 
-    // With no users, root redirects to /setup.
     let res = server.get("/").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/setup");
 
-    // Create the first admin.
     let csrf = common::anonymous_csrf(&mut server).await;
     let res = server
         .post("/setup")
@@ -50,7 +42,7 @@ async fn setup_creates_admin_then_dashboard_loads() {
     let admin = store.find_user_by_username("admin").await.unwrap().unwrap();
     assert!(admin.is_admin);
 
-    // Now authenticated (cookie saved) — dashboard renders 200.
+    // Authenticated by the saved cookie.
     server.get("/").await.assert_status_ok();
 }
 
@@ -74,11 +66,10 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
     (server, store, uid)
 }
 
-/// P1-D: an active session's idle timer slides forward on use rather than
-/// counting down to a fixed cutoff. Time-independent by construction — rather
-/// than waiting out a real TTL, an existing session's `expires_at` is moved
-/// to just shy of expiry directly in the database, then one authenticated
-/// request is issued and the row is re-read.
+/// An active session's idle timer slides forward on use rather than counting
+/// down to a fixed cutoff. Time-independent by construction: `expires_at` is
+/// moved to just shy of expiry directly in the database, then one authenticated
+/// request is issued and the row re-read.
 #[tokio::test]
 async fn an_active_session_survives_past_the_original_ttl() {
     let (server, store, _uid) = logged_in_server().await;
@@ -117,20 +108,17 @@ async fn an_active_session_survives_past_the_original_ttl() {
 #[tokio::test]
 async fn disabling_user_invalidates_session() {
     let (server, store, uid) = logged_in_server().await;
-    // Authenticated: dashboard is 200.
     server.get("/").await.assert_status_ok();
-    // Disable the account (mirroring what `web::users_set_disabled` does: set
-    // the flag, then revoke sessions — this test bypasses the HTTP route
-    // itself because the real route refuses to let an admin disable
-    // themselves, and `uid` here is the sole admin), then the same session
-    // must redirect to /login.
+    // Mirrors `web::users_set_disabled` (set the flag, then revoke sessions).
+    // The HTTP route is bypassed because it refuses to let an admin disable
+    // themselves, and `uid` is the sole admin.
     store.set_user_disabled(uid, true).await.unwrap();
     store.delete_sessions_for_user(uid).await.unwrap();
     let res = server.get("/projects/new").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/login");
-    // OWASP: the session row itself must be gone, not merely rejected by the
-    // `resolve_user` disabled check.
+    // The session row itself must be gone, not merely rejected by
+    // `resolve_user`'s disabled check.
     assert!(
         store
             .list_sessions_for_user(uid, chrono::Utc::now())
@@ -195,7 +183,6 @@ async fn create_and_delete_project() {
 #[tokio::test]
 async fn cannot_view_another_users_project() {
     let (server, store, _uid) = logged_in_server().await;
-    // project owned by a different user
     let other = store
         .create_user("other", Some("x"), false, chrono::Utc::now())
         .await
@@ -512,9 +499,9 @@ async fn login_page_uses_auth_card_and_error_is_restyled() {
 
 #[tokio::test]
 async fn login_page_bounces_an_already_signed_in_visitor() {
-    // Mostly there for forward auth, where `logout` lands on `/login` only to
-    // be re-authenticated by the gateway header before the page renders — but
-    // the rule is unconditional, so it is testable without a proxy.
+    // Mostly for forward auth, where `logout` lands on `/login` only to be
+    // re-authenticated by the gateway header before the page renders; the rule
+    // is unconditional, so it is testable without a proxy.
     let (mut server, store) = server().await;
     let phc = pingward::auth::hash_password("secret1").unwrap();
     store
@@ -579,17 +566,15 @@ async fn login_logout_cycle() {
     // logout → redirect, then root bounces to /login
     let logout_res = server.post("/logout").await;
     logout_res.assert_status(axum::http::StatusCode::SEE_OTHER);
-    // The removal cookie must carry `Path=/` (matching how the cookie was
-    // set) and the same `Secure` attribute as the cookie it clears —
-    // otherwise a browser can fail to overwrite/clear it. See
+    // The removal cookie must carry `Path=/` and the same `Secure` attribute as
+    // the cookie it clears, or a browser can fail to clear it. See
     // `web::session_removal_cookie`.
     let removal_cookie = logout_res.cookie(pingward::auth::session_cookie_name(false));
     assert_eq!(removal_cookie.path(), Some("/"));
     assert_eq!(removal_cookie.secure(), login_secure);
-    // A password logout asks the browser to drop this origin's cache — but
-    // never "cookies" (registrable-domain-scoped, would reach a gateway on a
-    // sibling subdomain) or "storage", which would wipe the pw-theme
-    // preference.
+    // A password logout drops this origin's cache — never "cookies"
+    // (registrable-domain-scoped, would reach a gateway on a sibling subdomain)
+    // or "storage", which would wipe the pw-theme preference.
     let clear_site_data = logout_res
         .header("clear-site-data")
         .to_str()
@@ -638,14 +623,12 @@ async fn login_alice(server: &mut TestServer, store: &Store) -> axum_test::TestR
         .await
 }
 
-/// The raw `Set-Cookie` header value for the session cookie, attributes and
-/// all. `cookie::Cookie::secure()` cannot tell "explicitly not Secure" apart
-/// from "Secure never mentioned" once a header round-trips through the
-/// parser (an absent flag parses to `None`, not `Some(false)`), so the raw
-/// header is the unambiguous way to check both presence and absence.
-///
-/// Takes `cookie_secure` because the cookie's *name* depends on it (P2-G):
-/// `__Host-pingward_session` when Secure is on, `pingward_session` otherwise.
+/// The raw `Set-Cookie` header value for the session cookie, attributes and all.
+/// `cookie::Cookie::secure()` cannot tell "explicitly not Secure" from "Secure
+/// never mentioned" once a header round-trips through the parser (an absent flag
+/// parses to `None`, not `Some(false)`), so the raw header is the unambiguous
+/// way to check both presence and absence. `cookie_secure` is taken because it
+/// decides the cookie's *name*: `__Host-pingward_session` or `pingward_session`.
 fn raw_session_set_cookie(res: &axum_test::TestResponse, cookie_secure: bool) -> String {
     let name = pingward::auth::session_cookie_name(cookie_secure);
     res.headers()
@@ -657,16 +640,14 @@ fn raw_session_set_cookie(res: &axum_test::TestResponse, cookie_secure: bool) ->
         .to_string()
 }
 
-/// P0-A: the session cookie's `Secure` attribute follows `PINGWARD_BASE_URL`'s
-/// scheme (via `config::parse_cookie_secure`), and it never carries
-/// `Max-Age`/`Expires` — a non-persistent cookie is OWASP's stated preference
-/// for an authenticated session, enforced server-side via
-/// `sessions.expires_at` instead. See `web::session_cookie`.
+/// The session cookie's `Secure` attribute follows `PINGWARD_BASE_URL`'s scheme
+/// (`config::parse_cookie_secure`), and it never carries `Max-Age`/`Expires`:
+/// expiry is enforced server-side through `sessions.expires_at`. See
+/// `web::session_cookie`.
 ///
-/// P2-G: on the `https://` server, the cookie's name also carries the
-/// `__Host-` prefix, and all three of the prefix's browser-enforced
-/// conditions hold — `Secure`, `Path=/`, and no `Domain` — so the browser
-/// itself refuses to let a sibling subdomain or a downgraded HTTP response
+/// On the `https://` server the name also carries the `__Host-` prefix, with all
+/// three of the prefix's browser-enforced conditions — `Secure`, `Path=/`, no
+/// `Domain` — so a sibling subdomain or a downgraded HTTP response cannot
 /// overwrite it.
 #[tokio::test]
 async fn session_cookie_carries_secure_only_when_configured() {
@@ -710,10 +691,10 @@ async fn session_cookie_carries_secure_only_when_configured() {
     );
 }
 
-/// P2-G: the `__Host-` prefixed name is consistent across both the write side
+/// The `__Host-` prefixed name is consistent across the write side
 /// (`session_cookie`, exercised by login) and the read side
-/// (`secret::session_id_from_jar`, exercised by every authenticated route and
-/// by `logout`'s removal cookie) on a `Secure` deployment.
+/// (`secret::session_id_from_jar`, exercised by every authenticated route and by
+/// `logout`'s removal cookie) on a `Secure` deployment.
 #[tokio::test]
 async fn host_prefixed_cookie_round_trips() {
     let (mut server, store) = server_with_base_url(Some("https://pingward.example")).await;
@@ -726,10 +707,9 @@ async fn host_prefixed_cookie_round_trips() {
     let res = server.post("/logout").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
 
-    // The session row itself must be gone — asserting only the 303 would
-    // still pass if `logout` read/cleared the *unprefixed* cookie name on
-    // this Secure deployment and left the real `__Host-` cookie (and its
-    // row) alone.
+    // The session row itself must be gone: asserting only the 303 would still
+    // pass if `logout` cleared the *unprefixed* cookie name on this Secure
+    // deployment and left the real `__Host-` cookie, and its row, alone.
     let alice = store.find_user_by_username("alice").await.unwrap().unwrap();
     assert!(
         store
@@ -740,10 +720,9 @@ async fn host_prefixed_cookie_round_trips() {
         "logout must delete the session row"
     );
 
-    // And the removal `Set-Cookie` must target the `__Host-` prefixed name
-    // with the attributes the prefix requires (`Secure`, `Path=/`) — using
-    // `raw_session_set_cookie` rather than the `secure()` accessor, whose
-    // `None`-vs-`Some(false)` ambiguity it exists to dodge.
+    // The removal `Set-Cookie` must target the `__Host-` prefixed name with the
+    // attributes the prefix requires, read through `raw_session_set_cookie` to
+    // dodge `secure()`'s `None`-vs-`Some(false)` ambiguity.
     let removal_cookie = raw_session_set_cookie(&res, true);
     assert!(
         removal_cookie.starts_with("__Host-pingward_session="),
@@ -753,10 +732,10 @@ async fn host_prefixed_cookie_round_trips() {
     assert!(removal_cookie.contains("; Path=/"), "{removal_cookie}");
 }
 
-/// P1-F: every response from `web::routes()` carries `Cache-Control:
-/// no-store`, so an authenticated page, the pre-login CSRF-bearing forms, and
-/// even a `csrf_guard` rejection are never cached by the browser, a shared
-/// computer, or an intermediary proxy. See `web::no_store`.
+/// Every response from `web::routes()` carries `Cache-Control: no-store`, so an
+/// authenticated page, the pre-login CSRF-bearing forms and even a `csrf_guard`
+/// rejection are never cached by the browser, a shared computer or an
+/// intermediary proxy. See `web::no_store`.
 #[tokio::test]
 async fn browser_responses_are_not_cacheable() {
     let (auth_server, store, uid) = logged_in_server().await;
@@ -792,9 +771,8 @@ async fn browser_responses_are_not_cacheable() {
     let res = logged_out.get("/login").await;
     assert_eq!(res.header("cache-control"), "no-store");
 
-    // A POST rejected by `csrf_guard` (missing/invalid token -> 403) still
-    // carries it — `no_store` sits outermost precisely so early returns like
-    // this one are covered too.
+    // A POST rejected by `csrf_guard` (403) still carries it: `no_store` sits
+    // outermost so early returns are covered too.
     let res = logged_out
         .post("/login")
         .form(&[("username", "admin"), ("password", "pw")])
@@ -804,8 +782,8 @@ async fn browser_responses_are_not_cacheable() {
 }
 
 /// `/api/docs` and `/api/openapi.json` accept a logged-in web session
-/// (`CurrentUser`) alongside `/api/v1`'s bearer auth, so — unlike `/api/v1`
-/// itself, which stays exempt — they carry `Cache-Control: no-store` too. See
+/// (`CurrentUser`) alongside `/api/v1`'s bearer auth, so they carry
+/// `Cache-Control: no-store` too while `/api/v1` itself stays exempt. See
 /// `web::no_store` and `api::docs_routes`.
 #[tokio::test]
 async fn api_docs_are_not_cacheable() {
@@ -819,13 +797,10 @@ async fn api_docs_are_not_cacheable() {
     res.assert_status_ok();
     assert_eq!(res.header("cache-control"), "no-store");
 
-    // `/api/v1` stays exempt on purpose (see `web::no_store`'s doc comment
-    // and `ARCHITECTURE.md`'s router-composition section) — this locks in
-    // that hoisting `.layer(no_store)` from `docs_routes()` up to
-    // `api::routes()` would silently break that contract. A 401 is enough to
-    // prove it: `no_store` would apply to every response through this layer
-    // regardless of status, and minting a bearer token isn't cheap with the
-    // helpers this test file already has.
+    // `/api/v1` stays exempt (see `web::no_store`'s doc comment and
+    // `ARCHITECTURE.md`), so this locks in that hoisting `.layer(no_store)` from
+    // `docs_routes()` up to `api::routes()` would silently break the contract.
+    // A 401 proves it: `no_store` would apply regardless of status.
     let res = auth_server.get("/api/v1/projects").await;
     res.assert_status(axum::http::StatusCode::UNAUTHORIZED);
     assert!(res.maybe_header("cache-control").is_none());
@@ -896,8 +871,8 @@ async fn admin_sets_retention_days() {
 #[tokio::test]
 async fn admin_creates_and_deletes_user() {
     let (server, store, _uid) = logged_in_server().await;
-    // Creating an account is access-granting, so it sits behind the elevation
-    // gate; deleting one is not, and needs no unlock.
+    // Creating an account is access-granting and sits behind the elevation gate;
+    // deleting one is not.
     common::unlock_admin(&server, "pw").await;
     server
         .post("/admin/users")
@@ -940,7 +915,6 @@ async fn create_channel_and_bind_to_check() {
         .await
         .unwrap();
 
-    // create a webhook channel
     let res = server
         .post(&format!("/projects/{pid}/channels"))
         .form(&[
@@ -955,7 +929,6 @@ async fn create_channel_and_bind_to_check() {
     let chid = channels[0].id;
     assert!(channels[0].config_json.contains("example.test"));
 
-    // bind it to the check
     server
         .post(&format!("/checks/{cid}/channels"))
         .form(&[("channel_ids", chid.to_string().as_str())])
@@ -1142,7 +1115,7 @@ async fn cannot_operate_on_another_users_check() {
         .post(&format!("/checks/{ocid}/delete?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::NOT_FOUND);
-    // The check must still exist — no cross-user mutation happened.
+    // No cross-user mutation happened.
     assert!(store.find_check(ocid).await.unwrap().is_some());
 }
 
@@ -1202,7 +1175,7 @@ async fn admin_cannot_delete_self() {
         .post(&format!("/admin/users/{uid}/delete?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
-    // Self-delete is a no-op guard: the admin must still exist.
+    // Self-delete is a no-op guard.
     assert!(store.find_user_by_id(uid).await.unwrap().is_some());
 }
 
@@ -1274,7 +1247,7 @@ async fn send_test_notification_reports_failure() {
 async fn admin_page_uses_restyled_field_class() {
     let (server, _store, _uid) = logged_in_server().await; // admin
 
-    // Settings and add-user are now sections of the same merged /admin page.
+    // Settings and add-user are sections of the same merged /admin page.
     let res = server.get("/admin").await;
     res.assert_status_ok();
     assert!(res.text().contains("class=\"field\""));
@@ -1329,17 +1302,14 @@ async fn check_page_shows_notification_channel_and_error() {
 /// the wrong password costs (`auth::verify_password_or_dummy`).
 ///
 /// The "quick exit" this replaced skipped argon2 entirely when there was no
-/// stored hash, so the *response time* separated "no such user" from "wrong
-/// password" no matter how generic the error message was — OWASP's
-/// Authentication Cheat Sheet names exactly that pattern as a user-enumeration
-/// hole. Timing is noisy, so the assertion is deliberately loose: a miss must
-/// simply be in the same order of magnitude as a hit. Without the fix the miss
-/// is a database lookup against a hit's full argon2 verification — three orders
-/// of magnitude apart, not the 2x this allows.
+/// stored hash, so *response time* separated "no such user" from "wrong
+/// password" however generic the message. Timing is noisy, so the assertion is
+/// loose: a miss must be within the same order of magnitude as a hit — without
+/// the fix it is a bare database lookup against a full argon2 verification,
+/// three orders apart rather than the 2x this allows.
 ///
-/// A warm-up miss runs first, because the process-wide dummy hash is minted on
-/// the first one and that mint would otherwise land inside the measurement (in
-/// the safe direction, but as noise).
+/// A warm-up miss runs first: the process-wide dummy hash is minted on the first
+/// one and would otherwise land inside the measurement.
 #[tokio::test]
 async fn an_unknown_username_costs_the_same_as_a_wrong_password() {
     use std::time::Instant;
@@ -1348,9 +1318,8 @@ async fn an_unknown_username_costs_the_same_as_a_wrong_password() {
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
     let mut state = AppState::new(store.clone(), common::test_config());
-    // Enough attempts to measure with: the default budget is five, and a 429
-    // is not a comparable measurement. `login_limiter` is a public field, so
-    // this needs no test-only seam in `AppState`.
+    // Enough attempts to measure with: the default budget is five, and a 429 is
+    // not a comparable measurement.
     state.login_limiter = std::sync::Arc::new(pingward::ratelimit::RateLimiter::new(1_000, 60));
     let mut server = TestServer::new(app(state));
     server.save_cookies();

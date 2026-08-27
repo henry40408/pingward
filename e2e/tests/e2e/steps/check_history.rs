@@ -1,5 +1,4 @@
-//! The check page's pings pager, filters and heartbeat strip — a port of
-//! `check_history.steps.js`.
+//! The check page's pings pager, filters and heartbeat strip.
 
 use anyhow::{Result, ensure};
 use cucumber::{then, when};
@@ -10,8 +9,8 @@ use pingward_e2e::world::PingwardWorld;
 
 #[when(expr = "I send {int} {string} pings")]
 async fn send_many_pings(world: &mut PingwardWorld, count: usize, kind: String) -> Result<()> {
-    // Seeding pings is cheap over HTTP: each is a bare GET to the check's ping
-    // URL with no body, so each renders as a single plain (non-toggle) `tr`.
+    // Each is a bare GET with no body, so each renders as a single plain
+    // (non-toggle) `tr`.
     let ping_url = read_ping_url(world).await?;
     let api = world.api()?;
     let kind = PingKind::parse(&kind)?;
@@ -39,9 +38,9 @@ async fn pager_link_disabled(world: &mut PingwardWorld, direction: String) -> Re
     pager_link_state(world, &direction, true).await
 }
 
-/// The pager's ends are always shown: reaching one renders a muted,
-/// non-clickable `<span class="btn disabled">` rather than hiding the control.
-/// So the assertion is on the class, never on visibility or a count of zero.
+/// The pager's ends are always shown: reaching one renders a muted
+/// `<span class="btn disabled">` rather than hiding the control, so the
+/// assertion is on the class, not on visibility.
 async fn pager_link_state(
     world: &PingwardWorld,
     direction: &str,
@@ -69,16 +68,13 @@ async fn click_newer(world: &mut PingwardWorld) -> Result<()> {
     world.driver()?.click("pings-newer").await
 }
 
-// Deliberately *not* the same step as `no_js.feature`'s "I filter **the**
-// pings by kind": with script the click is cancelled and the section swapped
-// in place, so there is no navigation to wait for. The near-identical wording
-// is the JavaScript suite's, and keeping both apart is what stops one waiting
-// strategy being used for the other path.
+// Not `no_js.feature`'s near-identically worded "I filter *the* pings by
+// kind": with script the click is cancelled and the section swapped in place,
+// so there is no navigation to wait for. Keeping the two apart stops one
+// waiting strategy being used for the other path.
 #[when(expr = "I filter pings by kind {string}")]
 async fn filter_pings_by_kind(world: &mut PingwardWorld, kind: String) -> Result<()> {
-    // Filtering swaps the pings section in place through a fetch to the
-    // fragment endpoint, so the row-count assertion that follows waits for the
-    // swap rather than for a navigation.
+    // The row-count assertion that follows waits for the fragment swap.
     let driver = world.driver()?;
     driver.select_option("pings-kind", &kind).await?;
     driver.click("pings-apply").await
@@ -101,8 +97,8 @@ async fn apply_pings_filter(world: &mut PingwardWorld) -> Result<()> {
 
 #[then(expr = "the pings from date is {string}")]
 async fn pings_from_is(world: &mut PingwardWorld, value: String) -> Result<()> {
-    // The local wall-clock value round-trips through UTC and back, so the
-    // applied value matches what was entered whatever the runner's time zone.
+    // The local wall-clock value round-trips through UTC, so it matches what
+    // was entered whatever the runner's time zone.
     world.driver()?.expect_value("pings-from", &value).await
 }
 
@@ -118,9 +114,8 @@ async fn pings_clear_absent(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("the newest heartbeat bar is flush with the strip's right edge")]
 async fn newest_bar_flush_right(world: &mut PingwardWorld) -> Result<()> {
-    // One of the two heartbeat invariants that exist only in CSS. Measured
-    // rather than asserted on markup: the bars are all rendered either way,
-    // and what this checks is which of them the clipping box lets through.
+    // A CSS-only invariant: the bars are all rendered either way, and this
+    // checks which of them the clipping box lets through.
     let gap = world
         .driver()?
         .eval(
@@ -141,9 +136,8 @@ async fn newest_bar_flush_right(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("the oldest heartbeat bars are clipped off the left")]
 async fn oldest_bars_clipped(world: &mut PingwardWorld) -> Result<()> {
-    // `scrollWidth` is no use here: the overflow runs off the *left* edge,
-    // which it does not count. Compare what was rendered against what the
-    // clipping box actually lets through instead.
+    // `scrollWidth` does not count overflow off the *left* edge, so this
+    // compares what was rendered against what the clipping box lets through.
     let measured = world
         .driver()?
         .eval(

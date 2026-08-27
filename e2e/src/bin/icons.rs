@@ -1,13 +1,9 @@
-//! Renders `assets/apple-touch-icon.png` from `assets/favicon.svg`.
+//! Renders `assets/apple-touch-icon.png` from `assets/favicon.svg` with
+//! `resvg`; needs no browser.
 //!
-//! A port of `screenshots/render-icon.mjs`, which reused the Chromium that
-//! Playwright installed rather than pulling in a rasteriser. With Playwright
-//! gone that reasoning inverts: `resvg` is a build-time dependency of one
-//! binary, where a browser would be an install-time dependency of everybody.
-//!
-//! The PNG stays a **committed artefact**, as it was — `src/assets.rs` embeds
-//! it at compile time and the root crate builds without ever running this. Run
-//! it after editing the SVG:
+//! The PNG is a committed artefact — `src/assets.rs` embeds it at compile time
+//! and the root crate builds without ever running this. Run it after editing
+//! the SVG:
 //!
 //! ```text
 //! cd e2e && cargo run --bin icons
@@ -53,11 +49,9 @@ fn main() -> Result<()> {
 /// Drops the corner radius from the `data-frame` backing rect.
 ///
 /// iOS masks the icon with its own superellipse, and a source radius under that
-/// mask reads as a double-rounded edge. `render-icon.mjs` said this as a CSS
-/// override (`[data-frame]{rx:0}`) because Chromium honours `rx` as a property;
-/// resvg reads the presentation attribute, so the attribute is what gets
-/// removed. Either way the inner quadrants keep their own radius, which is
-/// visible and wanted.
+/// mask reads as a double-rounded edge. resvg reads the presentation
+/// attribute, so the attribute is what gets removed; the inner quadrants keep
+/// their own radius, which is wanted.
 fn square_off_frame(svg: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     let radius = RE.get_or_init(|| {

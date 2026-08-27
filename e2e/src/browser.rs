@@ -1,17 +1,12 @@
 //! The browser session, and the emulations the suite depends on.
 //!
-//! `WebDriver::managed` downloads and supervises a matching chromedriver
-//! itself, so nothing has to be installed alongside the tests — but it does
-//! *not* download the browser, unlike the Playwright setup this replaces. A
-//! Chrome or Chromium in one of the well-known locations is a prerequisite now;
-//! [`Browser::open`] says so in as many words when it is missing, because the
-//! raw driver error does not.
+//! `WebDriver::managed` downloads and supervises a matching chromedriver, but
+//! not the browser: a local Chrome or Chromium is a prerequisite.
+//! [`Browser::open`] says so explicitly, because the raw driver error does not.
 //!
-//! Every emulation goes through CDP rather than `BiDi`.
-//! `Emulation.setEmulatedMedia` is the only way to reach `prefers-color-scheme`
-//! at all — `BiDi` has no equivalent — and `Emulation.setScriptExecutionDisabled`
-//! is what Playwright's `javaScriptEnabled: false` did underneath, so the
-//! `no_js.feature` scenarios run against the same mechanism as before.
+//! Every emulation goes through CDP rather than `BiDi`, which has no equivalent
+//! of `Emulation.setEmulatedMedia` (`prefers-color-scheme`) or
+//! `Emulation.setScriptExecutionDisabled` (`no_js.feature`).
 
 use std::time::Duration;
 
@@ -20,10 +15,9 @@ use thirtyfour::prelude::*;
 
 /// How long a query waits for a condition before giving up.
 ///
-/// Only ever paid in full by a genuine failure, so it is set for the slowest
-/// machine that runs this rather than the fastest: locally every wait settles
-/// in well under a second, while a two-core CI runner driving several browsers
-/// took longer than 10 s to land a navigation.
+/// Only paid in full by a genuine failure, so it is sized for the slowest
+/// machine: a two-core CI runner driving several browsers took over 10 s to
+/// land a navigation.
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How often a query re-checks while waiting.
@@ -42,14 +36,13 @@ impl Viewport {
     }
 }
 
-/// The default viewport, matching the `Desktop Chrome` device both Playwright
-/// projects used.
+/// The default viewport.
 pub const DESKTOP: Viewport = Viewport::new(1280, 720);
 
-/// Whether the page's own scripts run — the `chromium` / `no-js` project split.
+/// Whether the page's own scripts run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scripting {
-    /// The scripted path: `assets/theme-init.js` and `assets/app.js` run.
+    /// `assets/theme-init.js` and `assets/app.js` run.
     Enabled,
     /// The `@nojs` path: the page's own scripts never execute.
     Disabled,
@@ -71,17 +64,12 @@ impl Browser {
     /// downloaded, or when the session cannot be created.
     pub async fn open(scripting: Scripting) -> Result<Self> {
         let mut caps = DesiredCapabilities::chrome();
-        // `app.js`'s destructive forms go through `confirm()`, and this suite
-        // needs to answer some of them yes and one of them no. WebDriver's
-        // default is "dismiss and notify", which would silently cancel every
-        // delete; Playwright's default was the same, which is why the old
-        // steps registered a `page.on("dialog", …)` handler each time.
-        //
-        // "ignore" leaves the prompt standing so the step can answer it
-        // explicitly (see `Dom::accept_confirm` / `Dom::dismiss_confirm`). The
-        // Alert commands are exempt from the prompt-handling step, so they
-        // still work; anything *else* issued while a prompt is open fails
-        // loudly, which is the right outcome for a dialog nobody expected.
+        // `app.js`'s destructive forms go through `confirm()`, and the suite
+        // answers some yes and one no. WebDriver's default of "dismiss and
+        // notify" would silently cancel every delete; "ignore" leaves the
+        // prompt standing for `Dom::accept_confirm` / `Dom::dismiss_confirm`.
+        // Alert commands stay exempt, so anything else issued while a prompt is
+        // open fails loudly — the right outcome for an unexpected dialog.
         caps.set("unhandledPromptBehavior", "ignore")?;
         caps.add_arg("--headless=new")?;
         caps.add_arg(&format!(
@@ -90,11 +78,9 @@ impl Browser {
         ))?;
         // Containers get a 64 MB /dev/shm by default, which Chrome outgrows.
         caps.add_arg("--disable-dev-shm-usage")?;
-        // Playwright launched chromium with this, and the mobile-layout
-        // assertions were written against it. Without it the classic
-        // scrollbars on Linux take 15px out of the viewport, while macOS's
-        // overlay scrollbars take none — which makes a width comparison pass
-        // locally and fail only on CI.
+        // Without this, Linux's classic scrollbars take 15px out of the
+        // viewport while macOS's overlay scrollbars take none, so a
+        // mobile-layout width comparison passes locally and fails on CI.
         caps.add_arg("--hide-scrollbars")?;
 
         let driver = WebDriver::managed(caps).await.context(
@@ -107,12 +93,11 @@ impl Browser {
             driver,
             viewport: DESKTOP,
         };
-        // `--window-size` above sizes the *window*; what the stylesheet reads
-        // is the viewport, and the two differ by whatever chrome the platform's
-        // headless build keeps. Pinning it here is what Playwright's `viewport`
-        // option did, and `assets/app.css` branches at 720px, 640px and 560px —
-        // a desktop scenario laid out a little narrower than it asked for would
-        // silently be tested against the phone stylesheet.
+        // `--window-size` sizes the *window*; the stylesheet reads the
+        // viewport, and the two differ by the platform's headless chrome.
+        // `assets/app.css` branches at 720px, 640px and 560px, so a desktop
+        // scenario laid out narrower than it asked for would silently be tested
+        // against the phone stylesheet.
         browser.set_viewport(DESKTOP).await?;
         if scripting == Scripting::Disabled {
             browser.disable_scripting().await?;
@@ -122,15 +107,9 @@ impl Browser {
 
     /// Downloads and starts the driver once, before any scenario asks for it.
     ///
-    /// `WebDriver::managed` builds a *new* manager per call, so each session
-    /// prepares the driver for itself. That is harmless when it is already
-    /// cached and pathological when it is not: several sessions opening at once
-    /// on a cold cache all try to download the same driver and contend on its
-    /// lock file, which is a stall, not a slowdown. CI has a cold cache every
-    /// run, which is exactly where the scenarios run in parallel.
-    ///
-    /// One session opened and closed up front settles it — the download happens
-    /// once, and every later session finds the driver in place.
+    /// `WebDriver::managed` builds a new manager per call, so on a cold cache
+    /// (every CI run) parallel sessions all download the same driver and stall
+    /// on its lock file. Opening and closing one session up front settles it.
     ///
     /// # Errors
     ///
@@ -149,13 +128,12 @@ impl Browser {
         self.viewport
     }
 
-    /// Resizes the viewport, Playwright's `setViewportSize`.
+    /// Resizes the viewport.
     ///
-    /// Goes through `Emulation.setDeviceMetricsOverride` rather than the
-    /// `WebDriver` window commands: a headless window's outer size includes
-    /// chrome the layout does not see, so setting 375×667 that way lands a
-    /// viewport of some other width — and `mobile_layout.feature` asserts on
-    /// exact breakpoints.
+    /// Uses `Emulation.setDeviceMetricsOverride` rather than the `WebDriver`
+    /// window commands: a headless window's outer size includes chrome the
+    /// layout does not see, and `mobile_layout.feature` asserts exact
+    /// breakpoints.
     ///
     /// # Errors
     ///
@@ -177,13 +155,12 @@ impl Browser {
         Ok(())
     }
 
-    /// Emulates `prefers-color-scheme`, Playwright's
-    /// `emulateMedia({ colorScheme })`.
+    /// Emulates `prefers-color-scheme`.
     ///
-    /// `theme.feature` and the scriptless half of `no_js.feature` both turn on
-    /// this: with no stored preference and no script, `app.css`'s
-    /// `@media (prefers-color-scheme: light) { :root:not([data-theme]) }` is the
-    /// only thing that answers.
+    /// `theme.feature` and the scriptless half of `no_js.feature` turn on it:
+    /// with no stored preference and no script, `app.css`'s
+    /// `@media (prefers-color-scheme: light) { :root:not([data-theme]) }` is
+    /// the only thing that answers.
     ///
     /// # Errors
     ///
@@ -202,13 +179,10 @@ impl Browser {
         Ok(())
     }
 
-    /// Sends an extra header with every request, Playwright's
-    /// `setExtraHTTPHeaders`.
+    /// Sends an extra header with every request.
     ///
-    /// `account.feature` needs it to present an `X-Forwarded-For` that
-    /// `auth::client_ip` will honour — which only means anything alongside the
-    /// `@trusted-proxy` tag, since an untrusted caller's header is ignored by
-    /// design.
+    /// `account.feature` presents an `X-Forwarded-For` that `auth::client_ip`
+    /// only honours alongside the `@trusted-proxy` tag.
     ///
     /// # Errors
     ///
@@ -231,11 +205,8 @@ impl Browser {
         Ok(())
     }
 
-    /// Grants clipboard access, Playwright's
-    /// `grantPermissions(["clipboard-read", "clipboard-write"])`.
-    ///
-    /// Without it `navigator.clipboard.writeText` rejects in a headless
-    /// browser, and the ping URL's copy button never reaches its copied state.
+    /// Grants clipboard access; without it `navigator.clipboard.writeText`
+    /// rejects headlessly and the copy button never reaches its copied state.
     ///
     /// # Errors
     ///

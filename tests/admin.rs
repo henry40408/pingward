@@ -4,9 +4,9 @@ use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
 
-/// After a session exists, configure the `TestServer` to send that session's
-/// CSRF synchronizer token as a default `X-CSRF-Token` header so protected POSTs
-/// are not rejected by `csrf_guard`. Call after every (re)login.
+/// After a session exists, send that session's CSRF token as a default
+/// `X-CSRF-Token` header so protected POSTs pass `csrf_guard`. Call after every
+/// (re)login.
 async fn set_csrf(server: &mut TestServer, store: &Store) {
     let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
@@ -40,21 +40,13 @@ async fn admin_server() -> (TestServer, Store, i64) {
 // --- admin route guard exhaustiveness --------------------------------------
 //
 // `web::routes()` guards every `/admin*` handler individually via the
-// `AdminUser` extractor — there is no router-level layer enforcing it.
-// `non_admin_forbidden_on_every_admin_route` below parses `src/web.rs` to
-// recover the exact list of `/admin*` (method, path) pairs the router
-// registers — `axum::Router` does not expose its route table at runtime, so
-// source-parsing is the only way to derive it — and asserts every single one
-// returns 403 for a signed-in non-admin. There is no per-route exception
-// list: a new `/admin` route that forgets its `AdminUser` guard fails this
-// test, and the only way to make it pass again is to add the guard.
+// `AdminUser` extractor; there is no router-level layer enforcing it.
 
-/// Every `/admin*` route registered by `web::routes()` must 403 for a
-/// signed-in non-admin, with no exceptions. The route list is derived from
-/// the router's own source (`common::routes_in_router_source`) rather than
-/// hand-maintained, so a newly added `/admin` route that forgets its
-/// `AdminUser` guard fails this test and there is no way to silence it
-/// short of actually adding the guard.
+/// Every `/admin*` route registered by `web::routes()` must 403 for a signed-in
+/// non-admin, with no exceptions. The route list is derived from the router's
+/// own source rather than hand-maintained (`axum::Router` exposes no route
+/// table at runtime), so a new `/admin` route that forgets its `AdminUser`
+/// guard fails this test.
 #[tokio::test]
 async fn non_admin_forbidden_on_every_admin_route() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -82,8 +74,7 @@ async fn non_admin_forbidden_on_every_admin_route() {
     set_csrf(&mut server, &store).await;
 
     let routes = common::routes_in_router_source(include_str!("../src/web.rs"), "/admin");
-    // A parser that (due to a bug) returns nothing would make the loop below
-    // pass vacuously. Guard against that explicitly.
+    // A parser bug returning nothing would make the loop below pass vacuously.
     assert!(
         routes.len() >= 25,
         "parsed only {} /admin routes from web.rs — the source parser is \
@@ -95,9 +86,8 @@ async fn non_admin_forbidden_on_every_admin_route() {
         let path = common::normalise_route_path(raw_path);
         let status = match *method {
             "GET" => server.get(&path).await.status_code(),
-            // `AdminUser` is extracted before `Form`/`HtmlForm` in every
-            // handler, so the guard rejects before the body is parsed — an
-            // empty form is fine here.
+            // `AdminUser` is extracted before `Form`/`HtmlForm`, so the guard
+            // rejects before the body is parsed and an empty form is fine.
             "POST" => server.post(&path).form(&[("_", "")]).await.status_code(),
             other => panic!("unsupported method {other} for route {path}"),
         };
@@ -118,8 +108,7 @@ async fn admin_sees_admin_nav_link_on_dashboard() {
         "admin's own dashboard should show the Admin nav link"
     );
 
-    // A separate, non-admin member must NOT see the Admin nav link on their
-    // own dashboard, proving the link reflects the viewer, not the route.
+    // The link reflects the viewer, not the route: a non-admin must not see it.
     let state = AppState::new(store.clone(), common::test_config());
     let mut member_server = TestServer::new(app(state));
     member_server.save_cookies();
@@ -139,10 +128,9 @@ async fn admin_sees_admin_nav_link_on_dashboard() {
     );
 }
 
-/// An admin can reach another user's project, and reading it is *not*
-/// audited: a page of names and schedules is not a credential, and recording
-/// every page open buried the entries that matter under browsing noise. The
-/// mutation tests below are the other half of this — writes still audit.
+/// An admin can reach another user's project, and reading it is *not* audited —
+/// recording every page open buried the entries that matter. Writes still do;
+/// the mutation tests below are the other half.
 #[tokio::test]
 async fn admin_reading_another_users_project_is_not_audited() {
     let (server, store, _admin_id) = admin_server().await;
@@ -154,8 +142,7 @@ async fn admin_reading_another_users_project_is_not_audited() {
         .create_project(owner, "victim", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
-    // Admin can see it via /admin, owner-scoped route would 404.
-    server.get("/projects").await; // (owner route is per-user; admin uses /admin)
+    server.get("/projects").await; // the owner route is per-user; admin uses /admin
     server
         .get(&format!("/admin/projects/{pid}"))
         .await
@@ -166,13 +153,11 @@ async fn admin_reading_another_users_project_is_not_audited() {
     );
 }
 
-/// Deleting another user's project sends the admin back to `/admin`. The
-/// `location` assertion is the regression guard: it used to point at
-/// `/admin/projects`, a route that no longer exists and would now 404.
+/// Deleting another user's project sends the admin back to `/admin`. Regression:
+/// the redirect used to point at `/admin/projects`, which no longer exists.
 #[tokio::test]
 async fn admin_deletes_other_users_project_and_lands_on_admin() {
     let (server, store, _admin_id) = admin_server().await;
-    // A separate user owns a project.
     let owner = store
         .create_user("owner", Some("phc"), false, chrono::Utc::now())
         .await
@@ -181,13 +166,11 @@ async fn admin_deletes_other_users_project_and_lands_on_admin() {
         .create_project(owner, "victim", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
-    // Admin deletes the project and should land on /admin, not /admin/projects.
     let res = server
         .post(&format!("/admin/projects/{pid}/delete?confirmed=1"))
         .await;
     assert_eq!(res.status_code(), StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/admin");
-    // Verify the project is actually deleted.
     let projects = store.list_projects_for_user(owner).await.unwrap();
     assert!(!projects.iter().any(|p| p.id == pid));
 }
@@ -220,7 +203,6 @@ async fn admin_mutation_on_other_project_is_audited() {
         .post(&format!("/admin/checks/{cid}/pause"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
-    // Check is paused and the access was audited.
     assert_eq!(
         store.find_check(cid).await.unwrap().unwrap().status,
         pingward::models::CheckStatus::Paused
@@ -242,8 +224,8 @@ async fn admin_keeps_nav_link_on_owner_form_validation_error() {
         .create_project(admin_id, "p", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
-    // Invalid: blank name is allowed, but blank period_secs with schedule_kind
-    // "period" fails `validate_check`, triggering the error re-render branch.
+    // A blank `period_secs` with `schedule_kind` "period" fails
+    // `validate_check`, taking the error re-render branch.
     let res = server
         .post(&format!("/projects/{pid}/checks"))
         .form(&[
@@ -259,18 +241,17 @@ async fn admin_keeps_nav_link_on_owner_form_validation_error() {
             ("nag_interval_secs", ""),
         ])
         .await;
-    // Error re-render is 200 with the form; it must still show the Admin nav
-    // link since the viewer is an admin (even though this is the owner route).
+    // The error re-render is a 200 and must still show the Admin nav link: the
+    // viewer is an admin even on the owner route.
     res.assert_status_ok();
     assert!(res.text().contains("href=\"/admin\""));
 }
 
 // --- audit trail on /admin -------------------------------------------------
 
-/// GET a fragment endpoint the way `app.js` does. Without this header the
-/// endpoint answers a plain navigation with a redirect to the page that embeds
-/// the section instead of a bare partial (see `tests/no_js.rs`); these tests
-/// are about the partial, so they ask for it.
+/// GET a fragment endpoint the way `app.js` does. Without the header the
+/// endpoint redirects a plain navigation to the embedding page instead of
+/// serving a bare partial (see `tests/no_js.rs`).
 async fn get_fragment(server: &TestServer, path: &str) -> axum_test::TestResponse {
     server
         .get(path)
@@ -279,7 +260,7 @@ async fn get_fragment(server: &TestServer, path: &str) -> axum_test::TestRespons
 }
 
 /// Record `n` audit rows directly, one second apart, alternating action so the
-/// filter has something to narrow. Returns the seeded rows' actions in order.
+/// filter has something to narrow.
 async fn seed_audit(store: &Store, actor_id: i64, n: i64) {
     let base = chrono::Utc::now() - chrono::Duration::hours(1);
     for i in 0..n {
@@ -308,8 +289,8 @@ async fn seed_audit(store: &Store, actor_id: i64, n: i64) {
 }
 
 /// The trail is readable from `/admin` itself, and every column of
-/// `models::AuditLog` reaches the page — including the `method`/`path`/
-/// `detail`/`target_owner_id` carried in the expandable row.
+/// `models::AuditLog` reaches the page, `method`/`path`/`detail`/
+/// `target_owner_id` included via the expandable row.
 #[tokio::test]
 async fn admin_page_shows_the_audit_trail() {
     let (server, store, admin_id) = admin_server().await;
@@ -340,7 +321,6 @@ async fn admin_page_shows_the_audit_trail() {
     assert!(body.contains("user #9"), "target_owner_id missing: {body}");
 }
 
-/// An admin with an empty trail gets the empty state, not a broken table.
 #[tokio::test]
 async fn admin_audit_empty_state() {
     let (server, _store, _admin_id) = admin_server().await;
@@ -353,9 +333,9 @@ async fn admin_audit_empty_state() {
     );
 }
 
-/// The fragment endpoint serves the same table on its own, and honours the
-/// action filter. The card body and the fragment are one template, so this
-/// also pins what `/admin` inlines.
+/// The fragment endpoint serves the same table on its own and honours the
+/// action filter. Card body and fragment are one template, so this also pins
+/// what `/admin` inlines.
 #[tokio::test]
 async fn admin_audit_fragment_filters_by_action() {
     let (server, store, admin_id) = admin_server().await;
@@ -369,8 +349,8 @@ async fn admin_audit_fragment_filters_by_action() {
         3,
         "expected the 3 user.create rows: {body}"
     );
-    // Only the rows are filtered — the Action select still has to offer every
-    // action present in the trail, so assert on the cell, not the page.
+    // Only the rows are filtered — the Action select still offers every action
+    // in the trail, so assert on the cell, not the page.
     assert!(
         !body.contains("<td class=\"mono\">admin.access</td>"),
         "filtered-out action still present as a row: {body}"
@@ -449,10 +429,9 @@ async fn admin_audit_pager_href_carries_the_active_filter() {
 
 // --- settings saves are audited ---------------------------------------------
 
-/// Changing global settings is an admin action on the whole instance and had
-/// been going unrecorded. It matters most for `audit_retention_days`:
-/// shortening that window is how an admin would erase their own trail, so the
-/// change itself has to leave a mark.
+/// Changing global settings had been going unrecorded. It matters most for
+/// `audit_retention_days`: shortening that window is how an admin would erase
+/// their own trail, so the change itself has to leave a mark.
 #[tokio::test]
 async fn settings_save_is_audited_with_the_changed_keys() {
     let (server, store, _admin_id) = admin_server().await;
@@ -480,16 +459,15 @@ async fn settings_save_is_audited_with_the_changed_keys() {
         detail.contains("audit_retention_days=7"),
         "the changed key and its new value should be recorded: {detail}"
     );
-    // Only what actually changed — the four untouched fields were already
-    // blank, so naming them would bury the one edit that matters.
+    // Only what changed: the four untouched fields were already blank.
     assert!(
         !detail.contains("scan_interval"),
         "unchanged keys should not be listed: {detail}"
     );
 }
 
-/// A save that changes nothing writes no audit row — otherwise every visit to
-/// the settings form that ends in "Save" would pad the trail.
+/// A save that changes nothing writes no audit row, or every visit to the form
+/// that ends in "Save" would pad the trail.
 #[tokio::test]
 async fn settings_save_with_no_changes_writes_no_audit() {
     let (server, store, _admin_id) = admin_server().await;
@@ -582,9 +560,8 @@ async fn other_users_check(store: &Store, name: &str) -> (i64, i64) {
     (owner, cid)
 }
 
-/// Opening another user's check does not print its ping URL. The URL is a
-/// bearer credential — holding it is enough to mark the check up or down — so
-/// "just looking" must not hand it over.
+/// Opening another user's check does not print its ping URL: the URL is a
+/// bearer credential, enough on its own to mark the check up or down.
 #[tokio::test]
 async fn admin_check_page_withholds_another_users_ping_url() {
     let (server, store, _admin_id) = admin_server().await;
@@ -613,8 +590,7 @@ async fn admin_check_page_withholds_another_users_ping_url() {
 }
 
 /// Asking for it hands it over and writes that down — the one read under
-/// `/admin` that still audits, because it is the one that discloses a
-/// credential rather than a description.
+/// `/admin` that still audits, because it discloses a credential.
 #[tokio::test]
 async fn admin_revealing_another_users_ping_url_is_audited() {
     let (server, store, admin_id) = admin_server().await;
@@ -642,9 +618,9 @@ async fn admin_revealing_another_users_ping_url_is_audited() {
     );
 }
 
-/// The gate is about crossing a user boundary, not about the `/admin` route:
-/// an admin looking at their own check through `/admin` sees its URL without
-/// asking, and nothing is recorded, because nothing was disclosed to anyone.
+/// The gate is about crossing a user boundary, not about the `/admin` route: an
+/// admin looking at their own check sees its URL without asking, and nothing is
+/// recorded.
 #[tokio::test]
 async fn admin_sees_their_own_ping_url_without_revealing() {
     let (server, store, admin_id) = admin_server().await;
@@ -674,9 +650,8 @@ async fn admin_sees_their_own_ping_url_without_revealing() {
     assert!(store.list_audit(10).await.unwrap().is_empty());
 }
 
-/// The regression this whole change could have caused: reads and writes go
-/// through the same resolver, so dropping the read audit must not take the
-/// write audit with it.
+/// Reads and writes go through the same resolver, so dropping the read audit
+/// must not take the write audit with it.
 #[tokio::test]
 async fn admin_mutating_another_users_check_is_still_audited() {
     let (server, store, _admin_id) = admin_server().await;

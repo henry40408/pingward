@@ -1,9 +1,6 @@
-//! `Strict-Transport-Security`, gated by `PINGWARD_HSTS_MAX_AGE`
-//! (`web::hsts`). Default is off — pingward does not terminate TLS, so
-//! sending HSTS unconditionally would be wrong on a plain-HTTP internal
-//! deployment. When configured, the header must be app-wide: it covers
-//! `/healthz` and static assets, not just the browser-facing `web` router
-//! (unlike `Cache-Control: no-store`, which is `web`-only).
+//! `Strict-Transport-Security` (`web::hsts`), gated by `PINGWARD_HSTS_MAX_AGE`.
+//! Off by default since pingward does not terminate TLS. When set, the header
+//! is app-wide (`/healthz`, assets), unlike `Cache-Control: no-store`.
 
 use axum_test::TestServer;
 use pingward::{app, config::Config, db, state::AppState, store::Store};

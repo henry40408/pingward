@@ -1,13 +1,11 @@
 //! Human-readable duration parsing/formatting for the seconds-based form
-//! fields (check/project overrides, settings scan/nag intervals). Storage and
-//! the scheduler are unaffected — everything is still persisted as plain
-//! seconds; this module only sits at the form boundary.
+//! fields. This module sits only at the form boundary — storage and the
+//! scheduler still see plain seconds.
 
 /// Parse a duration into whole seconds. Accepts a bare integer (raw seconds,
-/// for back-compat with what the forms used to take) or one or more
-/// unit-suffixed components: `s`, `m`, `h`, `d` — combinable and
-/// whitespace/case tolerant (`1h30m`, `1H 30M`). Returns `None` for anything
-/// that is not fully consumed by that grammar.
+/// for back-compat) or unit-suffixed components `s`/`m`/`h`/`d`, combinable
+/// and whitespace/case tolerant (`1h30m`, `1H 30M`). `None` for anything not
+/// fully consumed by that grammar.
 pub fn parse_duration(s: &str) -> Option<i64> {
     let cleaned: String = s.chars().filter(|c| !c.is_ascii_whitespace()).collect();
     let cleaned = cleaned.to_ascii_lowercase();
@@ -63,10 +61,10 @@ pub fn parse_duration(s: &str) -> Option<i64> {
     }
 }
 
-/// Render whole seconds back into the compact canonical form
-/// `parse_duration` accepts, losslessly (`5430` -> `"1h30m30s"`, `300` -> `"5m"`,
-/// `0` -> `"0s"`). Distinct from `view::fmt_secs`, which is a lossy *display*
-/// format (`"1h 30m"` drops the seconds) and must stay unchanged.
+/// Render whole seconds back into the compact canonical form `parse_duration`
+/// accepts, losslessly (`5430` -> `"1h30m30s"`). Distinct from
+/// `view::fmt_secs`, which is a lossy display format (`"1h 30m"` drops the
+/// seconds) and must stay unchanged.
 pub fn fmt_duration(secs: i64) -> String {
     use std::fmt::Write;
     let s = secs.max(0);

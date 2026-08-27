@@ -17,9 +17,8 @@ pub struct SmtpConfig {
     pub tls: SmtpTls,
 }
 
-/// How log lines are formatted at startup. `Full`, `Compact` and `Pretty` are
-/// the human-readable console renderers; `Json` emits one JSON object per line
-/// for ingestion by a log aggregator.
+/// How log lines are formatted at startup: `Full`/`Compact`/`Pretty` are
+/// console renderers, `Json` emits one JSON object per line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogFormat {
     #[default]
@@ -38,41 +37,32 @@ pub struct Config {
     pub prune_interval_secs: u64,
     pub forward_auth_header: Option<String>,
     /// Where `POST /logout` sends the browser. Unset means `/login`, which
-    /// under forward auth just re-authenticates on the next request — see
-    /// `web::logout`.
+    /// under forward auth just re-authenticates — see `web::logout`.
     pub forward_auth_logout_url: Option<String>,
     pub trusted_proxies: Vec<String>,
     pub smtp: Option<SmtpConfig>,
     pub log_format: LogFormat,
     /// Process secret backing session-cookie signatures and CSRF tokens
-    /// (`crate::secret`). Not exposed on `/admin`'s Environment card — unlike
-    /// the SMTP password, even a configured/not-set indicator is unnecessary,
-    /// and `secret_source` already reaches the startup log.
+    /// (`crate::secret`). Not exposed on `/admin`'s Environment card, not even
+    /// as a configured/not-set flag; `secret_source` reaches the startup log.
     pub secret: Vec<u8>,
     pub secret_source: SecretSource,
     /// Whether session/flash cookies carry `Secure`. See
     /// [`parse_cookie_secure`].
     pub cookie_secure: bool,
     /// HSTS `max-age`, in seconds. `0` (the default) means the header is not
-    /// sent.
-    ///
-    /// Seconds rather than a boolean so an operator can ramp up the way the
-    /// HSTS deployment guides advise (`300` → `86400` → `31536000`) instead of
-    /// jumping straight to a year — once a browser has cached the policy it
-    /// cannot be withdrawn before max-age expires.
-    ///
-    /// `includeSubDomains` and `preload` are deliberately not offered: both
-    /// are traps on a self-hosted subdomain deployment (a wrong
-    /// `includeSubDomains` takes out unrelated hosts on the same domain, and
-    /// `preload` is close to irreversible). Anyone who needs them should set
-    /// them on the reverse proxy.
+    /// sent. Seconds rather than a boolean so an operator can ramp up
+    /// (`300` → `86400` → `31536000`): a policy a browser has cached cannot be
+    /// withdrawn before max-age expires. `includeSubDomains` and `preload` are
+    /// not offered — both are traps on a self-hosted subdomain deployment; set
+    /// them on the reverse proxy instead.
     pub hsts_max_age_secs: u64,
 }
 
 /// Resolve an env duration to whole seconds: a raw integer (`300`) or a
-/// human-readable string (`5m`), matching what the web UI's duration fields
-/// accept. Anything unparseable or negative falls back to `default` rather
-/// than failing — a typo in an env var must not stop the server booting.
+/// human-readable string (`5m`), as the web UI's duration fields accept.
+/// Anything unparseable or negative falls back to `default`, so a typo in an
+/// env var cannot stop the server booting.
 fn env_duration_secs(raw: Option<String>, default: u64) -> u64 {
     raw.and_then(|v| crate::duration::parse_duration(&v))
         .and_then(|s| u64::try_from(s).ok())
@@ -87,22 +77,19 @@ fn derived_from_base_url(base_url: &str) -> bool {
         .starts_with("https://")
 }
 
-/// Whether session/flash cookies carry `Secure`.
-///
-/// An explicit `PINGWARD_COOKIE_SECURE` wins; otherwise it is derived from the
-/// scheme of `PINGWARD_BASE_URL`. Deliberately not forced on: browsers silently
-/// drop a `Secure` cookie sent over HTTP, so hardcoding true would make a
-/// plaintext self-hosted deployment fail to log in with no error message.
+/// Whether session/flash cookies carry `Secure`. An explicit
+/// `PINGWARD_COOKIE_SECURE` wins; otherwise it is derived from the scheme of
+/// `PINGWARD_BASE_URL`. Not forced on: browsers silently drop a `Secure` cookie
+/// sent over HTTP, so a plaintext deployment would fail to log in with no error.
 pub fn parse_cookie_secure(raw: Option<&str>, base_url: &str) -> bool {
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
         Some(v) if v.eq_ignore_ascii_case("true") || v == "1" => true,
         Some(v) if v.eq_ignore_ascii_case("false") || v == "0" => false,
         Some(v) => {
-            // `Config::from_map` cannot fail (see its signature), and this
-            // project's env convention is "fall back to the default and keep
-            // booting" (see `env_duration_secs`). But the default here may be
-            // true, so warn rather than silently treating it as false — the
-            // latter would quietly strip `Secure` from a correct HTTPS deploy.
+            // The env convention is "fall back to the default and keep
+            // booting" (see `env_duration_secs`), but the default here may be
+            // true: silently reading it as false would strip `Secure` from a
+            // correct HTTPS deploy, so warn.
             tracing::warn!(
                 "invalid PINGWARD_COOKIE_SECURE '{v}': expected true/false/1/0; \
                  falling back to the scheme of PINGWARD_BASE_URL"
@@ -122,11 +109,8 @@ impl Config {
     pub fn from_map(get: impl Fn(&str) -> Option<String>) -> Self {
         let scan_interval_secs = env_duration_secs(get("PINGWARD_SCAN_INTERVAL"), 30);
         let prune_interval_secs = env_duration_secs(get("PINGWARD_PRUNE_INTERVAL_SECS"), 3600);
-        // Log format: "json" (any case) switches to structured output and
-        // "compact"/"pretty" pick the other two console renderers; an unset or
-        // unrecognized value keeps the default `full` one. Note that "text",
-        // this crate's former name for `full`, therefore still lands on the
-        // same renderer it always did.
+        // Unset or unrecognized keeps `full` — including "text", this crate's
+        // former name for that renderer.
         let log_format = match get("PINGWARD_LOG_FORMAT")
             .unwrap_or_default()
             .trim()
@@ -146,8 +130,8 @@ impl Config {
                     .collect()
             })
             .unwrap_or_default();
-        // Instance SMTP: present only when both host and from are set. Any
-        // partial config (host without from, etc.) means email is unavailable.
+        // Instance SMTP needs both host and from; a partial config means
+        // email is unavailable.
         let nonblank = |k: &str| {
             get(k)
                 .map(|v| v.trim().to_string())
@@ -167,8 +151,8 @@ impl Config {
                     "none" => SmtpTls::None,
                     _ => SmtpTls::Starttls,
                 };
-                // Default port depends on TLS mode: implicit TLS conventionally
-                // uses 465, while STARTTLS/plaintext use the submission port 587.
+                // Implicit TLS conventionally uses 465; STARTTLS/plaintext
+                // use the submission port 587.
                 let default_port = match tls {
                     SmtpTls::Tls => 465,
                     SmtpTls::Starttls | SmtpTls::None => 587,
@@ -178,10 +162,8 @@ impl Config {
                     .unwrap_or(default_port);
                 let username = nonblank("PINGWARD_SMTP_USERNAME");
                 let password = nonblank("PINGWARD_SMTP_PASSWORD");
-                // Cleartext-credentials footgun: sending AUTH over an
-                // unencrypted connection (TLS=none) exposes the username and
-                // password to anyone on the path. Intended only for a trusted
-                // local relay; warn once at startup otherwise.
+                // AUTH over an unencrypted connection exposes the credentials
+                // to anyone on the path — only safe for a trusted local relay.
                 if tls == SmtpTls::None && username.is_some() && password.is_some() {
                     tracing::warn!(
                         "SMTP AUTH credentials set with PINGWARD_SMTP_TLS=none: credentials will be sent unencrypted"
@@ -224,10 +206,9 @@ impl Config {
     }
 }
 
-/// Resolve the effective scan interval for a check using the spec §8 cascade:
-/// check → project → global (DB settings) → env default. A `Some(v)` override
-/// with `v <= 0` is treated as unset and falls through. The result is clamped
-/// to at least 1 second so the scan loop's timer is always valid.
+/// Effective scan interval, via the spec §8 cascade: check → project → global
+/// (DB settings) → env default. An override `<= 0` counts as unset and falls
+/// through. Clamped to `>= 1s` so the scan loop's timer is always valid.
 pub fn effective_scan_interval(
     check_secs: Option<i64>,
     project_secs: Option<i64>,
@@ -246,10 +227,9 @@ pub fn effective_scan_interval(
     env_default.max(1)
 }
 
-/// Resolve the effective nag (repeat-notification) interval for a check from
-/// the cascade: check → project → global. Returns `None` when nag is off at
-/// every level (unset or non-positive). Unlike `effective_scan_interval`,
-/// there is no env-default fallback — nag is opt-in.
+/// Effective nag (repeat-notification) interval, via the cascade: check →
+/// project → global. `None` when every level is unset or non-positive. Nag is
+/// opt-in, so there is no env-default fallback.
 pub fn effective_nag_interval(
     check_secs: Option<i64>,
     project_secs: Option<i64>,
@@ -286,13 +266,9 @@ mod tests {
         assert_eq!(c.log_format, LogFormat::Pretty);
     }
 
-    /// `text` was this crate's name for what `tracing-subscriber` calls `full`,
-    /// and the two render identically. The name is retired from the docs, but
-    /// the value is not rejected: it falls through to the very renderer it used
-    /// to select, so an existing `PINGWARD_LOG_FORMAT=text` keeps producing
-    /// byte-identical output and needs no action. It was never a matched value
-    /// to begin with — the old parser recognised only `json` and sent
-    /// everything else, `text` included, down the same fallback arm.
+    /// `text` was this crate's name for `tracing-subscriber`'s `full`. The
+    /// name is retired from the docs but not rejected: it falls through to the
+    /// same renderer, so an existing `PINGWARD_LOG_FORMAT=text` needs no action.
     #[test]
     fn log_format_text_still_selects_the_renderer_it_named() {
         let c = Config::from_map(|k| (k == "PINGWARD_LOG_FORMAT").then(|| "text".into()));
@@ -368,8 +344,8 @@ mod tests {
             c.forward_auth_logout_url.as_deref(),
             Some("https://auth.example.com/logout")
         );
-        // A blank value is "unset", not "redirect to the empty string" — an
-        // empty `Location` would strand the browser on the logout POST.
+        // A blank value is "unset": an empty `Location` would strand the
+        // browser on the logout POST.
         let c =
             Config::from_map(|k| (k == "PINGWARD_FORWARD_AUTH_LOGOUT_URL").then(|| "  ".into()));
         assert!(c.forward_auth_logout_url.is_none());

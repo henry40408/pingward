@@ -1,5 +1,4 @@
-//! The step definitions, one module per `steps/*.steps.js` the JavaScript
-//! suite had.
+//! The step definitions.
 //!
 //! Cucumber collects `#[given]` / `#[when]` / `#[then]` attributes at link
 //! time, so a module only has to be reachable from the crate root to

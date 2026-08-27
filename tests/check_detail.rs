@@ -121,9 +121,8 @@ async fn ping_timestamps_are_localizable_with_utc_fallback() {
     );
 }
 
-/// XSS regression: a check description carrying `<img onerror=...>` and a
-/// `javascript:` link must never reach the rendered check page as live markup.
-/// Mirrors `project_view.rs::project_description_neutralizes_xss_payloads`.
+/// XSS regression, mirroring
+/// `project_view.rs::project_description_neutralizes_xss_payloads`.
 #[tokio::test]
 async fn check_description_neutralizes_xss_payloads() {
     let (server, store, pid) = server_with_project().await;
@@ -145,12 +144,9 @@ async fn check_description_neutralizes_xss_payloads() {
     let res = server.get(&format!("/checks/{cid}")).await;
     res.assert_status_ok();
     let body = res.text();
-    // The escaped `onerror=alert(1)` text is expected to still appear as
-    // inert page *content* (the whole `<img ...>` became literal text) — a
-    // bare `!contains("onerror=alert(1)")` would be wrong, and `!contains
-    // ("onerror")` alone would false-positive on base.html's own unrelated
-    // `liveSource.onerror = ...` JS. What must never appear is a *live* tag
-    // or attribute built from the payload.
+    // The escaped payload still appears as inert page *content*, so a bare
+    // `!contains("onerror=alert(1)")` would be wrong and `!contains("onerror")`
+    // would false-positive on base.html's own `liveSource.onerror`.
     assert!(
         !body.contains("<img "),
         "a raw <img> tag leaked into rendered page: {body}"
@@ -169,8 +165,6 @@ async fn check_description_neutralizes_xss_payloads() {
     );
 }
 
-/// A check description's markdown renders on the check detail page
-/// (`**bold**` becomes `<strong>`).
 #[tokio::test]
 async fn check_description_markdown_renders_on_check_page() {
     let (server, store, pid) = server_with_project().await;
@@ -198,8 +192,6 @@ async fn check_description_markdown_renders_on_check_page() {
     );
 }
 
-/// A period check that has just pinged counts down to its next deadline, and
-/// carries the exact instant in the element's tooltip.
 #[tokio::test]
 async fn check_detail_shows_when_the_next_ping_is_due() {
     let (server, store, pid) = server_with_project().await;
@@ -240,8 +232,8 @@ async fn check_detail_shows_when_the_next_ping_is_due() {
     );
 }
 
-/// A check that has never pinged still has a real deadline — `scan_once` will
-/// down it — but the label must not read as a report about a run that happened.
+/// A never-pinged check still has a real deadline (`scan_once` will down it),
+/// but the label must not read as a report about a run that happened.
 #[tokio::test]
 async fn check_detail_next_due_names_the_first_ping_when_none_has_arrived() {
     let (server, store, pid) = server_with_project().await;
@@ -258,8 +250,7 @@ async fn check_detail_next_due_names_the_first_ping_when_none_has_arrived() {
         })
         .await
         .unwrap();
-    // Precondition: nothing has stamped `next_due_at`, so the page cannot be
-    // reading the stored column here.
+    // Precondition: `next_due_at` is unstamped, so the page cannot be reading it.
     assert!(
         store
             .find_check(cid)
@@ -279,8 +270,7 @@ async fn check_detail_next_due_names_the_first_ping_when_none_has_arrived() {
     );
 }
 
-/// A paused check is excluded from monitoring, so no deadline is enforced and
-/// none may be shown.
+/// A paused check is excluded from monitoring, so no deadline may be shown.
 #[tokio::test]
 async fn check_detail_paused_shows_no_deadline() {
     let (server, store, pid) = server_with_project().await;
@@ -320,11 +310,9 @@ async fn check_detail_paused_shows_no_deadline() {
     );
 }
 
-/// The strip renders past the widest viewport on purpose — `assets/app.css`
-/// clips the overflow from the left, so the *server* cap is what decides
-/// whether a wide screen can fill its width. Locking it here is what stops a
-/// well-meaning "why render bars nobody sees?" from silently putting the
-/// desktop strip back to a third of the card.
+/// The strip renders past the widest viewport: `assets/app.css` clips the
+/// overflow from the left, so the server cap decides whether a wide screen can
+/// fill its width. Locked here so "why render bars nobody sees?" cannot shrink it.
 #[tokio::test]
 async fn the_heartbeat_renders_more_bars_than_a_viewport_fits() {
     let (server, store, pid) = server_with_project().await;
@@ -343,8 +331,8 @@ async fn the_heartbeat_renders_more_bars_than_a_viewport_fits() {
         .unwrap();
     let check = store.find_check(cid).await.unwrap().unwrap();
 
-    // Start/success pairs, the shape the window is sized for: 150 runs is more
-    // than the cap, so the page must clamp rather than render every one.
+    // Start/success pairs, the shape the window is sized for: 150 runs exceeds
+    // the cap, so the page must clamp.
     for _ in 0..150 {
         server
             .post(&format!("/ping/{}/start", check.ping_uuid))
@@ -367,7 +355,6 @@ async fn the_heartbeat_renders_more_bars_than_a_viewport_fits() {
     let bars = strip.matches("<i ").count();
     assert_eq!(bars, 120, "expected the full {} bars, got {bars}", 120);
 
-    // The caption must not name a count: how many of those bars a reader can
-    // actually see is the browser's answer, not ours.
+    // The caption must not name a count: only the browser knows how many show.
     assert!(!body.contains("30 runs ago"), "stale fixed-count caption");
 }

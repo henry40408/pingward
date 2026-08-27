@@ -1,4 +1,4 @@
-//! Setup, sign-in and sign-out — a port of `auth.steps.js`.
+//! Setup, sign-in and sign-out.
 
 use anyhow::Result;
 use cucumber::{given, then, when};
@@ -37,10 +37,8 @@ async fn admin_exists(world: &mut PingwardWorld, username: String, password: Str
     world.api()?.bootstrap_admin(&username, &password).await
 }
 
-// Also a `Then` in `authz.feature`, where signing in *is* the assertion's
-// setup and the scenario reads as one sentence. cucumber-rs matches on the
-// keyword, unlike cucumber-js, so every keyword a step is written under has to
-// be declared.
+// cucumber-rs matches on the Gherkin keyword, so every keyword a step is
+// written under has to be declared; `authz.feature` uses this one as a `Then`.
 #[when(expr = "I sign in as {string} with password {string}")]
 #[then(expr = "I sign in as {string} with password {string}")]
 async fn sign_in_as(world: &mut PingwardWorld, username: String, password: String) -> Result<()> {

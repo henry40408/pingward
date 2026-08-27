@@ -85,9 +85,8 @@ async fn dashboard_shows_project_group_and_check_row() {
     );
 }
 
-/// The "no channel" chip is rendered for a check with zero bound channels and
-/// absent for a check that has one — asserted both directions in the same
-/// test so a template that always (or never) emits the chip would fail.
+/// Both directions in one test, so a template that always (or never) emits the
+/// chip fails one half.
 #[tokio::test]
 async fn dashboard_no_channel_chip_reflects_binding_state() {
     let (server, store, pid, unbound_cid) = server_with_project_and_check().await;
@@ -125,8 +124,8 @@ async fn dashboard_no_channel_chip_reflects_binding_state() {
         "exactly one row (the unbound check) must render the chip"
     );
     // The rows are independent `<div class="check" …>…</div>` blocks; split on
-    // that marker so we can assert the chip is inside the right row's block
-    // rather than just "present somewhere in the page".
+    // that marker so the chip is asserted inside the right row rather than
+    // "somewhere in the page".
     let rows: Vec<&str> = body.split("class=\"check\"").collect();
     let unbound_row = rows
         .iter()
@@ -147,7 +146,7 @@ async fn dashboard_no_channel_chip_reflects_binding_state() {
 }
 
 /// A running check has no tile of its own — it counts under Up — but keeps its
-/// per-row running badge. This pins both halves of the up/running tile merge.
+/// per-row running badge.
 #[tokio::test]
 async fn dashboard_counts_running_check_under_up_and_keeps_the_row_badge() {
     let (server, store, pid, cid) = server_with_project_and_check().await;
@@ -163,8 +162,8 @@ async fn dashboard_counts_running_check_under_up_and_keeps_the_row_badge() {
         )
         .await
         .unwrap();
-    // A second, untouched check is "new" — not up, not running — so it proves
-    // the Up tile counts the running check specifically, not every check.
+    // A second, untouched check is "new", so the Up tile is shown to count the
+    // running check specifically rather than every check.
     store
         .create_check(&pingward::store::NewCheck {
             project_id: pid,
@@ -182,8 +181,7 @@ async fn dashboard_counts_running_check_under_up_and_keeps_the_row_badge() {
     let res = server.get("/").await;
     res.assert_status_ok();
     let body = res.text();
-    // The running check is folded into Up (count 1), and there is no Running
-    // tile at all any more.
+    // The running check folds into Up, and there is no Running tile.
     assert_tile(&body, "Up", 1);
     assert!(
         !body.contains(">Running</div>"),
@@ -197,10 +195,9 @@ async fn dashboard_counts_running_check_under_up_and_keeps_the_row_badge() {
     );
 }
 
-/// Dashboard descriptions: a project's and a check's `markdown::truncate_plain`
-/// output must actually reach the rendered page, inside the `gdesc`/`cdesc`
-/// elements respectively, with markdown markers stripped (not raw) and the
-/// check's long description genuinely truncated (not the full string).
+/// A project's and a check's `markdown::truncate_plain` output must reach the
+/// rendered page inside `gdesc`/`cdesc`, with markdown markers stripped and the
+/// check's long description actually truncated.
 #[tokio::test]
 async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
     let (server, store, uid) = logged_in_server().await;
@@ -236,10 +233,8 @@ async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
         })
         .await
         .unwrap();
-    // Negative control: a second check with an EMPTY description must not
-    // render a `cdesc` element at all — proves the
-    // `{% if !c.description.is_empty() %}` guard works, and that the
-    // assertions below aren't matching something incidental.
+    // Negative control: a check with an empty description must render no `cdesc`
+    // element, pinning the `{% if !c.description.is_empty() %}` guard.
     store
         .create_check(&pingward::store::NewCheck {
             project_id: pid,
@@ -268,11 +263,10 @@ async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
         "raw markdown markers leaked into gdesc, truncate_plain did not run: {body}"
     );
 
-    // Check description: truncated (ellipsis present, tail of the original
-    // string absent) and markers stripped, rendered inside `cdesc`.
-    // 120 characters of content plus the ellipsis. Asserted against a literal
-    // rather than a `truncate_plain` call, so a broken truncation cannot make
-    // this test agree with itself.
+    // Check description: truncated and stripped inside `cdesc` — 120 characters
+    // plus the ellipsis. Asserted against a literal rather than a
+    // `truncate_plain` call, so a broken truncation cannot make this test agree
+    // with itself.
     let expected = "Nightly backups of the primary database run every day and verify checksum integrity end to end, catching silent corrupti…";
     assert!(
         body.contains(&format!(
@@ -294,8 +288,7 @@ async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
         "raw markdown markers leaked into cdesc, truncate_plain did not run: {body}"
     );
 
-    // Negative control: exactly one check row (the one with a non-empty
-    // description) should render a `cdesc` element.
+    // Exactly one check row has a non-empty description.
     assert_eq!(
         body.matches("data-testid=\"check-description-summary\"")
             .count(),
@@ -354,7 +347,7 @@ async fn server_with_two_projects() -> TestServer {
     server
 }
 
-/// Assert a summary tile shows exactly `n`. Matches the tile's own markup, so a
+/// Assert a summary tile shows exactly `n`, matching the tile's own markup so a
 /// counter that stops following the filter fails here rather than passing on a
 /// bare `body.contains("1")`.
 fn assert_tile(body: &str, label: &str, n: usize) {
@@ -425,9 +418,9 @@ async fn dashboard_filter_by_check_name_drops_other_projects_and_narrows_counter
     );
 }
 
-/// A project-level hit shows the project whole. Filtering by a term that exists
-/// only in the project's own description must still list checks that do not
-/// match it themselves, rather than rendering a header above an empty list.
+/// A project-level hit shows the project whole: a term found only in the
+/// project's own description must still list checks that do not match it, not a
+/// header above an empty list.
 #[tokio::test]
 async fn dashboard_filter_by_project_description_keeps_all_of_its_checks() {
     let server = server_with_two_projects().await;
@@ -458,8 +451,8 @@ async fn dashboard_filter_by_project_name_keeps_all_of_its_checks() {
     assert_tile(&body, "Total", 2);
 }
 
-/// Matching runs over the **raw** description, not the 120-character summary the
-/// row displays. The term below appears only in the truncated-away tail, so this
+/// Matching runs over the raw description, not the 120-character summary the row
+/// displays. The term below appears only in the truncated-away tail, so this
 /// fails if the filter is ever pointed at `CheckRow::description`.
 #[tokio::test]
 async fn dashboard_filter_matches_description_text_beyond_the_visible_summary() {
@@ -472,9 +465,8 @@ async fn dashboard_filter_matches_description_text_beyond_the_visible_summary() 
 
     let body = server.get("/?q=glacier").await.text();
     assert!(shows_check(&body, "backup"), "match missing: {body}");
-    // "glacier" does appear once, echoed into the search box — but the tail it
-    // came from must not be rendered, proving the match came from the stored
-    // description rather than anything on screen.
+    // "glacier" appears once, echoed into the search box; the tail it came from
+    // must not render, proving the match came from the stored description.
     assert!(
         !body.contains("offsite glacier vault"),
         "the matched tail is past the summary cut-off, so it must not render: {body}"
@@ -502,9 +494,9 @@ async fn dashboard_filter_is_case_insensitive() {
     );
     assert_tile(&body, "Total", 1);
 
-    // ...and the other direction, which is what folding the *haystack* buys:
-    // "TLS" is stored uppercase, so a lowercase query must still find it.
-    // Without this, dropping `to_lowercase()` on the haystack passes the suite.
+    // ...and the other direction, which folding the *haystack* buys: "TLS" is
+    // stored uppercase, so a lowercase query must still find it. Without this,
+    // dropping `to_lowercase()` on the haystack passes the suite.
     let body = server.get("/?q=tls").await.text();
     assert!(
         shows_check(&body, "rotate-certs"),
@@ -513,9 +505,8 @@ async fn dashboard_filter_is_case_insensitive() {
     assert_tile(&body, "Total", 1);
 }
 
-/// "Nothing matched" is a different state from "you have no projects" — they
-/// must not collapse into the same message, or a user with a typo is told to
-/// create a project they already have.
+/// "Nothing matched" must not collapse into "you have no projects", or a user
+/// with a typo is told to create a project they already have.
 #[tokio::test]
 async fn dashboard_no_results_state_is_distinct_from_the_empty_state() {
     let server = server_with_two_projects().await;
@@ -537,9 +528,7 @@ async fn dashboard_no_results_state_is_distinct_from_the_empty_state() {
 }
 
 /// One project whose four checks each resolve to a different display status:
-/// `web` → Up, `job` → Running, `cron` → Late, `db` → Down. Lets a test point
-/// the status filter at any bucket and assert both what shows and what the
-/// tiles count.
+/// `web` → Up, `job` → Running, `cron` → Late, `db` → Down.
 async fn server_with_mixed_statuses() -> TestServer {
     use pingward::models::CheckStatus;
     let (server, store, uid) = logged_in_server().await;
@@ -603,9 +592,8 @@ async fn server_with_mixed_statuses() -> TestServer {
     server
 }
 
-/// Whether a check row for `name` is rendered (reads the row's `nm` cell, so
-/// it can't be fooled by the name appearing in the search box or a project
-/// header).
+/// Whether a check row for `name` is rendered. Reads the row's `nm` cell, so the
+/// name appearing in the search box or a project header cannot fool it.
 fn shows_check(body: &str, name: &str) -> bool {
     check_order(body).iter().any(|n| n == name)
 }
@@ -644,9 +632,8 @@ async fn dashboard_status_filter_narrows_the_list_but_not_the_tiles() {
             "{name} must be hidden by status=down: {body}"
         );
     }
-    // ...but the tiles still show the full breakdown, so the other buckets
-    // remain visible to switch to. This is the deliberate exception to
-    // "counters follow the filter": they follow `q`, not the status select.
+    // ...but the tiles still show the full breakdown, so the other buckets stay
+    // switchable: the counters follow `q`, not the status select.
     assert_tile(&body, "Total", 4);
     assert_tile(&body, "Up", 2);
     assert_tile(&body, "Late", 1);
@@ -662,8 +649,8 @@ async fn dashboard_status_filter_narrows_the_list_but_not_the_tiles() {
     );
 }
 
-/// The merge again, this time in the filter: `status=up` must include the
-/// in-flight running check, not just the plain-up one.
+/// The merge again in the filter: `status=up` includes the in-flight running
+/// check, not just the plain-up one.
 #[tokio::test]
 async fn dashboard_status_up_filter_includes_running_checks() {
     let server = server_with_mixed_statuses().await;
@@ -699,8 +686,8 @@ async fn dashboard_status_and_text_filters_combine_with_and() {
     assert!(!shows_check(&body, "db"), "db matches neither: {body}");
 }
 
-/// An unrecognised `?status=` value degrades to "no filter" — the full list,
-/// no selected option, no clear link — rather than a 400 or an empty page.
+/// An unrecognised `?status=` value degrades to "no filter" (full list, no
+/// selected option, no clear link) rather than a 400 or an empty page.
 #[tokio::test]
 async fn dashboard_unknown_status_value_is_ignored() {
     let server = server_with_mixed_statuses().await;
@@ -713,8 +700,7 @@ async fn dashboard_unknown_status_value_is_ignored() {
         !body.contains("dashboard-filter-clear"),
         "a bogus status is not an active filter: {body}"
     );
-    // A bogus value collapses to "All": the All option is selected, and none of
-    // the real status options are.
+    // A bogus value collapses to "All".
     assert!(
         body.contains("value=\"\" selected"),
         "the All option should be selected for a bogus status: {body}"
@@ -727,8 +713,8 @@ async fn dashboard_unknown_status_value_is_ignored() {
     }
 }
 
-/// A status filter that matches nothing is the no-results state, not the
-/// "no projects yet" state — even though `q` is empty.
+/// A status filter that matches nothing is the no-results state, not the "no
+/// projects yet" state, even though `q` is empty.
 #[tokio::test]
 async fn dashboard_status_filter_with_no_matches_shows_no_results_not_empty() {
     let (server, store, uid) = logged_in_server().await;
@@ -780,8 +766,8 @@ async fn dashboard_empty_state_when_no_projects() {
 }
 
 /// Names in the order the dashboard renders them. Tests assert the whole
-/// sequence rather than one pairwise comparison, so a sort that happens to move
-/// the pair being checked but scrambles the rest still fails.
+/// sequence, so a sort that moves the pair being checked but scrambles the rest
+/// still fails.
 fn rendered_order(body: &str, open: &str, close: &str) -> Vec<String> {
     body.split(open)
         .skip(1)
@@ -797,11 +783,9 @@ fn project_order(body: &str) -> Vec<String> {
 }
 
 /// Check rows, top to bottom, flattened across groups. Matches the row's `nm`
-/// cell, so the search box and project headers cannot contribute.
-///
-/// The cell wraps its text in the row's real link to the check (that anchor is
-/// what makes the row work with JS off — see `tests/no_js.rs`), so the name
-/// starts after the anchor's own `>`.
+/// cell, so the search box and project headers cannot contribute. The cell wraps
+/// its text in the row's real link to the check (see `tests/no_js.rs`), so the
+/// name starts after the anchor's own `>`.
 fn check_order(body: &str) -> Vec<String> {
     rendered_order(body, "class=\"nm\"><a href=\"", "</a>")
         .iter()
@@ -842,8 +826,8 @@ async fn dashboard_project_order_by_name_is_case_insensitive() {
     );
 }
 
-/// Four checks in one project whose creation order is deliberately the reverse
-/// of their activity order, plus one that has never been pinged.
+/// Four checks in one project whose creation order is the reverse of their
+/// activity order, plus one that has never been pinged.
 async fn server_with_staggered_activity() -> TestServer {
     use pingward::models::CheckStatus;
     let (server, store, uid) = logged_in_server().await;
@@ -882,14 +866,14 @@ async fn server_with_staggered_activity() -> TestServer {
         .mark_ping(middle, CheckStatus::Up, Some(ago(600)), None, None)
         .await
         .unwrap();
-    // In flight: only a start, no finish. The start is what dates it, and it is
-    // the most recent activity of the four.
+    // In flight: only a start, no finish. The start dates it, and it is the most
+    // recent activity of the four.
     let running = mk(&store, pid, "running", "cu-running").await;
     store
         .mark_ping(running, CheckStatus::New, None, Some(ago(60)), None)
         .await
         .unwrap();
-    // Started long ago but finished recently — the finish wins, putting it
+    // Started long ago but finished recently: the finish wins, putting it
     // second. Guards against a sort that reads only `last_start_at`.
     let finished = mk(&store, pid, "finished", "cu-finished").await;
     store
@@ -925,7 +909,7 @@ async fn dashboard_never_pinged_checks_keep_creation_order_at_the_bottom() {
         .await
         .unwrap();
     // No check has any activity, so every sort key ties and the order must fall
-    // back to creation — not to whatever the sort happens to do with equal keys.
+    // back to creation rather than to whatever the sort does with equal keys.
     for (name, uuid) in [("zeta", "cu-z"), ("alpha", "cu-a"), ("mu", "cu-m")] {
         store
             .create_check(&pingward::store::NewCheck {

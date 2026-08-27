@@ -1,18 +1,16 @@
 //! The elevation gate on `/admin`'s access-granting actions
 //! (`web::elevation` / `src/elevate.rs`).
 //!
-//! `/admin`'s controls are single-button inline forms in a table row —
-//! `users_toggle_admin` posts no body at all — so the per-action password field
-//! `/account` uses does not fit. Re-authentication is decoupled instead: a
-//! refused action bounces to `/admin/unlock`, an interstitial that *explains*
-//! the requirement and takes the password; confirming lasts a while.
+//! `/admin`'s controls are single-button inline forms in a table row
+//! (`users_toggle_admin` posts no body), so `/account`'s per-action password
+//! field does not fit. A refused action bounces to `/admin/unlock` instead, an
+//! interstitial that explains the requirement and takes the password.
 //!
-//! The line drawn is **granting versus removing access**. Creating a user,
-//! resetting a password and promoting to admin each hand out access that
-//! outlives the browser session that did it. Disabling, demoting and deleting
-//! take access away, and an operator who thinks they are under attack must be
-//! able to do those without first finding their password — so those are
-//! deliberately ungated, and this file pins both halves.
+//! The line is granting versus removing access. Creating a user, resetting a
+//! password and promoting to admin hand out access outliving the session that
+//! did it; disabling, demoting and deleting are ungated, because an operator
+//! who thinks they are under attack must not have to find their password
+//! first. Both halves are pinned here.
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
@@ -22,8 +20,7 @@ mod common;
 
 const ADMIN_PW: &str = "pw";
 
-/// A signed-in admin, **not** unlocked, plus a second ordinary account to act
-/// on. Returns the admin's server and the target's id.
+/// A signed-in admin, *not* unlocked, plus an ordinary account to act on.
 async fn locked_admin() -> (TestServer, Store, i64) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -74,7 +71,7 @@ async fn creating_a_user_is_refused_while_locked() {
         "a locked admin must not have created an account"
     );
     // The refusal is an interstitial, not a silent bounce: the admin lands on
-    // the page that explains the requirement, with what was refused named.
+    // the page explaining the requirement, with what was refused named.
     let bounced = server.get("/admin/unlock").await.text();
     assert!(bounced.contains("unlock-bounced"), "{bounced}");
     assert!(bounced.contains("unlock-input"), "{bounced}");
@@ -117,9 +114,9 @@ async fn promoting_to_admin_is_refused_while_locked() {
 
 // --- removing access is not gated ---
 
-/// Demoting is the *other* direction through the same handler, and must stay
-/// available while locked: revoking someone's admin rights is what an operator
-/// reaches for when they think an account is compromised.
+/// Demoting is the *other* direction through the same handler and must stay
+/// available while locked: it is what an operator reaches for when they think
+/// an account is compromised.
 #[tokio::test]
 async fn demoting_an_admin_works_while_locked() {
     let (server, store, dave) = locked_admin().await;
@@ -176,8 +173,8 @@ async fn the_wrong_password_does_not_unlock() {
         .post("/admin/unlock")
         .form(&[("password", "not-the-password")])
         .await;
-    // The unlock page re-renders with the error, keeping the explanation in
-    // front of an admin who is mid-flow.
+    // The page re-renders with the error rather than redirecting, keeping the
+    // explanation in front of an admin mid-flow.
     res.assert_status_ok();
     assert!(res.text().contains("That password is not correct."));
     assert!(res.text().contains("unlock-input"));
@@ -192,8 +189,8 @@ async fn the_wrong_password_does_not_unlock() {
 }
 
 /// The unlock form is reachable from an authenticated seat, so it would be a
-/// third password oracle if it were not metered. It shares the account limiter
-/// with the login form and `/account`.
+/// third password oracle if unmetered. It shares the account limiter with the
+/// login form and `/account`.
 #[tokio::test]
 async fn repeated_wrong_unlocks_exhaust_the_account_budget() {
     let (server, _store, _dave) = locked_admin().await;
@@ -245,11 +242,10 @@ async fn elevation_does_not_leak_to_another_session() {
 
 /// Signing out and back in starts locked again.
 ///
-/// Note what this does and does not prove: a new session gets a new id and
-/// therefore a new handle, so it would be locked even if `logout` forgot to
-/// call `Elevations::revoke`. The revoke itself is unit-tested
-/// (`elevate::tests::revoke_ends_the_window_immediately`); what matters here is
-/// the user-visible half — elevation never survives a sign-out.
+/// A new session gets a new id and handle, so it would be locked even if
+/// `logout` forgot to call `Elevations::revoke` — the revoke itself is
+/// unit-tested in `elevate::tests::revoke_ends_the_window_immediately`. What
+/// this pins is the user-visible half.
 #[tokio::test]
 async fn signing_out_and_back_in_starts_locked() {
     let (server, store, dave) = locked_admin().await;
@@ -282,20 +278,16 @@ async fn signing_out_and_back_in_starts_locked() {
 
 // --- the interstitial page ---
 
-/// The page has to *explain*, not just ask. An admin who is already signed in
-/// and gets asked for their password again will otherwise reasonably wonder
-/// whether something is wrong.
+/// The page has to *explain*, not just ask: an admin already signed in who is
+/// asked for their password again will otherwise wonder what is wrong.
 #[tokio::test]
 async fn the_unlock_page_explains_the_requirement() {
     let (server, _store, _dave) = locked_admin().await;
     let body = server.get("/admin/unlock").await.text();
 
     assert!(body.contains("unlock-input"), "{body}");
-    // What it covers, and — just as important — what it does not. The three
-    // actions are named inline in the prose (emphasised with `<strong>`, which
-    // `.crumb strong` lifts out of the muted body colour) rather than as
-    // badges: `.badge` is the check-status vocabulary and reads as a status
-    // pill wherever it appears.
+    // The gated actions are named inline with `<strong>` rather than as badges:
+    // `.badge` is the check-status vocabulary and reads as a status pill.
     assert!(body.contains("unlock-gated"), "{body}");
     assert!(
         body.contains("<strong>granting admin rights</strong>"),
@@ -303,11 +295,10 @@ async fn the_unlock_page_explains_the_requirement() {
     );
     assert!(!body.contains("badge"), "{body}");
     assert!(body.contains("disabling, demoting, deleting"), "{body}");
-    // It is the same password again. Calling this a second *factor* would be
-    // wrong, and an admin hunting for a TOTP app is a support ticket.
+    // It is the same password again; calling it a second *factor* would send an
+    // admin hunting for a TOTP app.
     assert!(body.contains("not a second factor"), "{body}");
-    // The window is rendered from the constant rather than written into the
-    // copy, so the two cannot drift.
+    // Rendered from the constant, so copy and constant cannot drift.
     assert!(body.contains("15m"), "{body}");
     // A way out that is not the browser back button.
     assert!(body.contains("unlock-cancel"), "{body}");
@@ -417,13 +408,11 @@ async fn the_page_tells_a_passwordless_admin_it_does_not_apply() {
     assert!(store.find_user_by_id(dave).await.unwrap().unwrap().is_admin);
 }
 
-/// Regression lock for the message an admin sees after confirming.
-///
-/// It used to list the gated actions — "Confirmed. **Creating a user**,
-/// resetting a password and granting admin are available…" — which, read by
-/// someone who had just clicked "add user" and been bounced here, said their
-/// user had been created. It had not: a refused action is dropped rather than
-/// replayed, so the confirmation has to send them back to redo it.
+/// Regression lock for the message an admin sees after confirming: it used to
+/// list the gated actions ("Confirmed. **Creating a user**, resetting a password
+/// and granting admin are available…"), which read to someone just bounced from
+/// "add user" as if their user had been created. A refused action is dropped
+/// rather than replayed, so the confirmation has to send them back to redo it.
 #[tokio::test]
 async fn confirming_does_not_claim_the_refused_action_succeeded() {
     let (server, store, _dave) = locked_admin().await;
@@ -443,8 +432,7 @@ async fn confirming_does_not_claim_the_refused_action_succeeded() {
         !body.contains("Creating a user, resetting"),
         "the confirmation must not list the gated actions: {body}"
     );
-    // And the claim it must never make is the true one, checked against the
-    // database rather than against the copy.
+    // Checked against the database rather than the copy.
     assert!(
         store
             .find_user_by_username("carol")
@@ -458,10 +446,8 @@ async fn confirming_does_not_claim_the_refused_action_succeeded() {
 /// Validation runs before the gate, so a submission that could never succeed
 /// says why instead of sending the admin through a confirmation for nothing.
 ///
-/// This is the flow that produced the original report: submit a duplicate
-/// username while locked, get bounced, confirm, and come back to a page that
-/// looked like success. There is nothing to confirm now — the answer arrives
-/// on the first submission.
+/// The original report was this flow: submit a duplicate username while locked,
+/// get bounced, confirm, and come back to a page that looked like success.
 #[tokio::test]
 async fn a_doomed_submission_is_refused_without_asking_for_a_password() {
     let (server, store, _dave) = locked_admin().await;
@@ -485,8 +471,8 @@ async fn a_doomed_submission_is_refused_without_asking_for_a_password() {
     assert_eq!(store.count_users().await.unwrap(), 2);
 }
 
-/// The reordering must not have moved the gate past a side effect: a *valid*
-/// submission from a locked admin still writes nothing.
+/// The gate still sits above the first side effect: a *valid* submission from a
+/// locked admin writes nothing.
 #[tokio::test]
 async fn a_valid_submission_still_needs_confirming() {
     let (server, store, _dave) = locked_admin().await;
@@ -507,14 +493,13 @@ async fn a_valid_submission_still_needs_confirming() {
 // --- the in-page dialog's half of the contract ---
 //
 // `app.js` asks in place rather than letting the server bounce, so the form the
-// admin filled in survives. That needs two things from the server: a reply it
-// can act on without rendering HTML, and a marker telling it which controls
-// will be refused. Both are checked here; the dialog itself is covered by the
-// browser tests, which is the only place its behaviour is real.
+// admin filled in survives. That needs a reply it can act on without rendering
+// HTML, and a marker naming which controls will be refused; both are checked
+// here, while the dialog itself is covered by the browser tests.
 
-/// `X-Requested-With: fetch` is this app's existing "answer me, do not navigate
-/// me" signal. The decision is identical either way — only the presentation
-/// differs — so a scripted caller is never a weaker door than the form.
+/// `X-Requested-With: fetch` is this app's "answer me, do not navigate me"
+/// signal. The decision is identical either way, only the presentation differs,
+/// so a scripted caller is never a weaker door than the form.
 #[tokio::test]
 async fn the_fetch_variant_answers_with_status_codes() {
     let (server, store, dave) = locked_admin().await;
@@ -565,16 +550,15 @@ async fn the_fetch_variant_reports_the_lockout_too() {
 }
 
 /// The marker follows the same granting-versus-removing rule the handlers do,
-/// and disappears once confirmed. If it ever drifted from the handlers the
-/// server would still refuse — the cost of drift is a needless dialog or a
-/// bounce, never an ungated action.
+/// and disappears once confirmed. The server re-checks regardless, so drift
+/// costs a needless dialog or bounce, never an ungated action.
 #[tokio::test]
 async fn only_the_granting_controls_are_marked_and_only_while_locked() {
     let (server, store, dave) = locked_admin().await;
     let body = server.get("/admin").await.text();
     assert!(body.contains(r#"data-reauth="create this user""#), "{body}");
-    // One reset control per row, the signed-in admin's own included — that
-    // form is deliberately not hidden behind `is_self`.
+    // One reset control per row, the signed-in admin's own included: that form
+    // is not hidden behind `is_self`.
     assert_eq!(
         i64::try_from(body.matches(r#"data-reauth="reset this user"#).count()).unwrap(),
         store.count_users().await.unwrap(),
@@ -585,8 +569,7 @@ async fn only_the_granting_controls_are_marked_and_only_while_locked() {
         "{body}"
     );
 
-    // Demoting goes through the same route and must not be marked — it is the
-    // control an operator reaches for when they think they are under attack.
+    // Demoting goes through the same route and must not be marked.
     store.set_user_admin(dave, true).await.unwrap();
     let body = server.get("/admin").await.text();
     assert!(

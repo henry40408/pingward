@@ -55,7 +55,6 @@ async fn admin_dashboard_renders_with_figures() {
     res.assert_status_ok();
     let body = res.text();
     assert!(body.contains("Dashboard") || body.contains("Admin"));
-    // scale figures present
     assert!(body.contains("proj") || body.contains('1'));
 }
 
@@ -108,7 +107,6 @@ async fn admin_dashboard_shows_running_badge_with_count() {
 async fn admin_dashboard_absolute_times_wrapped_for_local_tz() {
     let (server, store, _admin) = admin_server().await;
     let now = chrono::Utc::now();
-    // Scheduler heartbeat timestamps.
     store
         .set_setting("last_scan_at", &now.to_rfc3339())
         .await
@@ -162,18 +160,15 @@ async fn admin_dashboard_absolute_times_wrapped_for_local_tz() {
         .unwrap();
 
     let body = server.get("/admin").await.text();
-    // Last scan, last prune, and the recent-failure "When" cell each carry the
-    // `.localtime` class with a `data-ts` so the shared base.html script converts
-    // them to the viewer's time zone (raw UTC text is only the no-JS fallback).
-    // The scheduler heartbeats render the class on a <div> (not a <span>), so
-    // match the class+attr pair rather than a specific tag; the trailing quote
-    // after `localtime` also excludes the script's `.localtime[data-ts]` selector.
+    // Last scan, last prune, and the recent-failure "When" cell each carry
+    // `.localtime` with a `data-ts`; raw UTC text is only the no-JS fallback.
+    // The heartbeats use a <div>, so match the class+attr pair rather than a tag;
+    // the trailing quote also excludes the script's `.localtime[data-ts]` selector.
     let spans = body.matches(r#"localtime" data-ts=""#).count();
     assert!(
         spans >= 3,
         "expected >=3 localtime elements (scan, prune, failure), got {spans}"
     );
-    // The scheduler heartbeat is embedded as its stored RFC3339 data-ts.
     assert!(
         body.contains(&format!(r#"data-ts="{}""#, now.to_rfc3339())),
         "last_scan_at must appear as an RFC3339 data-ts attribute"

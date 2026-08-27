@@ -11,19 +11,15 @@ use chrono::{DateTime, Duration, Utc};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::OnceLock;
 
-/// The unprefixed session cookie name, used when `Secure` is off.
 pub const SESSION_COOKIE_BASE: &str = "pingward_session";
-/// The name used when `Secure` is on. The `__Host-` prefix makes the browser
-/// enforce Secure + Path=/ + no Domain, so the cookie cannot be overwritten by
-/// a sibling subdomain or by a response downgraded to HTTP.
+/// Used when `Secure` is on. The `__Host-` prefix makes the browser enforce
+/// Secure + Path=/ + no Domain, so a sibling subdomain or a response downgraded
+/// to HTTP cannot overwrite the cookie.
 pub const SESSION_COOKIE_HOST_PREFIXED: &str = "__Host-pingward_session";
 
-/// The session cookie name this process uses.
-///
-/// This **must** be conditional on the resolved `cookie_secure`: applying
-/// `__Host-` unconditionally would make browsers on a plaintext HTTP
-/// deployment refuse the cookie outright, turning login into a silent
-/// failure.
+/// The session cookie name this process uses. Must stay conditional on
+/// `cookie_secure`: an unconditional `__Host-` makes browsers on a plaintext
+/// HTTP deployment refuse the cookie, turning login into a silent failure.
 pub fn session_cookie_name(cookie_secure: bool) -> &'static str {
     if cookie_secure {
         SESSION_COOKIE_HOST_PREFIXED
@@ -34,52 +30,37 @@ pub fn session_cookie_name(cookie_secure: bool) -> &'static str {
 
 /// Idle window: `sessions.expires_at` is always "last activity + this".
 ///
-/// OWASP's suggested 15–30 minutes targets high-value applications; pingward
-/// is a self-hosted monitoring dashboard whose users routinely leave the
-/// board open in a tab for days, so that figure would produce a stream of
-/// spurious logouts. The requirement is that *both* an idle and an absolute
-/// layer exist; 72 hours is the value chosen for this one.
+/// OWASP's 15–30 minutes targets high-value applications; a dashboard left
+/// open in a tab for days would see a stream of spurious logouts. What matters
+/// is that both an idle and an absolute layer exist.
 pub const SESSION_IDLE_TTL_HOURS: i64 = 72;
 
-/// Absolute cap, measured from `created_at`. No amount of activity extends it.
-/// Kept at the previous 30 days so that no existing session's maximum lifetime
-/// is shortened by the upgrade.
+/// Absolute cap from `created_at`; no amount of activity extends it.
 pub const SESSION_ABSOLUTE_MAX_DAYS: i64 = 30;
 
-/// Whether a session has passed its absolute cap.
-///
-/// A `None` `created_at` (a pre-`0010` row, whose `created_at = ''` yields
-/// `None` from `parse_ts`) is treated as *not* past the cap — only the idle
-/// window governs it. `0012_session_secret.sql` and
-/// `0015_invalidate_legacy_sessions.sql` already ran `DELETE FROM sessions`,
-/// so no such row can exist in a migrated database; this branch is
-/// defensive.
+/// Whether a session has passed its absolute cap. A `None` `created_at` (a
+/// pre-`0010` row) counts as not past it, leaving only the idle window;
+/// `0012`/`0015` deleted every such row, so that branch is defensive.
 pub fn is_past_absolute_cap(created_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
     created_at.is_some_and(|c| now >= c + Duration::days(SESSION_ABSOLUTE_MAX_DAYS))
 }
 
-/// Which direction a renewal moved a session's `expires_at`.
-///
-/// The two cases are operationally different and a `session.renewed` log line
-/// that cannot tell them apart is misleading: [`RenewalKind::Slid`] is the
-/// ordinary "this session is in use" heartbeat, whereas
-/// [`RenewalKind::Clamped`] means the stored window was *longer* than the
-/// current policy would ever grant and was pulled back — which only happens
-/// when a row was written by another process running older code, or by a
-/// build with a longer `SESSION_IDLE_TTL_HOURS` than this one. A burst of
-/// clamps is therefore a deployment signal, not user activity.
+/// Which direction a renewal moved a session's `expires_at`, discriminating
+/// the `session.renewed` log line. [`RenewalKind::Slid`] is the ordinary
+/// in-use heartbeat; [`RenewalKind::Clamped`] means the stored window exceeded
+/// what the current policy grants, which happens only for a row written by an
+/// older build or under a longer `SESSION_IDLE_TTL_HOURS`. A burst of clamps
+/// is a deployment signal, not user activity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenewalKind {
-    /// The window moved forward (or stayed put and was re-anchored to the
-    /// absolute cap): ordinary activity.
+    /// Moved forward, or re-anchored to the absolute cap: ordinary activity.
     Slid,
-    /// The window moved *backwards*, because the stored `expires_at` exceeded
-    /// what the current policy grants.
+    /// Moved backwards: the stored `expires_at` exceeded current policy.
     Clamped,
 }
 
 impl RenewalKind {
-    /// Log-field spelling, used as `renewal` on the `session.renewed` event.
+    /// Rendered as the `renewal` field on `session.renewed`.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Slid => "slid",
@@ -88,8 +69,7 @@ impl RenewalKind {
     }
 }
 
-/// A renewal decision: the `expires_at` to write, plus which direction it
-/// moved (see [`RenewalKind`]).
+/// A renewal decision: the `expires_at` to write, and which way it moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionRenewal {
     pub expires_at: DateTime<Utc>,
@@ -114,22 +94,13 @@ impl SessionRenewal {
 
 /// The renewal to apply when the session should slide, else `None`.
 ///
-/// Already at/past the absolute cap → `None`. Otherwise, if the stored
-/// `expires_at` already carries a longer window than the idle policy would
-/// ever grant — which could previously happen for a row created before this
-/// policy existed, since a row this branch writes never exceeds `now + idle`
-/// (see doc below) — it is clamped *down* to
-/// `min(now + idle, created_at + absolute)` immediately, bypassing the write
-/// throttle below. `0015_invalidate_legacy_sessions.sql` deletes every such
-/// pre-policy row on upgrade, so this clamp is no longer the mechanism
-/// operators depend on for *that* case. It stays because two others remain:
-/// a rolling deploy or a second instance on the same `DATABASE_URL` can
-/// still write a pre-policy row after the migration has run, and any future
-/// build that *lowers* `SESSION_IDLE_TTL_HOURS` leaves every live row
-/// carrying a window the new policy would never grant.
-/// Otherwise, more than half the idle window still remaining → `None` (this
-/// is the write throttle); otherwise `min(now + idle, created_at +
-/// absolute)`.
+/// At or past the absolute cap → `None`. A stored `expires_at` carrying a
+/// longer window than the idle policy grants is clamped *down* to
+/// `min(now + idle, created_at + absolute)` at once, bypassing the write
+/// throttle — reachable from a rolling deploy or a second instance on the same
+/// `DATABASE_URL`, and from any build that lowers `SESSION_IDLE_TTL_HOURS`.
+/// Otherwise more than half the idle window remaining → `None` (the write
+/// throttle); else `min(now + idle, created_at + absolute)`.
 pub fn refreshed_expiry(
     created_at: Option<DateTime<Utc>>,
     expires_at: DateTime<Utc>,
@@ -142,14 +113,8 @@ pub fn refreshed_expiry(
     }
     let next = cap.map_or(now + idle, |cap| (now + idle).min(cap));
     if expires_at > next {
-        // A row carrying a longer window than the idle policy allows would,
-        // before `0015_invalidate_legacy_sessions.sql`, have been a
-        // pre-upgrade row with its fixed 30-day expiry; that migration now
-        // deletes those on upgrade. What is left for this branch to catch is
-        // a row written by another process still running the old code, or —
-        // whenever `SESSION_IDLE_TTL_HOURS` is lowered — one minted under the
-        // previous, longer window: pulled *down* to the current policy rather
-        // than trusted as-is.
+        // Written by another process on older code, or minted under a longer
+        // `SESSION_IDLE_TTL_HOURS`: pulled down rather than trusted as-is.
         return Some(SessionRenewal::clamped(next));
     }
     if expires_at - now >= idle / 2 {
@@ -162,20 +127,13 @@ pub fn new_session_token() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// The identifier used for a session in log events: the same SHA-256 handle
-/// `/account` uses to identify a row, truncated to 16 hex characters to keep
-/// log volume down. **Never log the session id itself** — it is the bearer
-/// secret the cookie signature is attached to.
+/// A session's identifier in log events: the SHA-256 handle `/account` uses
+/// for the row, cut to 16 hex characters. Never log the session id itself — it
+/// is the bearer secret the cookie signature is attached to.
 ///
-/// Reusing that handle (rather than a second, separate hash) means a log line
-/// maps directly onto the row a user can see and revoke on /account.
-///
-/// To satisfy OWASP's literal "salted hash" wording more strictly, this could
-/// become a keyed digest under the process secret (a `LOG_DOMAIN = b"log:"`
-/// alongside the existing domains in src/secret.rs). UUID v4's 122 bits of
-/// entropy already put an unsalted SHA-256 beyond brute force, so the existing
-/// handle is used instead; switching to a keyed version would break the
-/// log ↔ /account correspondence, which is the deliberate trade-off here.
+/// A keyed digest would match OWASP's "salted hash" wording more literally, but
+/// UUID v4's 122 bits already put an unsalted SHA-256 beyond brute force and
+/// keying it would break the log ↔ /account correspondence.
 pub fn session_log_handle(session_id: &str) -> String {
     crate::apikey::hash_api_key(session_id)[..16].to_string()
 }
@@ -183,14 +141,10 @@ pub fn session_log_handle(session_id: &str) -> String {
 /// Longest username kept in a log line by [`log_username`].
 const LOG_USERNAME_MAX_CHARS: usize = 64;
 
-/// Make an attempted username safe to put in a log line.
-///
-/// The value on a failed login is whatever the form field carried, which means
-/// an attacker picks it. Two things follow. It is truncated, so a megabyte of
-/// form data cannot be turned into a megabyte of log; and callers must render
-/// the result with `Debug` (`username = ?…`), which quotes and escapes it, so
-/// an embedded newline cannot forge a second entry in `text` log format —
-/// `json` format escapes on its own, but the guarantee has to hold for both.
+/// Make an attempted username safe to log. The value is attacker-chosen, so it
+/// is truncated (a megabyte of form data must not become a megabyte of log) and
+/// callers MUST render it with `Debug` (`username = ?…`), which escapes an
+/// embedded newline that would otherwise forge an entry in `text` format.
 pub fn log_username(raw: &str) -> String {
     let mut out: String = raw.chars().take(LOG_USERNAME_MAX_CHARS).collect();
     if out.chars().count() < raw.chars().count() {
@@ -201,17 +155,14 @@ pub fn log_username(raw: &str) -> String {
 
 /// True when `ip` is covered by one of the configured trusted-proxy patterns.
 ///
-/// A pattern is either a bare address (`10.0.0.1`) or a CIDR block
-/// (`172.16.0.0/12`, `fd00::/8`). CIDR is what a container deployment needs:
-/// behind a reverse proxy on a Docker bridge network, the peer address is
-/// handed out from the network's pool and changes whenever the network is
-/// recreated, so pinning a single literal address silently stops matching.
+/// A pattern is a bare address (`10.0.0.1`) or a CIDR block (`172.16.0.0/12`,
+/// `fd00::/8`). CIDR is what a container deployment needs: a proxy on a Docker
+/// bridge network draws its address from a pool, so a pinned literal silently
+/// stops matching when the network is recreated.
 ///
-/// Both sides are compared in canonical form, so an IPv4-mapped IPv6 peer
-/// (`::ffff:172.18.0.5` — how a dual-stack listener reports an IPv4 client)
-/// matches an IPv4 pattern. A pattern that does not parse — a hostname, say —
-/// matches nothing; DNS is never consulted, because a name the operator does
-/// not control would let its resolver decide who is trusted.
+/// Both sides are compared canonically, so an IPv4-mapped IPv6 peer matches an
+/// IPv4 pattern. An unparseable pattern matches nothing, and DNS is never
+/// consulted — a name would let its resolver decide who is trusted.
 pub fn is_trusted_proxy(patterns: &[String], ip: IpAddr) -> bool {
     let ip = ip.to_canonical();
     patterns.iter().any(|p| proxy_pattern_matches(p, ip))
@@ -234,7 +185,6 @@ fn proxy_pattern_matches(pattern: &str, ip: IpAddr) -> bool {
     }
 }
 
-/// Compare the leading `prefix` bits of two same-length address byte strings.
 fn prefix_eq(a: &[u8], b: &[u8], prefix: u8, max: u8) -> bool {
     if prefix > max {
         return false;
@@ -244,8 +194,8 @@ fn prefix_eq(a: &[u8], b: &[u8], prefix: u8, max: u8) -> bool {
         return false;
     }
     let rest = prefix % 8;
-    // Short-circuits before indexing: when `rest` is 0, `whole` may be one past
-    // the last byte (a /32 or /128).
+    // Must short-circuit before indexing: with `rest` 0, `whole` may be one
+    // past the last byte (a /32 or /128).
     rest == 0 || {
         let mask = 0xffu8 << (8 - rest);
         (a[whole] & mask) == (b[whole] & mask)
@@ -273,25 +223,18 @@ pub fn forward_auth_username(
 
 /// Resolve the client IP to record against a session or a ping.
 ///
-/// The socket peer is the answer only when pingward is reached directly. The
-/// expected deployment is behind a reverse proxy, where every peer is the
-/// proxy — recording that would stamp every session and every ping with the
-/// same address and make the column useless for spotting a session you did not
-/// start or a host you did not expect a ping from. So when the peer is a
-/// configured trusted proxy, the first `X-Forwarded-For` entry (the original
-/// client) wins instead.
-///
-/// The trust check is what makes this safe: a request arriving from anywhere
-/// else can set `X-Forwarded-For` freely and is ignored, exactly as
-/// [`forward_auth_username`] treats its header. A trusted proxy that sends
-/// something unparseable falls back to the peer rather than storing junk.
+/// Behind a reverse proxy every peer is the proxy, which would stamp every
+/// session and ping with one address, so when the peer is a configured trusted
+/// proxy the first `X-Forwarded-For` entry wins instead. The trust check is
+/// what makes that safe: anyone else can set the header freely and is ignored.
+/// A trusted proxy sending something unparseable falls back to the peer.
 pub fn client_ip(
     headers: &HeaderMap,
     peer_ip: Option<IpAddr>,
     config: &crate::config::Config,
 ) -> Option<String> {
-    // Canonical form throughout, so a v4 client seen through a dual-stack
-    // listener is stored as `203.0.113.7`, not `::ffff:203.0.113.7`.
+    // Canonical form, so a v4 client seen through a dual-stack listener is
+    // stored as `203.0.113.7`, not `::ffff:203.0.113.7`.
     let peer = peer_ip?.to_canonical();
     if !is_trusted_proxy(&config.trusted_proxies, peer) {
         return Some(peer.to_string());
@@ -306,44 +249,31 @@ pub fn client_ip(
     Some(forwarded.map_or_else(|| peer.to_string(), |ip| ip.to_canonical().to_string()))
 }
 
-/// Minimum password length, counted in **characters**, not bytes — a
-/// passphrase written in a script with multi-byte code points must not be
-/// penalised for it.
+/// Minimum password length in characters, not bytes, so a multi-byte script
+/// is not penalised.
 ///
-/// NIST SP800-63B, via OWASP's Authentication Cheat Sheet, calls anything
-/// shorter than 15 characters weak *when MFA is not available*, and 8 when it
-/// is. pingward has no second factor, so the higher figure is the applicable
-/// one: for a local account the password is the whole credential. **If TOTP is
-/// ever added, this is the constant to revisit** — not the composition rules,
-/// of which there are deliberately none (see [`validate_password`]).
+/// NIST SP800-63B (via OWASP) calls under 15 characters weak without MFA, 8
+/// with. pingward has no second factor, so the higher figure applies; if TOTP
+/// is ever added, this is the constant to revisit.
 pub const MIN_PASSWORD_CHARS: usize = 15;
 
-/// Maximum password length, in characters.
-///
-/// The Cheat Sheet asks for *at least* 64 so that passphrases fit; the cap
-/// exists only to bound what reaches argon2. Note this is **not** the bcrypt
-/// situation — argon2's cost is set by its memory/time parameters and barely
-/// moves with input length, so a long password is not a denial-of-service
-/// lever here. The limit is a sanity bound on an unauthenticated form field,
-/// and it is a *rejection*, never a silent truncation.
+/// Maximum password length, in characters. OWASP asks for at least 64 so
+/// passphrases fit; the cap is a sanity bound on an unauthenticated form
+/// field, not a bcrypt-style cost limit (argon2's cost barely moves with input
+/// length). Over-long is a rejection, never a silent truncation.
 pub const MAX_PASSWORD_CHARS: usize = 128;
 
 /// Check a candidate password against the length policy, returning the message
 /// to show the user on failure.
 ///
-/// Length is the *only* rule. There is deliberately no composition
-/// requirement (upper/lower/digit/symbol) and no character is excluded —
-/// whitespace and unicode included — because the Cheat Sheet and NIST both
-/// treat composition rules as counterproductive. The password is not trimmed
-/// either: what the user typed is what is hashed.
+/// Length is the only rule: no composition requirement, no excluded character,
+/// no trimming (what the user typed is what is hashed), since NIST and OWASP
+/// both treat composition rules as counterproductive.
 ///
-/// The one Cheat Sheet control **not** implemented here is the breached-password
-/// blocklist (Pwned Passwords). It was weighed and deferred: at a 15-character
-/// floor almost nothing in a top-100k list is still eligible, so the marginal
-/// gain is small against a new SHA-1 dependency plus either an outbound request
-/// on the password-set path or a checked-in list that goes stale. This function
-/// is the single seam to add it at if that trade ever changes — every surface
-/// that sets a password goes through here.
+/// The breached-password blocklist (Pwned Passwords) is deferred — at a
+/// 15-character floor the marginal gain is small against an SHA-1 dependency
+/// plus an outbound request or a list that goes stale. Every surface that sets
+/// a password goes through here, so this is the seam to add it at.
 pub fn validate_password(plain: &str) -> Result<(), String> {
     let len = plain.chars().count();
     if len < MIN_PASSWORD_CHARS {
@@ -366,13 +296,10 @@ pub fn hash_password(plain: &str) -> Result<String, argon2::password_hash::Error
     Ok(phc.to_string())
 }
 
-/// A throwaway PHC string whose only purpose is to be *verified against* when
-/// there is no real hash to verify against — see [`verify_password_or_dummy`].
-///
-/// Built once per process from a random secret, so it can never match any
-/// submitted password. Minting it lazily means the first login miss of a
-/// process pays for a hash as well as a verify; that is a one-off, not a
-/// per-request signal, so it is not itself an oracle.
+/// A throwaway PHC string to verify against when there is no real hash — see
+/// [`verify_password_or_dummy`]. Built once per process from a random secret,
+/// so nothing matches it. Only the first miss of a process pays for the hash
+/// as well, which is a one-off rather than a per-request signal.
 fn dummy_password_hash() -> &'static str {
     static HASH: OnceLock<String> = OnceLock::new();
     HASH.get_or_init(|| {
@@ -384,23 +311,19 @@ fn dummy_password_hash() -> &'static str {
 /// Verify `plain` against `stored`, spending argon2's time even when `stored`
 /// is `None`.
 ///
-/// Skipping the comparison for an unknown username is the "quick exit" pattern
-/// OWASP's Authentication Cheat Sheet names as a user-enumeration hole: a
-/// generic error message is worthless if the *response time* still separates
-/// "no such user" from "wrong password", because argon2 is deliberately slow
-/// and the difference is trivially measurable. `stored` is `None` for two
-/// distinct cases that must stay indistinguishable from outside — no such
-/// user, and a forward-auth account that has no local password.
+/// Skipping the comparison is the "quick exit" user-enumeration hole OWASP
+/// names: a generic error message buys nothing if the response time still
+/// separates "no such user" from "wrong password". `stored` is `None` for two
+/// cases that must stay indistinguishable — no such user, and a forward-auth
+/// account with no local password.
 ///
-/// This does not equalise everything: the database lookup preceding it is
-/// still a hit-versus-miss. That difference is orders of magnitude below one
-/// argon2 verification, which is what made the original gap measurable.
+/// The preceding database lookup is still hit-versus-miss, but orders of
+/// magnitude below one argon2 verification.
 pub fn verify_password_or_dummy(plain: &str, stored: Option<&str>) -> bool {
     if let Some(phc) = stored {
         verify_password(plain, phc)
     } else {
-        // `black_box` so the discarded result cannot license LLVM to elide the
-        // call — the work *is* the point here.
+        // `black_box` so LLVM cannot elide the call: the work is the point.
         std::hint::black_box(verify_password(plain, dummy_password_hash()));
         false
     }
@@ -417,14 +340,14 @@ pub fn verify_password(plain: &str, phc: &str) -> bool {
     }
 }
 
-/// Resolve the authenticated user from the session cookie, or (failing that)
-/// from a trusted forward-auth header — auto-provisioning a non-admin,
-/// password-less user for a first-seen forward-auth identity.
+/// Resolve the authenticated user from the session cookie, else from a trusted
+/// forward-auth header, auto-provisioning a non-admin, password-less user for
+/// a first-seen identity.
 async fn resolve_user(parts: &mut Parts, state: &AppState) -> Option<User> {
     let now = Utc::now();
     let jar = CookieJar::from_headers(&parts.headers);
-    // The cookie is `<id>.<hmac>`; a bad signature short-circuits here, so a
-    // forged or stale cookie never reaches the database.
+    // A bad signature short-circuits here, so a forged or stale cookie never
+    // reaches the database.
     let cookie_name = session_cookie_name(state.config.cookie_secure);
     if let Some(session_id) =
         crate::secret::session_id_from_jar(&jar, &state.config.secret, cookie_name)
@@ -438,22 +361,20 @@ async fn resolve_user(parts: &mut Parts, state: &AppState) -> Option<User> {
     forward_auth_user(state, &parts.headers, peer_ip, now).await
 }
 
-/// The socket peer of the request, as `into_make_service_with_connect_info`
-/// records it in `main.rs`. `None` when the router is driven without connect
-/// info, which makes every trusted-proxy check fail closed.
+/// The request's socket peer, as `into_make_service_with_connect_info` records
+/// it. `None` when the router is driven without connect info, which makes
+/// every trusted-proxy check fail closed.
 pub fn peer_ip(extensions: &axum::http::Extensions) -> Option<IpAddr> {
     extensions
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip())
 }
 
-/// Resolve the user named by a trusted forward-auth header, auto-provisioning a
-/// non-admin, password-less account for a first-seen identity.
-///
-/// Returns `None` when forward-auth is not configured, the peer is not a
-/// trusted proxy, the header is absent, or the named account is disabled.
-/// Shared by [`resolve_user`] and `web::forward_auth_session`, which must agree
-/// on exactly who a given request belongs to.
+/// Resolve the user named by a trusted forward-auth header, auto-provisioning
+/// a non-admin, password-less account for a first-seen identity. `None` when
+/// forward-auth is unconfigured, the peer is untrusted, the header is absent,
+/// or the account is disabled. Shared by [`resolve_user`] and
+/// `web::forward_auth_session`, which must agree on who a request belongs to.
 pub async fn forward_auth_user(
     state: &AppState,
     headers: &HeaderMap,
@@ -490,11 +411,8 @@ impl FromRequestParts<AppState> for CurrentUser {
     }
 }
 
-/// Like `CurrentUser`, but infallible: resolves the current user via session
-/// cookie or trusted forward-auth header, yielding `None` instead of
-/// redirecting when no user can be resolved. Useful for handlers (e.g. the
-/// dashboard landing page) that need to branch on "no user" themselves
-/// rather than being redirected to `/login`.
+/// Like `CurrentUser`, but yields `None` instead of redirecting, for handlers
+/// (the dashboard landing page) that branch on "no user" themselves.
 pub struct OptionalUser(pub Option<User>);
 
 impl FromRequestParts<AppState> for OptionalUser {
@@ -548,18 +466,15 @@ mod tests {
         assert!(validate_password(&"a".repeat(MIN_PASSWORD_CHARS - 1)).is_err());
         assert!(validate_password(&"a".repeat(MAX_PASSWORD_CHARS + 1)).is_err());
         assert!(validate_password("").is_err());
-        // The Cheat Sheet's floor only applies without MFA; if that ever
-        // changes, this assertion is the reminder to revisit the constant.
-        // The maximum has a floor of its own — "at least 64 characters", so
-        // that a passphrase fits.
+        // The floor only applies without MFA; if that changes, these are the
+        // reminder to revisit the constants.
         const { assert!(MIN_PASSWORD_CHARS == 15) };
         const { assert!(MAX_PASSWORD_CHARS >= 64) };
     }
 
     #[test]
     fn password_policy_has_no_composition_rules() {
-        // All-lowercase, all-digits, whitespace and non-ASCII passphrases are
-        // every one of them acceptable: length is the only rule.
+        // Length is the only rule.
         for pw in [
             "correcthorsebatterystaple",
             "123456789012345",
@@ -573,18 +488,16 @@ mod tests {
 
     #[test]
     fn password_length_is_counted_in_characters_not_bytes() {
-        // 14 characters, but comfortably over 15 *bytes* in UTF-8: counting
-        // bytes would wrongly accept it.
+        // 14 characters but over 15 bytes: counting bytes would accept it.
         let cjk = "密碼密碼密碼密碼密碼密碼密碼";
         assert_eq!(cjk.chars().count(), MIN_PASSWORD_CHARS - 1);
         assert!(cjk.len() > MIN_PASSWORD_CHARS);
         assert!(validate_password(cjk).is_err());
     }
 
-    /// The point of the dummy verification is that a miss costs what a hit
-    /// costs. Timing is too noisy to assert on directly, so this pins the
-    /// observable contract instead: `None` still returns false, and the
-    /// dummy hash is a real argon2 PHC that no password matches.
+    /// Timing is too noisy to assert on, so this pins the observable
+    /// contract: `None` returns false and the dummy is a real argon2 PHC that
+    /// no password matches.
     #[test]
     fn verify_password_or_dummy_handles_a_missing_hash() {
         let phc = hash_password("correct horse battery").unwrap();
@@ -598,8 +511,7 @@ mod tests {
         let dummy = dummy_password_hash();
         assert!(dummy.starts_with("$argon2"));
         assert!(!verify_password("", dummy));
-        // Stable for the life of the process, so it costs one hash, not one
-        // per miss.
+        // Stable per process, so it costs one hash rather than one per miss.
         assert_eq!(dummy, dummy_password_hash());
     }
 
@@ -616,16 +528,15 @@ mod tests {
             log_username(&cjk).chars().count(),
             LOG_USERNAME_MAX_CHARS + 1
         );
-        // A forged-newline attempt survives truncation unchanged — it is the
-        // caller's `Debug` rendering that neutralises it, which this pins.
+        // The newline survives truncation; the caller's `Debug` rendering is
+        // what neutralises it.
         let forged = "bob\nsession.created user_id=1";
         assert_eq!(log_username(forged), forged);
         assert!(!format!("{:?}", log_username(forged)).contains('\n'));
     }
 
-    /// P2-G: the `__Host-` prefix is only safe to apply once `Secure` is
-    /// guaranteed on every response — otherwise a plaintext HTTP deployment's
-    /// browser would refuse the cookie outright.
+    /// `__Host-` is only safe once `Secure` is guaranteed, or a plaintext
+    /// HTTP deployment's browser refuses the cookie outright.
     #[test]
     fn session_cookie_name_is_prefixed_only_when_secure() {
         assert_eq!(session_cookie_name(true), SESSION_COOKIE_HOST_PREFIXED);
@@ -698,7 +609,7 @@ mod tests {
             h.insert("x-forwarded-for", HeaderValue::from_static(v));
             client_ip(&h, Some(proxy), &cfg).unwrap()
         };
-        // The original client is the leftmost entry; later hops are proxies.
+        // The original client is the leftmost entry.
         assert_eq!(with("203.0.113.7, 10.0.0.1"), "203.0.113.7");
         assert_eq!(with("  203.0.113.7  "), "203.0.113.7");
         // A trusted proxy sending nonsense falls back to the peer, never junk.
@@ -733,8 +644,8 @@ mod tests {
 
     #[test]
     fn trusted_proxy_accepts_a_cidr_block() {
-        // The Docker-bridge case: the proxy's address comes from a pool, so the
-        // whole range has to be trusted, not one literal address.
+        // The Docker-bridge case: the address comes from a pool, so the whole
+        // range has to be trusted.
         let nets = vec!["172.16.0.0/12".to_string()];
         assert!(is_trusted_proxy(&nets, "172.18.0.5".parse().unwrap()));
         assert!(is_trusted_proxy(&nets, "172.31.255.255".parse().unwrap()));
@@ -747,7 +658,7 @@ mod tests {
     fn trusted_proxy_handles_prefix_edges_and_v6() {
         let all = vec!["0.0.0.0/0".to_string()];
         assert!(is_trusted_proxy(&all, "8.8.8.8".parse().unwrap()));
-        // /32 and /128 exercise the "no partial byte" path, which must not
+        // /32 and /128 exercise the no-partial-byte path, which must not
         // index one past the address.
         let single = vec!["10.0.0.1/32".to_string()];
         assert!(is_trusted_proxy(&single, "10.0.0.1".parse().unwrap()));
@@ -772,8 +683,7 @@ mod tests {
 
     #[test]
     fn client_ip_matches_a_v4_mapped_peer_against_a_v4_pattern() {
-        // A dual-stack listener reports an IPv4 client as `::ffff:a.b.c.d`;
-        // the operator writes the plain v4 address in the env var.
+        // A dual-stack listener reports an IPv4 client as `::ffff:a.b.c.d`.
         let cfg = cfg_trusting("172.18.0.0/16");
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.7"));
@@ -799,8 +709,7 @@ mod tests {
         assert_eq!(a.len(), 36); // hyphenated uuid
     }
 
-    /// Regression lock: `session_log_handle` must never leak the raw session
-    /// id it derives from — it is the bearer secret backing the cookie.
+    /// The raw session id is the bearer secret backing the cookie.
     #[test]
     fn session_log_handle_is_never_the_raw_id() {
         let id = new_session_token();
@@ -843,8 +752,8 @@ mod tests {
         let result = refreshed_expiry(Some(created), stale_expiry, now).unwrap();
         assert_eq!(result.expires_at, cap);
         assert!(result.expires_at <= cap);
-        // Truncated by the cap, but still a *forward* move from the stored
-        // value — the clamp label is reserved for a window that shrinks.
+        // Truncated by the cap but still a forward move; the clamp label is
+        // reserved for a window that shrinks.
         assert_eq!(result.kind, RenewalKind::Slid);
     }
 
@@ -874,15 +783,9 @@ mod tests {
 
     #[test]
     fn refreshed_expiry_shortens_a_legacy_row_immediately() {
-        // A pre-branch row: created 1 day ago, but still carrying its old
-        // single-layer 30-day expiry (a hair under the cap, matching what a
-        // pre-`0015` upgrade would have produced before that migration
-        // started deleting such rows outright — see the doc comment above).
-        // Far more than half the idle window "remains" on the stored value,
-        // so the ordinary throttle alone would leave it untouched for weeks;
-        // the clamp must pull it down to the idle window on this very first
-        // sight instead. The function's contract is exercised here
-        // regardless of whether such a row can occur post-`0015`.
+        // A row created a day ago but still carrying a 30-day expiry: far
+        // more than half the idle window "remains", so the throttle alone
+        // would leave it for weeks. The clamp must pull it down on sight.
         let now = ts(2026, 1, 1);
         let created = now - Duration::days(1);
         let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);
@@ -896,12 +799,9 @@ mod tests {
 
     #[test]
     fn refreshed_expiry_does_not_shorten_a_freshly_created_row() {
-        // A row produced by this branch's own policy: `expires_at` sits
-        // exactly at `now + idle`. The clamp added for legacy rows must not
-        // fire here — it is not "less than the idle window remains", it is
-        // "carries more than the idle window would ever grant" — so only the
-        // ordinary half-life throttle governs, and at exactly the full idle
-        // window it must not renew yet.
+        // `expires_at` exactly at `now + idle`: the clamp fires on "more than
+        // the policy grants", not "less than the window remains", so only the
+        // half-life throttle governs and a full window must not renew yet.
         let now = ts(2026, 1, 1);
         let created = Some(now);
         let idle = Duration::hours(SESSION_IDLE_TTL_HOURS);

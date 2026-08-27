@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 /// Capacity of the live-tail event bus. A lagging subscriber just gets a
-/// coalesced "changed" signal (see `web::sse_for_check`), so this only needs
-/// to be big enough to absorb a burst between scan-loop ticks.
+/// coalesced "changed" signal, so this only needs to absorb a burst between
+/// scan-loop ticks.
 const EVENTS_CHANNEL_CAPACITY: usize = 256;
 
 #[derive(Clone)]
@@ -14,23 +14,21 @@ pub struct AppState {
     pub store: Store,
     pub config: Arc<Config>,
     /// Signal bus for the check-detail live tail: publishes a `check_id`
-    /// whenever that check changes (a ping arrives, or the scan loop
-    /// transitions it). Carries no payload data — subscribers re-fetch the
-    /// existing HTML fragment instead.
+    /// whenever that check changes. Carries no payload — subscribers re-fetch
+    /// the existing HTML fragment instead.
     pub events: broadcast::Sender<i64>,
-    /// Login-attempt limiter, keyed by client address. In-memory and
-    /// per-process — see `crate::ratelimit`. The `Arc` is what makes every
-    /// `AppState::clone()` share one set of counters; a bare `RateLimiter`
-    /// here would give each clone its own and silently disable the control.
+    /// Login-attempt limiter keyed by client address, in-memory per-process.
+    /// The `Arc` makes every `AppState::clone()` share one set of counters; a
+    /// bare `RateLimiter` would give each clone its own and silently disable
+    /// the control.
     pub login_limiter: Arc<crate::ratelimit::RateLimiter<std::net::IpAddr>>,
-    /// Login-attempt limiter, keyed by the **submitted username**. Separate
-    /// from `login_limiter` because a distributed attack is invisible to a
-    /// per-address counter: N addresses simply buy N times the budget against
-    /// one account. See `ratelimit::ACCOUNT_MAX_ATTEMPTS`.
+    /// Login-attempt limiter keyed by the submitted username. A per-address
+    /// counter cannot see a distributed attack: N addresses simply buy N times
+    /// the budget against one account. See `ratelimit::ACCOUNT_MAX_ATTEMPTS`.
     pub account_limiter: Arc<crate::ratelimit::RateLimiter<String>>,
     /// Which browser sessions have re-asserted their password recently, and so
-    /// may perform the `/admin` actions that *grant* access. In-memory and
-    /// per-process — see `crate::elevate` for why that costs nothing here.
+    /// may perform the `/admin` actions that grant access. In-memory and
+    /// per-process — see `crate::elevate`.
     pub elevations: Arc<crate::elevate::Elevations>,
 }
 

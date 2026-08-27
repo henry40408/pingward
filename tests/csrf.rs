@@ -27,13 +27,12 @@ async fn logged_in_server() -> (TestServer, Store) {
     (server, store)
 }
 
-/// Derive the current session's CSRF synchronizer token the way the server does.
+/// The current session's CSRF token, derived as the server does.
 async fn csrf_token(store: &Store) -> String {
     common::newest_session_csrf(&store.pool).await
 }
 
-/// Pull the value of the first `name="_csrf"` hidden input out of a rendered
-/// HTML body — the token a real browser would echo back on form submission.
+/// The first `name="_csrf"` hidden input's value, as a browser would echo back.
 fn extract_csrf(html: &str) -> String {
     let marker = "name=\"_csrf\" value=\"";
     let start = html
@@ -44,12 +43,10 @@ fn extract_csrf(html: &str) -> String {
     html[start..start + end].to_string()
 }
 
-// End-to-end form path: the token embedded in a rendered form authorizes a real
-// browser-style POST (no `X-CSRF-Token` header), and omitting it is rejected.
+// End-to-end form path: the embedded token alone (no header) authorizes a POST.
 #[tokio::test]
 async fn form_includes_csrf_and_form_post_succeeds() {
     let (server, _store) = logged_in_server().await;
-    // GET a page carrying a protected form and read the embedded token from the HTML.
     let body = server.get("/admin").await.text();
     let token = extract_csrf(&body);
     assert!(
@@ -57,22 +54,18 @@ async fn form_includes_csrf_and_form_post_succeeds() {
         "rendered form must embed a non-empty _csrf token"
     );
 
-    // The embedded token alone (no header) authorizes the form submission.
     server
         .post("/admin/users")
         .form(&[
             ("_csrf", token.as_str()),
             ("username", "bob"),
-            // Long enough for `auth::validate_password`: this case asserts the
-            // submission *succeeds*, so it has to clear the handler too, not
-            // just the CSRF layer. The rejected case below deliberately keeps a
-            // short one — it must never reach the handler at all.
+            // Long enough for `auth::validate_password`: this case must clear
+            // the handler, not just the CSRF layer.
             ("password", "bob's long passphrase"),
         ])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
 
-    // The same submission with the `_csrf` field omitted is rejected.
     server
         .post("/admin/users")
         .form(&[("username", "carol"), ("password", "pw")])
@@ -80,7 +73,6 @@ async fn form_includes_csrf_and_form_post_succeeds() {
         .assert_status(axum::http::StatusCode::FORBIDDEN);
 }
 
-// (a) A protected POST with a valid session cookie but NO token → 403.
 #[tokio::test]
 async fn protected_post_without_token_is_forbidden() {
     let (server, _store) = logged_in_server().await;
@@ -95,7 +87,6 @@ async fn protected_post_without_token_is_forbidden() {
         .assert_status(axum::http::StatusCode::FORBIDDEN);
 }
 
-// (b) Same POST WITH the header token → not 403 (303 redirect).
 #[tokio::test]
 async fn protected_post_with_header_token_succeeds() {
     let (mut server, store) = logged_in_server().await;
@@ -113,7 +104,6 @@ async fn protected_post_with_header_token_succeeds() {
         .assert_status(axum::http::StatusCode::SEE_OTHER);
 }
 
-// (b') The `_csrf` form-field path also authorizes the request (Task 5's path).
 #[tokio::test]
 async fn protected_post_with_form_field_token_succeeds() {
     let (server, store) = logged_in_server().await;
@@ -131,9 +121,8 @@ async fn protected_post_with_form_field_token_succeeds() {
         .assert_status(axum::http::StatusCode::SEE_OTHER);
 }
 
-// (b'') The multi-value "Save channels" form authorizes via the `_csrf` form
-// field even though it also carries repeated `channel_ids` keys — i.e. the guard
-// finds `_csrf` regardless of its position among the urlencoded pairs.
+// The guard finds `_csrf` among repeated `channel_ids` keys, regardless of its
+// position in the urlencoded body.
 #[tokio::test]
 async fn multi_value_channels_form_authorizes_via_csrf_field() {
     let (server, store) = logged_in_server().await;
@@ -176,7 +165,6 @@ async fn multi_value_channels_form_authorizes_via_csrf_field() {
         .await
         .unwrap();
     let tok = csrf_token(&store).await;
-    // Repeated `channel_ids` keys plus a trailing `_csrf` field (no header).
     server
         .post(&format!("/checks/{cid}/channels"))
         .form(&[
@@ -186,10 +174,9 @@ async fn multi_value_channels_form_authorizes_via_csrf_field() {
         ])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
-    // Both channels were actually bound (the rebuilt body reached the handler).
+    // The rebuilt body reached the handler: both channels are bound.
     let bound = store.bound_channel_ids(cid).await.unwrap();
     assert!(bound.contains(&ch1) && bound.contains(&ch2));
-    // The same submission with `_csrf` omitted is rejected.
     server
         .post(&format!("/checks/{cid}/channels"))
         .form(&[("channel_ids", ch1.to_string().as_str())])
@@ -197,7 +184,6 @@ async fn multi_value_channels_form_authorizes_via_csrf_field() {
         .assert_status(axum::http::StatusCode::FORBIDDEN);
 }
 
-// A wrong token is rejected even with a valid session.
 #[tokio::test]
 async fn protected_post_with_wrong_token_is_forbidden() {
     let (mut server, _store) = logged_in_server().await;
@@ -213,7 +199,7 @@ async fn protected_post_with_wrong_token_is_forbidden() {
         .assert_status(axum::http::StatusCode::FORBIDDEN);
 }
 
-// (c) POST /ping/{uuid} carries no token and lives in the exempt ping router.
+// `/ping/*` lives in the sibling router, structurally exempt from the guard.
 #[tokio::test]
 async fn ping_post_needs_no_csrf() {
     let (server, _store) = logged_in_server().await;
@@ -223,10 +209,9 @@ async fn ping_post_needs_no_csrf() {
     assert_ne!(res.status_code(), axum::http::StatusCode::FORBIDDEN);
 }
 
-// (d) POST /login is protected too. It has no exemption because
-// `web::anonymous_session` gives a logged-out visitor a token to embed, and
-// without the guard an attacker could log a victim into an account the
-// attacker controls.
+// `/login` has no exemption: `web::anonymous_session` hands a logged-out visitor
+// a token, and without the guard an attacker could log a victim into an account
+// they control.
 #[tokio::test]
 async fn login_post_with_the_anonymous_token_succeeds() {
     let (mut server, _store) = logged_in_server().await;
@@ -245,8 +230,7 @@ async fn login_post_with_the_anonymous_token_succeeds() {
 #[tokio::test]
 async fn login_post_without_a_token_is_forbidden() {
     let (mut server, _store) = logged_in_server().await;
-    // Prime an anonymous session, then submit valid credentials without the
-    // token it hands out.
+    // Prime an anonymous session, then submit without the token it hands out.
     common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
@@ -255,9 +239,8 @@ async fn login_post_without_a_token_is_forbidden() {
         .assert_status(axum::http::StatusCode::FORBIDDEN);
 }
 
-// The pre-login pages must actually embed the token, not merely be allowed to.
-// A missing hidden input renders a permanently unsubmittable form, and no
-// guard test would catch it — this asserts the templates carry it.
+// A missing hidden input renders a permanently unsubmittable form, which no
+// guard test would catch.
 #[tokio::test]
 async fn login_and_setup_pages_embed_a_token() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -277,9 +260,8 @@ async fn login_and_setup_pages_embed_a_token() {
     assert!(!extract_csrf(&server.get("/login").await.text()).is_empty());
 }
 
-// The anonymous session exists so a logged-out visitor has a token — it must
-// cost no `sessions` row, or a crawler hitting `/login` would grow the table
-// without bound.
+// The anonymous session must cost no `sessions` row, or a crawler hitting
+// `/login` would grow the table without bound.
 #[tokio::test]
 async fn an_anonymous_session_writes_no_row() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -306,23 +288,21 @@ async fn session_id(store: &Store) -> String {
 }
 
 /// A cookie-less server over the same store, so a test can present exactly one
-/// hand-built `Cookie` header instead of the jar's saved one. `secret` is what
-/// the server verifies against — pass something other than `TEST_SECRET` to
+/// hand-built `Cookie` header. Pass a `secret` other than `TEST_SECRET` to
 /// simulate a restart that rotated it.
 fn server_with_secret(store: &Store, secret: &str) -> TestServer {
     let config = Config::from_map(|k| (k == "PINGWARD_SECRET").then(|| secret.into()));
     TestServer::new(app(AppState::new(store.clone(), config)))
 }
 
-/// A GET that lands on the login redirect rather than the page — i.e. the
-/// cookie did not authenticate.
+/// Landed on the login redirect: the cookie did not authenticate.
 fn assert_bounced_to_login(res: &axum_test::TestResponse) {
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/login");
 }
 
-// The cookie is `<id>.<hmac>`: the bare session id — the pre-signing cookie
-// format, and what a database leak would expose — authenticates nothing.
+// The cookie is `<id>.<hmac>`: the bare session id — what a database leak would
+// expose — authenticates nothing.
 #[tokio::test]
 async fn unsigned_session_id_does_not_authenticate() {
     let (_server, store) = logged_in_server().await;
@@ -337,9 +317,8 @@ async fn unsigned_session_id_does_not_authenticate() {
     assert_bounced_to_login(&res);
 }
 
-// Rotating the secret — what a restart does when PINGWARD_SECRET is unset —
-// ends every existing session. The row is still there and still unexpired; only
-// its signature stopped verifying.
+// Rotating the secret (what a restart with `PINGWARD_SECRET` unset does) ends
+// every session: the row is still there and unexpired, only the signature fails.
 #[tokio::test]
 async fn a_rotated_secret_invalidates_existing_sessions() {
     let (server, store) = logged_in_server().await;
@@ -367,8 +346,7 @@ async fn a_rotated_secret_invalidates_existing_sessions() {
     );
 }
 
-// A CSRF token minted under one secret must not authorize a POST verified under
-// another, even when the session id is identical.
+// Rejected even when the session id is identical.
 #[tokio::test]
 async fn a_csrf_token_from_another_secret_is_rejected() {
     let (_server, store) = logged_in_server().await;

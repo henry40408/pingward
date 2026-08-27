@@ -1,30 +1,29 @@
 //! Cooperative shutdown: one broadcast flag shared by the HTTP server and the
 //! background loops, plus the OS-signal listener that raises it.
 //!
-//! The flag is a `tokio::sync::watch` rather than a oneshot because every
-//! consumer needs to observe the *same* request: axum's
-//! `with_graceful_shutdown` takes one future, and each background loop selects
-//! on another.
+//! A `watch` rather than a oneshot because every consumer must observe the
+//! same request: axum's `with_graceful_shutdown` takes one future, and each
+//! background loop selects on another.
 
 use tokio::sync::watch;
 
-/// The sending half, held by `main`. Dropping it counts as a shutdown request —
-/// a lost controller must never leave the background loops running forever.
+/// The sending half, held by `main`. Dropping it counts as a shutdown request,
+/// so a lost controller cannot leave the background loops running forever.
 pub struct ShutdownTx(watch::Sender<bool>);
 
 /// The receiving half. Cheap to clone: hand one to every task that must stop.
 #[derive(Clone)]
 pub struct Shutdown(watch::Receiver<bool>);
 
-/// Build a linked `(ShutdownTx, Shutdown)` pair, initially not shut down.
+/// A linked pair, initially not shut down.
 pub fn channel() -> (ShutdownTx, Shutdown) {
     let (tx, rx) = watch::channel(false);
     (ShutdownTx(tx), Shutdown(rx))
 }
 
 impl ShutdownTx {
-    /// Raise the flag. Idempotent — the value stays observable after this
-    /// handle drops, so a late `Shutdown::wait` still resolves.
+    /// Idempotent — the value stays observable after this handle drops, so a
+    /// late `Shutdown::wait` still resolves.
     pub fn trigger(&self) {
         let _ = self.0.send(true);
     }
@@ -32,14 +31,13 @@ impl ShutdownTx {
 
 impl Shutdown {
     /// Resolve once shutdown has been requested — immediately if it already
-    /// has, so a task that starts late still stops. Cancel-safe, so it serves
-    /// both as a `tokio::select!` branch and as axum's
-    /// `with_graceful_shutdown` future.
+    /// has, so a task that starts late still stops. Cancel-safe: usable both as
+    /// a `select!` branch and as axum's `with_graceful_shutdown` future.
     pub async fn wait(&self) {
-        // `wait_for` inspects the current value before parking, which is what
-        // makes the already-triggered case resolve instead of hanging (plain
-        // `changed()` only fires on a *new* value). `Err` means the
-        // `ShutdownTx` was dropped, which counts as a request.
+        // `wait_for` inspects the current value before parking, so the
+        // already-triggered case resolves instead of hanging; plain `changed()`
+        // only fires on a *new* value. `Err` means the `ShutdownTx` was
+        // dropped, which counts as a request.
         let mut rx = self.0.clone();
         let _ = rx.wait_for(|down| *down).await;
     }
@@ -47,15 +45,13 @@ impl Shutdown {
 
 /// Resolve on the first SIGTERM (`docker stop`, systemd) or SIGINT (Ctrl-C).
 ///
-/// Installing a handler is mandatory in the container image, not merely polite:
-/// the exec-form `ENTRYPOINT` makes pingward PID 1, and Linux discards any
-/// signal whose disposition is still the default for PID 1. Without a handler,
-/// SIGTERM is silently ignored and `docker compose down` waits out its full 10s
-/// grace period before resorting to SIGKILL.
+/// A handler is mandatory in the container image: the exec-form `ENTRYPOINT`
+/// makes pingward PID 1, and Linux discards any signal still at its default
+/// disposition for PID 1 — without one, SIGTERM is ignored and
+/// `docker compose down` waits out its full 10s grace period before SIGKILL.
 ///
-/// A listener that fails to install is logged and then pends forever rather
-/// than resolving, so a broken SIGINT registration cannot masquerade as a
-/// shutdown request and stop the server on its own.
+/// A listener that fails to install is logged and then pends forever, so a
+/// broken registration cannot masquerade as a shutdown request.
 pub async fn os_signal() {
     let interrupt = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
@@ -91,7 +87,6 @@ mod tests {
     use super::*;
     use tokio::time::{Duration, timeout};
 
-    /// The common case: a task parked on `wait` wakes when `main` triggers.
     #[tokio::test]
     async fn wait_resolves_after_trigger() {
         let (tx, shutdown) = channel();
@@ -103,8 +98,7 @@ mod tests {
             .unwrap();
     }
 
-    /// A receiver cloned (or first polled) *after* the trigger must still
-    /// resolve — otherwise a task spawned during shutdown would run forever.
+    /// Otherwise a task spawned during shutdown would run forever.
     #[tokio::test]
     async fn wait_resolves_immediately_when_already_triggered() {
         let (tx, shutdown) = channel();
@@ -114,8 +108,7 @@ mod tests {
             .expect("wait() must resolve for a receiver that starts after the trigger");
     }
 
-    /// Losing the controller is fail-closed: the loops stop rather than
-    /// outliving whoever was supposed to stop them.
+    /// Fail-closed: the loops stop rather than outliving their controller.
     #[tokio::test]
     async fn wait_resolves_when_sender_dropped() {
         let (tx, shutdown) = channel();
@@ -125,8 +118,7 @@ mod tests {
             .expect("wait() must resolve when the ShutdownTx is dropped");
     }
 
-    /// The other side of the assertion: `wait` must *not* resolve on its own,
-    /// or every `select!` guarding a sleep would exit on the first poll.
+    /// Otherwise every `select!` guarding a sleep would exit on the first poll.
     #[tokio::test]
     async fn wait_pends_until_triggered() {
         let (_tx, shutdown) = channel();

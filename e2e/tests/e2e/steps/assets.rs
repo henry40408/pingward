@@ -1,4 +1,4 @@
-//! The static assets the templates reference — a port of `assets.steps.js`.
+//! The static assets the templates reference.
 
 use anyhow::{Result, ensure};
 use cucumber::then;
@@ -7,11 +7,9 @@ use pingward_e2e::world::PingwardWorld;
 
 #[then("the footer shows the build version")]
 async fn footer_shows_version(world: &mut PingwardWorld) -> Result<()> {
-    // The version string is `git describe` output, which has no single shape:
-    // a release tag, a tag plus distance, or a bare short SHA before the first
-    // tag exists (and from CI's shallow, tag-less checkout). So this asserts
-    // the footer rendered *something* rather than matching a semver pattern
-    // that would fail on a perfectly good build.
+    // `git describe` output has no single shape — a tag, a tag plus distance,
+    // or a bare short SHA from a shallow checkout — so this only asserts the
+    // footer rendered something.
     let driver = world.driver()?;
     driver.expect_visible("app-version").await?;
     let version = driver.text_of("app-version").await?;
@@ -24,12 +22,9 @@ async fn footer_shows_version(world: &mut PingwardWorld) -> Result<()> {
 
 #[then(expr = "{string} is well-formed XML")]
 async fn asset_is_well_formed_xml(world: &mut PingwardWorld, asset: String) -> Result<()> {
-    // `DOMParser` with the `image/svg+xml` type is a real, spec-compliant XML
-    // parser — it is what the browser itself uses for the asset — and it
-    // reports a failure by returning a document whose root is a
-    // `<parsererror>` rather than by throwing. Fetching from inside the page
-    // keeps the request same-origin and exercises the served response, headers
-    // and all.
+    // `DOMParser` with `image/svg+xml` is the parser the browser uses for the
+    // asset, and it reports failure with a `<parsererror>` root rather than by
+    // throwing. Fetching from inside the page keeps the request same-origin.
     let result = world
         .driver()?
         .execute_async(

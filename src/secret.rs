@@ -1,22 +1,15 @@
 //! Keyed derivation for session cookies and CSRF tokens.
 //!
-//! One process-wide secret (`PINGWARD_SECRET`, or a random one generated at
-//! boot) backs both browser-facing credentials:
+//! One process-wide secret (`PINGWARD_SECRET`, or a random one per boot) backs
+//! both browser credentials: the session cookie is `<session_id>.<hmac>`, and
+//! the CSRF token is derived from the same id — hence no `csrf_token` column.
 //!
-//! - the session cookie is `<session_id>.<hmac>`, so a cookie with a bad
-//!   signature is rejected before any database work, and a leaked `sessions.id`
-//!   is not usable on its own;
-//! - the CSRF synchronizer token is derived from the same session id, which is
-//!   why `sessions` needs no `csrf_token` column.
-//!
-//! Both tags are domain-separated. Without the prefixes they would be the same
-//! value, and every rendered form embeds the CSRF token — which would print the
-//! session cookie's signature into the page body.
+//! The tags are domain-separated. Without the prefixes both values would be
+//! identical, and every rendered form would print the cookie's signature.
 //!
 //! Rotating the secret (including the implicit rotation of a restart with no
-//! `PINGWARD_SECRET` set) invalidates every signature at once, so all browser
-//! sessions end. API keys are unaffected: they are random bearer tokens matched
-//! by SHA-256 digest (see [`crate::apikey`]) and never touch this secret.
+//! `PINGWARD_SECRET` set) ends every browser session. API keys are unaffected;
+//! they are matched by SHA-256 digest (see [`crate::apikey`]).
 
 use axum_extra::extract::cookie::CookieJar;
 use hmac::{Hmac, KeyInit, Mac};
@@ -25,45 +18,34 @@ use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Domain-separation prefix for the session cookie signature.
 const SESSION_DOMAIN: &[u8] = b"session:";
-/// Domain-separation prefix for the CSRF synchronizer token.
 const CSRF_DOMAIN: &[u8] = b"csrf:";
-/// Domain-separation prefix for the one-shot flash cookie's signature.
 const FLASH_DOMAIN: &[u8] = b"flash:";
 
-/// Separates the session id from its signature in the cookie value. Session ids
-/// are hyphenated UUIDs, which never contain it, so `rsplit_once` cannot cut
-/// into the id itself.
+/// Separates payload from signature. Session ids are hyphenated UUIDs, which
+/// never contain it, so `rsplit_once` cannot cut into the id.
 const SIG_SEPARATOR: char = '.';
 
-/// Bytes of randomness in a generated secret.
 const GENERATED_SECRET_BYTES: usize = 32;
 
-/// Shortest `PINGWARD_SECRET` accepted. Anything shorter is treated as
-/// misconfiguration rather than silently used, since a guessable secret lets an
-/// attacker mint both session cookies and CSRF tokens.
+/// Shortest `PINGWARD_SECRET` accepted; a guessable secret mints both session
+/// cookies and CSRF tokens.
 pub const MIN_SECRET_LEN: usize = 16;
 
 /// Where the process's secret came from, for the one-time startup warning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretSource {
-    /// Read from `PINGWARD_SECRET`.
     Env,
-    /// `PINGWARD_SECRET` was unset or blank; a random secret was generated for
-    /// this process only.
+    /// Unset or blank; a random secret was generated for this process only.
     Generated,
-    /// `PINGWARD_SECRET` was set but shorter than [`MIN_SECRET_LEN`], so it was
-    /// rejected and a random secret generated instead. Distinguished from
-    /// [`SecretSource::Generated`] so the startup warning can say the value was
-    /// ignored rather than missing.
+    /// Set but shorter than [`MIN_SECRET_LEN`], so it was ignored and a random
+    /// secret generated. Separate from [`SecretSource::Generated`] so the
+    /// startup warning can say "ignored" rather than "missing".
     Rejected,
 }
 
-/// Resolve the process secret from an optional `PINGWARD_SECRET` value.
-///
-/// The raw value is used as-is (no base64 decoding) so any sufficiently long
-/// string works; generate one with `openssl rand -hex 32`.
+/// Resolve the process secret. The raw value is used as-is (no base64
+/// decoding); generate one with `openssl rand -hex 32`.
 pub fn resolve(raw: Option<&str>) -> (Vec<u8>, SecretSource) {
     match raw {
         Some(v) if v.len() >= MIN_SECRET_LEN => (v.as_bytes().to_vec(), SecretSource::Env),
@@ -72,7 +54,6 @@ pub fn resolve(raw: Option<&str>) -> (Vec<u8>, SecretSource) {
     }
 }
 
-/// A fresh random secret, used when none is configured.
 fn generate() -> Vec<u8> {
     let mut buf = vec![0u8; GENERATED_SECRET_BYTES];
     OsRng.fill_bytes(&mut buf);
@@ -87,15 +68,13 @@ fn mac(secret: &[u8], domain: &[u8], message: &str) -> HmacSha256 {
     mac
 }
 
-/// Attach a signature to `value`, in the same `<payload>.<hmac>` shape as
-/// [`sign_session`] but under its own domain.
+/// Attach a signature to `value` as `<payload>.<hmac>`.
 fn sign(secret: &[u8], domain: &[u8], value: &str) -> String {
     let sig = hex_encode(&mac(secret, domain, value).finalize().into_bytes());
     format!("{value}{SIG_SEPARATOR}{sig}")
 }
 
-/// Recover the payload from a `<payload>.<hmac>` value, or `None` when it is
-/// malformed or the signature does not verify.
+/// Recover the payload from `<payload>.<hmac>`, if the signature verifies.
 fn verify(secret: &[u8], domain: &[u8], signed: &str) -> Option<String> {
     let (value, sig) = signed.rsplit_once(SIG_SEPARATOR)?;
     let sig = hex_decode(sig)?;
@@ -112,9 +91,8 @@ fn hex_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// Decode lowercase-or-uppercase hex. `None` for odd length or a non-hex byte,
-/// which is how a malformed signature or CSRF token gets rejected before any
-/// comparison happens.
+/// Decode hex, either case. `None` for odd length or a non-hex byte, which is
+/// how a malformed signature is rejected before any comparison.
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
     let bytes = s.as_bytes();
     if !bytes.len().is_multiple_of(2) {
@@ -129,40 +107,32 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Build the cookie value for `session_id`: the id plus its signature.
 pub fn sign_session(secret: &[u8], session_id: &str) -> String {
     sign(secret, SESSION_DOMAIN, session_id)
 }
 
-/// Recover the session id from a cookie value, or `None` when the value is
-/// malformed or the signature does not verify. Callers must use this rather
+/// Recover the session id from a cookie value. Callers must use this rather
 /// than the raw cookie value — the value is no longer the id.
 pub fn verify_session(secret: &[u8], cookie_value: &str) -> Option<String> {
     verify(secret, SESSION_DOMAIN, cookie_value)
 }
 
-/// Build the one-shot flash cookie's value: the payload plus its signature.
+/// Sign the one-shot flash cookie's payload.
 ///
-/// The flash cookie carries no authority, so this is not what stops a forged
-/// value being *acted on* — `web::take_flash` maps only known keys to a fixed
-/// message, and the password-reset variant `u64`-parses its counts. What the
-/// signature adds is provenance: without it a response from a sibling
-/// subdomain can plant a flash this origin never set, and the user reads a
-/// message the server never sent (a fabricated "N API keys still work"
-/// count). Payloads never contain [`SIG_SEPARATOR`], so `rsplit_once` cannot
-/// cut into one.
+/// The cookie carries no authority; the signature adds provenance. Without it
+/// a sibling subdomain can plant a flash this origin never set, so the user
+/// reads a message the server never sent (a fabricated "N API keys still work"
+/// count). Payloads never contain [`SIG_SEPARATOR`].
 pub fn sign_flash(secret: &[u8], value: &str) -> String {
     sign(secret, FLASH_DOMAIN, value)
 }
 
-/// Recover a flash payload from a cookie value, or `None` when it is malformed
-/// or was not signed by this process's secret.
 pub fn verify_flash(secret: &[u8], cookie_value: &str) -> Option<String> {
     verify(secret, FLASH_DOMAIN, cookie_value)
 }
 
-/// The CSRF synchronizer token for a session, embedded in rendered forms as
-/// `_csrf` and accepted as the `X-CSRF-Token` header.
+/// The session's CSRF token, embedded in forms as `_csrf` and accepted as the
+/// `X-CSRF-Token` header.
 pub fn derive_csrf(secret: &[u8], session_id: &str) -> String {
     hex_encode(&mac(secret, CSRF_DOMAIN, session_id).finalize().into_bytes())
 }
@@ -198,7 +168,7 @@ mod tests {
 
     #[test]
     fn signature_is_required() {
-        // The bare id — the pre-signing cookie format — must not verify.
+        // The bare id, the pre-signing cookie format.
         assert!(verify_session(SECRET, ID).is_none());
     }
 
@@ -240,8 +210,7 @@ mod tests {
         assert!(!verify_csrf(SECRET, ID, "not-hex"));
     }
 
-    /// Domain separation: the CSRF token must never equal the session
-    /// signature, or rendering a form would leak the cookie's signature.
+    /// Or rendering a form would leak the cookie's signature.
     #[test]
     fn csrf_token_differs_from_the_session_signature() {
         let cookie = sign_session(SECRET, ID);
@@ -258,7 +227,7 @@ mod tests {
 
     #[test]
     fn an_unsigned_or_tampered_flash_is_rejected() {
-        // The pre-signing format — what a sibling subdomain would plant.
+        // The pre-signing format: what a sibling subdomain would plant.
         assert!(verify_flash(SECRET, "settings").is_none());
         assert!(verify_flash(SECRET, "password_reset_keys:1:9").is_none());
         let signed = sign_flash(SECRET, "password_reset_keys:1:2");
@@ -268,8 +237,7 @@ mod tests {
         assert!(verify_flash(b"another-secret-16-plus", &signed).is_none());
     }
 
-    /// Domain separation: a value signed for one purpose must not verify as
-    /// another, or a captured session cookie could be replayed as a flash.
+    /// Or a captured session cookie could be replayed as a flash.
     #[test]
     fn flash_and_session_signatures_do_not_cross_verify() {
         assert!(verify_flash(SECRET, &sign_session(SECRET, ID)).is_none());
@@ -296,8 +264,7 @@ mod tests {
         let (a, source) = resolve(None);
         assert_eq!(source, SecretSource::Generated);
         assert_eq!(a.len(), GENERATED_SECRET_BYTES);
-        // Two boots must not share a secret, or "restart logs everyone out"
-        // would silently stop holding.
+        // Or "restart logs everyone out" would silently stop holding.
         let (b, _) = resolve(None);
         assert_ne!(a, b);
     }

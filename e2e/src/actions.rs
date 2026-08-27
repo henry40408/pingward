@@ -1,21 +1,16 @@
-//! UI actions shared across step modules — a port of `support/actions.js`.
+//! UI actions shared across step modules.
 
 use anyhow::Result;
 
 use crate::dom::Dom;
 use crate::world::PingwardWorld;
 
-/// Drives the `/login` form: opens the login page, enters the credentials,
-/// submits.
+/// Drives the `/login` form, stopping at the click: callers assert the
+/// destination themselves, since a failed login stays on `/login`.
 ///
-/// Callers assert the destination themselves — a successful login lands on
-/// `/`, while an expected-failure login stays on `/login` with an error — so
-/// this deliberately stops at the click and makes no URL assertion.
-///
-/// Switching accounts needs the explicit sign-out: `/login` bounces an
-/// already-authenticated visitor to `/` (which is what stops a forward-auth
-/// logout from showing a login form to someone the gateway has just signed
-/// back in), so the form is only reachable while signed out.
+/// Switching accounts needs the explicit sign-out — `/login` bounces an
+/// already-authenticated visitor to `/`, so the form is only reachable while
+/// signed out.
 ///
 /// # Errors
 ///
@@ -35,9 +30,8 @@ pub async fn sign_in(world: &PingwardWorld, username: &str, password: &str) -> R
 
 /// Reveals the ping URL when the page is withholding it.
 ///
-/// An admin looking at someone else's check gets the ping URL only after an
-/// explicit, audited reveal (see `CheckPageViewer` in `src/web.rs`). Steps that
-/// merely *need* the URL — rather than asserting on the gate itself — go
+/// An admin viewing someone else's check gets it only after an audited reveal
+/// (`CheckPageViewer` in `src/web.rs`). Steps that merely need the URL go
 /// through this, so they read the same on the owner and admin routes.
 ///
 /// # Errors
