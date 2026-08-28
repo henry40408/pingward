@@ -15,6 +15,12 @@ ignore = [
     # spin 0.9.8 is yanked but pulled in transitively via flume -> sqlx-sqlite;
     # we don't control the version and there is no non-yanked 0.9.x to move to.
     "spin@0.9.8",
+    # chacha20 0.10.1 was yanked upstream (not an advisory); it is pulled in
+    # transitively via rand. 0.10.0 is yanked too, so the only non-yanked
+    # stable release is 0.10.2, published 2026-08-27 — too new to adopt under
+    # the 7-day hold on fresh releases, which clears on 2026-09-03. Remove
+    # this then; see #162.
+    "chacha20@0.10.1",
 ]
 
 [licenses]
