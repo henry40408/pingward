@@ -790,11 +790,11 @@ struct PeerAddr(Option<IpAddr>);
 
 impl FromRequestParts<AppState> for PeerAddr {
     type Rejection = Infallible;
-    async fn from_request_parts(
+    fn from_request_parts(
         parts: &mut axum::http::request::Parts,
         _state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(Self(crate::auth::peer_ip(&parts.extensions)))
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(Ok(Self(crate::auth::peer_ip(&parts.extensions))))
     }
 }
 
