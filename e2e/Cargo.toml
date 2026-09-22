@@ -46,7 +46,7 @@ tempfile = "3.26.0"
 # the only route to `prefers-color-scheme` — so a second protocol stack would
 # buy nothing. `cdp-events` is not needed either: no scenario intercepts a
 # request, it only *observes* deliveries, which the mock receiver records.
-thirtyfour = "=0.37.4"
+thirtyfour = "=0.37.5"
 tokio = { version = "1.53.1", features = [
   "macros",
   "net",
