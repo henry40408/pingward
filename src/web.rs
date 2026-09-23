@@ -700,7 +700,6 @@ async fn logout(
         secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
     {
         state.store.delete_session(&id).await?;
-        // Or the dead session's elevation lingers until its window elapses.
         state.elevations.revoke(&crate::apikey::hash_api_key(&id));
         tracing::info!(
             target: "pingward::session",
@@ -3770,9 +3769,9 @@ async fn admin_unlock_page(
 
 /// No-op without a session handle — harmless, as passwordless accounts already pass
 /// via `Elevation::not_applicable`.
-fn grant_elevation(state: &AppState, jar: &CookieJar) {
+fn grant_elevation(state: &AppState, jar: &CookieJar, user_id: i64) {
     if let Some(handle) = current_session_handle(state, jar) {
-        state.elevations.grant(&handle);
+        state.elevations.grant(&handle, user_id);
     }
 }
 
@@ -3790,7 +3789,7 @@ async fn admin_unlock(
     if wants_fragment(&headers) {
         return Ok(match outcome {
             Reauth::Passed => {
-                grant_elevation(&state, &jar);
+                grant_elevation(&state, &jar, admin.id);
                 StatusCode::NO_CONTENT.into_response()
             }
             Reauth::Failed => StatusCode::FORBIDDEN.into_response(),
@@ -3812,7 +3811,7 @@ async fn admin_unlock(
     if let Some(msg) = refusal {
         return render_admin_unlock(&state, &jar, &admin, None, Some(msg.to_string()));
     }
-    grant_elevation(&state, &jar);
+    grant_elevation(&state, &jar, admin.id);
     let jar = jar.add(flash_cookie(&state.config, "admin_unlocked"));
     Ok((jar, Redirect::to("/admin")).into_response())
 }
@@ -4056,6 +4055,7 @@ async fn users_delete(
         );
     }
     state.store.delete_user(id).await?;
+    state.elevations.revoke_user(id, None);
     // No `count`: sessions go via ON DELETE CASCADE.
     tracing::info!(
         target: "pingward::session",
@@ -4103,20 +4103,24 @@ async fn users_set_password(
     state.store.set_user_password(id, &phc).await?;
     // End sessions, or an intruder's cookie survives the reset. A self-reset spares
     // the current session; evicting an attacker on it also needs a logout.
-    let revoked = if id == admin.id {
-        match secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state)) {
-            Some(current) => {
-                state
-                    .store
-                    .delete_other_sessions_for_user(id, &current)
-                    .await?
-            }
-            // Unreachable for an authenticated `AdminUser`; fail safe anyway.
-            None => state.store.delete_sessions_for_user(id).await?,
+    let keep = (id == admin.id)
+        .then(|| {
+            secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
+        })
+        .flatten();
+    let revoked = match &keep {
+        Some(current) => {
+            state
+                .store
+                .delete_other_sessions_for_user(id, current)
+                .await?
         }
-    } else {
-        state.store.delete_sessions_for_user(id).await?
+        // Another user's reset; or, unreachable for an authenticated `AdminUser`,
+        // a self-reset without a session — fail safe anyway.
+        None => state.store.delete_sessions_for_user(id).await?,
     };
+    let keep = keep.map(|k| crate::apikey::hash_api_key(&k));
+    state.elevations.revoke_user(id, keep.as_deref());
     tracing::info!(
         target: "pingward::session",
         reason = "password_reset",
@@ -4257,7 +4261,9 @@ async fn users_set_disabled(
     // On disable, or disable→enable resurrects sessions (`resolve_user` blocks only
     // while disabled).
     let revoked = if new_disabled {
-        state.store.delete_sessions_for_user(id).await?
+        let n = state.store.delete_sessions_for_user(id).await?;
+        state.elevations.revoke_user(id, None);
+        n
     } else {
         0
     };
@@ -4506,20 +4512,19 @@ async fn account_password(
     let phc =
         hash_password(&form.new_password).map_err(|e| AppError::Other(e.to_string().into()))?;
     state.store.set_user_password(user.id, &phc).await?;
-    let revoked = match secret::session_id_from_jar(
-        &jar,
-        &state.config.secret,
-        session_cookie_name(&state),
-    ) {
+    let keep = secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state));
+    let revoked = match &keep {
         Some(current) => {
             state
                 .store
-                .delete_other_sessions_for_user(user.id, &current)
+                .delete_other_sessions_for_user(user.id, current)
                 .await?
         }
         // Unreachable here; revoking everything is the safe direction anyway.
         None => state.store.delete_sessions_for_user(user.id).await?,
     };
+    let keep = keep.map(|k| crate::apikey::hash_api_key(&k));
+    state.elevations.revoke_user(user.id, keep.as_deref());
     tracing::info!(
         target: "pingward::session",
         reason = "password_change",
@@ -4674,6 +4679,7 @@ async fn sessions_revoke(
         .store
         .delete_session_owned(&target.id, user.id)
         .await?;
+    state.elevations.revoke(&handle);
     tracing::info!(
         target: "pingward::session",
         reason = "revoked",
@@ -4713,6 +4719,8 @@ async fn sessions_revoke_others(
             .store
             .delete_other_sessions_for_user(user.id, &id)
             .await?;
+        let keep = crate::apikey::hash_api_key(&id);
+        state.elevations.revoke_user(user.id, Some(&keep));
         tracing::info!(
             target: "pingward::session",
             reason = "revoke_others",
