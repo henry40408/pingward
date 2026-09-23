@@ -1,5 +1,5 @@
 //! Write-API request bodies. Each converts into its web form struct so the
-//! handlers reuse the UI's validators ([`crate::web::validate_project`] etc.).
+//! handlers reuse the UI's validators (`web::validate_project` etc.).
 
 use crate::web::{ChannelForm, CheckForm, ProjectForm};
 use serde::Deserialize;
