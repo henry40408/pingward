@@ -201,9 +201,14 @@ async fn filter_dashboard(world: &mut PingwardWorld, term: String) -> Result<()>
     let driver = world.driver()?;
     driver.fill("dashboard-filter-input", &term).await?;
     driver.submit("dashboard-filter-submit").await?;
-    // A GET form; the empty `status` field may follow `q` in the query.
+    // A GET form, so the term arrives form-encoded (space as `+`); the empty
+    // `status` field may follow `q` in the query.
+    let query = reqwest::Url::parse_with_params("http://x/", [("q", &term)])?
+        .query()
+        .unwrap_or_default()
+        .to_owned();
     world
-        .expect_path_matching(&format!(r"\?q={}(&|$)", regex::escape(&term)))
+        .expect_path_matching(&format!(r"\?{}(&|$)", regex::escape(&query)))
         .await
 }
 

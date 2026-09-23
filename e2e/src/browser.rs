@@ -77,6 +77,10 @@ impl Browser {
         // desktop scenario could fall under an `app.css` breakpoint
         // (720/640/560px) and silently test the phone layout.
         browser.set_viewport(DESKTOP).await?;
+        // Headless Chrome inherits the host's appearance, so on a dark-mode
+        // desktop the default 'system' theme would resolve dark. Pin light;
+        // a scenario that wants dark re-issues `emulate_color_scheme`.
+        browser.emulate_color_scheme("light").await?;
         if scripting == Scripting::Disabled {
             browser.disable_scripting().await?;
         }
@@ -118,7 +122,8 @@ impl Browser {
         Ok(())
     }
 
-    /// Emulates `prefers-color-scheme` (for `theme.feature` and `no_js.feature`).
+    /// Emulates `prefers-color-scheme`: `open` pins "light", and `theme.feature`
+    /// and `no_js.feature` switch it per scenario.
     pub async fn emulate_color_scheme(&self, scheme: &str) -> Result<()> {
         self.driver
             .cdp()
