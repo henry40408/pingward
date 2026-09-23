@@ -2,9 +2,7 @@ use crate::models::{Check, CheckStatus, PingKind, PingSummary};
 use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 
-/// Build version stamped in by `build.rs` from `git describe --tags --always
-/// --dirty`: a release tag, a tag plus distance, or — before the first tag, or
-/// from a shallow CI checkout — a bare short SHA.
+/// Build version from `build.rs` (`git describe --tags --always --dirty`).
 pub fn version() -> &'static str {
     env!("GIT_VERSION")
 }
@@ -32,22 +30,15 @@ impl DisplayStatus {
     }
 }
 
-/// A `Start` ping has been recorded more recently than the last finish
-/// (success/fail). A `Log` ping stamps neither column, so it cannot clear
-/// this. `Option`'s ordering (`Some(_) > None`, `None > None` false) makes
-/// this one comparison cover both "started and never finished" and "started
-/// again after the last finish".
+/// A `start` is newer than the last finish. `Option`'s ordering (`Some(_) >
+/// None`, `None > None` false) also covers "started and never finished".
 fn is_running(check: &Check) -> bool {
     check.last_start_at > check.last_ping_at
 }
 
-/// `next_due_at` already includes grace, so `next_due_at - grace` is the
-/// expected run time. A stored-Up check inside `(expected, due]` is "late".
-///
-/// Precedence is `Paused > Down > Running > Late > Up`. `Running` applies only
-/// to a stored `Up`/`New` check and beats `Late`, since a long-running job
-/// legitimately drifts past its expected time. `Down`/`Paused` ignore
-/// `is_running`, so an in-flight run never masks an alert.
+/// Precedence `Paused > Down > Running > Late > Up`: a long job may drift past
+/// its expected time, but an in-flight run never masks an alert. `Late` is a
+/// stored-Up check inside `(next_due_at - grace, next_due_at]`.
 pub fn display_status(check: &Check, now: DateTime<Utc>) -> DisplayStatus {
     match check.status {
         CheckStatus::Down => DisplayStatus::Down,
@@ -77,8 +68,7 @@ fn is_finish(k: PingKind) -> bool {
     matches!(k, PingKind::Success | PingKind::Fail)
 }
 
-/// Pair each finish (success/fail) ping with the most recent preceding `start`.
-/// Input may be newest- or oldest-first; normalized to chronological internally.
+/// Finish ping id → seconds since the preceding `start`, in any input order.
 pub fn run_durations(pings: &[PingSummary]) -> HashMap<i64, i64> {
     let mut ordered: Vec<&PingSummary> = pings.iter().collect();
     ordered.sort_by_key(|p| (p.created_at, p.id));
@@ -95,7 +85,7 @@ pub fn run_durations(pings: &[PingSummary]) -> HashMap<i64, i64> {
                     }
                 }
             }
-            _ => {} // log / exitcode-as-recorded: ignore
+            _ => {}
         }
     }
     out
@@ -113,8 +103,7 @@ const MIN_H: u32 = 5;
 const NONE_H: u32 = 16;
 const HOT_FRACTION: f64 = 0.80;
 
-/// Build the heartbeat strip: the last `n` runs (success/fail pings), height by
-/// fraction of runtime budget used, colour by outcome. See spec §7.
+/// The last `n` runs: height by fraction of runtime budget, colour by outcome.
 #[allow(
     clippy::cast_sign_loss,
     reason = "`frac` is clamped to [0.0, 1.0] and MAX_H > 0, so the scaled height is non-negative"
@@ -144,8 +133,7 @@ pub fn heartbeat(
         .iter()
         .filter_map(|p| durations.get(&p.id).copied())
         .collect();
-    // Ceiling: explicit max_runtime, else window max — but the window fallback
-    // needs >= 2 measured durations to be meaningful.
+    // Explicit max_runtime, else the window max of at least 2 measured runs.
     let ceiling: Option<i64> = match max_runtime_secs {
         Some(m) if m > 0 => Some(m),
         _ => {
@@ -185,8 +173,6 @@ pub fn heartbeat(
                     let title = if failed {
                         "failed".into()
                     } else if dur.is_some() {
-                        // Duration measured, but no ceiling to render it as a
-                        // fraction of.
                         "no runtime limit set".into()
                     } else {
                         "duration unknown".into()
@@ -198,32 +184,21 @@ pub fn heartbeat(
         .collect()
 }
 
-/// Every IANA timezone, for the `<datalist>` behind the timezone fields.
-/// Called straight from the templates so no template struct has to carry a
-/// 597-entry constant.
+/// Every IANA timezone, for the timezone `<datalist>`; called from templates.
 pub fn timezones() -> &'static [chrono_tz::Tz] {
     &chrono_tz::TZ_VARIANTS
 }
 
-/// The suggestions behind the `<datalist>` on every interval-shaped duration
-/// field (check/project overrides, `/admin`'s global intervals). Called
-/// straight from the templates, like [`timezones`].
-///
-/// A hint, not a constraint: the handlers still parse and validate whatever is
-/// typed. The point is to make the unit suffixes discoverable — a field
-/// holding `3600` reads as one that wants seconds. One list spans every use
-/// (scan intervals in seconds, nag intervals in hours) so they read as one
-/// kind of field, and every entry must round-trip through `parse_duration`
-/// (`durations_all_parse`).
+/// `<datalist>` hints for interval duration fields, making unit suffixes
+/// discoverable. Handlers still validate; every entry must pass
+/// `parse_duration` (`every_suggested_duration_is_one_the_forms_accept`).
 pub fn durations() -> &'static [&'static str] {
     &[
         "30s", "1m", "5m", "15m", "30m", "1h", "6h", "12h", "1d", "7d",
     ]
 }
 
-/// The same for `/account`'s API key expiry: same parser, different scale, so
-/// kept separate from [`durations`] rather than carrying entries that are
-/// noise in the other list.
+/// Like [`durations`], at API-key-expiry scale.
 pub fn expiries() -> &'static [&'static str] {
     &["7d", "30d", "90d", "365d"]
 }
@@ -239,14 +214,9 @@ pub fn fmt_secs(secs: i64) -> String {
     }
 }
 
-/// An absolute timestamp as the UI's plain-text fallback: what stays on the
-/// page when `app.js` does not rewrite a `.localtime[data-ts]` span into the
-/// viewer's zone. Human-readable rather than machine-readable — no sub-second
-/// digits, no `T`, and the zone spelled out, since a bare number that might be
-/// local or might be UTC is worse than one that says which.
-///
-/// Takes a reference so Askama can call it on a field or a `Some(t)` binding
-/// alike.
+/// Fallback text of a `.localtime[data-ts]` span, shown when `app.js` does not
+/// localise it; names the zone so it is never mistaken for local time. Takes a
+/// reference so Askama can call it on a field or a `Some(t)` binding alike.
 pub fn fmt_utc(at: &DateTime<Utc>) -> String {
     at.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }
@@ -264,8 +234,7 @@ pub fn fmt_relative(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// Forward-looking mirror of [`fmt_relative`]: how far `then` still is from
-/// `now`, at the same granularity ("in 45s", "in 12m", "in 3h", "in 2d").
+/// Forward mirror of [`fmt_relative`]: "in 45s", "in 12m", "in 3h", "in 2d".
 pub fn fmt_until(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let s = (then - now).num_seconds().max(0);
     if s < 60 {
@@ -284,41 +253,30 @@ pub fn fmt_until(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
 pub struct NextDue {
     /// Visible text, e.g. `due in 57m`, `overdue by 12m`.
     pub label: String,
-    /// The deadline as RFC 3339, carried in the element's `title`. `None`
-    /// whenever `label` names a state rather than an instant (paused,
-    /// unschedulable), so the template renders no tooltip.
+    /// RFC 3339 deadline for the `title`; `None` when `label` names a state.
     pub iso: Option<String>,
 }
 
-/// Describe a check's next deadline for display.
-///
-/// The source is [`crate::scheduler::due_time`], not the stored
-/// `checks.next_due_at` column: that column is only stamped by `ping::apply`,
-/// so it is `NULL` for a never-pinged check and for one downed by a `fail`
-/// ping. `due_time` is what `scan_once` evaluates, so the rendered deadline
-/// predicts when the check will actually be marked down.
-///
-/// The deadline includes grace (see [`display_status`]) — hence "due" rather
-/// than "expected", which is `grace_secs` earlier.
+/// The check page's next deadline, from [`crate::scheduler::due_time`] (what
+/// `scan_once` evaluates), not the stored `next_due_at`, which is NULL for a
+/// never-pinged check or one downed by a `fail` ping. It includes grace, hence
+/// "due" rather than "expected".
 pub fn next_due(check: &Check, now: DateTime<Utc>) -> NextDue {
     let unlabelled = |label: &str| NextDue {
         label: label.into(),
         iso: None,
     };
-    // Spec §6: a paused check is excluded from monitoring, so a countdown
-    // here would be a deadline nothing enforces.
+    // Nothing enforces a paused check's deadline.
     if check.status == CheckStatus::Paused {
         return unlabelled("not scheduled while paused");
     }
     let Some(due) = crate::scheduler::due_time(check) else {
-        // Period check with no period, or an uninterpretable cron expression.
         return unlabelled("next due unknown");
     };
     let label = if now >= due {
         format!("overdue by {}", fmt_secs((now - due).num_seconds()))
     } else if check.last_ping_at.is_none() {
-        // Never pinged: the deadline is anchored on creation, so say "first
-        // ping" rather than let "due in 1h" imply a run already happened.
+        // Anchored on creation; don't imply a run already happened.
         format!("first ping due {}", fmt_until(due, now))
     } else {
         format!("due {}", fmt_until(due, now))
@@ -483,8 +441,6 @@ mod tests {
 
     #[test]
     fn heartbeat_known_duration_without_ceiling_has_distinct_title() {
-        // One measured run and no max_runtime_secs leaves ceiling None, but
-        // the duration is known — the tooltip must not say "duration unknown".
         let t0 = Utc.with_ymd_and_hms(2026, 7, 14, 8, 0, 0).unwrap();
         let pings = vec![
             ping(1, PingKind::Start, t0),
@@ -492,7 +448,7 @@ mod tests {
         ];
         let bars = heartbeat(&pings, None, false, 6);
         let bar = bars.last().unwrap();
-        assert_eq!(bar.class, "none"); // height/class logic unchanged
+        assert_eq!(bar.class, "none");
         assert_eq!(bar.title, "no runtime limit set");
     }
 
@@ -536,8 +492,6 @@ mod tests {
         c.status = CheckStatus::New;
         c.last_ping_at = None;
         c.created_at = now - Duration::minutes(5);
-        // Anchored on creation: the deadline is real (scan_once will down it)
-        // but says nothing about a run that happened.
         assert_eq!(next_due(&c, now).label, "first ping due in 1h");
     }
 
@@ -584,10 +538,7 @@ mod tests {
         assert_eq!(fmt_until(now - Duration::hours(1), now), "in 0s");
     }
 
-    /// A suggestion the field would reject is worse than no suggestion. Both
-    /// lists are held to the handlers' parser and to `> 0` — the strictest
-    /// bound any field carrying them applies (only grace is looser, at
-    /// `>= 0`), so one check covers every field.
+    /// `> 0` is the strictest bound any field carrying these lists applies.
     #[test]
     fn every_suggested_duration_is_one_the_forms_accept() {
         for raw in durations().iter().chain(expiries().iter()) {
@@ -600,8 +551,7 @@ mod tests {
         }
     }
 
-    /// A browser renders a datalist in document order, so an unsorted list
-    /// reads as arbitrary rather than as a scale.
+    /// A datalist renders in document order.
     #[test]
     fn suggested_durations_are_sorted_and_distinct() {
         for list in [durations(), expiries()] {

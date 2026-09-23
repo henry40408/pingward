@@ -59,8 +59,7 @@ async fn form_includes_csrf_and_form_post_succeeds() {
         .form(&[
             ("_csrf", token.as_str()),
             ("username", "bob"),
-            // Long enough for `auth::validate_password`: this case must clear
-            // the handler, not just the CSRF layer.
+            // Passes `auth::validate_password`, so the handler succeeds too.
             ("password", "bob's long passphrase"),
         ])
         .await
@@ -209,9 +208,7 @@ async fn ping_post_needs_no_csrf() {
     assert_ne!(res.status_code(), axum::http::StatusCode::FORBIDDEN);
 }
 
-// `/login` has no exemption: `web::anonymous_session` hands a logged-out visitor
-// a token, and without the guard an attacker could log a victim into an account
-// they control.
+// `/login` is not exempt (login CSRF); `web::anonymous_session` supplies the token.
 #[tokio::test]
 async fn login_post_with_the_anonymous_token_succeeds() {
     let (mut server, _store) = logged_in_server().await;
@@ -230,7 +227,6 @@ async fn login_post_with_the_anonymous_token_succeeds() {
 #[tokio::test]
 async fn login_post_without_a_token_is_forbidden() {
     let (mut server, _store) = logged_in_server().await;
-    // Prime an anonymous session, then submit without the token it hands out.
     common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
@@ -287,9 +283,8 @@ async fn session_id(store: &Store) -> String {
         .unwrap()
 }
 
-/// A cookie-less server over the same store, so a test can present exactly one
-/// hand-built `Cookie` header. Pass a `secret` other than `TEST_SECRET` to
-/// simulate a restart that rotated it.
+/// A cookie-less server over the same store; a `secret` other than
+/// `TEST_SECRET` simulates a rotating restart.
 fn server_with_secret(store: &Store, secret: &str) -> TestServer {
     let config = Config::from_map(|k| (k == "PINGWARD_SECRET").then(|| secret.into()));
     TestServer::new(app(AppState::new(store.clone(), config)))
@@ -317,8 +312,7 @@ async fn unsigned_session_id_does_not_authenticate() {
     assert_bounced_to_login(&res);
 }
 
-// Rotating the secret (what a restart with `PINGWARD_SECRET` unset does) ends
-// every session: the row is still there and unexpired, only the signature fails.
+// Rotating the secret ends every session via the signature alone; rows survive.
 #[tokio::test]
 async fn a_rotated_secret_invalidates_existing_sessions() {
     let (server, store) = logged_in_server().await;

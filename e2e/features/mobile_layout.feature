@@ -1,10 +1,8 @@
 Feature: Mobile layout
 
-  The sticky header (.bar .inner) lays out brand, nav links and controls in a
-  single non-wrapping flex row whose intrinsic width is fixed regardless of
-  viewport. Nothing else on these pages causes horizontal overflow, so a
-  regression here would silently reintroduce a horizontal scrollbar on every
-  phone-width viewport across the app.
+  Phone-width (375px) layout. The header row (.bar .inner) must wrap, or its
+  min-content width puts a horizontal scrollbar on every page; wide tables
+  must scroll inside .tscroll rather than dragging their card body sideways.
 
   Background:
     Given an admin "admin" with password "correct horse battery" exists
@@ -30,22 +28,11 @@ Feature: Mobile layout
     And I visit "/admin"
     Then Environment rows do not wrap
 
-  # The Check health and Notification health cards only render their tables
-  # when there is failing data (down checks / failed deliveries), so this
-  # seeds a check that goes down and a webhook channel bound to it whose
-  # delivery fails (unreachable http://127.0.0.1:1/hook is the default target
-  # for "I create a webhook channel"), populating all three conditional
-  # tables at once: the down-checks table, the per-channel failure table, and
-  # the recent-failures table. The project/check/channel names are long but
-  # deliberately unbroken by spaces or hyphens — browsers treat those as line-
-  # break opportunities, so a merely long name still wraps to fit a narrow
-  # cell instead of forcing the table wider than the viewport.
-  #
-  # A regression here would be silent: with .cb's own overflow-x:auto, an
-  # unwrapped wide table drags the rest of the card body sideways with it
-  # (e.g. it would strand the "Recent failures" table below the down-checks
-  # table off-screen), not just look like a scrollbar cosmetically appearing
-  # in the wrong place.
+  # The health tables render only with failing data: a down check plus a
+  # webhook bound to it whose delivery fails (the step's default target,
+  # http://127.0.0.1:1/hook, is unreachable) populates all three. Names have
+  # no spaces or hyphens, which would be break opportunities letting a narrow
+  # cell wrap instead of forcing the table wider than the viewport.
   Scenario: The admin health tables scroll inside their cards at phone width
     Given a project named "NightlyMaintenanceAndReportingPipeline"
     And I remember the current project
@@ -65,11 +52,9 @@ Feature: Mobile layout
     And I reload the check page
     Then the page has no horizontal scrollbar
 
-  # The heartbeat caption is three flex items on one row: "older", a
-  # legend, and "now". Below ~640px they stop fitting, and because each is its
-  # own flex item they wrapped independently and side by side — the legend's
-  # second line landed beside "ago" rather than under its own first line. The
-  # legend now takes a full-width row underneath instead.
+  # The caption is three flex items ("older", legend, "now"); below ~640px
+  # each would wrap independently and interleave, so the legend takes a
+  # full-width row underneath.
   Scenario: The check page's heartbeat captions stack instead of interleaving at phone width
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60
@@ -93,14 +78,10 @@ Feature: Mobile layout
     Then the check row's status dot sits next to the name
     And the check row is a single line
 
-  # The "no channel" chip was originally hidden below 640px along with .spark
-  # and .cwhen, which meant the one thing on the row a reader has to act on was
-  # the one thing a phone never showed. It is visible at every width now, and
-  # the space it takes comes out of .cmeta — which is `min-width: 0` and whose
-  # .nm has no ellipsis, so the name wraps rather than truncates when squeezed.
-  # Both halves are asserted: the chip really is there (otherwise the line
-  # count below proves nothing) and the name it sits beside still fits on one
-  # line at 375px.
+  # The "no channel" chip stays visible below 640px (unlike .spark/.cwhen) but
+  # moves to its own row: .nm has no ellipsis, so squeezing .cmeta would wrap
+  # the name. Asserts the chip is rendered, the name is one line, and the chip
+  # sits below it.
   Scenario: A check with no channel is flagged at phone width too
     Given a project named "Nightly jobs"
     And a check named "nightly-database-backup" with period 60
@@ -109,12 +90,9 @@ Feature: Mobile layout
     Then the check row's name stays on one line beside the "no channel" chip
     And the page has no horizontal scrollbar
 
-  # A project group's header (.gh) is one non-wrapping flex row: name,
-  # description, "N checks", a rule, and the "Manage →" link. Flex shrinks
-  # every item with the default flex-shrink: 1, so a long description squeezed
-  # the short labels too and broke "1 checks" into "1" / "checks" (and
-  # "Manage →" into "Manage" / "→"). The description is the only item that may
-  # give; it truncates with an ellipsis.
+  # The group header (.gh) is one non-wrapping flex row; with the default
+  # flex-shrink a long description would wrap "1 checks" and "Manage →". Only
+  # the description may give, truncating with an ellipsis.
   Scenario: The dashboard group header labels stay on one line at phone width
     Given a project named "Nightly jobs"
     And I open the project edit form

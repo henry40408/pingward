@@ -1,10 +1,7 @@
-//! End-to-end delivery test for the check-detail live tail
-//! (`GET /checks/{id}/events`, `src/web.rs::check_events`).
+//! Live-tail delivery (`GET /checks/{id}/events`, `web::check_events`).
 //!
-//! Not `axum_test`: its request helpers await the *entire* response body, and
-//! an SSE body never ends, so such a request hangs forever. The router is driven
-//! with `tower::ServiceExt::oneshot` and the body read as a stream under a
-//! `tokio::time::timeout`.
+//! Driven with `oneshot` and a timed stream read: `axum_test` awaits the whole
+//! body, and an SSE body never ends.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -15,16 +12,14 @@ use tower::ServiceExt;
 
 mod common;
 
-/// A fresh, migrated in-memory-SQLite store.
 async fn test_store() -> Store {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     Store::new(pool)
 }
 
-/// Creates a user and a live session row directly through the store, returning
-/// the `Cookie` header value: `<id>.<hmac>` signed with `common::TEST_SECRET`,
-/// since the bare id no longer authenticates anything.
+/// A new user's `Cookie` header, signed with `common::TEST_SECRET` (a bare id
+/// does not authenticate).
 async fn login_cookie(store: &Store, username: &str) -> String {
     let phc = pingward::auth::hash_password("pw").unwrap();
     let user_id = store
@@ -48,8 +43,7 @@ async fn login_cookie(store: &Store, username: &str) -> String {
     format!("{}={value}", pingward::auth::session_cookie_name(false))
 }
 
-/// Reads `body` until `needle` appears, panicking on timeout — a hang there
-/// means the live-tail signal was never delivered to the subscriber.
+/// A timeout means the signal never reached the subscriber.
 async fn read_until_contains(body: axum::body::Body, needle: &str, timeout: Duration) {
     let fut = async {
         let mut buf = Vec::new();
@@ -74,10 +68,8 @@ async fn read_until_contains(body: axum::body::Body, needle: &str, timeout: Dura
         });
 }
 
-/// The broadcast published by `ping::apply` reaches a subscriber that opened the
-/// stream first. Drives the real `/ping/{uuid}` endpoint rather than calling
-/// `state.events.send(...)`, which would only prove the channel itself works.
-/// Both requests go through one cloned `Router`, so they share one sender.
+/// Drives the real `/ping/{uuid}` endpoint, not `state.events.send`, through
+/// one cloned `Router` so both requests share a sender.
 #[tokio::test]
 async fn owner_receives_changed_event_when_check_is_pinged() {
     let store = test_store().await;
@@ -109,9 +101,7 @@ async fn owner_receives_changed_event_when_check_is_pinged() {
         .await
         .unwrap();
 
-    // 1. Open the SSE stream first: `ping::apply`'s publish is gated on
-    // `events.receiver_count() > 0`, so without the subscription the signal goes
-    // nowhere and this test hangs instead of failing loudly.
+    // Subscribe first: publishing is gated on `receiver_count() > 0`.
     let sse_req = Request::builder()
         .uri(format!("/checks/{check_id}/events"))
         .header("cookie", &cookie)
@@ -130,7 +120,6 @@ async fn owner_receives_changed_event_when_check_is_pinged() {
         "expected an SSE content-type, got {content_type:?}"
     );
 
-    // 2. The real ping endpoint, the same path a monitored job would call.
     let ping_req = Request::builder()
         .method("POST")
         .uri("/ping/check-uuid")
@@ -142,7 +131,6 @@ async fn owner_receives_changed_event_when_check_is_pinged() {
     read_until_contains(resp.into_body(), "changed", Duration::from_secs(5)).await;
 }
 
-/// 404, as on every other owner-scoped route (`owned_check` in `src/web.rs`).
 #[tokio::test]
 async fn non_owner_gets_404_from_check_events() {
     let store = test_store().await;

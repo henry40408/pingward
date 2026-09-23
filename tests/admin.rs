@@ -4,9 +4,8 @@ use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
 
-/// After a session exists, send that session's CSRF token as a default
-/// `X-CSRF-Token` header so protected POSTs pass `csrf_guard`. Call after every
-/// (re)login.
+/// Installs the newest session's CSRF token as a default header. Call after
+/// every (re)login.
 async fn set_csrf(server: &mut TestServer, store: &Store) {
     let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
@@ -37,16 +36,9 @@ async fn admin_server() -> (TestServer, Store, i64) {
     (server, store, admin_id)
 }
 
-// --- admin route guard exhaustiveness --------------------------------------
-//
-// `web::routes()` guards every `/admin*` handler individually via the
-// `AdminUser` extractor; there is no router-level layer enforcing it.
-
-/// Every `/admin*` route registered by `web::routes()` must 403 for a signed-in
-/// non-admin, with no exceptions. The route list is derived from the router's
-/// own source rather than hand-maintained (`axum::Router` exposes no route
-/// table at runtime), so a new `/admin` route that forgets its `AdminUser`
-/// guard fails this test.
+/// Every `/admin*` route must 403 for a signed-in non-admin. Each handler is
+/// guarded by its own `AdminUser` extractor (no router layer), and the route
+/// list is parsed from `web.rs`, so a new unguarded route fails here.
 #[tokio::test]
 async fn non_admin_forbidden_on_every_admin_route() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -69,12 +61,10 @@ async fn non_admin_forbidden_on_every_admin_route() {
             ("password", "pw"),
         ])
         .await;
-    // A valid session + CSRF token proves every 403 below comes from the
-    // `AdminUser` guard, not a missing/invalid CSRF token.
+    // A valid CSRF token, so every 403 comes from `AdminUser`, not `csrf_guard`.
     set_csrf(&mut server, &store).await;
 
     let routes = common::routes_in_router_source(include_str!("../src/web.rs"), "/admin");
-    // A parser bug returning nothing would make the loop below pass vacuously.
     assert!(
         routes.len() >= 25,
         "parsed only {} /admin routes from web.rs — the source parser is \
@@ -86,8 +76,7 @@ async fn non_admin_forbidden_on_every_admin_route() {
         let path = common::normalise_route_path(raw_path);
         let status = match *method {
             "GET" => server.get(&path).await.status_code(),
-            // `AdminUser` is extracted before `Form`/`HtmlForm`, so the guard
-            // rejects before the body is parsed and an empty form is fine.
+            // `AdminUser` rejects before the body is parsed.
             "POST" => server.post(&path).form(&[("_", "")]).await.status_code(),
             other => panic!("unsupported method {other} for route {path}"),
         };
@@ -108,7 +97,7 @@ async fn admin_sees_admin_nav_link_on_dashboard() {
         "admin's own dashboard should show the Admin nav link"
     );
 
-    // The link reflects the viewer, not the route: a non-admin must not see it.
+    // A non-admin must not see it.
     let state = AppState::new(store.clone(), common::test_config());
     let mut member_server = TestServer::new(app(state));
     member_server.save_cookies();
@@ -117,20 +106,29 @@ async fn admin_sees_admin_nav_link_on_dashboard() {
         .create_user("member", Some(&phc), false, chrono::Utc::now())
         .await
         .unwrap();
+    let csrf = common::anonymous_csrf(&mut member_server).await;
     member_server
         .post("/login")
-        .form(&[("username", "member"), ("password", "pw")])
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "member"),
+            ("password", "pw"),
+        ])
         .await;
-    let member_body = member_server.get("/").await.text();
+    let member_res = member_server.get("/").await;
+    member_res.assert_status_ok();
+    let member_body = member_res.text();
+    assert!(
+        member_body.contains(r#"href="/account""#),
+        "the member must actually be signed in for the absence below to mean anything"
+    );
     assert!(
         !member_body.contains(r#"href="/admin""#),
         "non-admin member should not see the Admin nav link"
     );
 }
 
-/// An admin can reach another user's project, and reading it is *not* audited —
-/// recording every page open buried the entries that matter. Writes still do;
-/// the mutation tests below are the other half.
+/// Cross-user admin *reads* are not audited (writes are; see below).
 #[tokio::test]
 async fn admin_reading_another_users_project_is_not_audited() {
     let (server, store, _admin_id) = admin_server().await;
@@ -153,8 +151,8 @@ async fn admin_reading_another_users_project_is_not_audited() {
     );
 }
 
-/// Deleting another user's project sends the admin back to `/admin`. Regression:
-/// the redirect used to point at `/admin/projects`, which no longer exists.
+/// Deleting another user's project redirects to `/admin` (not the removed
+/// `/admin/projects`).
 #[tokio::test]
 async fn admin_deletes_other_users_project_and_lands_on_admin() {
     let (server, store, _admin_id) = admin_server().await;
@@ -224,8 +222,7 @@ async fn admin_keeps_nav_link_on_owner_form_validation_error() {
         .create_project(admin_id, "p", "", None, None, chrono::Utc::now())
         .await
         .unwrap();
-    // A blank `period_secs` with `schedule_kind` "period" fails
-    // `validate_check`, taking the error re-render branch.
+    // Blank `period_secs` fails `validate_check`: the error re-render branch.
     let res = server
         .post(&format!("/projects/{pid}/checks"))
         .form(&[
@@ -241,17 +238,15 @@ async fn admin_keeps_nav_link_on_owner_form_validation_error() {
             ("nag_interval_secs", ""),
         ])
         .await;
-    // The error re-render is a 200 and must still show the Admin nav link: the
-    // viewer is an admin even on the owner route.
+    // The re-render still knows the viewer is an admin.
     res.assert_status_ok();
     assert!(res.text().contains("href=\"/admin\""));
 }
 
 // --- audit trail on /admin -------------------------------------------------
 
-/// GET a fragment endpoint the way `app.js` does. Without the header the
-/// endpoint redirects a plain navigation to the embedding page instead of
-/// serving a bare partial (see `tests/no_js.rs`).
+/// GET a fragment endpoint as `app.js` does; without the header it redirects
+/// to the embedding page.
 async fn get_fragment(server: &TestServer, path: &str) -> axum_test::TestResponse {
     server
         .get(path)
@@ -259,8 +254,7 @@ async fn get_fragment(server: &TestServer, path: &str) -> axum_test::TestRespons
         .await
 }
 
-/// Record `n` audit rows directly, one second apart, alternating action so the
-/// filter has something to narrow.
+/// Records `n` audit rows one second apart, alternating action.
 async fn seed_audit(store: &Store, actor_id: i64, n: i64) {
     let base = chrono::Utc::now() - chrono::Duration::hours(1);
     for i in 0..n {
@@ -288,9 +282,8 @@ async fn seed_audit(store: &Store, actor_id: i64, n: i64) {
     }
 }
 
-/// The trail is readable from `/admin` itself, and every column of
-/// `models::AuditLog` reaches the page, `method`/`path`/`detail`/
-/// `target_owner_id` included via the expandable row.
+/// Every column of `models::AuditLog` reaches `/admin`, the rest via the
+/// expandable row.
 #[tokio::test]
 async fn admin_page_shows_the_audit_trail() {
     let (server, store, admin_id) = admin_server().await;
@@ -312,7 +305,6 @@ async fn admin_page_shows_the_audit_trail() {
         body.contains("project #1"),
         "target type/id column missing: {body}"
     );
-    // The rest of AuditLog, in the expandable row.
     assert!(
         body.contains("GET /admin/projects/1"),
         "method/path missing: {body}"
@@ -333,9 +325,6 @@ async fn admin_audit_empty_state() {
     );
 }
 
-/// The fragment endpoint serves the same table on its own and honours the
-/// action filter. Card body and fragment are one template, so this also pins
-/// what `/admin` inlines.
 #[tokio::test]
 async fn admin_audit_fragment_filters_by_action() {
     let (server, store, admin_id) = admin_server().await;
@@ -349,21 +338,18 @@ async fn admin_audit_fragment_filters_by_action() {
         3,
         "expected the 3 user.create rows: {body}"
     );
-    // Only the rows are filtered — the Action select still offers every action
-    // in the trail, so assert on the cell, not the page.
+    // Assert on the cell: the Action select still lists every action.
     assert!(
         !body.contains("<td class=\"mono\">admin.access</td>"),
         "filtered-out action still present as a row: {body}"
     );
-    // A filter in force offers a way out of it.
     assert!(
         body.contains("data-testid=\"audit-clear\""),
         "Clear link missing while filtered: {body}"
     );
 }
 
-/// A filter that matches nothing says so rather than reading as "no audit
-/// entries exist".
+/// A filter matching nothing must not read as "no audit entries exist".
 #[tokio::test]
 async fn admin_audit_fragment_filtered_empty_state_differs() {
     let (server, store, admin_id) = admin_server().await;
@@ -378,21 +364,17 @@ async fn admin_audit_fragment_filtered_empty_state_differs() {
     );
 }
 
-/// Keyset paging over the fragment: the Older link carries a `ab=` cursor plus
-/// the active filter, and following it yields strictly older rows.
 #[tokio::test]
 async fn admin_audit_pages_and_carries_the_filter() {
     let (server, store, admin_id) = admin_server().await;
-    // 20 rows per page, so 24 rows means a second page exists.
+    // 20 rows per page.
     seed_audit(&store, admin_id, 24).await;
 
     let res = get_fragment(&server, "/admin/audit?aaction=admin.access").await;
     res.assert_status_ok();
     let body = res.text();
-    // 12 of the 24 rows are admin.access — one page's worth, no Older link.
     assert_eq!(body.matches("data-testid=\"audit-row\"").count(), 12);
 
-    // Unfiltered, 24 rows page at 20.
     let res = get_fragment(&server, "/admin/audit").await;
     let body = res.text();
     assert_eq!(body.matches("data-testid=\"audit-row\"").count(), 20);
@@ -412,11 +394,10 @@ async fn admin_audit_pages_and_carries_the_filter() {
     assert_eq!(res.text().matches("data-testid=\"audit-row\"").count(), 4);
 }
 
-/// Paging preserves an active filter rather than silently widening it.
 #[tokio::test]
 async fn admin_audit_pager_href_carries_the_active_filter() {
     let (server, store, admin_id) = admin_server().await;
-    // 48 rows: 24 of each action, so a filtered view still has two pages.
+    // 24 per action, so the filtered view still has two pages.
     seed_audit(&store, admin_id, 48).await;
 
     let res = get_fragment(&server, "/admin/audit?aaction=admin.access").await;
@@ -429,9 +410,8 @@ async fn admin_audit_pager_href_carries_the_active_filter() {
 
 // --- settings saves are audited ---------------------------------------------
 
-/// Changing global settings had been going unrecorded. It matters most for
-/// `audit_retention_days`: shortening that window is how an admin would erase
-/// their own trail, so the change itself has to leave a mark.
+/// Settings changes are audited: shortening `audit_retention_days` is how an
+/// admin would erase their own trail.
 #[tokio::test]
 async fn settings_save_is_audited_with_the_changed_keys() {
     let (server, store, _admin_id) = admin_server().await;
@@ -459,15 +439,13 @@ async fn settings_save_is_audited_with_the_changed_keys() {
         detail.contains("audit_retention_days=7"),
         "the changed key and its new value should be recorded: {detail}"
     );
-    // Only what changed: the four untouched fields were already blank.
+    // Only changed keys are listed.
     assert!(
         !detail.contains("scan_interval"),
         "unchanged keys should not be listed: {detail}"
     );
 }
 
-/// A save that changes nothing writes no audit row, or every visit to the form
-/// that ends in "Save" would pad the trail.
 #[tokio::test]
 async fn settings_save_with_no_changes_writes_no_audit() {
     let (server, store, _admin_id) = admin_server().await;
@@ -494,8 +472,7 @@ async fn settings_save_with_no_changes_writes_no_audit() {
     );
 }
 
-/// Clearing a setting is as much a change as setting one, and reads as
-/// `key=unset` rather than an empty right-hand side.
+/// Clearing a setting is a change, recorded as `key=unset`.
 #[tokio::test]
 async fn settings_save_records_a_cleared_value_as_unset() {
     let (server, store, _admin_id) = admin_server().await;
@@ -533,8 +510,7 @@ async fn settings_save_records_a_cleared_value_as_unset() {
 
 // --- the ping URL is disclosed, not just displayed ---------------------------
 
-/// Seed a project + check owned by someone other than the signed-in admin,
-/// returning `(owner_id, check_id)`.
+/// A check owned by another user: `(owner_id, check_id)`.
 async fn other_users_check(store: &Store, name: &str) -> (i64, i64) {
     let owner = store
         .create_user(name, Some("phc"), false, chrono::Utc::now())
@@ -560,8 +536,7 @@ async fn other_users_check(store: &Store, name: &str) -> (i64, i64) {
     (owner, cid)
 }
 
-/// Opening another user's check does not print its ping URL: the URL is a
-/// bearer credential, enough on its own to mark the check up or down.
+/// Another user's check page withholds the ping URL, a bearer credential.
 #[tokio::test]
 async fn admin_check_page_withholds_another_users_ping_url() {
     let (server, store, _admin_id) = admin_server().await;
@@ -578,7 +553,7 @@ async fn admin_check_page_withholds_another_users_ping_url() {
         body.contains("data-testid=\"reveal-ping-url\""),
         "no reveal control offered: {body}"
     );
-    // The usage help spells the URL out five more times, so it goes too.
+    // The usage help repeats the URL, so it is withheld too.
     assert!(
         !body.contains("data-testid=\"ping-help\""),
         "the ping help block still prints the URL: {body}"
@@ -589,8 +564,7 @@ async fn admin_check_page_withholds_another_users_ping_url() {
     );
 }
 
-/// Asking for it hands it over and writes that down — the one read under
-/// `/admin` that still audits, because it discloses a credential.
+/// The one audited read under `/admin`: it discloses a credential.
 #[tokio::test]
 async fn admin_revealing_another_users_ping_url_is_audited() {
     let (server, store, admin_id) = admin_server().await;
@@ -618,9 +592,7 @@ async fn admin_revealing_another_users_ping_url_is_audited() {
     );
 }
 
-/// The gate is about crossing a user boundary, not about the `/admin` route: an
-/// admin looking at their own check sees its URL without asking, and nothing is
-/// recorded.
+/// The gate is about crossing a user boundary, not the `/admin` route.
 #[tokio::test]
 async fn admin_sees_their_own_ping_url_without_revealing() {
     let (server, store, admin_id) = admin_server().await;
@@ -650,8 +622,8 @@ async fn admin_sees_their_own_ping_url_without_revealing() {
     assert!(store.list_audit(10).await.unwrap().is_empty());
 }
 
-/// Reads and writes go through the same resolver, so dropping the read audit
-/// must not take the write audit with it.
+/// Reads and writes share a resolver; dropping the read audit must not drop
+/// the write audit.
 #[tokio::test]
 async fn admin_mutating_another_users_check_is_still_audited() {
     let (server, store, _admin_id) = admin_server().await;

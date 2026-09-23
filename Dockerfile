@@ -1,26 +1,20 @@
 # syntax=docker/dockerfile:1
 
-# ---- build: cross-compile a static musl binary with cargo-zigbuild ----------
-# The builder is pinned to the native build platform; zig cross-compiles to the
-# target arch's musl triple, so no qemu emulation is needed — an arm64 image
-# builds at the host's native speed.
-# No Rust version here: rust-toolchain.toml is the single source of truth and
-# rustup installs it below. Do not "simplify" this to `rust:1.97` — the
-# un-suffixed tag resolves to trixie, which would be a silent Debian major bump.
+# ---- build: static musl binary via cargo-zigbuild -------------------------
+# Runs on the native build platform; zig cross-compiles, so no qemu.
+# The Rust version comes from rust-toolchain.toml. Don't change this to e.g.
+# `rust:1.97`: un-suffixed tags resolve to trixie (a silent Debian major bump).
 FROM --platform=$BUILDPLATFORM rust:bookworm AS build
 
-# aws-lc-sys (the rustls/aws-lc-rs crypto backend behind sqlx's TLS) compiles
-# its C sources through CMake; the SQLite (C) dep is built by zig cc. curl
-# fetches zig; xz unpacks it.
+# cmake: aws-lc-sys (rustls crypto) C build. curl + xz: fetch and unpack zig.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends cmake curl xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Zig 0.14.1 avoids the libc++-19 bindgen requirement that 0.15+ introduces.
+# Not 0.15+: it adds a libc++-19 bindgen requirement.
 ARG ZIG_VERSION=0.14.1
-# 0.23.0 is the first release whose zigcc wrapper filters
-# `-Wl,--fix-cortex-a53-843419`, which rustc started passing for
-# aarch64-unknown-linux-musl in 1.98 and zig's linker rejects.
+# >= 0.23.0 filters `-Wl,--fix-cortex-a53-843419` (passed by rustc >= 1.98 for
+# aarch64 musl), which zig's linker rejects.
 ARG ZIGBUILD_VERSION=0.23.0
 RUN cargo install cargo-zigbuild --version "${ZIGBUILD_VERSION}" --locked
 RUN set -eux; \
@@ -35,22 +29,15 @@ RUN set -eux; \
 
 WORKDIR /app
 
-# Install the pinned toolchain in a layer keyed on rust-toolchain.toml alone, so
-# editing source does not re-download the compiler. Any rustup proxy invocation
-# triggers the install.
+# Install the pinned toolchain in its own layer, so source edits don't re-download it.
 COPY rust-toolchain.toml .
 RUN cargo --version
 
 COPY . .
 
-# Map Docker's TARGETARCH onto the Rust musl triple and build. `rustup target
-# add` runs after the source (and rust-toolchain.toml) is in place, so it
-# resolves against the pinned toolchain rather than the base image's default.
-#
-# build.rs stamps the binary with GIT_VERSION. `.dockerignore` excludes `.git`,
-# so its own `git describe` fallback cannot work here — the workflow passes the
-# describe output in as a build arg. The literal "dev" default means an
-# arg-less `docker build` still produces a working image, just labelled `dev`.
+# Map TARGETARCH to the musl triple and build with the pinned toolchain.
+# GIT_VERSION comes from the workflow (`.git` is excluded from the context);
+# without it the image is labelled `dev`.
 ARG TARGETARCH
 ARG GIT_VERSION=dev
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -71,17 +58,12 @@ COPY --from=build /out/pingward /pingward
 
 VOLUME /data
 
-# Run from /data so the default SQLite path (pingward.sqlite3, relative) is
-# created inside the mounted volume without an explicit DATABASE_URL override.
+# The default relative SQLite path then lands in the volume.
 WORKDIR /data
 
 EXPOSE 8080
 
-# Bind the HTTP listener on all interfaces inside the container (the app default
-# is loopback). Set via ENV rather than a hardcoded ENTRYPOINT arg so it stays
-# overridable at runtime with `-e PINGWARD_BIND=...` or a compose `environment:`
-# entry. PINGWARD_BASE_URL should also be set to the externally-reachable URL so
-# rendered ping URLs are correct.
+# Listen on all interfaces (the app default is loopback); ENV keeps it overridable.
 ENV PINGWARD_BIND=0.0.0.0:8080
 
 ENTRYPOINT ["/pingward"]

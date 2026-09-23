@@ -10,12 +10,8 @@ fn pg_url() -> Option<String> {
         .filter(|u| u.starts_with("postgres"))
 }
 
-/// Reset to a clean schema so migrations apply idempotently across runs.
-///
-/// Every Postgres assertion has to live in the one test below: this drops and
-/// recreates a schema in a *shared* database, and nextest runs tests
-/// concurrently, so a second `#[tokio::test]` calling it races the first and
-/// `CREATE SCHEMA public` fails with 42P06 for whichever loses.
+/// Drops and recreates the shared schema, so every Postgres assertion must stay
+/// in the one test below: a second concurrent caller fails with 42P06.
 async fn fresh_pg_store(url: &str) -> Store {
     let pool = db::connect(url).await.expect("connect postgres");
     sqlx::query("DROP SCHEMA public CASCADE")
@@ -43,11 +39,8 @@ async fn postgres_full_round_trip() {
         .create_user("alice", Some("phc"), true, now)
         .await
         .unwrap();
-    // `UsernameTaken` is classified from the backend's own unique-violation
-    // code, and Postgres's 23505 is a different code from `SQLite`'s 2067, so
-    // covering one says nothing about the other: a duplicate username on
-    // Postgres could fall back to `AppError::Db`'s blank 500 with the whole
-    // `SQLite` suite still green.
+    // Postgres's unique-violation code (23505) differs from `SQLite`'s, so the
+    // `UsernameTaken` mapping needs its own coverage.
     let err = store
         .create_user("alice", Some("other"), false, now)
         .await
@@ -136,9 +129,7 @@ async fn postgres_full_round_trip() {
         .await
         .unwrap();
 
-    // The batched recent-pings query's ROW_NUMBER() window must behave on
-    // PostgreSQL as on SQLite: per-check limit honored, grouped by check_id,
-    // matching the per-check query. cid already has one ping; give cid2 three.
+    // Batched `ROW_NUMBER()` window on Postgres; cid has one ping, cid2 gets three.
     let cid2 = store
         .create_check(&NewCheck {
             project_id: pid,
@@ -185,9 +176,7 @@ async fn postgres_full_round_trip() {
     let batched: Vec<i64> = batch.get(&cid2).unwrap().iter().map(|p| p.id).collect();
     assert_eq!(batched, per_check, "batch order matches per-check query");
 
-    // The batched checks-per-project query's generated `IN ($1,…,$N)` list must
-    // bind and group on PostgreSQL as on SQLite. `pid2` is left empty, which
-    // also exercises the "absent, not empty vector" contract.
+    // Generated `IN ($1,…,$N)` list on Postgres; empty `pid2` must be absent.
     let pid2 = store
         .create_project(uid, "proj2", "", None, None, now)
         .await
@@ -269,8 +258,7 @@ async fn postgres_full_round_trip() {
         "expired session must not resolve to a user"
     );
 
-    // Only the still-valid session is listed, with `last_seen_at` stamped by
-    // the `find_session_user` lookup above.
+    // `last_seen_at` was stamped by the `find_session_user` lookup above.
     let sessions = store.list_sessions_for_user(uid, now).await.unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].id, "sess-active");
@@ -278,8 +266,7 @@ async fn postgres_full_round_trip() {
     assert_eq!(sessions[0].ip.as_deref(), Some("127.0.0.1"));
     assert_eq!(sessions[0].last_seen_at, Some(now));
 
-    // (a) A session created far in the past is rejected even though its idle
-    // window (`expires_at`) has not lapsed, and it is not listed.
+    // (a) Past the absolute cap but inside its idle window.
     store
         .create_session(
             "sess-abscap",
@@ -311,8 +298,8 @@ async fn postgres_full_round_trip() {
     );
     store.delete_session("sess-abscap").await.unwrap();
 
-    // (b) A session well under half its idle window is extended on lookup, and
-    // the new `expires_at` is re-read directly to prove it was persisted.
+    // (b) Under half its idle window left, so lookup slides `expires_at`;
+    // re-read from the table to prove it persisted.
     store
         .create_session(
             "sess-slide",
@@ -342,7 +329,6 @@ async fn postgres_full_round_trip() {
     );
     store.delete_session("sess-slide").await.unwrap();
 
-    // A second session, then "revoke others" keeps only it.
     store
         .create_session(
             "sess-second",
@@ -355,8 +341,7 @@ async fn postgres_full_round_trip() {
         )
         .await
         .unwrap();
-    // Removes the already-expired "sess-expired" too: "revoke others" is
-    // conditioned only on not being `keep_id`.
+    // 2: also the already-expired "sess-expired" (filter is only `!= keep_id`).
     let removed = store
         .delete_other_sessions_for_user(uid, "sess-second")
         .await
@@ -366,7 +351,6 @@ async fn postgres_full_round_trip() {
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].id, "sess-second");
 
-    // Owner-scoped delete: another user's id is a no-op, the owner's id works.
     assert!(
         !store
             .delete_session_owned("sess-second", uid + 1)
@@ -391,7 +375,6 @@ async fn postgres_full_round_trip() {
             .is_empty()
     );
 
-    // Plain `delete_session` (used by logout) still works unscoped.
     store
         .create_session("sess-active", uid, future_expiry, None, None, false, now)
         .await
@@ -406,8 +389,6 @@ async fn postgres_full_round_trip() {
         "deleted session must not resolve to a user"
     );
 
-    // `delete_sessions_for_user` (admin password reset / disable) keeps none,
-    // unlike `delete_other_sessions_for_user`.
     store
         .create_session("sess-a", uid, future_expiry, None, None, false, now)
         .await
@@ -426,9 +407,7 @@ async fn postgres_full_round_trip() {
             .is_empty()
     );
 
-    // (c) `delete_expired_sessions` reclaims both expiry reasons: a lapsed idle
-    // window, and one only past the absolute cap. No session for `uid` remains
-    // at this point, so the count below is unambiguous.
+    // (c) Both expiry reasons are reclaimed; no other session exists here.
     store
         .create_session(
             "sess-idle-expired",
@@ -459,8 +438,7 @@ async fn postgres_full_round_trip() {
         "both the idle-expired and the cap-expired session must be reclaimed"
     );
 
-    // Nag: a per-check interval plus a downed check, then the reminder scan and
-    // the acknowledge/clear cycle.
+    // Nag: reminder, acknowledge, clear.
     store
         .update_check_schedule(
             cid,
@@ -495,7 +473,6 @@ async fn postgres_full_round_trip() {
     );
     store.acknowledge(cid).await.unwrap();
     assert!(store.find_check(cid).await.unwrap().unwrap().acknowledged);
-    // acknowledged → no further reminders
     assert!(
         pingward::scheduler::nag_once(
             &store,
@@ -513,8 +490,7 @@ async fn postgres_full_round_trip() {
         None
     );
 
-    // Retention: an old ping and notification are pruned once retention is
-    // configured, while recent rows survive.
+    // Retention pruning.
     let old = now - chrono::Duration::days(30);
     store
         .insert_ping(
@@ -546,7 +522,7 @@ async fn postgres_full_round_trip() {
         .set_setting("notifications_retention_days", "7")
         .await
         .unwrap();
-    // Expired sessions are pruned unconditionally, not by retention.
+    // Expired sessions are pruned regardless of retention settings.
     store
         .create_session(
             "sess-prune-expired",
@@ -574,8 +550,7 @@ async fn postgres_full_round_trip() {
 
     let counts = pingward::prune::prune_once(&store, now).await.unwrap();
     let (pd, nd, sd) = (counts.pings, counts.notifications, counts.sessions);
-    // Every other row in this test was inserted at `now` or later, so exact
-    // counts catch an over-deleting regression that `>= 1` would miss.
+    // Every other ping/notification is recent, so exact counts catch over-deletion.
     assert_eq!(
         (pd, nd, sd),
         (1, 1, 1),
@@ -584,7 +559,6 @@ async fn postgres_full_round_trip() {
     let remaining_sessions = store.list_sessions_for_user(uid, now).await.unwrap();
     assert_eq!(remaining_sessions.len(), 1);
     assert_eq!(remaining_sessions[0].id, "sess-prune-valid");
-    // A far-past cutoff matches nothing: every remaining row is recent.
     let far = (now - chrono::Duration::days(3650)).to_rfc3339();
     assert_eq!(store.delete_pings_before(&far).await.unwrap(), 0);
     assert_eq!(store.delete_notifications_before(&far).await.unwrap(), 0);
@@ -616,15 +590,13 @@ async fn postgres_full_round_trip() {
         .await
         .unwrap();
     assert_eq!(store.validate_api_key(&h2, now).await.unwrap(), None);
-    // A live key remains, to prove the user-delete cascade removes it below.
+    // A live key for the user-delete cascade below to remove.
     let (_f3, p3, h3) = pingward::apikey::generate_api_key();
     store
         .insert_api_key(uid, "live", &h3, &p3, None, now)
         .await
         .unwrap();
 
-    // Deleting the user cascades to project → checks → channels → pings, and
-    // to the user's api keys.
     store.delete_user(uid).await.unwrap();
     assert!(store.list_projects_for_user(uid).await.unwrap().is_empty());
     assert!(store.find_check(cid).await.unwrap().is_none());

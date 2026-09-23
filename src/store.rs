@@ -14,12 +14,8 @@ pub struct Store {
     pub pool: Pool,
 }
 
-/// Why a [`Store::create_user`] failed.
-///
-/// `users.username` is `UNIQUE` on both backends, so a duplicate is an ordinary
-/// outcome of a form submission rather than a fault. A distinct variant keeps
-/// it out of `AppError::Db`'s blank 500: every caller has to say what it does
-/// when a name is taken.
+/// Why a [`Store::create_user`] failed. A duplicate username is an ordinary form
+/// outcome, so it gets its own variant instead of `AppError::Db`'s blank 500.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateUserError {
     #[error("that username is already taken")]
@@ -29,10 +25,8 @@ pub enum CreateUserError {
 }
 
 impl From<sqlx::Error> for CreateUserError {
-    /// Classify the driver's error. `is_unique_violation` reads the backend's
-    /// own code (`SQLite` 2067 / Postgres 23505) rather than matching a
-    /// message. `users` has exactly one unique constraint, so a violation can
-    /// only be the username; a second one would need distinguishing here.
+    /// Any unique violation is the username: it is the only unique constraint
+    /// on `users`. A second one would need distinguishing here.
     fn from(e: sqlx::Error) -> Self {
         match &e {
             sqlx::Error::Database(db) if db.is_unique_violation() => Self::UsernameTaken,
@@ -48,41 +42,34 @@ pub struct CheckStatusCounts {
     pub up: i64,
     pub down: i64,
     pub paused: i64,
-    /// Stored `up`/`new` checks with an in-flight `start` (mirrors
-    /// `view::DisplayStatus::Running`). A display derivation rather than a
-    /// stored status, so it comes from a second query instead of a
-    /// `SUM(CASE ...)`, whose result type differs across backends on `Any`.
+    /// Stored `up`/`new` checks with an in-flight `start` (display-only
+    /// `Running`). A second query, since `SUM(CASE ...)`'s type differs across
+    /// backends on `Any`.
     pub running: i64,
 }
 
-/// A keyset cursor for the check-detail "recent pings"/"recent notifications"
-/// tables. Ordered by `id`, not `created_at`: monotonic, covered by the
-/// `(check_id, id)` index, and stable under concurrent inserts.
+/// Keyset cursor over `id` rather than `created_at`: monotonic, indexed, and
+/// stable under concurrent inserts.
 #[derive(Debug, Clone, Copy)]
 pub enum PageCursor {
-    /// The newest page — no cursor.
+    /// The newest page.
     Latest,
-    /// Rows older than this id (paging "older").
+    /// Rows older than this id.
     Before(i64),
-    /// Rows newer than this id (paging back toward "newer").
+    /// Rows newer than this id.
     After(i64),
 }
 
-/// One page of keyset-paginated rows, always newest-first (`id DESC`) for
-/// display regardless of which direction was queried.
+/// Always newest-first (`id DESC`), whichever direction was queried.
 #[derive(Debug)]
 pub struct Page<T> {
     pub items: Vec<T>,
-    /// A row exists with `id` newer than the newest item on this page.
     pub has_newer: bool,
-    /// A row exists with `id` older than the oldest item on this page.
     pub has_older: bool,
 }
 
-/// Filters for the check-detail "recent pings" table; empty `kinds` and `None`
-/// bounds mean no constraint. Date bounds are re-serialized with `to_rfc3339()`
-/// and compared against the RFC3339 `created_at` text, so the lexicographic
-/// comparison stays chronological (as in [`Store::delete_pings_before`]).
+/// Empty/`None` fields mean no constraint. Date bounds are re-serialized with
+/// `to_rfc3339()` so comparing them to the `created_at` text stays chronological.
 #[derive(Debug, Clone, Default)]
 pub struct PingFilter {
     pub kinds: Vec<PingKind>,
@@ -91,7 +78,6 @@ pub struct PingFilter {
 }
 
 impl PingFilter {
-    /// True when no constraint is set.
     pub fn is_empty(&self) -> bool {
         self.kinds.is_empty() && self.from.is_none() && self.to.is_none()
     }
@@ -114,9 +100,7 @@ impl PingFilter {
     }
 }
 
-/// Filters for the check-detail "recent notifications" table: `events` filters
-/// the notify event, `statuses` the delivery result, both empty meaning no
-/// constraint. Date bounds behave as in [`PingFilter`].
+/// Empty/`None` fields mean no constraint; date bounds as in [`PingFilter`].
 #[derive(Debug, Clone, Default)]
 pub struct NotifFilter {
     pub events: Vec<EventKind>,
@@ -126,7 +110,6 @@ pub struct NotifFilter {
 }
 
 impl NotifFilter {
-    /// True when no constraint is set.
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
             && self.statuses.is_empty()
@@ -161,10 +144,9 @@ impl NotifFilter {
     }
 }
 
-/// Filters for the `/admin` audit-log table. `actor` and `action` are exact
-/// matches on the stored token (the UI offers selects built from the values
-/// actually present, so there is nothing to fuzzy-match); `None` or an empty
-/// string means no constraint. Date bounds behave as in [`PingFilter`].
+/// `actor` and `action` are exact matches (the UI's selects list stored values).
+/// `None` means no constraint; `Some("")` matches only an empty value. Date
+/// bounds as in [`PingFilter`].
 #[derive(Debug, Clone, Default)]
 pub struct AuditFilter {
     pub actor: Option<String>,
@@ -174,7 +156,6 @@ pub struct AuditFilter {
 }
 
 impl AuditFilter {
-    /// True when no constraint is set.
     pub fn is_empty(&self) -> bool {
         self.actor.is_none() && self.action.is_none() && self.from.is_none() && self.to.is_none()
     }
@@ -226,8 +207,7 @@ pub struct NewCheck<'a> {
     pub nag_interval_secs: Option<i64>,
 }
 
-/// Not `#[derive(Default)]` like `NewAudit`: `str_enum!`-generated
-/// `ScheduleKind` has no `Default`. `Period` matches the new-check form.
+/// Manual because `ScheduleKind` has no `Default`.
 impl Default for NewCheck<'_> {
     fn default() -> Self {
         Self {
@@ -247,9 +227,8 @@ impl Default for NewCheck<'_> {
     }
 }
 
-/// The new values for a check's schedule. No `Default`, unlike [`NewCheck`]:
-/// on an UPDATE an unset field would write the default over what is stored, so
-/// defaulting `name` would blank the check's name. Callers spell out all of it.
+/// No `Default`, unlike [`NewCheck`]: on an UPDATE a defaulted field would
+/// overwrite the stored value (e.g. blank the name).
 #[derive(Debug, Clone)]
 pub struct UpdateCheck<'a> {
     pub name: &'a str,
@@ -276,9 +255,8 @@ fn decode_err(msg: impl Into<String>) -> sqlx::Error {
     sqlx::Error::Decode(Box::<dyn std::error::Error + Send + Sync>::from(msg.into()))
 }
 
-/// Fallible row mapping: a corrupt enum or timestamp must surface as `Err`
-/// rather than panic — a panic here (via `list_active_checks` in the scan
-/// loop) would unwind and permanently kill the spawned scan task.
+/// Fallible: a panic on a corrupt row (via `list_active_checks`) would
+/// permanently kill the scan task.
 fn row_to_check(row: &sqlx::any::AnyRow) -> Result<Check, sqlx::Error> {
     let schedule_kind_raw: String = row.get("schedule_kind");
     let schedule_kind = ScheduleKind::from_str(&schedule_kind_raw)
@@ -398,9 +376,7 @@ fn row_to_ping(row: &sqlx::any::AnyRow) -> Result<Ping, sqlx::Error> {
     })
 }
 
-/// Narrow counterpart of [`row_to_ping`] for the heartbeat projection: the
-/// four columns `view::heartbeat`/`view::run_durations` read. Kept beside it
-/// so the two stay in step if `pings` gains a column.
+/// Narrow counterpart of [`row_to_ping`]; keep the two in step.
 fn row_to_ping_summary(row: &sqlx::any::AnyRow) -> Result<PingSummary, sqlx::Error> {
     let kind_raw: String = row.get("kind");
     let kind = PingKind::from_str(&kind_raw)
@@ -450,35 +426,23 @@ fn row_to_audit(row: &sqlx::any::AnyRow) -> Result<AuditLog, sqlx::Error> {
     })
 }
 
-/// A value bound into a filtered keyset query. Columns, operators and
-/// placeholders are self-generated literals; only these values cross the query
-/// boundary as bound parameters, so the assembled SQL has no injection
-/// surface.
+/// The only data that reaches a keyset query, always as a bound parameter.
 enum QueryBind {
     Int(i64),
     Text(String),
 }
 
-/// One extra `WHERE` predicate layered onto a keyset page (a filter). The
-/// column name and operator are fixed caller literals; values are always bound.
+/// A filter predicate: column and operator are caller literals, values are bound.
 enum Predicate {
-    /// `col op $n` with a text value (e.g. `created_at >= $n`).
+    /// `col op $n`.
     TextCmp(&'static str, &'static str, String),
-    /// `col IN ($a,$b,…)` over text values. An empty `vals` is skipped by the
-    /// filter builders, so this never renders as `IN ()`.
+    /// `col IN (…)`. Filter builders never construct it empty, so no `IN ()`.
     TextIn(&'static str, Vec<String>),
 }
 
-/// Shared keyset-pagination core for `pings`/`notifications`/`audit_log`, all
-/// paged by `id`, so the SQL shape and `has_newer`/`has_older` bookkeeping live
-/// here once. `table` and every predicate column/operator are fixed caller
-/// literals and every value is bound, so interpolating the assembled clause is
-/// safe. A limit+1 fetch detects another page without a separate `COUNT(*)`.
-///
-/// `scope` is the owning-row constraint the table is partitioned by
-/// (`("check_id", id)` for pings/notifications). `audit_log` is instance-wide
-/// and passes `None`, which is why the `WHERE` clause is assembled
-/// conditionally: an unscoped, unfiltered page has no predicates at all.
+/// Keyset pagination by `id` for `pings`/`notifications`/`audit_log`. Fetches
+/// `limit + 1` rows to detect another page without a `COUNT(*)`. `scope` is
+/// e.g. `("check_id", id)`; `audit_log` passes `None`, so `WHERE` may be empty.
 #[allow(
     clippy::cast_sign_loss,
     reason = "`limit` is a small positive page size supplied by callers, never negative"
@@ -501,7 +465,6 @@ async fn keyset_page<T>(
         conds.push(format!("{col} = ${}", binds.len()));
     }
 
-    // Filter predicates, each allocating fresh placeholders in bind order.
     for f in filters {
         match f {
             Predicate::TextCmp(col, op, v) => {
@@ -521,7 +484,6 @@ async fn keyset_page<T>(
         }
     }
 
-    // The cursor predicate + scan direction. Latest carries no cursor bound.
     let order = match cursor {
         PageCursor::Latest => "DESC",
         PageCursor::Before(id) => {
@@ -546,8 +508,7 @@ async fn keyset_page<T>(
         "SELECT * FROM {table}{where_clause} ORDER BY id {order} LIMIT ${}",
         binds.len()
     );
-    // Safe: `table`, every column, operator and placeholder is a
-    // self-generated literal; all values are bound.
+    // Safe: only literals are interpolated; all values are bound.
     let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for b in &binds {
         q = match b {
@@ -557,8 +518,7 @@ async fn keyset_page<T>(
     }
     let mut rows = q.fetch_all(pool).await?;
 
-    // Interpret the limit+1 overflow row per direction. Before/After came from
-    // an adjacent page, so the opposite-direction flag is known true.
+    // A Before/After cursor came from an adjacent page, so the opposite flag is true.
     match cursor {
         PageCursor::Latest => {
             let has_older = rows.len() as i64 > limit;
@@ -589,8 +549,7 @@ async fn keyset_page<T>(
         PageCursor::After(_) => {
             let has_newer = rows.len() as i64 > limit;
             if has_newer {
-                // Rows are ASC by id; the last row is the farthest-from-cursor
-                // overflow row — drop it, keeping the rows nearest the cursor.
+                // ASC, so the overflow row is last (farthest from the cursor).
                 rows.pop();
             }
             let mut items = rows.iter().map(row_to).collect::<Result<Vec<T>, _>>()?;
@@ -617,8 +576,7 @@ impl Store {
         row.as_ref().map(row_to_check).transpose()
     }
 
-    /// One corrupt row must never abort the whole scan: rows that fail to
-    /// decode are logged and skipped rather than propagated or panicked on.
+    /// Corrupt rows are logged and skipped so one cannot abort the whole scan.
     pub async fn list_active_checks(&self) -> Result<Vec<Check>, sqlx::Error> {
         let rows = sqlx::query("SELECT * FROM checks WHERE status IN ('new','up')")
             .fetch_all(&self.pool)
@@ -636,8 +594,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Checks currently in `down` status — the candidates for nag reminders.
-    /// Corrupt rows are logged and skipped, mirroring `list_active_checks`.
+    /// Nag candidates; corrupt rows are skipped as in `list_active_checks`.
     pub async fn list_down_checks(&self) -> Result<Vec<Check>, sqlx::Error> {
         let rows = sqlx::query("SELECT * FROM checks WHERE status = 'down'")
             .fetch_all(&self.pool)
@@ -704,8 +661,8 @@ impl Store {
         Ok(())
     }
 
-    /// Mark the start of a down incident's alerting: stamp the alert baseline
-    /// and clear any prior acknowledgement so a fresh incident is never silent.
+    /// Start a down incident: stamp the alert baseline and clear any prior
+    /// acknowledgement so a fresh incident is never silent.
     pub async fn begin_down_alert(
         &self,
         check_id: i64,
@@ -733,7 +690,7 @@ impl Store {
         Ok(())
     }
 
-    /// Clear nag state on recovery: no acknowledgement, no alert baseline.
+    /// Clear nag state on recovery.
     pub async fn clear_nag(&self, check_id: i64) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE checks SET acknowledged=0, last_alert_at=NULL WHERE id=$1")
             .bind(check_id)
@@ -866,8 +823,7 @@ impl Store {
             .await
     }
 
-    /// Persist a new API key. Only the `token_hash` and non-secret `prefix` are
-    /// stored — the plaintext is never seen here.
+    /// Only the hash and the non-secret `prefix` are stored.
     pub async fn insert_api_key(
         &self,
         user_id: i64,
@@ -892,7 +848,7 @@ impl Store {
         Ok(row.get::<i64, _>("id"))
     }
 
-    /// List a user's API keys (metadata only), newest first.
+    /// Newest first.
     pub async fn list_api_keys_for_user(&self, user_id: i64) -> Result<Vec<ApiKey>, sqlx::Error> {
         let rows = sqlx::query("SELECT * FROM api_keys WHERE user_id = $1 ORDER BY id DESC")
             .bind(user_id)
@@ -901,9 +857,8 @@ impl Store {
         rows.iter().map(row_to_api_key).collect()
     }
 
-    /// Delete an API key, scoped to its owner. `false` means the key does not
-    /// exist or belongs to another user — existence is not distinguished,
-    /// mirroring the 404-hiding model.
+    /// Owner-scoped. `false` for a missing key and a foreign one alike, so
+    /// existence is not disclosed.
     pub async fn delete_api_key(&self, id: i64, user_id: i64) -> Result<bool, sqlx::Error> {
         let res = sqlx::query("DELETE FROM api_keys WHERE id = $1 AND user_id = $2")
             .bind(id)
@@ -913,9 +868,8 @@ impl Store {
         Ok(res.rows_affected() > 0)
     }
 
-    /// Resolve a token hash to its owning user id, honoring expiry. On a match
-    /// the key's `last_used_at` is refreshed, throttled to once per 60s so a
-    /// hot key does not cost a write per request.
+    /// The owning user id of an unexpired key. `last_used_at` is refreshed at
+    /// most once per 60s, so a hot key does not cost a write per request.
     pub async fn validate_api_key(
         &self,
         token_hash: &str,
@@ -979,14 +933,10 @@ impl Store {
         Ok(())
     }
 
-    /// Resolve a session to its owning user, honoring the idle window
-    /// (`expires_at`, in SQL) and the absolute cap (`created_at`, in Rust —
-    /// see below). On a match `last_seen_at` is refreshed, throttled to once
-    /// per 60s like [`Store::validate_api_key`]'s `last_used_at`, and
-    /// `expires_at` slides only past the half-life of the idle window
-    /// (`auth::refreshed_expiry`), roughly one write per 36 hours. The two
-    /// throttles are independent, but one UPDATE covers both when either
-    /// fires.
+    /// The session's user, honoring the idle window (`expires_at`, in SQL) and
+    /// the absolute cap (`created_at`, in Rust). `last_seen_at` is refreshed at
+    /// most once per 60s; `expires_at` slides only past the idle window's
+    /// half-life (`auth::refreshed_expiry`).
     pub async fn find_session_user(
         &self,
         session_id: &str,
@@ -1006,9 +956,8 @@ impl Store {
         let Some(row) = row else {
             return Ok(None);
         };
-        // Checked here rather than in the WHERE clause: `created_at` may be
-        // '' (a pre-0010 row), which sorts below every RFC3339 string, so any
-        // SQL predicate over it would misjudge those rows.
+        // Not in SQL: a pre-0010 row has `created_at = ''`, which sorts below
+        // every timestamp.
         let created = parse_ts(row.get("session_created_at"));
         if crate::auth::is_past_absolute_cap(created, now) {
             return Ok(None);
@@ -1028,8 +977,7 @@ impl Store {
                 let user_id: i64 = row.get("id");
                 let ip: Option<String> = row.get("session_ip");
                 let user_agent: Option<String> = row.get("session_user_agent");
-                // Without `renewal`, a clamp — which only a stale writer or
-                // a policy change produces — reads as routine activity.
+                // `renewal` tells a clamp (deployment signal) from routine activity.
                 tracing::info!(
                     target: "pingward::session",
                     handle = %crate::auth::session_log_handle(session_id),
@@ -1061,8 +1009,7 @@ impl Store {
         Ok(())
     }
 
-    /// List a user's currently-valid sessions (not expired), newest-created
-    /// first, for the `/account` management page.
+    /// Unexpired sessions, newest-created first.
     pub async fn list_sessions_for_user(
         &self,
         user_id: i64,
@@ -1077,26 +1024,16 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         let sessions: Vec<Session> = rows.iter().map(row_to_session).collect::<Result<_, _>>()?;
-        // `find_session_user` already refuses these and `/account` reaps them
-        // via [`Store::delete_capped_sessions_for_user`] before listing, so
-        // this guards the other callers (the revoke handlers).
+        // `/account` reaps capped rows first; this guards the other callers.
         Ok(sessions
             .into_iter()
             .filter(|s| !crate::auth::is_past_absolute_cap(s.created_at, now))
             .collect())
     }
 
-    /// Delete `user_id`'s sessions past the absolute cap
-    /// (`created_at + SESSION_ABSOLUTE_MAX_DAYS`), returning how many went.
-    ///
-    /// Such a row is already inert, but hidden is not gone: until the next
-    /// prune pass (hourly by default) the owner could neither see it on
-    /// `/account` nor revoke it. Reaping the caller's own rows as they open
-    /// that page makes the list truthful by construction.
-    ///
-    /// `created_at <> ''` excludes pre-`0010` rows, which would otherwise look
-    /// infinitely old — the same exclusion [`Store::delete_expired_sessions`]
-    /// makes.
+    /// Delete `user_id`'s sessions past the absolute cap, so `/account` does not
+    /// wait for the next prune to stop hiding them. `created_at <> ''` spares
+    /// pre-0010 rows, as in [`Store::delete_expired_sessions`].
     pub async fn delete_capped_sessions_for_user(
         &self,
         user_id: i64,
@@ -1114,9 +1051,7 @@ impl Store {
         Ok(res.rows_affected())
     }
 
-    /// Delete a session, scoped to its owner. `false` means the session does
-    /// not exist or belongs to another user — existence is not distinguished,
-    /// as in [`Store::delete_api_key`].
+    /// Owner-scoped, as in [`Store::delete_api_key`].
     pub async fn delete_session_owned(&self, id: &str, user_id: i64) -> Result<bool, sqlx::Error> {
         let res = sqlx::query("DELETE FROM sessions WHERE id = $1 AND user_id = $2")
             .bind(id)
@@ -1126,8 +1061,7 @@ impl Store {
         Ok(res.rows_affected() > 0)
     }
 
-    /// Delete every session for `user_id` except `keep_id` ("revoke all other
-    /// sessions"). Returns the number of sessions removed.
+    /// Delete every session for `user_id` except `keep_id`.
     pub async fn delete_other_sessions_for_user(
         &self,
         user_id: i64,
@@ -1141,14 +1075,8 @@ impl Store {
         Ok(res.rows_affected())
     }
 
-    /// Delete all of `user_id`'s sessions, for an admin password reset or a
-    /// disabled account — OWASP requires invalidation after a privilege
-    /// change.
-    ///
-    /// Keeping no row makes this correct only when the operator is a different
-    /// user. An admin resetting their *own* password goes through
-    /// [`Store::delete_other_sessions_for_user`] in `web::users_set_password`,
-    /// so the session they are operating from survives.
+    /// For a password reset or a disabled account. When the operator is the
+    /// target, use [`Store::delete_other_sessions_for_user`] to keep their own.
     pub async fn delete_sessions_for_user(&self, user_id: i64) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
             .bind(user_id)
@@ -1190,8 +1118,7 @@ impl Store {
         row.as_ref().map(row_to_project).transpose()
     }
 
-    /// Every project paired with its owner's username, for the admin
-    /// cross-user projects list. Ordered by project id.
+    /// Every project with its owner's username, by project id.
     pub async fn list_all_projects_with_owner(
         &self,
     ) -> Result<Vec<(Project, String)>, sqlx::Error> {
@@ -1277,10 +1204,8 @@ impl Store {
             .collect())
     }
 
-    /// The instance-wide display timezone for notification timestamps, `None`
-    /// when unset or blank. A read failure reports unset rather than
-    /// propagating: a settings query must not stop a down alert going out, and
-    /// the worst case is a timestamp in the check's own zone.
+    /// Instance-wide notification timezone; `None` when unset or blank. A read
+    /// failure also yields `None`: it must not stop a down alert going out.
     pub async fn display_timezone(&self) -> Option<String> {
         self.get_setting("display_timezone")
             .await
@@ -1290,8 +1215,7 @@ impl Store {
             .filter(|s| !s.is_empty())
     }
 
-    /// Every project's name, keyed by id. One map per scan/nag pass keeps
-    /// naming the project in each notification a fixed query count.
+    /// One map per scan/nag pass, so naming projects costs a fixed query count.
     pub async fn all_project_names(&self) -> Result<HashMap<i64, String>, sqlx::Error> {
         let rows = sqlx::query("SELECT id, name FROM projects")
             .fetch_all(&self.pool)
@@ -1339,9 +1263,7 @@ impl Store {
         rows.iter().map(row_to_channel).collect()
     }
 
-    /// Update a channel's name and config. `kind` is absent because it is
-    /// immutable: a stored `config_json` only has meaning for the kind that
-    /// wrote it.
+    /// `kind` is immutable: `config_json` only means something to the kind that wrote it.
     pub async fn update_channel(
         &self,
         id: i64,
@@ -1367,9 +1289,7 @@ impl Store {
 
     // --- bindings ---
     pub async fn bind_channel(&self, check_id: i64, channel_id: i64) -> Result<(), sqlx::Error> {
-        // `ON CONFLICT DO NOTHING` (on the `(check_id, channel_id)` primary
-        // key) rather than SQLite-only `INSERT OR IGNORE`, which is a parse
-        // error on Postgres.
+        // Not SQLite-only `INSERT OR IGNORE`, a parse error on Postgres.
         sqlx::query(
             "INSERT INTO check_channels (check_id, channel_id) VALUES ($1,$2) \
              ON CONFLICT DO NOTHING",
@@ -1381,14 +1301,9 @@ impl Store {
         Ok(())
     }
 
-    /// Binds `check_id` to every channel already configured on `project_id`,
-    /// called right after a check is created so a fresh check is never
-    /// silently unnotified. `ON CONFLICT DO NOTHING` for the reason
-    /// [`Store::bind_channel`] gives. The `WHERE project_id = $2` on the
-    /// SELECT is not just a filter: with an UPSERT clause attached to an
-    /// `INSERT … SELECT`, `SQLite`'s parser cannot tell whether `ON` opens the
-    /// upsert or a join, and needs the WHERE to disambiguate — removing it is
-    /// a syntax error on `SQLite` only.
+    /// Binds a new check to every channel on its project. The `WHERE` is also
+    /// syntax: in `INSERT … SELECT … ON CONFLICT`, `SQLite` needs it to tell the
+    /// upsert's `ON` from a join's.
     pub async fn bind_all_project_channels(
         &self,
         check_id: i64,
@@ -1406,9 +1321,7 @@ impl Store {
         Ok(())
     }
 
-    /// Batched membership check: which of `check_ids` have at least one bound
-    /// channel, in one round-trip. Mirrors
-    /// [`Store::list_checks_for_projects`]'s `$N` placeholder generation.
+    /// Which of `check_ids` have at least one bound channel, in one query.
     pub async fn checks_with_channels(
         &self,
         check_ids: &[i64],
@@ -1423,8 +1336,7 @@ impl Store {
         let sql = format!(
             "SELECT DISTINCT check_id FROM check_channels WHERE check_id IN ({placeholders})"
         );
-        // Safe: `sql` interpolates only self-generated `$N` placeholders;
-        // every value is bound below.
+        // Safe: only `$N` placeholders are interpolated.
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for id in check_ids {
             q = q.bind(*id);
@@ -1483,11 +1395,8 @@ impl Store {
         rows.iter().map(row_to_check).collect()
     }
 
-    /// Batched form of [`Store::list_checks_for_project`]: every check of any
-    /// of `project_ids` in one round-trip, keyed by `project_id`, so the
-    /// dashboard does not issue a query per group. Projects with no checks are
-    /// absent from the map; each vector keeps the per-project query's id
-    /// order.
+    /// Batched [`Store::list_checks_for_project`], keyed by `project_id` (id
+    /// order kept; projects with no checks absent).
     pub async fn list_checks_for_projects(
         &self,
         project_ids: &[i64],
@@ -1502,8 +1411,7 @@ impl Store {
         let sql = format!(
             "SELECT * FROM checks WHERE project_id IN ({placeholders}) ORDER BY project_id, id"
         );
-        // Safe: `sql` interpolates only self-generated `$N` placeholders;
-        // every value is bound below.
+        // Safe: only `$N` placeholders are interpolated.
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for id in project_ids {
             q = q.bind(*id);
@@ -1574,10 +1482,7 @@ impl Store {
         rows.iter().map(row_to_ping).collect()
     }
 
-    /// The heartbeat window for one check: the newest `limit` pings, narrowed
-    /// to the columns the strip and its duration pairing read. See
-    /// [`Store::list_recent_ping_summaries_for_checks`] for why the body stays
-    /// in the database.
+    /// The newest `limit` pings as [`PingSummary`]s (no `body`).
     pub async fn list_recent_ping_summaries(
         &self,
         check_id: i64,
@@ -1594,16 +1499,9 @@ impl Store {
         rows.iter().map(row_to_ping_summary).collect()
     }
 
-    /// Batched heartbeat windows: the newest `per_check_limit` pings for each
-    /// of `check_ids` in one round-trip, narrowed to the four columns the strip
-    /// needs.
-    ///
-    /// This is the dashboard's hot query. Selecting whole rows decoded every
-    /// captured POST body (up to `ping::MAX_BODY`, 10 KiB) only for
-    /// `view::heartbeat` to drop it, which measured as a quarter to two-thirds
-    /// of the whole render (#116 records the numbers). Checks with no pings are
-    /// absent from the map. Uses a `ROW_NUMBER()` window (`SQLite` >= 3.25 /
-    /// `PostgreSQL`).
+    /// Batched [`Store::list_recent_ping_summaries`]: the dashboard's hot query,
+    /// hence no `body`. Checks with no pings are absent. `ROW_NUMBER()` needs
+    /// `SQLite` >= 3.25.
     pub async fn list_recent_ping_summaries_for_checks(
         &self,
         check_ids: &[i64],
@@ -1624,8 +1522,7 @@ impl Store {
              ) sub WHERE rn <= ${} ORDER BY check_id, id DESC",
             check_ids.len() + 1
         );
-        // Safe: `sql` interpolates only self-generated `$N` placeholders and
-        // a count; every value is bound below.
+        // Safe: only `$N` placeholders are interpolated.
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for id in check_ids {
             q = q.bind(*id);
@@ -1640,11 +1537,8 @@ impl Store {
         Ok(map)
     }
 
-    /// Batched form of [`list_recent_pings`]: the most recent
-    /// `per_check_limit` pings (newest id first) for each of `check_ids` in one
-    /// round-trip, keyed by `check_id`, avoiding the dashboard's N+1. Checks
-    /// with no pings are absent. Uses a `ROW_NUMBER()` window (`SQLite` >=
-    /// 3.25 / `PostgreSQL`).
+    /// Batched [`Store::list_recent_pings`], newest first; checks with no pings
+    /// are absent. `ROW_NUMBER()` needs `SQLite` >= 3.25.
     pub async fn list_recent_pings_for_checks(
         &self,
         check_ids: &[i64],
@@ -1653,7 +1547,6 @@ impl Store {
         if check_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        // Placeholders `$1..$N` for the IN list; the limit is the final param.
         let placeholders = (1..=check_ids.len())
             .map(|i| format!("${i}"))
             .collect::<Vec<_>>()
@@ -1665,8 +1558,7 @@ impl Store {
              ) sub WHERE rn <= ${} ORDER BY check_id, id DESC",
             check_ids.len() + 1
         );
-        // Safe: `sql` interpolates only self-generated `$N` placeholders and
-        // a count; every value is bound below.
+        // Safe: only `$N` placeholders are interpolated.
         let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for id in check_ids {
             q = q.bind(*id);
@@ -1681,10 +1573,9 @@ impl Store {
         Ok(map)
     }
 
-    /// Keyset-paginated page of a check's pings for the check-detail table
-    /// (newest-first), narrowed by `filter`. Independent of
-    /// [`Store::list_recent_pings`], which the heartbeat strip uses and which
-    /// table paging must never affect.
+    /// A page of a check's pings for the check-detail table. Separate from the
+    /// heartbeat strip's [`Store::list_recent_ping_summaries`], which paging and
+    /// filtering must never affect.
     pub async fn list_pings_page(
         &self,
         check_id: i64,
@@ -1704,8 +1595,6 @@ impl Store {
         .await
     }
 
-    /// Keyset-paginated page of a check's notifications for the check-detail
-    /// table (newest-first), narrowed by `filter`.
     pub async fn list_notifications_page(
         &self,
         check_id: i64,
@@ -1764,8 +1653,7 @@ impl Store {
         rows.iter().map(row_to_notification).collect()
     }
 
-    /// Delete pings older than `cutoff`. `created_at` is TEXT RFC3339 (UTC),
-    /// so the lexicographic `<` is chronological on both backends.
+    /// `created_at` is RFC3339 UTC text, so the lexicographic `<` is chronological.
     pub async fn delete_pings_before(&self, cutoff: &str) -> Result<u64, sqlx::Error> {
         let r = sqlx::query("DELETE FROM pings WHERE created_at < $1")
             .bind(cutoff)
@@ -1774,12 +1662,8 @@ impl Store {
         Ok(r.rows_affected())
     }
 
-    /// Delete audit-log rows older than `cutoff`.
-    ///
-    /// Unlike pings and notifications this deletes a record of who did what, so
-    /// its retention defaults to off and the settings save that changes it is
-    /// itself audited (`settings.update`), leaving a trace when someone
-    /// shortens the window.
+    /// Retention defaults to off, and changing it is itself audited
+    /// (`settings.update`), so shortening the window leaves a trace.
     pub async fn delete_audit_before(&self, cutoff: &str) -> Result<u64, sqlx::Error> {
         let r = sqlx::query("DELETE FROM audit_log WHERE created_at < $1")
             .bind(cutoff)
@@ -1788,7 +1672,6 @@ impl Store {
         Ok(r.rows_affected())
     }
 
-    /// Delete notifications older than `cutoff`.
     pub async fn delete_notifications_before(&self, cutoff: &str) -> Result<u64, sqlx::Error> {
         let r = sqlx::query("DELETE FROM notifications WHERE created_at < $1")
             .bind(cutoff)
@@ -1797,16 +1680,13 @@ impl Store {
         Ok(r.rows_affected())
     }
 
-    /// Delete sessions expired for either reason: the idle window lapsed
-    /// (`expires_at <= now`) or the absolute cap was reached (`created_at <=
-    /// now - SESSION_ABSOLUTE_MAX_DAYS`). Both are already unusable, so this is
-    /// unconditional rather than retention-driven.
+    /// Delete sessions past their idle window or absolute cap. They are already
+    /// unusable, so this is not retention-driven.
     pub async fn delete_expired_sessions(&self, now: DateTime<Utc>) -> Result<u64, sqlx::Error> {
         let cap_before =
             (now - chrono::Duration::days(crate::auth::SESSION_ABSOLUTE_MAX_DAYS)).to_rfc3339();
         let r = sqlx::query(
-            // The second predicate excludes created_at = '' (pre-0010 rows)
-            // so they are not mistaken for infinitely old and deleted.
+            // `created_at <> ''`: a pre-0010 row is unaged, not infinitely old.
             "DELETE FROM sessions WHERE expires_at <= $1 OR (created_at <> '' AND created_at <= $2)",
         )
         .bind(now.to_rfc3339())
@@ -1863,9 +1743,8 @@ impl Store {
         Ok(row.get::<i64, _>("id"))
     }
 
-    /// The newest `limit` audit rows, unfiltered and unpaged: the
-    /// straight-line accessor assertions read the trail with. `/admin` goes
-    /// through [`Store::list_audit_page`].
+    /// Newest `limit` rows, unfiltered; for tests. `/admin` uses
+    /// [`Store::list_audit_page`].
     pub async fn list_audit(&self, limit: i64) -> Result<Vec<AuditLog>, sqlx::Error> {
         let rows = sqlx::query("SELECT * FROM audit_log ORDER BY id DESC LIMIT $1")
             .bind(limit)
@@ -1874,9 +1753,6 @@ impl Store {
         rows.iter().map(row_to_audit).collect()
     }
 
-    /// Keyset-paginated page of the audit trail for the `/admin` table
-    /// (newest-first), narrowed by `filter`. The trail is instance-wide, so
-    /// unlike the ping/notification pages there is no scope to pass.
     pub async fn list_audit_page(
         &self,
         cursor: PageCursor,
@@ -1895,10 +1771,8 @@ impl Store {
         .await
     }
 
-    /// The distinct actors and actions present in the trail, sorted, for the
-    /// audit filter's two selects. Built from the data so a new `record_audit`
-    /// call site shows up without being registered. Both are index-backed
-    /// (`idx_audit_actor`, `idx_audit_action`).
+    /// Distinct actors and actions for the audit filter's selects, read from the
+    /// data so a new `record_audit` call site appears by itself.
     pub async fn audit_filter_options(&self) -> Result<(Vec<String>, Vec<String>), sqlx::Error> {
         let actors = sqlx::query_scalar("SELECT DISTINCT actor_username FROM audit_log ORDER BY 1")
             .fetch_all(&self.pool)
@@ -1927,8 +1801,7 @@ impl Store {
                 _ => {}
             }
         }
-        // `status IN ('up','new')` keeps this consistent with
-        // `view::display_status`: Running only applies on top of up/new.
+        // Matches `view::display_status`: Running only applies on top of up/new.
         c.running = sqlx::query_scalar(
             "SELECT COUNT(*) FROM checks \
              WHERE status IN ('up','new') AND last_start_at IS NOT NULL \
@@ -1939,10 +1812,8 @@ impl Store {
         Ok(c)
     }
 
-    /// Every check currently `down` with its project name and owner username,
-    /// for the admin incidents view. Ordered by `last_ping_at` (longest-down
-    /// first) with never-pinged checks last on both backends, and `id` as a
-    /// deterministic tiebreaker.
+    /// Down checks with project name and owner, oldest `last_ping_at` first and
+    /// never-pinged last (`IS NULL` sorts the same on both backends).
     pub async fn list_down_checks_with_owner(
         &self,
     ) -> Result<Vec<(Check, String, String)>, sqlx::Error> {
@@ -1985,10 +1856,8 @@ impl Store {
         Ok((ok, err))
     }
 
-    /// Per-channel `(channel_name, ok, error)` notification counts since
-    /// `cutoff`, most failures first. The conditional sums are cast to `BIGINT`
-    /// because a bare `SUM()` can come back as a wider type on `PostgreSQL` and
-    /// fail to decode as `i64`.
+    /// Per-channel `(channel_name, ok, error)` since `cutoff`, most failures
+    /// first. Cast to `BIGINT`: a bare `SUM()` may not decode as `i64` on Postgres.
     pub async fn channel_failure_counts_since(
         &self,
         cutoff: DateTime<Utc>,
@@ -2051,11 +1920,8 @@ impl Store {
 mod tests {
     use super::*;
 
-    /// The classification `CreateUserError::from` depends on. Were
-    /// `is_unique_violation` to stop seeing the backend's error code through
-    /// the `Any` driver, a duplicate username would silently return to a blank
-    /// 500 with every handler test still passing — they exercise the
-    /// pre-check, not the constraint.
+    /// Handler tests exercise the pre-check, not the constraint, so only this
+    /// catches `is_unique_violation` going blind through the `Any` driver.
     #[tokio::test]
     async fn a_duplicate_username_is_classified_not_swallowed() {
         let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -2074,13 +1940,11 @@ mod tests {
             matches!(err, CreateUserError::UsernameTaken),
             "expected UsernameTaken, got {err:?}"
         );
-        // A `Db` misclassification would have been caught above, but a
-        // silently-ignored insert would not.
+        // Also rule out a silently ignored insert.
         assert_eq!(store.count_users().await.unwrap(), 1);
     }
 
-    /// Exact match, as the `UNIQUE` constraint and `find_user_by_username` do.
-    /// Making this case-insensitive is a migration, not a validator tweak.
+    /// Case-insensitivity would take a migration, not a validator tweak.
     #[tokio::test]
     async fn usernames_differing_only_in_case_are_distinct() {
         let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -2140,8 +2004,6 @@ mod tests {
         assert!(store.find_check_by_uuid("nope").await.unwrap().is_none());
     }
 
-    /// A project's and a check's `description` persist on insert and change on
-    /// update, on both the freshly-created row and the reloaded one.
     #[tokio::test]
     async fn project_and_check_description_persist_and_update() {
         let store = seeded().await;
@@ -2304,8 +2166,7 @@ mod tests {
         assert_eq!(found.last_start_at, Some(s1));
         assert_eq!(found.next_due_at, Some(due1));
 
-        // Second call with None for ping/start timestamps: COALESCE preserves
-        // the prior values, but next_due_at is unconditionally overwritten to NULL.
+        // COALESCE keeps the timestamps, but next_due_at is overwritten to NULL.
         store
             .mark_ping(id, CheckStatus::Up, None, None, None)
             .await
@@ -2322,8 +2183,6 @@ mod tests {
         assert_eq!(found.next_due_at, None);
     }
 
-    /// The DB-level CHECK constraint on `checks.status` (migration 0001) must
-    /// reject an out-of-domain status at insert time, not merely on read.
     #[tokio::test]
     async fn bad_status_is_rejected_by_check_constraint() {
         let store = seeded().await;
@@ -2376,19 +2235,13 @@ mod tests {
             )
             .await
             .unwrap();
-        // valid at now
         let u = store
             .find_session_user("sess-1", now)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(u.id, uid);
-        // The lookup above found sess-1 well under half its idle window, so
-        // it slid `expires_at` to `now + SESSION_IDLE_TTL_HOURS`. Idle expiry
-        // with no intervening activity is covered by `sess-idle-expiry`.
-
-        // Listing surfaces the metadata stamped at creation; the
-        // `last_seen_at` throttle stamped it on the first lookup, also at now.
+        // That lookup also slid `expires_at` (1h left is under half of 72h).
         let rows = store.list_sessions_for_user(uid, now).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "sess-1");
@@ -2397,7 +2250,7 @@ mod tests {
         assert_eq!(rows[0].user_agent.as_deref(), Some("curl/8.0"));
         assert_eq!(rows[0].ip.as_deref(), Some("127.0.0.1"));
 
-        // A lookup less than 60s later must not move `last_seen_at` (throttled).
+        // Throttled: under 60s later, `last_seen_at` stays.
         store
             .find_session_user("sess-1", now + chrono::Duration::seconds(30))
             .await
@@ -2405,13 +2258,11 @@ mod tests {
         let rows = store.list_sessions_for_user(uid, now).await.unwrap();
         assert_eq!(rows[0].last_seen_at, Some(now));
 
-        // 60s+ later, the throttle lets the timestamp advance.
         let later = now + chrono::Duration::seconds(61);
         store.find_session_user("sess-1", later).await.unwrap();
         let rows = store.list_sessions_for_user(uid, later).await.unwrap();
         assert_eq!(rows[0].last_seen_at, Some(later));
 
-        // A second session for the same user, newer than the first.
         let created2 = now + chrono::Duration::seconds(5);
         store
             .create_session(
@@ -2429,7 +2280,6 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, "sess-2", "newest-created session lists first");
 
-        // Revoking "other" sessions keeps only sess-2.
         let removed = store
             .delete_other_sessions_for_user(uid, "sess-2")
             .await
@@ -2439,7 +2289,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "sess-2");
 
-        // Owner-scoped delete: another user's id is a silent no-op.
+        // Another user's id is a silent no-op.
         assert!(!store.delete_session_owned("sess-2", 1).await.unwrap());
         assert_eq!(
             store
@@ -2569,8 +2419,6 @@ mod tests {
                 .is_empty()
         );
 
-        // Idle expiry alone (no prior activity to slide it) still rejects a
-        // session once its window lapses.
         store
             .create_session(
                 "sess-idle-expiry",
@@ -2592,8 +2440,6 @@ mod tests {
         );
     }
 
-    /// A session with plenty of idle window left must not have `expires_at`
-    /// rewritten on lookup — only a lookup past the half-life should write.
     #[tokio::test]
     async fn find_session_user_does_not_slide_a_fresh_session() {
         let store = seeded().await;
@@ -2618,8 +2464,6 @@ mod tests {
         assert_eq!(expires_at, original_expiry.to_rfc3339());
     }
 
-    /// A session under half its idle window has `expires_at` slid forward to
-    /// `now + SESSION_IDLE_TTL_HOURS` on lookup.
     #[tokio::test]
     async fn find_session_user_slides_expiry() {
         let store = seeded().await;
@@ -2694,8 +2538,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "sess-future");
 
-        // A session inside its idle window but past the absolute cap must
-        // also be reclaimed.
+        // Inside its idle window but past the absolute cap.
         store
             .create_session(
                 "sess-abscap",
@@ -2708,9 +2551,7 @@ mod tests {
             )
             .await
             .unwrap();
-        // A pre-0010 row (created_at = '') is unaged, not infinitely old, so
-        // only its idle window governs. Inserted raw because `create_session`
-        // always stamps a real `created_at`.
+        // A pre-0010 row (created_at = ''): only its idle window governs.
         sqlx::query(
             "INSERT INTO sessions (id, user_id, expires_at, created_at, sso) \
              VALUES ($1,$2,$3,'',0)",
@@ -2733,8 +2574,6 @@ mod tests {
             .collect();
         assert!(!ids.contains(&"sess-abscap".to_string()));
         assert!(ids.contains(&"sess-future".to_string()));
-        // `list_sessions_for_user` filters `is_past_absolute_cap`, which is
-        // `false` for a `None` created_at, so the blank-created row is listed.
         assert!(ids.contains(&"sess-blank-created".to_string()));
     }
 
@@ -3208,8 +3047,7 @@ mod tests {
         assert_eq!(rows[0].actor_username, "adm");
     }
 
-    /// Seed `n` audit rows alternating actor and action, one second apart, and
-    /// return the store. Row `i` is `(actor{i%2}, action{i%2})`.
+    /// `n` audit rows one second apart; row `i` is `(actor{i%2}, action{i%2})`.
     async fn seeded_audit(n: i64) -> Store {
         let store = seeded().await;
         let base = Utc.with_ymd_and_hms(2026, 7, 14, 8, 0, 0).unwrap();
@@ -3237,8 +3075,7 @@ mod tests {
         store
     }
 
-    /// The audit trail pages by id like pings/notifications do, even though it
-    /// is the first table to use `keyset_page` with no owning-row scope.
+    /// The unscoped (`scope = None`) path through `keyset_page`.
     #[tokio::test]
     async fn list_audit_page_keyset_pagination() {
         let store = seeded_audit(25).await;
@@ -3251,7 +3088,6 @@ mod tests {
         assert_eq!(first.items.len(), 10);
         assert!(!first.has_newer, "the latest page has nothing newer");
         assert!(first.has_older);
-        // Newest-first.
         assert!(first.items[0].id > first.items[9].id);
 
         let older = store
@@ -3269,7 +3105,7 @@ mod tests {
         assert_eq!(last.items.len(), 5, "25 rows = 10 + 10 + 5");
         assert!(!last.has_older, "nothing older than the first row");
 
-        // Paging back lands on the page we came from, still newest-first.
+        // Paging back lands on the page we came from.
         let back = store
             .list_audit_page(PageCursor::After(older.items[0].id), 10, &f)
             .await
@@ -3312,7 +3148,7 @@ mod tests {
         assert_eq!(by_action.items.len(), 5);
         assert!(by_action.items.iter().all(|a| a.action == "admin.access"));
 
-        // Both at once, and both are AND-ed: alice never performs user.create.
+        // AND-ed: alice never performs user.create.
         let contradictory = store
             .list_audit_page(
                 PageCursor::Latest,
@@ -3327,7 +3163,7 @@ mod tests {
             .unwrap();
         assert!(contradictory.items.is_empty());
 
-        // Date bounds are inclusive on both ends: rows 2..=4 of 10.
+        // Inclusive bounds: rows 2..=4.
         let windowed = store
             .list_audit_page(
                 PageCursor::Latest,
@@ -3342,7 +3178,6 @@ mod tests {
             .unwrap();
         assert_eq!(windowed.items.len(), 3);
 
-        // An actor nobody matches is an empty page, not an error.
         let nobody = store
             .list_audit_page(
                 PageCursor::Latest,
@@ -3357,8 +3192,6 @@ mod tests {
         assert!(nobody.items.is_empty() && !nobody.has_older);
     }
 
-    /// The filter selects are built from the data, so a new `record_audit`
-    /// call site appears in them without anyone registering it.
     #[tokio::test]
     async fn audit_filter_options_are_distinct_and_sorted() {
         let store = seeded_audit(6).await;
@@ -3373,8 +3206,7 @@ mod tests {
     #[tokio::test]
     async fn status_counts_and_scale() {
         let store = seeded().await;
-        // `seeded()` pre-seeds user 'u' and project 'p', so `username` must
-        // be distinct here to clear the UNIQUE constraint.
+        // `seeded()` already made user 'u'.
         let uid = store
             .create_user("u2", Some("p"), false, Utc::now())
             .await
@@ -3410,8 +3242,6 @@ mod tests {
             .await
             .unwrap();
 
-        // The two checks just created are the only rows in `checks` (the
-        // seeded project has none), and both start out `new`.
         let counts = store.count_checks_by_status().await.unwrap();
         assert_eq!(
             counts.new + counts.up + counts.down + counts.paused,
@@ -3424,8 +3254,7 @@ mod tests {
         assert_eq!(counts.running, 0);
         assert_eq!(store.count_projects().await.unwrap(), 2); // seeded 'p' + this 'p2'
 
-        // `b` gets a start ping and never finishes: stays stored `new`, but
-        // becomes running.
+        // `b` starts and never finishes: stored `new`, running.
         let t1 = Utc::now();
         let t2 = t1 + Duration::seconds(1);
         store
@@ -3433,8 +3262,7 @@ mod tests {
             .await
             .unwrap();
 
-        // `c` finishes successfully (stored `up`), then starts again without
-        // finishing: running on top of `up`.
+        // `c` succeeds, then starts again: running on top of `up`.
         let cid = store
             .create_check(&NewCheck {
                 project_id: pid,
@@ -3457,8 +3285,7 @@ mod tests {
             .await
             .unwrap();
 
-        // `d` fails (stored `down`), then starts again: `Down` beats
-        // `Running`, so an in-flight start must not count as running.
+        // `d` fails, then starts again: `Down` beats `Running`.
         let did = store
             .create_check(&NewCheck {
                 project_id: pid,
@@ -3547,8 +3374,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_failure_counts_does_not_merge_same_named_channels() {
-        // `channels.name` is NOT unique (only `channels.id` is): two channels
-        // sharing a name must stay two rows, not merge into one.
+        // `channels.name` is not unique: two same-named channels stay two rows.
         let store = seeded().await;
         let cid = store
             .create_check(&NewCheck {
@@ -3656,7 +3482,6 @@ mod tests {
             .await
             .unwrap();
 
-        // A has a last_ping_at (was pinged before going down); B never pinged.
         let t0 = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
         store
             .mark_ping(a, CheckStatus::Down, Some(t0), Some(t0), None)
@@ -3668,7 +3493,7 @@ mod tests {
         let names: Vec<_> = rows.iter().map(|(c, _, _)| c.name.clone()).collect();
         let ia = names.iter().position(|n| n == "A").unwrap();
         let ib = names.iter().position(|n| n == "B").unwrap();
-        // A (pinged) must precede B (never pinged) — NULLs sort last.
+        // Never-pinged B sorts last.
         assert!(
             ia < ib,
             "expected pinged check before never-pinged: {names:?}"
@@ -3678,15 +3503,13 @@ mod tests {
     #[tokio::test]
     async fn batch_checks_for_projects_matches_per_project() {
         let store = seeded().await;
-        // `seeded` makes project 1; add two more so the IN list has to group.
         for name in ["p2", "p3"] {
             store
                 .create_project(1, name, "", None, None, Utc::now())
                 .await
                 .unwrap();
         }
-        // Interleave the projects so a query that leaked rows across groups, or
-        // relied on insertion order, shows up.
+        // Interleaved, to catch rows leaking across groups or insertion-order reliance.
         for (project_id, name, uuid) in [
             (1, "a1", "u-a1"),
             (2, "b1", "u-b1"),
@@ -3712,10 +3535,8 @@ mod tests {
         let batch = store.list_checks_for_projects(&[1, 2, 3]).await.unwrap();
         assert_eq!(batch.get(&1).unwrap().len(), 3);
         assert_eq!(batch.get(&2).unwrap().len(), 2);
-        // Project 3 has no checks, so it is absent rather than mapped to [].
         assert!(!batch.contains_key(&3));
-        // The batch must be indistinguishable from the per-project query it
-        // replaces — same ids, same order.
+        // Same ids, same order as the per-project query.
         for pid in [1, 2, 3] {
             let single: Vec<i64> = store
                 .list_checks_for_project(pid)
@@ -3730,7 +3551,7 @@ mod tests {
                 .unwrap_or_default();
             assert_eq!(batched, single, "project {pid}");
         }
-        // Empty input short-circuits to an empty map (no `IN ()` to build).
+        // Empty input short-circuits (no `IN ()`).
         assert!(
             store
                 .list_checks_for_projects(&[])
@@ -3801,7 +3622,7 @@ mod tests {
         assert_eq!(batch.get(&a).unwrap().len(), 3);
         assert_eq!(batch.get(&b).unwrap().len(), 2);
         assert!(!batch.contains_key(&c));
-        // Batch matches the per-check query (same ids, same newest-first order).
+        // Same ids and order as the per-check query.
         for id in [a, b] {
             let single: Vec<i64> = store
                 .list_recent_pings(id, 3)
@@ -3813,7 +3634,6 @@ mod tests {
             let batched: Vec<i64> = batch.get(&id).unwrap().iter().map(|p| p.id).collect();
             assert_eq!(batched, single, "check {id}");
         }
-        // Empty input short-circuits to an empty map.
         assert!(
             store
                 .list_recent_pings_for_checks(&[], 3)
@@ -3823,9 +3643,7 @@ mod tests {
         );
     }
 
-    /// The heartbeat projection must select the same rows in the same order
-    /// as the wide query it replaced; a drift would silently redraw every
-    /// strip.
+    /// A drift from the wide query would silently redraw every strip.
     #[tokio::test]
     async fn ping_summaries_match_the_wide_query_row_for_row() {
         let store = seeded().await;
@@ -3856,7 +3674,6 @@ mod tests {
                             PingKind::Start
                         },
                         Some(0),
-                        // A body big enough that selecting it would be visible.
                         &"x".repeat(4096),
                         Some("10.0.0.1"),
                         base + chrono::Duration::seconds(i),
@@ -3866,7 +3683,6 @@ mod tests {
             }
         }
 
-        // Batched: same keys, same ids, same kinds, same timestamps.
         let wide = store.list_recent_pings_for_checks(&ids, 3).await.unwrap();
         let narrow = store
             .list_recent_ping_summaries_for_checks(&ids, 3)
@@ -3881,7 +3697,6 @@ mod tests {
             assert_eq!(&w_proj, n, "check {cid}");
         }
 
-        // Single-check form, against the same window.
         for cid in &ids {
             let w: Vec<PingSummary> = store
                 .list_recent_pings(*cid, 3)
@@ -3894,7 +3709,6 @@ mod tests {
             assert_eq!(w, n, "check {cid}");
         }
 
-        // Empty input short-circuits, like the wide batch does.
         assert!(
             store
                 .list_recent_ping_summaries_for_checks(&[], 3)
@@ -3934,8 +3748,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        // Discover the actual (auto-increment) ids, oldest to newest, rather
-        // than assuming literal values.
+        // Real auto-increment ids, oldest to newest.
         let mut all: Vec<i64> = store
             .list_recent_pings(cid, 10)
             .await
@@ -3983,8 +3796,7 @@ mod tests {
         assert!(page3.has_newer);
         assert!(!page3.has_older);
 
-        // After(newest id of that last page) -> steps back toward newest;
-        // there are still newer rows (id4, id5) beyond this page.
+        // After(id1) -> [id3, id2]; id4 and id5 are still newer.
         let page4 = store
             .list_pings_page(cid, PageCursor::After(id1), 2, &PingFilter::default())
             .await

@@ -1,10 +1,6 @@
-//! Retrying assertions.
-//!
-//! `WebDriver` has no polling layer: a `find` that runs before the server's
-//! redirect has landed simply reports the old page. thirtyfour's `ElementQuery`
-//! filters cover "wait for an element matching X" and [`crate::dom`] uses them;
-//! these helpers cover a value that has to settle, like a check's status after
-//! a ping or the URL after a form post.
+//! Retrying assertions for values that must settle (a status after a ping,
+//! the URL after a post): `WebDriver` does not wait, so a `find` before a
+//! redirect lands reads the old page.
 
 use std::fmt::Debug;
 use std::future::Future;
@@ -15,12 +11,8 @@ use thirtyfour::error::{WebDriverError, WebDriverErrorInner};
 
 use crate::browser::{WAIT_INTERVAL, WAIT_TIMEOUT};
 
-/// Is this the DOM having moved under the probe, rather than a real fault?
-///
-/// The check page swaps its pings and notifications sections in place, so an
-/// element found on one poll can be detached before the next line reads it — to
-/// a poll that is "not yet". Only the stale-reference error is forgiven; a
-/// missing element, bad selector or dead session still fails immediately.
+/// A stale element reference counts as "not yet": the check page swaps its
+/// sections in place, detaching elements mid-poll. Every other error is fatal.
 fn is_stale(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause.downcast_ref::<WebDriverError>().is_some_and(|error| {
@@ -32,13 +24,7 @@ fn is_stale(error: &anyhow::Error) -> bool {
     })
 }
 
-/// Polls `probe` until it reports the expected value. On timeout the failure
-/// names the last value seen, not merely that a wait expired.
-///
-/// # Errors
-///
-/// Fails when `probe` errors, or when the value has still not matched by
-/// [`WAIT_TIMEOUT`].
+/// Polls `probe` until it equals `expected`; a timeout names the last value.
 pub async fn eventually_eq<T, E, F, Fut>(what: &str, expected: E, mut probe: F) -> Result<()>
 where
     T: Debug,
@@ -67,11 +53,6 @@ where
 }
 
 /// Polls `probe` until it reports `true`.
-///
-/// # Errors
-///
-/// Fails when `probe` errors, or when it has still not held by
-/// [`WAIT_TIMEOUT`].
 pub async fn eventually<F, Fut>(what: &str, probe: F) -> Result<()>
 where
     F: FnMut() -> Fut,
@@ -80,13 +61,8 @@ where
     eventually_within(WAIT_TIMEOUT, what, probe).await
 }
 
-/// [`eventually`] with a deadline of its own, for the waits on a background
-/// loop rather than on the page — chiefly the scan loop, which only transitions
-/// an overdue check on its next pass.
-///
-/// # Errors
-///
-/// Fails when `probe` errors, or when it has still not held by `timeout`.
+/// [`eventually`] with its own deadline, for waits on a background loop such
+/// as the scan loop.
 pub async fn eventually_within<F, Fut>(timeout: Duration, what: &str, mut probe: F) -> Result<()>
 where
     F: FnMut() -> Fut,
@@ -107,13 +83,7 @@ where
     }
 }
 
-/// Polls `probe` until it reports a value, handing it back — "read something
-/// once it exists".
-///
-/// # Errors
-///
-/// Fails when `probe` errors, or when it has still reported `None` by
-/// [`WAIT_TIMEOUT`].
+/// Polls `probe` until it returns `Some`, and hands the value back.
 pub async fn eventually_some<T, F, Fut>(what: &str, mut probe: F) -> Result<T>
 where
     F: FnMut() -> Fut,

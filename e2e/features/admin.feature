@@ -18,9 +18,7 @@ Feature: Admin cross-user management
     When I open the admin dashboard
     Then the admin dashboard is shown
 
-  # .subhead ("Recent failures", the Environment groups, "Add user") only set
-  # spacing, so it inherited the global h2 and rendered at 21px/700 inside a
-  # card whose own heading is 13px — the section shouting over its container.
+  # .subhead must not inherit the global h2 size inside a 13px card heading.
   Scenario: A subheading inside a card does not outweigh the card's own heading
     When I open the admin dashboard
     Then no card subheading renders larger than its card heading
@@ -41,8 +39,7 @@ Feature: Admin cross-user management
     And the check status is "new"
     And the ping URL is withheld
 
-  # The ping URL is a bearer credential: holding it is enough to mark the
-  # check up or down. An admin gets it only by asking, and asking is recorded.
+  # The ping URL is a bearer credential, so an admin must ask and is audited.
   Scenario: Revealing another user's ping URL is an explicit, audited step
     Given I open the member's check in the admin area
     When I reveal the ping URL
@@ -96,10 +93,7 @@ Feature: Admin cross-user management
     When I delete the member's project
     Then the admin projects list has no projects
 
-  # The audit trail is the read side of what /admin/* mutations and credential
-  # disclosures write — plain reads no longer land here. Its filter/pager swap
-  # the card in place through the same fragment helper the check page's
-  # history tables use.
+  # Admin mutations and credential disclosures are audited; plain reads are not.
   Scenario: The audit trail lists what the admin did to another user's data
     Given I open the member's check in the admin area
     And I pause the check

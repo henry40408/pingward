@@ -8,8 +8,8 @@ Feature: Account
     When I open the account page
     Then the current session is marked as this device
 
-  # The server is spawned with 127.0.0.1 trusted, so the forwarded header is
-  # honoured; signing in again is what creates the session that records it.
+  # @trusted-proxy trusts 127.0.0.1; signing in again creates the session
+  # that records the forwarded IP.
   @trusted-proxy
   Scenario: A session behind a trusted proxy records the forwarded client IP
     Given requests arrive through a trusted proxy as "203.0.113.7"
@@ -50,9 +50,8 @@ Feature: Account
     And I revoke the API key
     Then no API keys remain
 
-  # An API key is not bound by the session caps and survives a password reset,
-  # so minting one asks for the password again — a borrowed browser must not be
-  # convertible into permanent access.
+  # A key escapes session caps and survives a password reset, so minting one
+  # re-asks the password.
   Scenario: Creating an API key with the wrong password is refused
     When I open the account page
     And I create an API key named "CI deploy" with my password "not my password"

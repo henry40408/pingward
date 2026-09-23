@@ -1,22 +1,13 @@
-// Every script the browser UI runs, in one deferred file.
-//
-// External rather than inline so the app can serve `script-src 'self'` with no
-// `'unsafe-inline'` and no per-response nonce (see `web::security_headers`).
-// For the same reason no template carries an `onclick=`/`onsubmit=` attribute —
-// the delegated handlers below stand in for them, keyed off `data-` attributes.
-//
-// Loaded with `defer`, so the DOM is parsed before any of this runs. Each block
-// is guarded by the presence of what it operates on, because every page loads
-// the same file.
+// Every script the UI runs, deferred. The CSP (`web::content_security_policy`)
+// allows `script-src 'self'` with no 'unsafe-inline' or nonce, so templates
+// carry no inline handlers: delegated handlers below key off `data-` attributes.
+// Every page loads this file, so each block checks its target exists.
 
-// --- shared helpers for the swappable history sections (check page pings +
-//     notifications, /admin audit trail) ---
+// --- swappable history sections (check pings/notifications, /admin audit) ---
 window.pw = (function () {
   var pad = function (n) { return String(n).padStart(2, '0'); };
 
-  // Localize absolute timestamps within `root` to the viewer's zone, falling
-  // back to the server-rendered UTC text. Takes a root so it can re-run on a
-  // fragment after a partial swap.
+  // Localize timestamps under `root` (re-run after a fragment swap).
   function localize(root) {
     root.querySelectorAll('.localtime[data-ts]').forEach(function (el) {
       var d = new Date(el.getAttribute('data-ts'));
@@ -39,9 +30,8 @@ window.pw = (function () {
     });
   }
 
-  // Fill each datetime-local from its data-utc (UTC instant) in local time.
-  // Minute precision matches the inputs: a step=1 seconds sub-field left blank
-  // would make .value empty on submit.
+  // Fill each datetime-local from its data-utc, in local time, to the minute
+  // (a blank seconds sub-field would empty .value).
   function fillDates(root) {
     root.querySelectorAll('input[type=datetime-local][data-utc]').forEach(function (el) {
       var v = el.getAttribute('data-utc'); if (!v) return;
@@ -51,7 +41,7 @@ window.pw = (function () {
     });
   }
 
-  // A datetime-local value (local wall clock) -> UTC RFC3339 (Z), '' if blank.
+  // datetime-local (local wall clock) -> UTC RFC 3339, '' if blank.
   function toUtc(val) {
     if (!val) return '';
     var d = new Date(val); if (isNaN(d.getTime())) return '';
@@ -60,10 +50,8 @@ window.pw = (function () {
 
   function initSection(section) { localize(section); bindToggles(section); fillDates(section); }
 
-  // Wire a swappable history section: its pager/Clear links and Filter button
-  // fetch the fragment endpoint and replace the section's contents in place.
-  // Returns the loader so a caller can re-fetch on its own, null when the
-  // section is not on the page.
+  // Pager/Clear links and the Apply button swap in the fragment. Returns the
+  // loader, or null when the section is absent.
   function wireSection(id, buildQuery) {
     var section = document.getElementById(id);
     if (!section) return null;
@@ -90,24 +78,17 @@ window.pw = (function () {
 
 // --- delegated handlers, standing in for inline attributes ---
 
-// A whole row acts as a link to `data-href`. Delegated from the document so it
-// also covers rows inserted by a fragment swap; a click that landed on a real
-// control is left alone.
-//
-// Mouse convenience only, not the row's link: the name inside each row is a
-// real `<a>` to the same destination, and that is what carries keyboard access,
-// the focus ring, the context menu, middle-click and the row working at all
-// with JS off. Nothing here should grow back into the only way to reach a
-// page.
+// A `data-href` row is a mouse convenience; the real route is the `<a>` on the
+// name, which must stay (keyboard, middle-click, no-JS). Delegated so swapped-in
+// rows work too.
 document.addEventListener('click', function (e) {
   if (e.target.closest('a, button, input, select, textarea, label')) return;
   var row = e.target.closest('[data-href]');
   if (row) location = row.getAttribute('data-href');
 });
 
-// Destructive forms confirm first (`data-confirm`); the filter forms never
-// submit at all (`data-nosubmit`) — their Apply button fetches a fragment
-// instead, and a stray Enter in a filter field must not navigate away.
+// `data-confirm` forms ask first; `data-nosubmit` filter forms never submit
+// (Apply fetches a fragment, and a stray Enter must not navigate).
 document.addEventListener('submit', function (e) {
   var form = e.target;
   if (!form.getAttribute) return;
@@ -115,10 +96,8 @@ document.addEventListener('submit', function (e) {
   var message = form.getAttribute('data-confirm');
   if (message) {
     if (!confirm(message)) { e.preventDefault(); return; }
-    // Answered here, so tell the server as much: without the flag it refuses
-    // and renders the same question as a page (`ConfirmQuery` in web.rs), which
-    // is what a browser running no script gets. The flag goes in the query
-    // string because several of these forms post no body at all.
+    // Without `?confirmed=1` the server renders the question as a page
+    // (`ConfirmQuery`); a query param because some forms post no body.
     if (form.action.indexOf('confirmed=1') === -1) {
       form.action += (form.action.indexOf('?') === -1 ? '?' : '&') + 'confirmed=1';
     }
@@ -128,17 +107,9 @@ document.addEventListener('submit', function (e) {
 });
 
 // --- admin re-authentication dialog ---
-//
-// The `/admin` controls that hand out access are single-button inline forms in
-// a table row, so they cannot carry a password field of their own. Without this
-// the server bounces them to `/admin/unlock` and whatever was typed into the
-// form is gone; asking in place keeps the form intact.
-//
-// Progressive enhancement in both directions: the server refuses an unconfirmed
-// action whatever the page did, and with JS off (or if this throws) the bounce
-// still works. `data-reauth` is only rendered while locked. Built by delegation
-// because the CSP (`script-src 'self'`, no nonce, no 'unsafe-inline') leaves no
-// room for an inline handler.
+// `data-reauth` forms (rendered only while locked) ask for the password in
+// place instead of bouncing to `/admin/unlock` and losing the form's input.
+// The server re-checks regardless, and without JS the bounce still works.
 var reauthDialog = null;
 var reauthPending = null;
 
@@ -202,20 +173,18 @@ function submitReauth() {
     body: body.toString()
   }).then(function (r) {
     if (r.status === 204) {
-      // Confirmed for a while, so nothing else needs asking either.
+      // Unlocked for a while; nothing else needs asking.
       var marked = document.querySelectorAll('[data-reauth]');
       for (var i = 0; i < marked.length; i++) marked[i].removeAttribute('data-reauth');
       reauthPending = null;
       reauthDialog.close();
-      // `submit()`, not `requestSubmit()`: it fires no submit event, so the
-      // handler above cannot intercept this one again.
+      // `submit()` fires no submit event, so the handler above won't re-intercept.
       form.submit();
       return;
     }
     if (r.status === 403) { reauthError('That password is not correct.'); return; }
     if (r.status === 429) { reauthError('Too many attempts — try again later.'); return; }
-    // Anything else (session gone, server trouble): hand over to the page that
-    // can explain rather than leave the admin stuck in a dialog.
+    // Anything else: hand over to the page that can explain.
     location = '/admin/unlock';
   }).catch(function () { location = '/admin/unlock'; });
 }
@@ -226,15 +195,14 @@ function submitReauth() {
   var mq = matchMedia('(prefers-color-scheme: dark)');
   var order = ['light', 'dark', 'system'];
 
-  // Stored preference, normalized: unset/unknown -> 'system' (follow OS).
+  // Stored preference; unset/unknown -> 'system'.
   function pref() {
     var p = null;
     try { p = localStorage.getItem('pw-theme'); } catch (e) {}
     return (p === 'light' || p === 'dark' || p === 'system') ? p : 'system';
   }
 
-  // Resolve p to an effective light/dark for data-theme and reflect p itself in
-  // the button glyph + labels.
+  // data-theme gets the effective light/dark; the button shows p itself.
   function apply(p) {
     var eff = (p === 'light' || p === 'dark') ? p : (mq.matches ? 'dark' : 'light');
     document.documentElement.setAttribute('data-theme', eff);
@@ -255,7 +223,7 @@ function submitReauth() {
 
 pw.localize(document);
 
-// --- copy buttons (API token on /account, ping URL on a check page) ---
+// --- copy buttons ---
 document.querySelectorAll('.copy').forEach(function (btn) {
   btn.addEventListener('click', function () {
     var text = btn.getAttribute('data-copy');
@@ -288,9 +256,8 @@ document.querySelectorAll('.copy').forEach(function (btn) {
     return qs.length ? ('?' + qs.join('&')) : '';
   });
 
-  // Opt-in, not always-on: an EventSource held open by every check page would
-  // spend one of the browser's ~6 HTTP/1.1 connections per origin, so a handful
-  // of open tabs would stall the rest of the app.
+  // Opt-in live tail: an always-open EventSource per tab would eat the ~6
+  // HTTP/1.1 connections per origin.
   var liveBtn = document.getElementById('pings-live');
   var pingsSection = document.getElementById('pings-section');
   var pingsCard = document.getElementById('pings-card');
@@ -318,10 +285,8 @@ document.querySelectorAll('.copy').forEach(function (btn) {
         loadPings(pingsSection.getAttribute('data-endpoint'));
       }, 500);
     };
-    // EventSource retries transport errors itself, so there is no retry logic
-    // here — but the button must stop claiming "open" while a retry is in
-    // flight, and a CLOSED stream is never coming back (the check was deleted,
-    // say), so drop the toggle to off.
+    // EventSource retries by itself; show "connecting" meanwhile, and turn
+    // off once CLOSED (it will not come back).
     liveSource.onerror = function () {
       if (liveSource !== this) return; // stale handler from a replaced stream
       if (this.readyState === EventSource.CLOSED) stopLive();
@@ -334,12 +299,10 @@ document.querySelectorAll('.copy').forEach(function (btn) {
   window.addEventListener('pagehide', stopLive);
 })();
 
-// The check form's period/cron fields and the channel form's per-kind config
-// blocks are switched by `:has()` rules in `app.css`, not here: an inline
-// `style.display` would outrank those rules, so a script copy could only ever
-// disagree with them (and with no script every branch showed at once).
+// The check/channel forms' per-kind fields switch via `:has()` in `app.css`, not
+// here: an inline `style.display` would outrank those rules.
 
-// --- /admin: ticking heartbeat ages + the audit trail section ---
+// --- /admin: ticking heartbeat ages ---
 (function () {
   if (!document.querySelector('.hb-ago[data-ago]')) return;
   function rel(ts) {
@@ -363,8 +326,7 @@ document.querySelectorAll('.copy').forEach(function (btn) {
   setInterval(tick, 1000);
 })();
 
-// The audit trail is a swappable history section like the check page's
-// pings/notifications tables: same helper, same fragment contract.
+// --- /admin: audit trail section ---
 pw.wireSection('audit-section', function (s) {
   var qs = [];
   var actor = s.querySelector('[data-testid=audit-actor]');

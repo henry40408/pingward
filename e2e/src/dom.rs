@@ -1,16 +1,9 @@
-//! The Playwright vocabulary the steps were written in, rebuilt on `WebDriver`.
+//! Page helpers over `WebDriver`, which has no retry layer: the waits live here.
 //!
-//! `WebDriver` has no retry layer, so each Playwright locator becomes an
-//! `ElementQuery` with an explicit wait here rather than at several hundred
-//! call sites. Two conventions:
-//!
-//! * Presence and visibility are different questions. [`Dom::expect_visible`]
-//!   waits for a *displayed* element, [`Dom::expect_absent`] for the absence of
-//!   any; `no_js.feature` turns on that distinction, since a control the
-//!   stylesheet hides without script is still in the document.
-//! * Asking about an absence must not wait, so the "not there" helpers use
-//!   `nowait`; callers wrap them in [`crate::wait::eventually`] when the
-//!   absence is something the page has to become.
+//! * Visible is not present: `no_js.feature` relies on controls that the
+//!   stylesheet hides but that remain in the document.
+//! * `_opt`/`_all` lookups use `nowait`; wrap them in
+//!   [`crate::wait::eventually`] when the page must become that way.
 
 use std::time::Instant;
 
@@ -20,215 +13,150 @@ use thirtyfour::prelude::*;
 
 use crate::browser::{WAIT_INTERVAL, WAIT_TIMEOUT};
 
-/// Playwright's page vocabulary, as far as this suite used it.
 #[allow(async_fn_in_trait)]
 pub trait Dom {
-    /// The element carrying `data-testid`, once it is displayed.
+    /// Waits for the displayed element with this `data-testid`.
     async fn test_id(&self, id: &str) -> Result<WebElement>;
 
-    /// The element carrying `data-testid`, present or not, without waiting.
     async fn test_id_opt(&self, id: &str) -> Result<Option<WebElement>>;
 
-    /// Every element carrying `data-testid`, without waiting.
     async fn test_ids(&self, id: &str) -> Result<Vec<WebElement>>;
 
-    /// The element matching a CSS selector, once it is displayed.
+    /// Waits for the displayed element matching a CSS selector.
     async fn css(&self, selector: &str) -> Result<WebElement>;
 
-    /// The element matching a CSS selector, present or not, without waiting.
     async fn css_opt(&self, selector: &str) -> Result<Option<WebElement>>;
 
-    /// Every element matching a CSS selector, without waiting.
     async fn css_all(&self, selector: &str) -> Result<Vec<WebElement>>;
 
-    /// Replaces a field's contents, Playwright's `fill`.
     async fn fill(&self, id: &str, value: &str) -> Result<()>;
 
     /// Clicks the element once it is clickable.
     async fn click(&self, id: &str) -> Result<()>;
 
-    /// Waits for the element to be displayed.
     async fn expect_visible(&self, id: &str) -> Result<()>;
 
-    /// Waits for the element to stop being displayed — it may remain in the
-    /// DOM, which is what `toBeHidden()` allowed.
+    /// Waits for the element to be undisplayed; it may stay in the DOM.
     async fn expect_hidden(&self, id: &str) -> Result<()>;
 
-    /// Waits for no element with that id to exist at all, `toHaveCount(0)`.
+    /// Waits for no element with that id to exist.
     async fn expect_absent(&self, id: &str) -> Result<()>;
 
-    /// Waits for the element's text to contain `needle`, `toContainText`.
     async fn expect_text(&self, id: &str, needle: &str) -> Result<()>;
 
-    /// Waits for the element's text to be exactly `text` — `up` must not be
-    /// satisfied by a status chip reading `paused`.
+    /// Exact match, so `up` is not satisfied by a chip reading `paused`.
     async fn expect_exact_text(&self, id: &str, text: &str) -> Result<()>;
 
-    /// Waits for the element's text to be anything but `text`,
-    /// `not.toHaveText`.
     async fn expect_not_exact_text(&self, id: &str, text: &str) -> Result<()>;
 
-    /// [`Dom::expect_visible`] addressed by a CSS selector, for the controls
-    /// that carry an `id` but no `data-testid` (flash banners, settings
-    /// fields, `#cron_expr`).
     async fn expect_visible_css(&self, selector: &str) -> Result<()>;
 
-    /// [`Dom::expect_hidden`] addressed by a CSS selector.
     async fn expect_hidden_css(&self, selector: &str) -> Result<()>;
 
-    /// [`Dom::expect_exact_text`] addressed by a CSS selector.
     async fn expect_exact_text_css(&self, selector: &str, text: &str) -> Result<()>;
 
-    /// [`Dom::expect_text`] addressed by a CSS selector.
     async fn expect_text_css(&self, selector: &str, needle: &str) -> Result<()>;
 
-    /// Waits for a control's value to be exactly `value`, `toHaveValue`.
     async fn expect_value(&self, id: &str, value: &str) -> Result<()>;
 
-    /// [`Dom::expect_value`] addressed by a CSS selector.
     async fn expect_value_css(&self, selector: &str, value: &str) -> Result<()>;
 
-    /// Elements carrying `data-testid` whose text contains `text` —
-    /// Playwright's `.filter({ hasText })`.
     async fn test_ids_with_text(&self, id: &str, text: &str) -> Result<Vec<WebElement>>;
 
-    /// Elements matching a CSS selector whose text contains `text`.
     async fn css_with_text(&self, selector: &str, text: &str) -> Result<Vec<WebElement>>;
 
-    /// The one element matching a CSS selector whose text contains `text`,
-    /// once it is there.
+    /// Waits for the first selector match whose text contains `text`.
     async fn css_row(&self, selector: &str, text: &str) -> Result<WebElement>;
 
-    /// Chooses an `<option>` by its visible label, Playwright's
-    /// `selectOption({ label })`.
+    /// Chooses an `<option>` by its visible label.
     async fn select_label(&self, id: &str, label: &str) -> Result<()>;
 
-    /// The element's text, once it is displayed.
     async fn text_of(&self, id: &str) -> Result<String>;
 
-    /// Is the element present and displayed, as the page stands right now?
+    /// Whether the element is present and displayed right now.
     async fn is_visible(&self, id: &str) -> Result<bool>;
 
-    /// Waits for exactly `expected` elements to match a CSS selector,
-    /// `toHaveCount`.
     async fn expect_count(&self, selector: &str, expected: usize) -> Result<()>;
 
-    /// How many elements match a CSS selector, as the page stands.
     async fn count_css(&self, selector: &str) -> Result<usize>;
 
-    /// Replaces the contents of the field a CSS selector picks out.
     async fn fill_css(&self, selector: &str, value: &str) -> Result<()>;
 
-    /// Clicks the element a CSS selector picks out, once it is clickable.
     async fn click_css(&self, selector: &str) -> Result<()>;
 
-    /// Clicks a control that navigates, and waits for the navigation to land.
-    ///
-    /// Element Click returns as soon as the click is dispatched, so a form POST
-    /// answered with a redirect is still in flight on the next line. Waiting
-    /// for the current document to go stale detects it even for the forms that
-    /// redirect back to the page they came from, which watching the URL misses.
+    /// Clicks a navigating control and waits for the old document to go stale.
+    /// `WebDriver`'s click returns before a redirect lands, and watching the URL
+    /// misses forms that redirect back to the same page.
     async fn submit_css(&self, selector: &str) -> Result<()>;
 
-    /// [`Dom::submit_css`] addressed by `data-testid`.
     async fn submit(&self, id: &str) -> Result<()>;
 
-    /// Chooses an `<option>` by value, Playwright's `selectOption`.
+    /// Chooses an `<option>` by value.
     async fn select_option(&self, id: &str, value: &str) -> Result<()>;
 
-    /// [`Dom::select_option`] addressed by a CSS selector.
     async fn select_option_css(&self, selector: &str, value: &str) -> Result<()>;
 
-    /// A form control's current value, Playwright's `inputValue`.
     async fn value_of(&self, id: &str) -> Result<String>;
 
-    /// [`Dom::value_of`] addressed by a CSS selector.
     async fn value_of_css(&self, selector: &str) -> Result<String>;
 
-    /// Waits for an attribute on the element a CSS selector picks out to equal
-    /// `expected`, or to be absent when `expected` is `None`.
+    /// Waits for `attr` to equal `expected`, or be absent when `None`.
     async fn expect_attr(&self, selector: &str, attr: &str, expected: Option<&str>) -> Result<()>;
 
-    /// The table row containing `text`, Playwright's
-    /// `locator("tr", { hasText })`.
+    /// Waits for the first `<tr>` containing `text`.
     async fn row_with_text(&self, text: &str) -> Result<WebElement>;
 
-    /// Waits for some element rendering `text` to be displayed. Matches the
-    /// innermost carrier, or every ancestor up to `<body>` would match too.
+    /// Waits for the innermost element containing `text` to be displayed.
     async fn expect_text_somewhere(&self, text: &str) -> Result<()>;
 
-    /// Is some element rendering `text` displayed, as the page stands?
     async fn has_text_somewhere(&self, text: &str) -> Result<bool>;
 
-    /// Waits for some element whose whole text is `text` to be displayed,
-    /// `getByText(text, { exact: true })`.
+    /// Waits for an element whose whole text is `text` to be displayed.
     async fn expect_exact_text_somewhere(&self, text: &str) -> Result<()>;
 
-    /// The link with this accessible name, if the page has one.
     async fn link_named(&self, name: &str) -> Result<Option<WebElement>>;
 
-    /// The button with this accessible name, if the page has one.
     async fn button_named(&self, name: &str) -> Result<Option<WebElement>>;
 
-    /// The heading with exactly this text, if the page has one.
+    /// The heading with exactly this text, if any.
     async fn heading_opt(&self, name: &str) -> Result<Option<WebElement>>;
 
-    /// Evaluates a script and hands back the JSON it returned.
     async fn eval(&self, script: &str) -> Result<serde_json::Value>;
 
-    /// Finds an element and reads its text in one go, reporting `None` when it
-    /// is not there *or* went stale mid-read. A fragment swap racing the read
-    /// is the poll's answer ("not yet"), not a fault.
+    /// Finds and reads in one go; `None` if absent or stale mid-read (a fragment
+    /// swap racing the read means "not yet").
     async fn text_of_css(&self, selector: &str) -> Result<Option<String>>;
 
-    /// [`Dom::text_of_css`] addressed by `data-testid`.
     async fn text_of_test_id(&self, id: &str) -> Result<Option<String>>;
 
-    /// The text of every element a CSS selector matches, in document order.
     async fn texts_of(&self, selector: &str) -> Result<Vec<String>>;
 
-    /// Is the checkbox ticked? Playwright's `toBeChecked`.
     async fn is_checked(&self, id: &str) -> Result<bool>;
 
-    /// Ticks a checkbox if it is not already, Playwright's `check`.
+    /// Ticks a checkbox unless already ticked.
     async fn check(&self, id: &str) -> Result<()>;
 
-    /// One computed style property of the first element a selector matches.
     async fn computed_style(&self, selector: &str, property: &str) -> Result<String>;
 
-    /// Waits for a `confirm()` prompt and reads its message. Polls, because the
-    /// click that raises it returns before the prompt is up.
+    /// Waits for a `confirm()` prompt, which appears after the click returns,
+    /// and reads its message.
     async fn confirm_message(&self) -> Result<String>;
 
-    /// Answers the standing `confirm()` prompt yes.
     async fn accept_confirm(&self) -> Result<()>;
 
-    /// Answers the standing `confirm()` prompt no.
     async fn dismiss_confirm(&self) -> Result<()>;
 
-    /// Clicks a control guarded by `data-confirm`, accepts the prompt, and
-    /// waits for the submission to land — most of these forms redirect back to
-    /// the page they came from, so without the wait the next assertion reads
-    /// the pre-submit document.
+    /// Clicks a `data-confirm` control, accepts, and waits for the submission to
+    /// land (these often redirect back to the same page).
     async fn confirm_and_submit(&self, id: &str) -> Result<()>;
 
-    /// The first matching element's border box as `(x, y, width, height)` in
-    /// viewport coordinates. Read through `getBoundingClientRect`, since
-    /// `WebElement::rect` reports document coordinates and disagrees once the
-    /// page has scrolled.
+    /// Border box `(x, y, width, height)` in viewport coordinates, via
+    /// `getBoundingClientRect`: `WebElement::rect` is document-relative.
     async fn bounding_box(&self, selector: &str) -> Result<(f64, f64, f64, f64)>;
 }
 
-/// Clicks an element once it is actually clickable.
-///
-/// `WebElement::click` dispatches into a disabled control happily, and the
-/// check page's pager renders its ends as `<span class="btn disabled">` rather
-/// than hiding them. [`Dom::click`] and [`Dom::click_css`] already wait; this
-/// is for callers that found the element themselves, usually by row.
-///
-/// # Errors
-///
-/// Fails when the element never becomes clickable.
+/// Waits until clickable, then clicks: `WebElement::click` happily clicks a
+/// disabled control such as the pager's `<span class="btn disabled">` ends.
 pub async fn click_when_ready(element: &WebElement) -> Result<()> {
     element
         .wait_until()
@@ -240,15 +168,7 @@ pub async fn click_when_ready(element: &WebElement) -> Result<()> {
     Ok(())
 }
 
-/// Clicks a control that navigates, and waits for the navigation to land.
-///
-/// The element-handle form of [`Dom::submit_css`], for row-scoped controls
-/// found by walking a table. Without the wait, the assertion that follows
-/// reads the old page.
-///
-/// # Errors
-///
-/// Fails when the click does not replace the document.
+/// [`Dom::submit_css`] for an element already found (e.g. within a row).
 pub async fn submit_element(driver: &WebDriver, element: &WebElement) -> Result<()> {
     let document = driver.find(By::Tag("html")).await?;
     click_when_ready(element).await?;
@@ -261,17 +181,9 @@ pub async fn submit_element(driver: &WebDriver, element: &WebElement) -> Result<
     Ok(())
 }
 
-/// Clicks a control that *may* raise a `confirm()` before it submits, answers
-/// it yes if it does, and waits for the navigation.
-///
-/// `/admin`'s per-row controls confirm conditionally (delete always,
-/// revoke-admin and disable only when state would change, promote and enable
-/// never), so this races a prompt appearing against the document being
-/// replaced rather than stalling the full timeout on the silent paths.
-///
-/// # Errors
-///
-/// Fails when neither happens before the timeout.
+/// Clicks a control that *may* raise a `confirm()`, accepts it if so, and
+/// waits for the navigation. `/admin`'s row controls confirm only
+/// conditionally, so this races the prompt against the page being replaced.
 pub async fn submit_element_confirming(driver: &WebDriver, element: &WebElement) -> Result<()> {
     let document = driver.find(By::Tag("html")).await?;
     click_when_ready(element).await?;
@@ -283,7 +195,7 @@ pub async fn submit_element_confirming(driver: &WebDriver, element: &WebElement)
             break;
         }
         if document.is_present().await.is_ok_and(|present| !present) {
-            // Already gone — the control submitted without confirming.
+            // Submitted without confirming.
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
@@ -301,18 +213,13 @@ pub async fn submit_element_confirming(driver: &WebDriver, element: &WebElement)
     Ok(())
 }
 
-/// The text an element contains, as Playwright compared it.
-///
-/// Not `WebElement::text`, which returns *rendered* text put through
-/// `text-transform`: a chip styled `uppercase` reads `DOWN` where the markup
-/// says `down`. Reading `textContent` compares content, not the stylesheet.
+/// `textContent` rather than `WebElement::text`, which applies
+/// `text-transform` (an `uppercase` chip reads `DOWN` for markup `down`).
 #[allow(async_fn_in_trait)]
 pub trait TextContent {
-    /// The element's `textContent`, untouched by CSS.
     async fn content_text(&self) -> Result<String>;
 
-    /// The element's `textContent` with runs of whitespace collapsed, as
-    /// Playwright's text matchers compare it.
+    /// `textContent` with whitespace runs collapsed.
     async fn normalized_text(&self) -> Result<String>;
 }
 
@@ -326,37 +233,28 @@ impl TextContent for WebElement {
     }
 }
 
-/// Collapses whitespace the way Playwright's text matchers do.
 pub fn normalize(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Finding elements inside another element, for the steps that scoped a query
-/// to a row, a card or a section.
+/// Descendant lookups, for steps scoped to a row, card or section.
 #[allow(async_fn_in_trait)]
 pub trait Within {
-    /// The descendant link with this accessible name, if there is one.
     async fn link_named(&self, name: &str) -> Result<Option<WebElement>>;
 
-    /// The descendant link whose text is exactly `name`. The edit-flow steps
-    /// need it: the per-row lowercase `edit` link would otherwise collide with
-    /// the page's own `Edit`.
+    /// Exact text match, so a row's lowercase `edit` link does not collide
+    /// with the page's `Edit`.
     async fn link_named_exact(&self, name: &str) -> Result<Option<WebElement>>;
 
-    /// The descendant button with this accessible name, matched on rendered
-    /// text or `aria-label` — both are in use here.
     async fn button_named(&self, name: &str) -> Result<Option<WebElement>>;
 
-    /// The descendant carrying `data-testid`, without waiting.
     async fn test_id_opt(&self, id: &str) -> Result<Option<WebElement>>;
 
-    /// The descendant carrying `data-testid`, which must be there.
+    /// Waits for the descendant.
     async fn test_id(&self, id: &str) -> Result<WebElement>;
 
-    /// Every descendant matching a CSS selector, without waiting.
     async fn css_all(&self, selector: &str) -> Result<Vec<WebElement>>;
 
-    /// The first descendant matching a CSS selector, without waiting.
     async fn css_opt(&self, selector: &str) -> Result<Option<WebElement>>;
 }
 
@@ -492,8 +390,7 @@ impl Dom for WebDriver {
     }
 
     async fn expect_text(&self, id: &str, needle: &str) -> Result<()> {
-        // A loop rather than `wait::eventually` so the failure can name the
-        // text that was there instead of reporting a bare timeout.
+        // Hand-rolled so the failure can name the last text seen.
         let deadline = Instant::now() + WAIT_TIMEOUT;
         let mut last = None;
         loop {
@@ -691,8 +588,7 @@ impl Dom for WebDriver {
             let Some(element) = self.css_opt(selector).await? else {
                 return Ok(false);
             };
-            // A stale handle means the document was replaced mid-read, which
-            // is what these post-submit assertions wait through: "not yet".
+            // Stale mid-read means the document was replaced: "not yet".
             match element.attr(attr).await {
                 Ok(value) => Ok(value.as_deref() == expected),
                 Err(_) => Ok(false),
@@ -807,8 +703,7 @@ impl Dom for WebDriver {
     }
 
     async fn computed_style(&self, selector: &str, property: &str) -> Result<String> {
-        // Not `css`, which waits for a displayed element: these scenarios
-        // usually ask whether something is `display: none`.
+        // Not `css`, which waits for display: callers often probe `display: none`.
         let element = self
             .css_opt(selector)
             .await?
@@ -830,8 +725,7 @@ impl Dom for WebDriver {
     }
 
     async fn accept_confirm(&self) -> Result<()> {
-        // Waiting for the text first covers the gap between the click
-        // returning and the prompt being up.
+        // Waits out the gap between the click returning and the prompt.
         self.confirm_message().await?;
         self.accept_alert().await?;
         Ok(())
@@ -881,12 +775,9 @@ impl Dom for WebDriver {
     }
 }
 
-/// Replaces a field's contents, whatever kind of control it is.
-///
-/// `clear` then `send_keys`, because Element Send Keys appends. `datetime-local`
-/// is the exception: `clear` leaves it partially filled and rejecting
-/// keystrokes, so it is set through its `value` property — which is what makes
-/// the minute-precision bounds in `check_history.feature` land.
+/// Replaces a field's contents with `clear` + `send_keys` (which appends).
+/// Date/time inputs are set via `value` instead: `clear` leaves a
+/// `datetime-local` partly filled and refusing keystrokes.
 async fn fill_element(driver: &WebDriver, field: &WebElement, value: &str) -> Result<()> {
     let kind = field.attr("type").await?.unwrap_or_default();
     if kind == "datetime-local" || kind == "date" || kind == "time" {
@@ -900,8 +791,7 @@ async fn fill_element(driver: &WebDriver, field: &WebElement, value: &str) -> Re
     Ok(())
 }
 
-/// Sets a control's value and fires the events a real edit would: the filter
-/// forms listen for `change` to enable their Apply button.
+/// Sets `value` and fires `input`/`change`, which the filter forms listen for.
 async fn set_value_via_script(driver: &WebDriver, field: &WebElement, value: &str) -> Result<()> {
     driver
         .execute(
@@ -924,13 +814,11 @@ async fn select_value(element: &WebElement, what: &str, value: &str) -> Result<(
     Ok(())
 }
 
-/// A control's current value. `prop`, not `attr`: the attribute is the initial
-/// value, and these assertions run after a re-render.
+/// `prop`, not `attr`: the attribute is only the initial value.
 async fn value_of_element(element: &WebElement) -> Result<String> {
     Ok(element.prop("value").await?.unwrap_or_default())
 }
 
-/// Waits for a displayed element, naming what was being looked for on failure.
 async fn displayed(driver: &WebDriver, by: By, what: &str) -> Result<WebElement> {
     driver
         .query(by)
@@ -941,14 +829,13 @@ async fn displayed(driver: &WebDriver, by: By, what: &str) -> Result<WebElement>
         .with_context(|| format!("no displayed element for {what}"))
 }
 
-/// Every match as the page stands; "none" is an empty `Vec`, not an error.
+/// Every current match, without waiting; none is an empty `Vec`.
 async fn all(driver: &WebDriver, by: By) -> Result<Vec<WebElement>> {
     Ok(driver.query(by).nowait().all_from_selector().await?)
 }
 
-/// Keeps the elements whose text contains `text`. An element that goes stale
-/// mid-read is dropped rather than failing the filter — these lists are read
-/// while fragment swaps are in flight.
+/// Keeps elements whose text contains `text`; stale ones (fragment swap in
+/// flight) are dropped rather than failing.
 async fn with_text(elements: Vec<WebElement>, text: &str) -> Result<Vec<WebElement>> {
     let mut matched = Vec::new();
     for element in elements {
@@ -961,10 +848,8 @@ async fn with_text(elements: Vec<WebElement>, text: &str) -> Result<Vec<WebEleme
     Ok(matched)
 }
 
-/// An `XPath` for "the innermost element whose text contains `text`".
-///
-/// `not(.//*[…])` keeps it to the innermost match; without it every ancestor up
-/// to `<body>` matches and the first hit is a possibly off-screen container.
+/// `XPath` for the innermost element containing `text`; without `not(.//*[…])`
+/// every ancestor up to `<body>` would match too.
 fn innermost_text_xpath(text: &str) -> String {
     let literal = xpath_literal(text);
     format!(
@@ -973,13 +858,9 @@ fn innermost_text_xpath(text: &str) -> String {
     )
 }
 
-/// An `XPath` for "the `tag` whose accessible name matches `name`".
-///
-/// The match is substring and case-insensitive, as `getByRole` is: an exact
-/// comparison would hide a button labelled "Send test" from a step asking for
-/// "Send test notification". The name comes from rendered text or `aria-label`,
-/// and `XPath` 1.0 has no case-insensitive compare, so both sides are folded
-/// with `translate`.
+/// `XPath` for a `tag` whose text or `aria-label` contains `name`,
+/// case-insensitively (`XPath` 1.0 needs `translate` to fold case), so
+/// "Send test" finds a button labelled "Send test notification".
 fn named_role_xpath(tag: &str, name: &str) -> String {
     const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const LOWER: &str = "abcdefghijklmnopqrstuvwxyz";
@@ -992,8 +873,8 @@ fn named_role_xpath(tag: &str, name: &str) -> String {
     )
 }
 
-/// Quotes a string for `XPath`, which has no escape syntax of its own: a value
-/// containing both quote characters is assembled with `concat()`.
+/// Quotes a string for `XPath`, which has no escapes; a value with both quote
+/// kinds is built with `concat()`.
 fn xpath_literal(value: &str) -> String {
     if !value.contains('\'') {
         return format!("'{value}'");

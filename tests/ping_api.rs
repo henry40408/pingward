@@ -215,7 +215,7 @@ async fn get_verb_works_for_success() {
     assert_eq!(c.status, pingward::models::CheckStatus::Up);
 }
 
-/// Spec §6: a paused check is excluded from monitoring; the ping is still recorded.
+/// A paused check stays paused, but the ping is still recorded.
 #[tokio::test]
 async fn paused_check_is_not_resurrected_by_a_ping() {
     let (server, store) = test_server().await;

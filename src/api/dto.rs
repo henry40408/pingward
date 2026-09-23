@@ -1,9 +1,5 @@
-//! Serialization DTOs for the programmatic API, kept separate from
-//! [`crate::models`] so serde/utoipa derives never leak onto the domain types
-//! (whose string-backed enums are not `Serialize`).
-//!
-//! [`ChannelDto`] omits `config_json`: a channel's config holds delivery
-//! secrets, which must never cross the API boundary.
+//! API DTOs, kept apart from [`crate::models`] so serde/utoipa derives stay off
+//! the domain types. [`ChannelDto`] omits `config_json`: it holds secrets.
 
 use crate::models::{ApiKey, Channel, Check, Notification, Ping, Project};
 use chrono::{DateTime, Utc};
@@ -17,8 +13,7 @@ pub struct ProjectDto {
     pub owner_id: i64,
     #[schema(example = "Backups")]
     pub name: String,
-    /// Raw markdown (the subset in `src/markdown.rs`); never rendered
-    /// server-side.
+    /// Raw markdown (the subset in `src/markdown.rs`), unrendered.
     #[schema(example = "Nightly **offsite** backup jobs.")]
     pub description: String,
     /// Per-project scan-interval override in seconds, if set.
@@ -47,8 +42,7 @@ pub struct CheckDto {
     pub id: i64,
     pub project_id: i64,
     pub name: String,
-    /// Raw markdown (the subset in `src/markdown.rs`); never rendered
-    /// server-side.
+    /// Raw markdown (the subset in `src/markdown.rs`), unrendered.
     #[schema(example = "Runs nightly at 02:00 **UTC**.")]
     pub description: String,
     /// The per-check UUID embedded in this check's ping URL.
@@ -136,9 +130,10 @@ impl From<Channel> for ChannelDto {
 pub struct PingDto {
     pub id: i64,
     pub check_id: i64,
-    /// One of `success`, `fail`, `start`, `log`, `exitcode`.
+    /// One of `success`, `fail`, `start`, `log` (an exit-code ping is stored
+    /// as `success`/`fail`).
     pub kind: String,
-    /// The reported exit code (for `exitcode` pings).
+    /// The exit code reported via `/ping/{uuid}/{code}`, if any.
     pub exit_code: Option<i64>,
     /// The request body captured with the ping (truncated at ingest).
     pub body: String,
@@ -188,8 +183,7 @@ impl From<Notification> for NotificationDto {
     }
 }
 
-/// Metadata for one of the caller's API keys; the secret token is never
-/// included, only the display `prefix`.
+/// One of the caller's API keys; the secret is never included, only `prefix`.
 #[derive(Serialize, ToSchema)]
 pub struct ApiKeyDto {
     pub id: i64,
@@ -213,9 +207,7 @@ impl From<ApiKey> for ApiKeyDto {
     }
 }
 
-/// A keyset-paginated slice of pings, newest-first. `has_older`/`has_newer`
-/// report whether adjacent pages exist; `next_before`/`next_after` carry the
-/// boundary ids to fetch them.
+/// A keyset-paginated slice of pings, newest-first.
 #[derive(Serialize, ToSchema)]
 pub struct PingPage {
     pub items: Vec<PingDto>,

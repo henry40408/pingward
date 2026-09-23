@@ -1,9 +1,8 @@
 @fast-scan
 Feature: Time-dependent check states
 
-  # These scenarios run pingward with a 1s scan interval (via the @fast-scan
-  # tag) so the background scan loop downs overdue/overrun checks within a
-  # couple of seconds — no ping drives the transition.
+  # @fast-scan (1s scan interval) lets the scan loop, not a ping, down the
+  # check within seconds.
 
   Background:
     Given an admin "admin" with password "correct horse battery" exists

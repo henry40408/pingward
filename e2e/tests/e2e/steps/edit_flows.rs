@@ -6,9 +6,8 @@ use cucumber::{given, then, when};
 use pingward_e2e::dom::{Dom, TextContent, Within, submit_element};
 use pingward_e2e::world::PingwardWorld;
 
-/// Follows the page's single uppercase `Edit` link. Matched exactly: a project
-/// with checks also renders per-row lowercase `edit` links, which a
-/// case-insensitive substring match would reach first.
+/// Follows the page's `Edit` link, matched exactly: per-row lowercase `edit`
+/// links would win a case-insensitive match.
 async fn open_edit_form(world: &PingwardWorld, expected: &str) -> Result<()> {
     let driver = world.driver()?;
     let body = driver.find(thirtyfour::By::Tag("body")).await?;
@@ -77,8 +76,7 @@ async fn check_name_is(world: &mut PingwardWorld, name: String) -> Result<()> {
 
 #[then(expr = "the check timezone field shows {string}")]
 async fn timezone_field_shows(world: &mut PingwardWorld, timezone: String) -> Result<()> {
-    // The check page has no timezone display, so persistence is read back off
-    // the re-opened edit form.
+    // Read off the edit form; the check page does not display the timezone.
     world
         .driver()?
         .expect_value_css("#timezone", &timezone)
@@ -120,8 +118,7 @@ async fn check_description_bold(world: &mut PingwardWorld, text: String) -> Resu
     description_bold(world, "check-description", &text).await
 }
 
-/// The description card renders through `markdown.rs`, so `**bold**` becomes a
-/// real `<strong>` rather than escaped markers.
+/// `**bold**` must render as a real `<strong>`, not escaped markers.
 async fn description_bold(world: &PingwardWorld, id: &str, text: &str) -> Result<()> {
     let card = world.driver()?.test_id(id).await?;
     let strong = card
@@ -138,9 +135,8 @@ async fn description_bold(world: &PingwardWorld, id: &str, text: &str) -> Result
 
 #[then("the check row shows a truncated description")]
 async fn truncated_description(world: &mut PingwardWorld) -> Result<()> {
-    // The row shows `markdown::truncate_plain`: markers stripped, capped at 120
-    // characters. The ellipsis is what proves truncation, rather than the whole
-    // description fitting.
+    // `markdown::truncate_plain(_, 120)`: markers stripped; the ellipsis proves
+    // truncation happened.
     let driver = world.driver()?;
     driver.expect_visible("check-description-summary").await?;
     driver.expect_text("check-description-summary", "…").await?;

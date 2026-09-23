@@ -5,26 +5,17 @@ on:
     branches: [main]
   pull_request:
 
-# One run per ref at a time. A newer push supersedes the run it interrupted;
-# a tag does not — a tagged build publishes one specific version and nothing
-# should quietly cancel it.
+# A newer push cancels the older run of the same ref.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
-# Every `uses:` is pinned to a full commit SHA, and the version comment names
-# an exact release tag — never a floating major like `v2`. Dependabot works
-# out what a SHA pin currently is by finding the tag that points at it, so a
-# pin taken from a floating tag stops being recognisable the moment that tag
-# moves on. Swatinem/rust-cache did exactly that: `v2` briefly sat on an
-# untagged post-release changelog fixup, we pinned that commit, and once v2.9.2
-# moved the tag away our pin matched no tag at all. Dependabot then stopped
-# offering versions and started offering whatever master's HEAD happened to be
-# that morning — an unreviewed, unreleased commit running with full job
-# permissions, which is the opposite of what SHA pinning is for.
+# Pin every `uses:` to the commit SHA of an exact release tag (never a floating
+# major like `v2`): Dependabot identifies a pin by the tag pointing at it, and a
+# SHA no tag points at gets "updated" to unreleased branch HEADs.
 
 jobs:
   test:
@@ -118,8 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # cargo-llvm-cov installs the llvm-tools-preview component itself, so the
-      # toolchain needs no extra declaration beyond rust-toolchain.toml.
+      # cargo-llvm-cov installs llvm-tools-preview itself.
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -165,10 +155,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Its own key, and both workspaces named: `e2e/` is deliberately outside
-      # the root workspace, so its artefacts live in `e2e/target` and would
-      # otherwise be invisible to the cache — and sharing a key with the
-      # unit-test job would have the two evict each other.
+      # Own key (so it doesn't evict the test job's cache) and both workspaces:
+      # `e2e/` is a separate workspace with its own `e2e/target`.
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -177,14 +165,11 @@ jobs:
             .
             e2e
 
-      # The suite spawns this binary once per scenario; without this step the
-      # first scenario would build it while the rest waited.
+      # Every scenario spawns this binary; build it once up front.
       - name: Build pingward
         run: cargo build
 
-      # thirtyfour's driver manager downloads and supervises a matching
-      # chromedriver itself, so nothing is installed here — but it downloads
-      # only the *driver*. The browser is the runner image's own Google Chrome.
+      # thirtyfour downloads chromedriver itself; the browser is the runner's Chrome.
       - name: Cache chromedriver
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -192,8 +177,7 @@ jobs:
           key: thirtyfour-drivers-${{ runner.os }}-${{ hashFiles('e2e/Cargo.lock') }}
           restore-keys: thirtyfour-drivers-${{ runner.os }}-
 
-      # The root job's `--all` and `--all-targets` stop at the workspace
-      # boundary, so the E2E crate's own lint set is only enforced here.
+      # The root job's fmt/clippy stop at the workspace boundary.
       - name: Check formatting
         working-directory: e2e
         run: cargo fmt --all --check
@@ -202,8 +186,7 @@ jobs:
         working-directory: e2e
         run: cargo clippy --all-targets -- -D warnings
 
-      # No sharding: cucumber runs the scenarios concurrently in one process,
-      # sized to the runner's cores.
+      # No sharding: cucumber runs scenarios concurrently, sized to the cores.
       - name: Run E2E tests
         working-directory: e2e
         run: cargo test --test e2e

@@ -7,7 +7,6 @@ use pingward_e2e::actions::sign_in;
 use pingward_e2e::dom::{Dom, TextContent, click_when_ready, submit_element};
 use pingward_e2e::world::PingwardWorld;
 
-/// Captures a trailing row id out of a path.
 fn id_from(path: &str, pattern: &str) -> Result<i64> {
     let captures = regex::Regex::new(pattern)?
         .captures(path)
@@ -26,10 +25,8 @@ async fn member_owns_project_and_check(
     check: String,
     period: i64,
 ) -> Result<()> {
-    // Seeds a project and check owned by a second, non-admin user, so the
-    // `/admin/*` scenarios exercise real cross-user access. We arrive signed in
-    // as the admin; `sign_in` handles the switch, since `/login` bounces an
-    // authenticated visitor to `/`.
+    // Seeds data owned by a non-admin so `/admin/*` exercises real cross-user
+    // access. `sign_in` signs the admin out first.
     sign_in(world, &username, &password).await?;
     world.expect_path("/").await?;
 
@@ -55,14 +52,12 @@ async fn member_owns_project_and_check(
 #[when("I open the admin dashboard")]
 #[when("I open the admin projects list")]
 async fn open_admin(world: &mut PingwardWorld) -> Result<()> {
-    // "All projects" is a section of the merged `/admin`, not its own page.
+    // "All projects" is a section of `/admin`, not its own page.
     world.goto("/admin").await
 }
 
 #[then("the admin dashboard is shown")]
 async fn admin_dashboard_shown(world: &mut PingwardWorld) -> Result<()> {
-    // Section headings carry no `data-testid`, so they are matched by text;
-    // the site-wide counts render as bare tiles and are matched by test id.
     let driver = world.driver()?;
     let heading = driver.heading_opt("Admin").await?;
     ensure!(heading.is_some(), "no `Admin` heading is rendered");
@@ -73,10 +68,8 @@ async fn admin_dashboard_shown(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("no card subheading renders larger than its card heading")]
 async fn subheads_are_subordinate(world: &mut PingwardWorld) -> Result<()> {
-    // A `.subhead` must read below the card's own `.ch h2`. Compares computed
-    // sizes, not declarations — the bug it guards was an inherited global `h2`.
-    // The 2px allowance lets a subhead exceed the uppercase, letter-spaced card
-    // label slightly without reopening the 21px-vs-13px gap.
+    // Computed sizes, so an inherited global `h2` size is caught. The 2px
+    // allowance admits the 14px `.subhead` over the 13px uppercase card label.
     let measured = world
         .driver()?
         .eval(
@@ -138,8 +131,7 @@ async fn admin_projects_list_shows(
 
 #[given("I open the member's project in the admin area")]
 async fn open_member_project(world: &mut PingwardWorld) -> Result<()> {
-    // These are the shared owner templates with `/admin`-prefixed forms, so
-    // the steps that follow reuse the monitoring definitions verbatim.
+    // Shared owner templates with `/admin`-prefixed forms, so owner steps apply.
     let id = world
         .project_id
         .ok_or_else(|| anyhow::anyhow!("no step recorded the member's project"))?;
@@ -157,7 +149,6 @@ async fn open_member_check(world: &mut PingwardWorld) -> Result<()> {
 
 #[then(expr = "I am viewing the check {string}")]
 async fn viewing_check(world: &mut PingwardWorld, name: String) -> Result<()> {
-    // Both `project.html` and `check.html` render the name as the page `<h1>`.
     let heading = world.driver()?.heading_opt(&name).await?;
     ensure!(heading.is_some(), "no heading reads {name:?}");
     Ok(())
@@ -187,8 +178,7 @@ async fn on_admin_project_page(world: &mut PingwardWorld, name: String) -> Resul
 
 #[when(expr = "I add a webhook channel named {string}")]
 async fn add_webhook_channel(world: &mut PingwardWorld, name: String) -> Result<()> {
-    // `channel_form.html` carries no `data-testid`, so fields are addressed by
-    // id. Webhook is the default kind, so only name and URL need filling.
+    // Webhook is the default kind, so only name and URL need filling.
     let id = world
         .project_id
         .ok_or_else(|| anyhow::anyhow!("no step recorded the member's project"))?;
@@ -215,8 +205,7 @@ async fn channel_listed(world: &mut PingwardWorld, name: String) -> Result<()> {
 
 #[when("I delete the member's project")]
 async fn delete_member_project(world: &mut PingwardWorld) -> Result<()> {
-    // The admin delete redirects to `/admin` where the owner flow redirects to
-    // the dashboard, hence its own step.
+    // Lands on `/admin`, where the owner flow lands on `/`.
     world
         .driver()?
         .confirm_and_submit("delete-project-button")
@@ -278,8 +267,7 @@ async fn audit_shows_entry(world: &mut PingwardWorld, action: String) -> Result<
 
 #[when("I expand the first audit row")]
 async fn expand_first_audit_row(world: &mut PingwardWorld) -> Result<()> {
-    // A row with a request behind it is a `tr.toggle` followed by a `tr.exp`
-    // that gains `.open` on click, as the ping table's captured output does.
+    // The row is a `tr.toggle`; its `tr.exp` sibling gains `.open` on click.
     world.driver()?.click("audit-row").await
 }
 
@@ -296,15 +284,13 @@ async fn filter_audit_by_action(world: &mut PingwardWorld, action: String) -> Re
     let driver = world.driver()?;
     driver.select_option("audit-action", &action).await?;
     driver.click("audit-apply").await?;
-    // The Clear link renders only in a filtered response, so waiting for it
-    // stops the next assertions racing the pre-filter rows.
+    // Clear renders only once filtered, so this waits out the pre-filter rows.
     driver.expect_visible("audit-clear").await
 }
 
 #[when(expr = "I filter the audit trail by actor {string}")]
 async fn filter_audit_by_actor(world: &mut PingwardWorld, actor: String) -> Result<()> {
-    // The select is built with `SELECT DISTINCT`, so an actor nobody matches
-    // is not in it; this drives the endpoint the Filter button would call.
+    // The select lists only actors present, so an unmatched one is set via URL.
     let path = world.path().await?;
     let base = path.split('?').next().unwrap_or("/admin").to_owned();
     world.goto(&format!("{base}?aactor={actor}")).await
@@ -335,7 +321,7 @@ async fn audit_clear_absent(world: &mut PingwardWorld) -> Result<()> {
 async fn clear_audit_filter(world: &mut PingwardWorld) -> Result<()> {
     let driver = world.driver()?;
     driver.click("audit-clear").await?;
-    // Mirror of the filter step: the link disappearing is the swap signal.
+    // The link disappearing is the swap signal.
     driver.expect_absent("audit-clear").await
 }
 
@@ -366,9 +352,8 @@ async fn reveal_ping_url(world: &mut PingwardWorld) -> Result<()> {
 
 #[given(expr = "I unlock admin actions with my password {string}")]
 async fn unlock_admin_actions(world: &mut PingwardWorld, password: String) -> Result<()> {
-    // Creating a user, resetting a password and granting admin hand out access
-    // that outlives the session, so they sit behind `src/elevate.rs`. Removing
-    // access — disabling, demoting, deleting — never needs it.
+    // `src/elevate.rs` gates granting access (create user, set password,
+    // promote), never removing it.
     world.goto("/admin/unlock").await?;
     let driver = world.driver()?;
     driver.fill("unlock-input", &password).await?;
@@ -378,9 +363,8 @@ async fn unlock_admin_actions(world: &mut PingwardWorld, password: String) -> Re
 
 #[when("I follow the confirm link on the admin page")]
 async fn follow_confirm_link(world: &mut PingwardWorld) -> Result<()> {
-    // The server bounces a refused action to the interstitial; with JS it is
-    // reached by the link on `/admin`, which is what this drives. The bounce
-    // itself is asserted in `tests/admin_elevation.rs`.
+    // Drives the `/admin` link; the server-side bounce is covered by
+    // `tests/admin_elevation.rs`.
     world.goto("/admin").await?;
     world.driver()?.submit("elevation-confirm-link").await?;
     world.expect_path("/admin/unlock").await
@@ -396,11 +380,9 @@ async fn confirmation_page_explains(world: &mut PingwardWorld) -> Result<()> {
 
 #[given("I lock admin actions")]
 async fn lock_admin_actions(world: &mut PingwardWorld) -> Result<()> {
-    // Elevation is per-session and dropped on sign-out, so re-signing in is how
-    // a scenario returns to the locked state; there is no "lock now" control.
+    // No "lock now" control; elevation dies with the session, so sign in again.
     sign_in(world, "admin", "correct horse battery").await?;
     world.goto("/admin").await?;
-    // Locked, `/admin` shows only a note linking to the interstitial.
     world
         .driver()?
         .expect_visible("elevation-confirm-link")
@@ -421,8 +403,7 @@ async fn fill_in_new_user(
 
 #[when("I submit the new user form")]
 async fn submit_new_user_form(world: &mut PingwardWorld) -> Result<()> {
-    // Not `submit`: while locked, `app.js` intercepts the click and opens the
-    // dialog instead of navigating.
+    // Not `submit`: while locked, `app.js` opens a dialog instead of navigating.
     let driver = world.driver()?;
     let button = driver.test_id("user-submit").await?;
     click_when_ready(&button).await

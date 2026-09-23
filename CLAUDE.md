@@ -1,496 +1,212 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code in this repository. `ARCHITECTURE.md` holds the full
+design rationale; this file lists what breaks things if you get it wrong.
 
 ## What this is
 
-pingward is a self-hosted, healthchecks-style uptime/cron monitor. Jobs "ping"
-a per-check URL; a background loop marks a check **down** when a ping is overdue
-and delivers notifications through per-check channels. It serves both a
-server-rendered web UI (Askama templates) and machine `/ping/*` endpoints from a
-single axum process.
+pingward: self-hosted, healthchecks-style uptime/cron monitor. Jobs ping a
+per-check URL; a background loop marks overdue checks **down** and notifies via
+per-check channels. One axum process serves a server-rendered UI (Askama) and
+the machine `/ping/*` endpoints.
 
 ## Commands
 
-Build / run:
-- `cargo build` — **required after any template or route change**; Askama
-  templates are compiled into the binary, and the E2E harness runs the compiled
-  `target/debug/pingward`.
-- `cargo run` — starts the server (defaults: SQLite file `pingward.sqlite3`,
-  bind `127.0.0.1:8080`). Override via env (see Config below).
+- `cargo build` — **required after any template or route change** (templates
+  compile into the binary; the E2E harness runs `target/debug/pingward`).
+- `cargo run` — SQLite `pingward.sqlite3`, bind `127.0.0.1:8080`.
+- CI lint: `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`,
+  `cargo deny check`.
+- Tests: `cargo nextest run` (never `cargo test`). One test:
+  `cargo nextest run -E 'test(success_ping_marks_up)'` or a substring.
+- `tests/pg_store.rs` **silently skips** without `TEST_DATABASE_URL=postgres://…`;
+  `tests/smtp_e2e.rs` skips without `PINGWARD_TEST_SMTP_HOST`. `docker compose up -d`
+  (Postgres 5432, mailpit 1025/8025), then export `TEST_DATABASE_URL`,
+  `PINGWARD_TEST_SMTP_HOST=localhost`, `PINGWARD_TEST_SMTP_PORT=1025`,
+  `PINGWARD_TEST_MAILPIT_API=http://localhost:8025`.
 
-`build.rs` stamps the binary with `GIT_VERSION` (`git describe --tags --always
---dirty`), rendered in the global footer. Releases are cut with `gh release
-create`, so the **git tag is the source of truth and `Cargo.toml`'s `version` is
-never bumped** — before the first tag, or from a shallow CI checkout, the string
-is a bare short SHA. An explicit `GIT_VERSION` env var overrides the describe
-call; the release image needs that because `.dockerignore` excludes `.git`, so
-`docker.yml` resolves the version on the runner and passes it as a
-`--build-arg`.
+Version stamp: `build.rs` sets `GIT_VERSION` from `git describe --tags --always
+--dirty` (footer). An explicit non-empty, non-`dev` `GIT_VERSION` env wins —
+`docker.yml` passes it as a build arg since `.dockerignore` excludes `.git`.
+Releases are `gh release create`; **never bump `Cargo.toml`'s `version`**.
 
-Lint / format (must pass in CI):
-- `cargo fmt --all --check`
-- `cargo clippy --all-targets -- -D warnings`
+### Browser E2E (`e2e/`, cucumber + thirtyfour)
 
-Rust tests (use `cargo nextest`, not `cargo test` — CI does):
-- `cargo nextest run` — full suite. SQLite-backed tests run unconditionally.
-- Single test: `cargo nextest run -E 'test(success_ping_marks_up)'` (or pass a
-  substring: `cargo nextest run success_ping`).
-- Postgres integration tests (`tests/pg_store.rs`) **silently skip** unless
-  `TEST_DATABASE_URL=postgres://…` is set; SMTP delivery tests
-  (`tests/smtp_e2e.rs`) skip unless `PINGWARD_TEST_SMTP_HOST` is set. Start both
-  backends with `docker compose up -d` (Postgres on 5432, mailpit on 1025/8025),
-  then export `TEST_DATABASE_URL`, `PINGWARD_TEST_SMTP_HOST=localhost`,
-  `PINGWARD_TEST_SMTP_PORT=1025`, `PINGWARD_TEST_MAILPIT_API=http://localhost:8025`.
-
-Browser E2E (cucumber + thirtyfour, in `e2e/`) — its **own cargo workspace**,
-so `--workspace` at the root never compiles it or drives a browser:
-- `cd e2e && cargo test --test e2e` — the whole suite. `harness = false`:
-  cucumber runs the scenarios itself, concurrently, one per core up to four.
-  Each scenario spawns a **fresh binary + temp SQLite DB** on a random port,
-  because `POST /setup` creates the first admin once and almost every scenario
-  walks through it. Selectors use `data-testid`.
-- Single feature or scenario: `cargo test --test e2e -- -i features/ping_kinds.feature`,
-  or `--name "POST body"`. `--tags` also works.
-- A **local Chrome or Chromium is a prerequisite**: thirtyfour's driver manager
-  downloads the *driver*, never the browser
+- Its **own cargo workspace**: root `fmt`/`clippy`/`--workspace` never reach it —
+  run `cargo fmt --all --check` and clippy inside `e2e/` too (CI does).
+- `cd e2e && cargo test --test e2e` — whole suite (`harness = false`; scenarios run
+  concurrently, one per core, max 4). One feature: `-- -i features/ping_kinds.feature`;
+  one scenario: `--name "POST body"`; `--tags` works.
+- Each scenario gets a fresh binary + temp SQLite DB on a random port (almost all
+  walk through `POST /setup`). Selectors use `data-testid`.
+- Needs a **local Chrome/Chromium**; only the driver is downloaded
   (`brew install --cask ungoogled-chromium`).
-- `cargo fmt` / `cargo clippy` at the root stop at the workspace boundary, so
-  run them inside `e2e/` too — CI does.
-- **Tags select the environment** (`tests/e2e/main.rs` + `server::Options`):
-  `@nojs` disables the page's own scripts (`no_js.feature`, and only that
-  file); `@fast-scan` shortens `PINGWARD_SCAN_INTERVAL`; `@smtp-env` and
-  `@trusted-proxy` add env the scenario needs. Anything `app.js` must not be
-  the sole provider of belongs under `@nojs` — the rest of the suite cannot see
-  it. Where both directions matter (open without script, collapsed with it),
-  pair the scenario across `no_js.feature` and the JS-on suite.
-- Two translations to keep in mind when adding steps. cucumber-rs matches on
-  the **Gherkin keyword**, unlike cucumber-js, so a step written under both
-  `Given` and `When` needs both attributes. And a `{string}` argument arrives
-  with its backslash escaping **intact** — put it through
-  `pingward_e2e::unescape` when the expected text contains a quote.
+- Tags pick the environment (`e2e/tests/e2e/main.rs`, `server::Options::from_tags`):
+  `@nojs` (only in `no_js.feature`) disables page scripts; `@fast-scan` sets
+  `PINGWARD_SCAN_INTERVAL=1`; `@smtp-env`, `@trusted-proxy` add env. Anything
+  `app.js` must not be the sole provider of needs a `@nojs` scenario; pair it
+  with a JS-on one when both behaviours matter.
+- cucumber-rs matches on the **Gherkin keyword**: a step used under `Given` and
+  `When` needs both attributes. `{string}` args keep backslash escapes — pass
+  through `pingward_e2e::unescape` when expecting a quote.
 
-README assets (both commit their output):
-- `cd e2e && cargo run --bin screenshots` — rebuilds `docs/screenshots/*.png`
-  by seeding backdated demo data against a *stopped* throwaway DB, then
-  rebooting. `e2e/src/seed.rs` must keep every seeded check's timestamps inside
-  its schedule budget — the boot `scan_once` would otherwise rewrite the status
-  the shot is meant to show. Cron checks anchor on a real fire time, and its
-  evaluator numbers weekdays the way the `cron` crate does (**Sunday = 1**); a
-  0-based convention silently anchors a weekly check a day out and the boot
-  scan downs it.
-  **Decide whether a change makes these stale, and say so without being
-  asked.** They are committed artefacts of the UI, so nothing fails when they
-  drift — the README simply keeps advertising a version of the app that no
-  longer exists, and the drift is only ever caught by eye. Any change to a
-  template, to `assets/app.css`, or to rendered copy is a candidate: open the
-  affected PNG, compare, and either regenerate or state that the surface is not
-  in frame. The version stamp in the footer is part of the shot, so build from
-  a clean tree (or pass `GIT_VERSION` explicitly) — `build.rs` will happily
-  reuse a stale `-dirty` stamp naming a commit a rebase has since replaced.
-- `cd e2e && cargo run --bin icons` — re-renders `assets/apple-touch-icon.png`
-  from `assets/favicon.svg` with resvg. Run after editing the SVG; it needs no
-  browser.
+### README assets (outputs are committed)
 
-## Architecture
+- `cd e2e && cargo run --bin screenshots` → `docs/screenshots/*.png`.
+  `e2e/src/seed.rs` must keep seeded timestamps inside each schedule's budget or
+  the boot `scan_once` rewrites the status. Cron `dow` is **Sunday = 1** (the
+  `cron` crate's numbering).
+- **After any change to a template, `assets/app.css` or rendered copy, say
+  unprompted whether the screenshots are now stale** — nothing fails when they
+  drift. Compare the affected PNG, then regenerate or state it's out of frame.
+  Build from a clean tree (or set `GIT_VERSION`): the footer stamp is in frame and
+  `build.rs` can reuse a stale `-dirty` stamp.
+- `cd e2e && cargo run --bin icons` → `assets/apple-touch-icon.png` from
+  `assets/favicon.svg` (no browser needed).
 
-**Router composition** (`src/lib.rs::app`) merges three sibling routers under
-one `AppState`:
-- `web::routes()` — the browser UI, wrapped in three layers. Order is
-  load-bearing and documented in `ARCHITECTURE.md`: `forward_auth_session` →
-  `anonymous_session` → `csrf_guard` → handler.
-- `ping::routes()` — machine `/ping/*` endpoints. Merged as a sibling, so they
-  are **structurally exempt from CSRF** (public, unauthenticated).
-- `assets::routes()` + `/healthz`.
+## Invariants
 
-**Response headers**: `web::content_security_policy` is layered on the `web`
-router (like `no_store`), `web::security_headers` and `web::hsts` app-wide
-(nosniff, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`). The CSP
-says `script-src 'self'` with **no `'unsafe-inline'` and no nonce**, which
-holds only because every script is a file under `/assets` (`assets/app.js` +
-the render-blocking `assets/theme-init.js`) and **no template carries an
-`onclick=`/`onsubmit=` attribute** — row navigation, confirm prompts and the
-non-submitting filter forms are `data-href`/`data-confirm`/`data-nosubmit`
-handled by delegation in `app.js`, which also survives a fragment swap. Adding
-an inline handler means weakening the policy for the whole UI; add the
-behaviour to `app.js` instead. `data-href` is a mouse convenience over the
-row's **real** `<a>` (the name), never the only route to a page — see
-`tests/no_js.rs`, which also pins that the three fragment endpoints redirect a
-JS-less navigation to the page embedding the section
-(`wants_fragment`/`fragment_page_redirect`) rather than serving a bare,
-unstyled partial. `data-confirm` is likewise not what enforces anything: an
-irreversible handler runs only with `?confirmed=1` and otherwise renders
-`templates/confirm.html` (the same question as a page), with `app.js` appending
-the flag after its dialog. The flag is a **query** param because several of
-these forms post no body, and the gate sits **below** authorization and below
-every refusal guard — see ARCHITECTURE.md's "Confirming a destructive action".
-CSS that hides what a click reveals must hang off the **`js` class** on
-`<html>` (set by `theme-init.js` before first paint, not by the deferred
-`app.js`): `:root.js tr.exp:not(.open)` is what collapses the ping/audit output
-panels, so an unscripted browser keeps them open instead of losing the content.
-The three history filters are **real GET forms** posting to the embedding page
-with named controls; each carries the sibling section's filter as hidden inputs
-(`carry_fields`/`clear_href`) because a GET submit replaces the whole query
-string. `datetime-local` values are local wall clock with JS (converted before
-fetch) and read as UTC without it — matching what each mode displays.
-`base.html` carries **no default `data-theme`** (`theme-init.js` sets it before
-first paint); the absence is what lets `app.css`'s
-`@media (prefers-color-scheme: light) { :root:not([data-theme]) }` answer for a
-scriptless browser. That light palette exists **twice** — keep both in sync,
-`tests/no_js.rs` compares them token by token. A control whose behaviour is
-entirely in `app.js` is **not drawn** without it (`:root:not(.js)` hides
-`.copy`, `.live-toggle`, `#pw-theme-toggle`); content is the opposite — the
-`/admin` heartbeat age is rendered server-side (`relative_setting`) and merely
-re-ticked by JS. The check/channel forms switch their per-kind field blocks
-with `:has()` rules in `app.css`, **not** JS (an inline `style.display` would
-outrank them), and every absolute timestamp's fallback text goes through
-`view::fmt_utc`. `style-src` keeps `'unsafe-inline'` for the
-heartbeat bars' computed `style="height:Npx"`. `/api/docs` is deliberately
-outside the CSP — Scalar loads its bundle from a CDN.
+### Routing & CSP
+- `src/lib.rs::app` merges `web::routes()`, `ping::routes()`, `api` routes,
+  `assets::routes()` + `/healthz`. `web` layer order is load-bearing:
+  `forward_auth_session` → `anonymous_session` → `csrf_guard` → handler.
+  `/ping/*` is a sibling, so structurally outside CSRF.
+- CSP (`web::content_security_policy`, `web` router only) is `script-src 'self'`
+  with **no `'unsafe-inline'`, no nonce**. So: **no inline scripts, no
+  `onclick=`/`onsubmit=`** — add behaviour to `assets/app.js` via delegation
+  (`data-href`, `data-confirm`, `data-nosubmit`, `data-reauth`). `style-src` keeps
+  `'unsafe-inline'` only for heartbeat bar heights. `/api/docs` is deliberately
+  outside the CSP (Scalar from CDN).
 
-**Session & CSRF secret** (`src/secret.rs`): one process secret
-(`PINGWARD_SECRET`) keys every browser credential, domain-separated —
-`cookie = <session_id>.HMAC(secret, "session:" ++ id)`,
-`csrf = HMAC(secret, "csrf:" ++ id)`, and the one-shot flash cookie
-`<payload>.HMAC(secret, "flash:" ++ payload)` (so a value planted by a sibling
-subdomain never renders). The prefixes are load-bearing: without them the
-session signature and the CSRF token are the same value, and every rendered
-form would print the cookie's signature. Because the CSRF token is *derived*,
-`sessions` has no `csrf_token` column, neither rendering nor checking one costs
-a query, and a session id needs no row behind it to carry a valid token — which
-is what lets `web::anonymous_session` hand every logged-out visitor a signed
-cookie without an insert, and in turn why `csrf_guard` has **no path
-exemptions**: `/login` and `/setup` are protected like everything else. **The
-cookie value is not the session id** — never use `cookie.value()` as one; go
-through `secret::session_id_from_jar`, which verifies the signature before any
-DB work. Rotating the secret ends every browser session without touching the
-rows; with `PINGWARD_SECRET` unset a random secret is generated per process, so
-**every restart signs everyone out** — startup warns about exactly that. API
-keys are unaffected (`src/apikey.rs`, SHA-256 of a random bearer token).
+### Works without JavaScript (`tests/no_js.rs`)
+- `data-href` rows must keep a real `<a>`. Fragment endpoints redirect a plain
+  navigation to the embedding page (`wants_fragment`/`fragment_page_redirect`).
+- `data-confirm` enforces nothing: destructive handlers run only with
+  `?confirmed=1` (query, since some forms post no body), else render
+  `templates/confirm.html`. The gate sits below authz and every refusal guard.
+  See ARCHITECTURE.md "Confirming a destructive action".
+- CSS hiding click-revealed content must hang off `:root.js` (set by
+  `theme-init.js` before paint), e.g. `:root.js tr.exp:not(.open)`. JS-only
+  controls are hidden via `:root:not(.js)`.
+- `base.html` has **no default `data-theme`**. The light palette exists twice in
+  `app.css` (`[data-theme]` + `prefers-color-scheme`) — keep in sync; the test
+  compares them.
+- History filters are real GET forms; each carries the sibling section's filter
+  as hidden inputs (`carry_fields`/`clear_href`).
+- Per-kind form fields switch via `:has()` in CSS, not JS. Absolute timestamps
+  fall back to `view::fmt_utc` inside `.localtime[data-ts]` spans.
 
-**Background loops** (`src/main.rs` spawns two tokio tasks, after building
-`AppState` so both loops and the HTTP server share `state.events`):
-- `scheduler::run_scan_loop` — periodically re-evaluates every check's
-  `due_time`, transitions overdue checks to down, and fires notifications.
-- `prune::run_prune_loop` — deletes old pings/notifications and expired sessions.
+### Session, CSRF, secret (`src/secret.rs`)
+- One `PINGWARD_SECRET` HMACs cookie, CSRF token and flash cookie with
+  domain prefixes `session:`/`csrf:`/`flash:` — **keep the prefixes** (otherwise
+  the CSRF token equals the cookie signature).
+- CSRF is derived, not stored; `csrf_guard` has **no path exemptions**.
+- **The cookie value is not the session id** — use
+  `secret::session_id_from_jar`, never `cookie.value()`.
+- Session rows are shown/addressed by a SHA-256 handle
+  (`apikey::hash_api_key`), never the raw id.
 
-**Graceful shutdown** (`src/shutdown.rs`): one `watch<bool>` flag behind a
-`(ShutdownTx, Shutdown)` pair, raised by `os_signal()` on the first
-SIGTERM/SIGINT and shared by the HTTP server and both loops. The signal handler
-is **mandatory, not polite**: the image's exec-form `ENTRYPOINT` makes pingward
-PID 1, and Linux discards any signal still at its default disposition for PID 1
-— with no handler, `docker compose down` sits out its whole 10s grace period
-before SIGKILL. `main` drains in order: `with_graceful_shutdown` → each loop
-returns from the `select!` at its sleep (an in-flight pass finishes) → **join**
-both handles, so no loop query is outstanding → `store.pool.close()` bounded by
-`POOL_CLOSE_TIMEOUT` (5s; fire-and-forget `deliver_event` tasks can still hold
-a connection). That last step is the SQLite payoff — a clean close of the last
-connection checkpoints the WAL and removes the `-wal`/`-shm` sidecars, which
-SIGKILL never did. Adding a param to either loop means updating `main.rs` and
-`tests/scheduler.rs` together.
+### Auth (`src/auth.rs`, `src/web.rs`)
+- `auth::validate_password` (15–128 *characters*, no trimming/composition) must be
+  called by every surface that **sets** a password. **`/login` must never
+  validate.**
+- `login_submit` uses `verify_password_or_dummy` (constant cost for unknown users).
+- `POST /login`: `login_limiter` (5/IP/60s) + `account_limiter` (10/account/15min,
+  keyed on the submitted username before lookup; success `clear`s).
+  `ratelimit::rate_limit_key` uses the **rightmost** XFF hop; `auth::client_ip`
+  (attribution) uses the leftmost — **do not unify them**.
+- `Store::create_user` returns `CreateUserError`; callers must handle
+  `UsernameTaken`.
+- `web::reauthenticate` guards `/account/password`, `/account/api-keys`,
+  `/admin/unlock`; passwordless forward-auth accounts pass unchallenged.
+- `src/elevate.rs`: in-memory 15-min unlock per session handle. Gate actions that
+  **grant** access (`users_create`, `users_set_password`, promote); never gate
+  delete/disable/demote. See ARCHITECTURE.md "Elevation for `/admin`'s
+  access-granting actions".
+- An admin cannot delete/disable/demote themselves.
+- Owner scoping: `owned_project`/`owned_check` return **404, not 403**.
+- Trusted proxies: `auth::is_trusted_proxy` (address or CIDR, canonicalised, no
+  DNS). `ping::ClientIp` is the one extractor for pings and sessions. Under
+  `axum-test` there is no `ConnectInfo`; see `tests/ping_source_ip.rs`.
+- Auth logging (`pingward::auth`): `login.failed`, `reauth.failed`
+  (`surface` = `password_change`/`api_key_create`/`admin_unlock`),
+  `csrf.rejected`. Never log passwords; log usernames via `auth::log_username`
+  with `?`. `csrf.rejected` `token_missing` is `debug!`, others `warn!` — pinned
+  by `tests/csrf_logging.rs`.
 
-**Live-tail signal bus**: `AppState::events` (`broadcast::Sender<i64>`) carries
-a `check_id` whenever that check changes — published by `ping::apply` (every
-ping kind, even `Log`/paused checks) and `scheduler::run_scan_loop` (each
-`Down` transition), both gated on `receiver_count() > 0` so it's free when
-unwatched. `web::sse_for_check` turns it into an SSE stream carrying **no
-data** — the browser re-fetches the existing pings fragment on each `"changed"`
-event, keeping rendering/auth in one place. In-process only: not shared across
-replicas (see ARCHITECTURE.md). On the check page it is opt-in behind a LIVE
-toggle, since an always-open connection per tab would eat into the browser's
-per-origin HTTP/1.1 connection budget; each event debounces ~500ms, and the
-pager and filter form are hidden while live (`assets/app.css` `.live-on`).
+### Admin & audit
+- Cross-user admin handlers reuse owner templates. `web::audits_as_mutation`
+  audits non-GET only; the ping URL of another user's check is a disclosure,
+  revealed via audited `POST /admin/checks/{id}/ping-url` (`web::CheckPageViewer`).
+  The REST API audits every admin cross-user access. See ARCHITECTURE.md
+  "Reading vs. disclosing under `/admin`".
+- Retention (`pings_/notifications_/audit_retention_days`) defaults to **off**;
+  `settings_save` audits changed keys as `settings.update`.
 
-**Persistence** (`src/db.rs`, `src/store.rs`): one sqlx `AnyPool` that dispatches
-to **SQLite or Postgres by URL scheme**. All queries go through `Store` and must
-work on both backends — use `$N` placeholders + `RETURNING id` (the `Any` driver
-does **not** translate `?`). Migrations are duplicated in `migrations/sqlite/`
-and `migrations/postgres/`; `db::migrate` picks the migrator from the URL, so a
-schema change means writing the SQL **in both**. Both directories are embedded
-at compile time with `sqlx::migrate!` (hence sqlx's `macros` feature) — the
-release image ships only the binary and runs from `/data`, so migrations must
-never be read from the filesystem at startup. SQLite pragmas (foreign keys,
-busy_timeout, WAL for file DBs) are applied per-connection in `db::connect`.
+### Persistence (`src/db.rs`, `src/store.rs`)
+- One sqlx `AnyPool`, SQLite or Postgres by URL scheme. All SQL via `Store`, must
+  run on both: **`$N` placeholders** (`?` is not translated), `RETURNING id`, no
+  `ILIKE` (filter case-insensitively in Rust).
+- Schema changes go in **both** `migrations/sqlite/` and `migrations/postgres/`;
+  they're embedded with `sqlx::migrate!` — never read from disk at runtime.
 
-**Auth & authorization** (`src/auth.rs`):
-- Session cookie (`session_cookie_name(cookie_secure)` — plain
-  `pingward_session`, or `__Host-pingward_session` when
-  `PINGWARD_COOKIE_SECURE` is on) + argon2 password hashing. An optional
-  trusted forward-auth header auto-provisions a passwordless non-admin user.
-- Request extractors: `CurrentUser` (401/redirect if none), `OptionalUser`,
-  `AdminUser` (403 if not admin).
-- `auth::validate_password` is the single password policy, called by all four
-  surfaces that **set** one (`setup_submit`, `account_password`,
-  `users_create`, `users_set_password`) — length only
-  (`MIN_PASSWORD_CHARS` 15, `MAX_PASSWORD_CHARS` 128, counted in *characters*),
-  no composition rules, no trimming, and over-long is a rejection rather than a
-  truncation. **`/login` never validates** and must not start to: the floor
-  would lock out every credential predating the policy. A new
-  password-setting surface must call it; that is the seam a breached-password
-  check would be added at (deliberately absent — see ARCHITECTURE.md).
-- `login_submit` calls `auth::verify_password_or_dummy`, never a bare
-  `verify_password`: an unknown username (or a passwordless forward-auth
-  account) must still pay for one argon2 verification, or the *response time*
-  discloses which usernames exist and the generic error message buys nothing.
-- `POST /login` is guarded by **two** `ratelimit::RateLimiter`s (generic over
-  their key so both share one implementation): `login_limiter` is 5 per client
-  IP per minute, `account_limiter` is 10 per **account** per 15 minutes — a
-  per-address counter cannot see a distributed attack, which just buys `5 × N`
-  guesses. The account one is keyed on the *submitted* username **before** the
-  lookup, so an invented username throttles identically (otherwise being
-  throttled is a username oracle), and a success `clear`s its bucket rather
-  than `release`-ing one attempt. An account lockout is inherently a DoS
-  primitive; that is accepted and documented, not solved.
-- `Store::create_user` returns `CreateUserError`, not `sqlx::Error`, so a
-  duplicate `users.username` cannot fall into `AppError::Db`'s blank 500 —
-  `UsernameTaken` is classified from the backend's own unique-violation code
-  and every caller must handle it. `users_create` also pre-checks, and does so
-  (with the rest of its read-only validation) **before** the elevation gate, so
-  a submission that can never succeed says why instead of demanding a
-  confirmation first; the gate still sits immediately above the first side
-  effect. The pre-check cannot replace the error mapping — two admins can race
-  it.
-- `web::reauthenticate` is the shared gate demanding the signed-in user's own
-  password again before a sensitive action; `POST /account/password`,
-  `POST /account/api-keys` and `POST /admin/unlock` use it. The API-key one carries its own weight: a
-  key is bound by neither session cap and survives `users_set_password`, so a
-  borrowed browser would otherwise buy permanent access. A **passwordless
-  forward-auth account passes unchallenged** (nothing to verify; its authority
-  is at the gateway) and is not rendered the field — `has_password` gates both
-  that and the password card. Attempts go through `account_limiter`, which is
-  what closed `/account/password`'s previously unmetered password oracle.
-- `/admin`'s controls are single-button inline forms (`users_toggle_admin` posts
-  no body), so a per-action password field does not fit: re-auth is decoupled
-  into `src/elevate.rs`, an in-memory per-session unlock
-  (`POST /admin/unlock`, `ELEVATION_TTL_SECS` 15min, keyed by session **handle**,
-  dropped on logout — no migration, since a restart just means unlocking again).
-  The line is **granting vs removing access**: `users_create`,
-  `users_set_password` and `users_toggle_admin` *when promoting* are gated;
-  delete, disable and demote deliberately are **not** — an operator who thinks
-  they are under attack must not have to find their password first. A refusal
-  redirects to `GET /admin/unlock` — an interstitial **page**, not a field,
-  because the requirement needs explaining (why a signed-in admin is asked
-  again, what it covers, that it is the same password and **not** a second
-  factor); `/admin` keeps only a one-line note linking there. With JS, `app.js`
-  pre-empts the bounce: forms marked `data-reauth` (rendered **only** while
-  locked) open a native `<dialog>`, which posts to `/admin/unlock` with
-  `X-Requested-With: fetch` for a 204/403/429 instead of HTML, then submits the
-  original form — so nothing the admin typed is lost. The dialog is built by
-  delegation in `app.js` (CSP forbids inline handlers), and the server re-checks
-  regardless, so drift between the marker and the handlers costs a needless
-  prompt, never an ungated action. Without JS the bounce still works.
-- Rejected attempts log to the `pingward::auth` target — `login.failed`
-  (`reason` = `bad_credentials`/`account_disabled`/`rate_limited`/`account_locked`),
-  `reauth.failed` (`surface` = `password_change`/`api_key_create`), and
-  `csrf.rejected` (`reason` = `no_session`/`header_mismatch`/`body_unreadable`/
-  `token_missing`/`token_mismatch`). One
-  event per layer, discriminated by a field rather than by name, so one alert
-  rule catches "somebody is guessing a password". Nothing else observes a failed
-  attempt, so this is the only spray signal an operator gets. Never log the
-  submitted password, and route an attempted username through
-  `auth::log_username` rendered with `Debug` (`?…`), which is what stops an
-  embedded newline forging a log entry.
-  `csrf.rejected` is the one event split across levels: `token_missing` is
-  `debug!` and every other reason is `warn!`. `csrf_guard` is layered outside
-  every handler, so it refuses before `login_submit` reaches `login_limiter` —
-  a bot never sends `_csrf`, so all of that unthrottled traffic lands on that
-  one reason, while the rest mean a token was presented and still failed to
-  verify. Do not flatten the two levels; `tests/csrf_logging.rs` pins them.
-- Owner scoping goes through `owned_project` / `owned_check` in `web.rs`, which
-  return **404 (not 403)** for another user's resource — existence is hidden.
-- `/account` is the per-user account page (password, sessions, then API keys,
-  stacked as ordinary cards — no tabs). `POST /account/password` is the only
-  way a non-admin can rotate their own credential; it demands the current
-  password, since a session cookie alone must not be enough to lock the owner
-  out, and revokes every *other* session on success (API keys survive, as they
-  do for the admin-driven `users_set_password`). A passwordless forward-auth
-  account has no card and is refused with 403 — its credential lives at the
-  gateway, and a local one would be a second way in that the gateway's
-  sign-out could not end. Session expiry is two layers: `expires_at` is an
-  idle window (`SESSION_IDLE_TTL_HOURS`, 72h) that slides forward on use only
-  past the half-life of the window, so it writes far less often than
-  `last_seen_at`; a separate absolute cap (`SESSION_ABSOLUTE_MAX_DAYS`, 30d
-  from `created_at`) is enforced in Rust rather than SQL and never extends no
-  matter how active the session is. Since `sessions.id` is the cookie's bearer
-  secret, rows are identified in the UI/URLs by a SHA-256 handle
-  (`apikey::hash_api_key`) rather than the id itself. A session's stored IP
-  comes from `auth::client_ip`, which shares its trusted-proxy gate with
-  `forward_auth_username` so an untrusted caller cannot spoof it.
-- That gate is `auth::is_trusted_proxy`, and a `PINGWARD_TRUSTED_PROXIES`
-  entry is a bare address **or a CIDR block** (`172.16.0.0/12`, `fd00::/8`) —
-  a containerised reverse proxy draws its address from the bridge network's
-  pool, so a pinned literal stops matching when the network is recreated.
-  Comparison and storage are canonical (`IpAddr::to_canonical`), so an
-  IPv4-mapped IPv6 peer matches an IPv4 entry; unparseable entries match
-  nothing and DNS is never consulted.
-- `ping::ClientIp` is the extractor that resolves it, so `/ping/*`
-  (`pings.source_ip`) and the login/setup handlers share one rule instead of
-  each handler deciding. `ConnectInfo` is only populated by
-  `into_make_service_with_connect_info`, so under `axum-test` there is no peer
-  at all — the trusted-proxy path is covered in `tests/ping_source_ip.rs`,
-  which drives the router with `oneshot` and injects `ConnectInfo` itself.
-- `/admin` is the single merged admin page (every handler guarded by
-  `AdminUser`), stacked as ordinary cards — no tabs, no sub-nav, mirroring how
-  `/account` merges its sections. Former `/settings` and `/users` POST routes
-  live under `/admin/…` so path grouping matches permission grouping. The
-  deeper per-project/per-check cross-user handlers **reuse the owner
-  templates** via an `is_admin`/base-prefix flag, so `data-testid`s and most
-  step definitions are shared with the owner flow.
-  **Reads under `/admin` are not audited; disclosures and mutations are.**
-  `web::audits_as_mutation` gates the three cross-user resolvers
-  (`admin_project`/`admin_check`/`admin_channel`) on the request method —
-  those resolvers are the choke point for reads *and* writes, so the gate has
-  to live there or dropping the read audit would silently take every admin
-  pause/resume/delete/regenerate with it. The one read that still audits is
-  `POST /admin/checks/{id}/ping-url`: the ping URL is a bearer credential, so
-  an admin looking at someone else's check sees a "Reveal ping URL" control
-  instead of the URL, and asking writes `admin.ping_url_reveal`.
-  `web::CheckPageViewer` carries that decision — it replaced a separate
-  `admin: bool` so the route prefix and the URL's visibility cannot be passed
-  contradicting each other; an admin viewing a check they own is not gated.
-  The audit card's two filter selects are built from
-  `Store::audit_filter_options` (`SELECT DISTINCT`) rather than a hardcoded
-  list, so a new `record_audit` call site appears in them by itself.
-  `audit_retention_days` prunes the table through the same
-  `prune::PruneTable` cascade as pings/notifications, and like them **defaults
-  to off** — a default that started deleting a compliance record on upgrade
-  would be the wrong surprise. Because shortening that window is precisely how
-  an admin would erase their own trail, `settings_save` records a
-  `settings.update` entry naming the changed keys (a no-op save writes
-  nothing); that is the only mitigation available, since anyone able to set an
-  env var or reach the database could tamper regardless.
-  An admin can never delete, disable, or demote their own account — the "All
-  users" row renders those controls inert and the handlers refuse the same
-  self-targeted request with a one-shot flash.
+### Background loops & shutdown
+- `main.rs` spawns `scheduler::run_scan_loop` and `prune::run_prune_loop`.
+  Changing either loop's params means updating `main.rs` and `tests/scheduler.rs`.
+- `src/shutdown.rs` handles SIGTERM/SIGINT — **mandatory** (PID 1 in the image
+  ignores default-disposition signals). Drain: server (≤ `HTTP_DRAIN_TIMEOUT`; SSE never ends
+  by itself) → loops → join →
+  `store.pool.close()` within `POOL_CLOSE_TIMEOUT` (checkpoints SQLite WAL).
+- Live tail: `AppState::events` broadcasts a `check_id` (from `ping::apply` and
+  `run_scan_loop`, only when `receiver_count() > 0`); `web::sse_for_check` sends
+  a data-less `"changed"` and the browser re-fetches the fragment. In-process only.
 
-**Scheduling** (`src/scheduler.rs`, `src/config.rs`): a check is `Period`
-(interval) or `Cron` (6-field `sec min hour dom mon dow`, evaluated in the
-check's timezone). `due_time` anchors on the last success (else creation) plus
-period/cron + grace. Scan and nag/reminder intervals resolve through a
-**check → project → global → env** cascade (`effective_scan_interval` /
-`effective_nag_interval`); non-positive overrides fall through. Duration form
-fields (period/grace/scan/max-runtime/nag overrides, plus the settings-page
-scan/nag intervals) accept either raw seconds or a human-readable string
-(`5m`, `1h30m`, `2d`) via `duration::parse_duration`, are always stored as
-seconds, and are re-rendered on forms via `duration::fmt_duration`; the
-retention-days settings fields are plain integers, not durations.
-`view::fmt_secs` remains the lossy *display* format used elsewhere (e.g. the
-heartbeat strip tooltips).
+### Scheduling & display
+- `due_time` = last success (else creation) + period/cron + grace. Cron is 6-field
+  (`sec min hour dom mon dow`) in the check's timezone (`web::validate_timezone`).
+- Scan interval cascades check → project → global → env; nag interval check →
+  project → global (no env default, off when unset). Non-positive falls through.
+- Duration fields accept seconds or `5m`/`1h30m`/`2d` (`duration::parse_duration`),
+  stored as seconds, re-rendered with `duration::fmt_duration` (lossless);
+  `view::fmt_secs` is lossy display only. Retention fields are plain integers.
+- Dashboard ordering and `q`/status filtering happen in Rust; `Store` lists stay
+  in id order (shared by other pages and the API). Loads are batched — keep the
+  query count fixed; heartbeat reads the narrow `models::PingSummary`, not `body`.
+- Check-page heartbeat: never narrow the window to `kind IN ('success','fail')` —
+  `run_durations` needs the `start` pings. No run count in the caption.
+- `view::display_status` adds display-only `late`/`running`; precedence
+  `Paused > Down > Running > Late > Up`. `view::next_due` uses
+  `scheduler::due_time`, not `checks.next_due_at` (often NULL).
 
-**Dashboard** (`src/web.rs::dashboard`): renders one group per project.
-Display **order is decided in the handler, not in SQL** — the `Store` list
-queries stay in id order because the project page, the admin views and the API
-share them. Projects sort by name case-insensitively; within a group, checks
-sort by `last_activity_at` (`max(last_ping_at, last_start_at)`, so an in-flight
-`Start` counts), never-pinged last. Both the text (`q`) and status filters run
-in Rust over the loaded rows — `LIKE` is case-insensitive on SQLite but not on
-Postgres, and `ILIKE` is untranslated by the `Any` driver.
-Loads are **batched, not per-group** (`list_checks_for_projects`,
-`list_recent_ping_summaries_for_checks`, `checks_with_channels`), so a request
-is a fixed number of queries however many projects a user owns. The heartbeat
-window is deliberately a **narrow projection** (`models::PingSummary`) rather
-than whole ping rows: selecting `body` meant decoding every captured POST
-output — up to `ping::MAX_BODY` (10 KiB) per row, 40 rows per check — only for
-`view::heartbeat` to drop it. That was most of the dashboard's render time
-(measured in #116, which records the before/after).
+### Notifications (`src/notify.rs`)
+- Six `Notifier`s; delivery is fire-and-forget (`tokio::spawn`) with `RetryPolicy`.
+- Check creation (web and API) calls `Store::bind_all_project_channels`.
+- Channel edit: **blank field keeps the stored value; never re-render a secret**
+  (webhook/Slack URLs count). Single validator `validate_channel_update`;
+  templates see only `ChannelEditView`. `kind` is immutable. See ARCHITECTURE.md
+  "Editing a channel without leaking its secrets".
+- Message = `notify::event_text`, max **four lines**; `EventDetail` is built at the
+  call site from the **pre-update** snapshot, never re-read during delivery.
+  Webhook payload changes are additive only. See ARCHITECTURE.md "What a
+  notification says".
 
-The **check page's** strip is sized differently from the dashboard's six bars:
-the server renders more bars than fit (`web::HEARTBEAT_BARS`, over
-`web::HEARTBEAT_WINDOW` rows) and `.beat` in `assets/app.css` clips the
-overflow from the *left*, so the strip fills any viewport with the newest run
-pinned right — the server never needs to know the viewport. Do not "optimise"
-the window into a `kind IN ('success','fail')` query: `run_durations` pairs
-each finish ping with the `start` before it, so dropping the starts flattens
-every bar. Do not put a run count in the caption either; only the browser
-knows how many bars are visible.
+### Models
+- String-backed enums come from `str_enum!` in `src/models.rs` — add variants there.
 
-**Display status** (`src/view.rs::display_status`/`DisplayStatus`): a
-display-only status layered on top of the stored `CheckStatus`
-(`new`/`up`/`down`/`paused`) — `late` and `running` exist only here, so the
-stored status keeps its narrower meaning. Precedence is `Paused > Down >
-Running > Late > Up`: `Running` beats `Late` (a long-running job legitimately
-drifts past its expected time) but is itself beaten by `Down`/`Paused`, so an
-in-flight run never masks an alert. It is derived from `last_start_at >
-last_ping_at`, relying on `Option`'s ordering (`Some(_) > None`, not
-`None > None`) to cover "started and never finished" with no `is_some()`
-check. `view::next_due` derives the header countdown from
-`scheduler::due_time`, **not** the stored `checks.next_due_at` — that column
-is only ever stamped by `ping::apply`, so it is NULL for a never-pinged check
-and for one downed by a `fail` ping, while `due_time` is what `scan_once`
-itself evaluates. The deadline includes grace, hence "due" not "expected".
+## Config (`src/config.rs`)
 
-**Notifications** (`src/notify.rs`): a `Notifier` trait with six implementations
-(`webhook`, `telegram`, `slack`, `ntfy`, `pushover`, `email`/SMTP). `notifier_for`
-builds one from a stored `Channel`; `deliver_event` applies a `RetryPolicy`.
-Delivery is fire-and-forget (`tokio::spawn`) so a ping response is never blocked
-on notification I/O. Instance SMTP is configured via env (`config::SmtpConfig`).
-Check creation auto-binds every channel already configured on the check's
-project (`Store::bind_all_project_channels`) — both `web::check_create_core`
-and `api::v1::create_check` call it, so a check made through either surface
-starts wired up instead of silently alerting nobody. Existing checks are
-unaffected. A check that still ends up with zero bound channels gets a "no
-channel" chip on the dashboard and project page
-(`Store::checks_with_channels`).
-Channels are editable on the web, admin and API surfaces under one rule: **a
-blank submitted field keeps the stored value**, so a stored secret is never
-re-rendered. `validate_channel_update(form, Option<&Channel>)` is the single
-validator (`validate_channel` = the `None` case, so create and edit enforce the
-same per-kind required fields); the template only sees `ChannelEditView`
-(non-secret values + `has_*: bool` flags), which makes non-leakage a type-level
-property. Webhook/Slack **URLs count as secrets** (they are capability tokens);
-chat ids, ntfy server/topic and email recipients are pre-filled.
-`ntfy_token_clear` is the one explicit-clear escape hatch, and **`kind` is
-immutable**. See ARCHITECTURE.md's "Editing a channel without leaking its
-secrets".
-Message content is `notify::event_text`, deliberately capped at **four lines**
-— headline, context, reason, link. Everything past the headline comes from
-`notify::EventDetail`, whose fields are all `Option` so a failed lookup drops a
-line rather than the notification (`EventDetail::default()` renders the bare
-one-liner — that is the channel-test path). It is built **at the call site from
-the pre-update check snapshot**, never re-read during delivery: an `Up` event
-reports the ping *before* the recovery, which a re-read would have already
-overwritten. `DownCause` is likewise the caller's to set —
-`scan_once` knows `Overdue`/`Overrun`, `ping::apply` knows
-`Failed { exit_code }`, and `nag_once` sets none, which is why a reminder says
-"Last ping …" instead of claiming "No ping since …" for a check downed by a
-`/fail` ping. Timestamps render in the *check's* timezone (`notify::fmt_at`)
-with a `duration::fmt_duration` relative suffix — unless the instance-wide
-`display_timezone` setting is set on `/admin`, which wins
-(`EventDetail::with_display_timezone`). That setting exists because a
-notification is the one surface with no browser to localise it; the web UI
-renders every absolute time in the *viewer's* zone via the `.localtime[data-ts]`
-spans. A check's own `timezone` is otherwise used only to pick the wall clock a
-**cron** schedule fires on (period schedules ignore it), and it is validated on
-save (`web::validate_timezone`) — an unparseable name used to be stored
-verbatim and then silently ignored, leaving the schedule on UTC. Webhook
-payload additions are strictly additive — its original
-`check`/`event`/`at`/`project_id` keys are untouched. See ARCHITECTURE.md's
-"What a notification says".
+Test parsing via `Config::from_map`, not real env. Unparseable duration env vars
+fall back to defaults. The README's table is the user-facing reference; `/admin`'s
+Environment card shows these read-only, secrets only as configured/not-set.
 
-**Models** (`src/models.rs`): string-backed enums (`CheckStatus`, `PingKind`,
-`ScheduleKind`, `ChannelKind`, …) are generated by the `str_enum!` macro, which
-also derives `as_str()` / `FromStr` — add variants there.
-
-## Config (env vars, `src/config.rs`)
-
-`DATABASE_URL` (default `sqlite://pingward.sqlite3?mode=rwc`), `PINGWARD_BIND`,
-`PINGWARD_BASE_URL` (used to render ping URLs, and the check link in every
-notification), `PINGWARD_SCAN_INTERVAL`,
-`PINGWARD_PRUNE_INTERVAL_SECS`, `PINGWARD_LOG_FORMAT` (`text` default, or `json`
-for line-delimited structured logs — parsed into `config::LogFormat`, applied by
-`init_tracing` in `main.rs`), `PINGWARD_FORWARD_AUTH_HEADER` +
-`PINGWARD_TRUSTED_PROXIES`, `PINGWARD_FORWARD_AUTH_LOGOUT_URL` (the gateway's
-sign-out endpoint; unset, a forward-auth logout lands on the dashboard with a
-flash saying only the proxy can end the session, since a local logout would
-just be re-authenticated — see ARCHITECTURE.md's "Session layers"),
-`PINGWARD_SECRET` (session/CSRF signing key, ≥16 bytes; generated per process
-when unset — see above), `PINGWARD_COOKIE_SECURE` (whether the session/flash
-cookie carries `Secure`; default derived from whether `PINGWARD_BASE_URL`
-starts with `https://`), `PINGWARD_HSTS_MAX_AGE` (off by default since pingward
-does not terminate TLS itself), and `PINGWARD_SMTP_*` (host/from required to
-enable email; port/TLS defaulted). The scan and prune interval env vars accept
-raw seconds or a human-readable duration; an unparseable value falls back to
-the default rather than failing at boot. `Config::from_map` is the testable
-core — unit-test config parsing through it rather than real env. These env vars
-are also surfaced read-only on `/admin`'s "Environment" card, with secrets
-shown only as configured/not-set, never their value.
+`DATABASE_URL` (`sqlite://pingward.sqlite3?mode=rwc`), `PINGWARD_BIND`
+(`127.0.0.1:8080`), `PINGWARD_BASE_URL` (`http://localhost:8080`; ping URLs and
+notification links), `PINGWARD_SCAN_INTERVAL` (30s), `PINGWARD_PRUNE_INTERVAL_SECS`
+(3600), `PINGWARD_LOG_FORMAT` (`full` default; `compact`/`pretty`/`json`),
+`RUST_LOG` (default `error,pingward=info`), `PINGWARD_TRUSTED_PROXIES`,
+`PINGWARD_FORWARD_AUTH_HEADER`, `PINGWARD_FORWARD_AUTH_LOGOUT_URL`,
+`PINGWARD_SECRET` (≥16 bytes, else random per process → every restart signs
+everyone out), `PINGWARD_COOKIE_SECURE` (default from `PINGWARD_BASE_URL`
+scheme; also switches the cookie name to `__Host-pingward_session`),
+`PINGWARD_HSTS_MAX_AGE` (0 = off), `PINGWARD_SMTP_{HOST,FROM,PORT,USERNAME,PASSWORD,TLS}`
+(host + from enable email).

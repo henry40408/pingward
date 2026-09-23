@@ -1,9 +1,6 @@
 <!doctype html>
-{# No `data-theme` here on purpose. `theme-init.js` sets it before the first
-   paint, and hardcoding a value only decided what a browser running *no*
-   script was stuck with — always dark, whatever its OS asked for. Left off,
-   the `prefers-color-scheme` block in app.css (which is keyed on the attribute
-   being absent) finally gets to answer. #}
+{# No `data-theme` on purpose: `theme-init.js` sets it, and without script its
+   absence lets app.css's `prefers-color-scheme` block answer. #}
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -12,9 +9,8 @@
   <link rel="stylesheet" href="/assets/app.css?v={{ crate::assets::css_version() }}">
   <link rel="icon" type="image/svg+xml" href="/favicon.svg?v={{ crate::assets::icon_version() }}">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png?v={{ crate::assets::icon_version() }}">
-  {# Render-blocking on purpose: it resolves the theme before the first paint.
-     Everything else is in the deferred app.js below. Both are files rather
-     than inline blocks so the CSP can be `script-src 'self'`. #}
+  {# Render-blocking on purpose (theme before first paint). Files, not inline
+     blocks, so the CSP can be `script-src 'self'`. #}
   <script src="/assets/theme-init.js?v={{ crate::assets::js_version() }}"></script>
   <script src="/assets/app.js?v={{ crate::assets::js_version() }}" defer></script>
 </head>
@@ -30,8 +26,7 @@
   </div></header>
   {% endif %}
   <main class="wrap">{% block body %}{% endblock %}</main>
-  {# Outside the `show_nav` guard on purpose: login and setup are exactly the
-     pages a bug report gets filed from, so the version has to be there too. #}
+  {# Outside `show_nav` so login and setup show the version too. #}
   <footer class="foot"><span data-testid="app-version">pingward {{ crate::view::version() }}</span></footer>
 </body>
 </html>

@@ -13,7 +13,7 @@ pub enum AppError {
     Other(#[from] anyhow_like::Error),
 }
 
-// Minimal boxed-error alias to avoid an extra dependency.
+// Boxed-error alias, avoiding an `anyhow` dependency.
 pub mod anyhow_like {
     pub type Error = Box<dyn std::error::Error + Send + Sync>;
 }

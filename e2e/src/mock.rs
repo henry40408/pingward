@@ -1,10 +1,6 @@
-//! The endpoint the webhook channels in a scenario are pointed at.
-//!
-//! Answers 200 to everything, so the notifier records a successful send; the
-//! scenarios that want a *failed* delivery point the channel somewhere nothing
-//! is listening. Delivery is fire-and-forget, so the POST lands shortly after
-//! the response the step was waiting on — hence
-//! [`MockWebhook::wait_for_payload`] polls rather than reading once.
+//! Webhook receiver for notification scenarios. Answers 200 to everything
+//! (failed-delivery scenarios point elsewhere). Delivery is fire-and-forget,
+//! so [`MockWebhook::wait_for_payload`] polls.
 
 use std::time::{Duration, Instant};
 
@@ -12,10 +8,8 @@ use anyhow::{Context, Result, bail};
 use wiremock::matchers::any;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// How long to wait for a delivery that is already in flight.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How often to re-read the recorded requests while waiting.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// An HTTP endpoint that records every request it receives.
@@ -25,11 +19,6 @@ pub struct MockWebhook {
 }
 
 impl MockWebhook {
-    /// Starts a receiver on an ephemeral port.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the catch-all rule cannot be registered.
     pub async fn start() -> Result<Self> {
         let server = MockServer::start().await;
         Mock::given(any())
@@ -39,17 +28,11 @@ impl MockWebhook {
         Ok(Self { server })
     }
 
-    /// The URL a channel should be configured with.
     pub fn url(&self) -> String {
         self.server.uri()
     }
 
-    /// Every JSON body received so far, in arrival order. Non-JSON bodies are
-    /// skipped rather than failing the read.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the recorder is not retaining requests.
+    /// Every JSON body received so far, in order; non-JSON bodies are skipped.
     pub async fn payloads(&self) -> Result<Vec<serde_json::Value>> {
         let requests = self
             .server
@@ -62,12 +45,7 @@ impl MockWebhook {
             .collect())
     }
 
-    /// Waits for a received payload whose `event` field is `event`, and hands
-    /// it back.
-    ///
-    /// # Errors
-    ///
-    /// Fails when no such payload arrives within [`DELIVERY_TIMEOUT`].
+    /// Waits for a payload whose `event` field is `event`.
     pub async fn wait_for_payload(&self, event: &str) -> Result<serde_json::Value> {
         let deadline = Instant::now() + DELIVERY_TIMEOUT;
         loop {
@@ -97,11 +75,6 @@ impl MockWebhook {
         }
     }
 
-    /// Asserts that nothing has been delivered.
-    ///
-    /// # Errors
-    ///
-    /// Fails when anything was received.
     pub async fn expect_nothing(&self) -> Result<()> {
         let payloads = self.payloads().await?;
         if !payloads.is_empty() {

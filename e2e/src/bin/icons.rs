@@ -1,13 +1,6 @@
-//! Renders `assets/apple-touch-icon.png` from `assets/favicon.svg` with
-//! `resvg`; needs no browser.
-//!
-//! The PNG is a committed artefact — `src/assets.rs` embeds it at compile time
-//! and the root crate builds without ever running this. Run it after editing
-//! the SVG:
-//!
-//! ```text
-//! cd e2e && cargo run --bin icons
-//! ```
+//! Renders the committed `assets/apple-touch-icon.png` from
+//! `assets/favicon.svg` with `resvg`. Rerun after editing the SVG:
+//! `cd e2e && cargo run --bin icons`.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -16,7 +9,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use resvg::{tiny_skia, usvg};
 
-/// The size iOS asks for; it downscales for smaller slots.
+/// iOS's size; it downscales for smaller slots.
 const SIZE: u32 = 180;
 
 fn main() -> Result<()> {
@@ -46,12 +39,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Drops the corner radius from the `data-frame` backing rect.
-///
-/// iOS masks the icon with its own superellipse, and a source radius under that
-/// mask reads as a double-rounded edge. resvg reads the presentation
-/// attribute, so the attribute is what gets removed; the inner quadrants keep
-/// their own radius, which is wanted.
+/// Drops `rx`/`ry` from the `data-frame` backing rect: iOS applies its own
+/// mask, and a rounded source reads as a double-rounded edge.
 fn square_off_frame(svg: &str) -> String {
     static RE: OnceLock<Regex> = OnceLock::new();
     let radius = RE.get_or_init(|| {

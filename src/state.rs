@@ -4,31 +4,24 @@ use axum::extract::FromRef;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-/// Capacity of the live-tail event bus. A lagging subscriber just gets a
-/// coalesced "changed" signal, so this only needs to absorb a burst between
-/// scan-loop ticks.
+/// Live-tail bus capacity. A lagging subscriber gets one coalesced "changed"
+/// signal, so this only needs to absorb a burst.
 const EVENTS_CHANNEL_CAPACITY: usize = 256;
 
 #[derive(Clone)]
 pub struct AppState {
     pub store: Store,
     pub config: Arc<Config>,
-    /// Signal bus for the check-detail live tail: publishes a `check_id`
-    /// whenever that check changes. Carries no payload — subscribers re-fetch
-    /// the existing HTML fragment instead.
+    /// Live-tail signal: the `check_id` of a check that changed. Subscribers
+    /// re-fetch the HTML fragment.
     pub events: broadcast::Sender<i64>,
-    /// Login-attempt limiter keyed by client address, in-memory per-process.
-    /// The `Arc` makes every `AppState::clone()` share one set of counters; a
-    /// bare `RateLimiter` would give each clone its own and silently disable
-    /// the control.
+    /// Login attempts per client address. The `Arc` is load-bearing: without it
+    /// each `AppState` clone would get its own counters.
     pub login_limiter: Arc<crate::ratelimit::RateLimiter<std::net::IpAddr>>,
-    /// Login-attempt limiter keyed by the submitted username. A per-address
-    /// counter cannot see a distributed attack: N addresses simply buy N times
-    /// the budget against one account. See `ratelimit::ACCOUNT_MAX_ATTEMPTS`.
+    /// Login attempts per submitted username, which a distributed attack cannot
+    /// spread across addresses.
     pub account_limiter: Arc<crate::ratelimit::RateLimiter<String>>,
-    /// Which browser sessions have re-asserted their password recently, and so
-    /// may perform the `/admin` actions that grant access. In-memory and
-    /// per-process — see `crate::elevate`.
+    /// Sessions recently re-authenticated for `/admin` grants; see `crate::elevate`.
     pub elevations: Arc<crate::elevate::Elevations>,
 }
 

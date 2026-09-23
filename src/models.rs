@@ -92,11 +92,7 @@ pub struct Ping {
 }
 
 /// The subset of a [`Ping`] the heartbeat strip and run-duration pairing read.
-///
-/// Selecting whole rows for the dashboard's 40-row window per check decoded
-/// every captured POST body (up to `ping::MAX_BODY`, 10 KiB each) only to drop
-/// it — most of the page's render time. See
-/// `Store::list_recent_ping_summaries_for_checks`.
+/// Omits `body` (up to 10 KiB each), whose decoding dominated dashboard render time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PingSummary {
     pub id: i64,
@@ -127,8 +123,8 @@ pub struct Notification {
     pub created_at: DateTime<Utc>,
 }
 
-/// A stored API key's metadata. The token itself is never held here — only its
-/// SHA-256 hash is persisted; `prefix` is a non-secret display fragment.
+/// A stored API key's metadata; only the token's SHA-256 hash is persisted.
+/// `prefix` is a non-secret display fragment.
 #[derive(Debug, Clone)]
 pub struct ApiKey {
     pub id: i64,

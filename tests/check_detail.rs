@@ -105,7 +105,7 @@ async fn ping_timestamps_are_localizable_with_utc_fallback() {
     let res = server.get(&format!("/checks/{cid}")).await;
     res.assert_status_ok();
     let body = res.text();
-    // Absolute timestamps are emitted as RFC3339 UTC the client localizes.
+    // RFC3339 UTC for the client to localize.
     assert!(
         body.contains("class=\"localtime\" data-ts=\""),
         "no localizable timestamp emitted: {body}"
@@ -114,15 +114,14 @@ async fn ping_timestamps_are_localizable_with_utc_fallback() {
         body.contains("+00:00"),
         "data-ts should be RFC3339 UTC: {body}"
     );
-    // The no-JS fallback shows a full date labeled UTC (not a bare HH:MM:SS).
+    // No-JS fallback: a full date labeled UTC.
     assert!(
         body.contains(" UTC</span>"),
         "fallback should show a UTC date-time: {body}"
     );
 }
 
-/// XSS regression, mirroring
-/// `project_view.rs::project_description_neutralizes_xss_payloads`.
+/// As `project_view.rs::project_description_neutralizes_xss_payloads`.
 #[tokio::test]
 async fn check_description_neutralizes_xss_payloads() {
     let (server, store, pid) = server_with_project().await;
@@ -144,9 +143,8 @@ async fn check_description_neutralizes_xss_payloads() {
     let res = server.get(&format!("/checks/{cid}")).await;
     res.assert_status_ok();
     let body = res.text();
-    // The escaped payload still appears as inert page *content*, so a bare
-    // `!contains("onerror=alert(1)")` would be wrong and `!contains("onerror")`
-    // would false-positive on base.html's own `liveSource.onerror`.
+    // The escaped payload remains as inert text, so assert on live markup
+    // rather than on `onerror`.
     assert!(
         !body.contains("<img "),
         "a raw <img> tag leaked into rendered page: {body}"
@@ -221,7 +219,6 @@ async fn check_detail_shows_when_the_next_ping_is_due() {
         body.contains("data-testid=\"check-next-due\""),
         "next-due element missing: {body}"
     );
-    // 1h period + 5m grace, pinged just now.
     assert!(
         body.contains("due in 1h"),
         "next deadline not counted down: {body}"
@@ -232,8 +229,7 @@ async fn check_detail_shows_when_the_next_ping_is_due() {
     );
 }
 
-/// A never-pinged check still has a real deadline (`scan_once` will down it),
-/// but the label must not read as a report about a run that happened.
+/// A never-pinged check has a deadline, labelled as the first ping's.
 #[tokio::test]
 async fn check_detail_next_due_names_the_first_ping_when_none_has_arrived() {
     let (server, store, pid) = server_with_project().await;
@@ -250,7 +246,7 @@ async fn check_detail_next_due_names_the_first_ping_when_none_has_arrived() {
         })
         .await
         .unwrap();
-    // Precondition: `next_due_at` is unstamped, so the page cannot be reading it.
+    // `next_due_at` is unstamped, so the page must derive the deadline.
     assert!(
         store
             .find_check(cid)
@@ -270,7 +266,6 @@ async fn check_detail_next_due_names_the_first_ping_when_none_has_arrived() {
     );
 }
 
-/// A paused check is excluded from monitoring, so no deadline may be shown.
 #[tokio::test]
 async fn check_detail_paused_shows_no_deadline() {
     let (server, store, pid) = server_with_project().await;
@@ -310,9 +305,8 @@ async fn check_detail_paused_shows_no_deadline() {
     );
 }
 
-/// The strip renders past the widest viewport: `assets/app.css` clips the
-/// overflow from the left, so the server cap decides whether a wide screen can
-/// fill its width. Locked here so "why render bars nobody sees?" cannot shrink it.
+/// `HEARTBEAT_BARS` exceeds any viewport on purpose (CSS clips from the left);
+/// pinned so it isn't "optimised" down.
 #[tokio::test]
 async fn the_heartbeat_renders_more_bars_than_a_viewport_fits() {
     let (server, store, pid) = server_with_project().await;
@@ -331,8 +325,7 @@ async fn the_heartbeat_renders_more_bars_than_a_viewport_fits() {
         .unwrap();
     let check = store.find_check(cid).await.unwrap().unwrap();
 
-    // Start/success pairs, the shape the window is sized for: 150 runs exceeds
-    // the cap, so the page must clamp.
+    // 150 start/success runs, more than the cap.
     for _ in 0..150 {
         server
             .post(&format!("/ping/{}/start", check.ping_uuid))
@@ -355,6 +348,6 @@ async fn the_heartbeat_renders_more_bars_than_a_viewport_fits() {
     let bars = strip.matches("<i ").count();
     assert_eq!(bars, 120, "expected the full {} bars, got {bars}", 120);
 
-    // The caption must not name a count: only the browser knows how many show.
+    // No run count in the caption: only the browser knows how many show.
     assert!(!body.contains("30 runs ago"), "stale fixed-count caption");
 }

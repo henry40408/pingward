@@ -1,13 +1,6 @@
-//! Regression test for `pingward::session` audit logging
-//! (`auth::session_log_handle`, used at every `tracing::info!(target:
-//! "pingward::session", ...)` site in `src/web.rs`).
-//!
-//! Nothing else in the suite captures a `tracing` subscriber, so those call
-//! sites could all be deleted with CI green. Only the helper is unit-tested,
-//! never a call site: a refactor writing `handle = %id` would ship raw session
-//! ids — the cookie's bearer secret — into the logs unnoticed. This drives
-//! login -> request -> logout against a capturing subscriber and asserts both
-//! halves: the events are emitted, and the raw id appears nowhere.
+//! `pingward::session` log events through login -> request -> logout: they are
+//! emitted, and log `auth::session_log_handle` rather than the raw session id
+//! (the cookie's bearer secret). Only the helper itself is unit-tested.
 
 use axum_test::TestServer;
 use pingward::{app, db, secret, state::AppState, store::Store};
@@ -16,8 +9,7 @@ use std::sync::{Arc, Mutex};
 
 mod common;
 
-/// A `Write` sink appending into a shared buffer. Cloning shares the same
-/// `Vec<u8>`, so `MakeWriter`'s clone-per-event closure still collects into one.
+/// Clones share one buffer, so per-event `MakeWriter` clones collect together.
 #[derive(Clone, Default)]
 struct SharedBuf(Arc<Mutex<Vec<u8>>>);
 
@@ -54,9 +46,7 @@ async fn session_lifecycle_is_logged_without_leaking_the_raw_id() {
         .with_writer(make_writer)
         .with_ansi(false)
         .finish();
-    // Scoped thread-local guard: it cannot clash with a subscriber another test
-    // in this binary installs, and `#[tokio::test]`'s current-thread runtime keeps
-    // every task this test drives on the thread the guard applies to.
+    // Thread-local, which covers every task on the current-thread test runtime.
     let guard = tracing::subscriber::set_default(subscriber);
 
     let csrf = common::anonymous_csrf(&mut server).await;
@@ -70,8 +60,7 @@ async fn session_lifecycle_is_logged_without_leaking_the_raw_id() {
         .await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
 
-    // Recover the raw session id the way production does, so the negative
-    // assertion below checks the actual bearer secret rather than a stand-in.
+    // The real raw id, so the negative assertion checks the actual secret.
     let cookie_name = pingward::auth::session_cookie_name(false);
     let cookie_value = res.cookie(cookie_name).value().to_string();
     let raw_session_id = secret::verify_session(common::TEST_SECRET.as_bytes(), &cookie_value)
@@ -87,9 +76,7 @@ async fn session_lifecycle_is_logged_without_leaking_the_raw_id() {
     drop(guard);
     let output = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
 
-    // (a) `session.created` carries no `reason` field — only `session.destroyed`
-    // does — and a password login is distinguished from forward-auth only by
-    // `sso=false`.
+    // (a) The events are emitted.
     assert!(
         output.contains("session.created"),
         "expected a session.created event in:\n{output}"
@@ -111,8 +98,7 @@ async fn session_lifecycle_is_logged_without_leaking_the_raw_id() {
         "expected the session_log_handle to appear in:\n{output}"
     );
 
-    // (b) The half that fails if a call site logs `%id` instead of
-    // `%session_log_handle(&id)`.
+    // (b) Fails if a call site logs `%id` instead of the handle.
     assert!(
         !output.contains(&raw_session_id),
         "the raw session id must never appear in logged output — found it in:\n{output}"

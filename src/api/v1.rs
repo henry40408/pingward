@@ -1,7 +1,6 @@
 //! `/api/v1` handlers. [`resolve_project`]/[`resolve_check`]/[`resolve_channel`]
-//! are the ownership choke point: 404 for a resource the caller may not reach
-//! (existence hidden), plus an audit entry when an admin key crosses into
-//! another user's data. Writes reuse the web UI's own validators.
+//! are the ownership choke point: 404 for another user's resource, except an
+//! admin key, which gets through with an audit entry.
 
 use crate::api::dto::{
     ApiKeyDto, BoundChannels, ChannelDto, CheckDto, NotificationPage, PingPage, ProjectDto,
@@ -27,8 +26,7 @@ use utoipa::IntoParams;
 const DEFAULT_PAGE_LIMIT: i64 = 20;
 const MAX_PAGE_LIMIT: i64 = 100;
 
-/// Keyset pagination for the ping/notification lists. `before` and `after` are
-/// mutually exclusive; `before` wins if both are given.
+/// Keyset pagination; `before` wins if both cursors are given.
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct PageParams {
     /// Return items older than this id (page toward older).
@@ -55,9 +53,8 @@ impl PageParams {
     }
 }
 
-/// Record an admin key reaching a resource it does not own. Called only from the
-/// admin branch of a resolver, so an admin touching their own data never logs;
-/// `method` is what distinguishes a cross-user read from a write.
+/// Record an admin key reaching a resource it does not own; `method`
+/// distinguishes a read from a write.
 async fn audit_cross_user(
     state: &AppState,
     admin: &User,
@@ -87,8 +84,7 @@ async fn audit_cross_user(
     Ok(())
 }
 
-/// Resolve a project the caller may act on: owner-scope first, else an audited
-/// admin cross-user access, else 404 (existence hidden).
+/// Owner first, else an audited admin access, else 404.
 async fn resolve_project(
     state: &AppState,
     id: i64,
@@ -323,8 +319,7 @@ pub async fn list_check_notifications(
     Ok(Json(NotificationPage::from_page(page)))
 }
 
-/// List the caller's own API keys; the secret token is never returned.
-/// Always self-scoped — an admin key sees only its owner's keys.
+/// List the caller's own API keys (never another user's, even for an admin).
 #[utoipa::path(
     get, path = "/api/v1/keys", tag = "keys",
     security(("api_key" = [])),
@@ -357,10 +352,6 @@ pub async fn get_channel(
     let ch = resolve_channel(&state, id, &user, "GET", uri.path()).await?;
     Ok(Json(ch.into()))
 }
-
-// ----------------------------------------------------------------------------
-// Writes
-// ----------------------------------------------------------------------------
 
 async fn reload_check(state: &AppState, id: i64) -> Result<Json<CheckDto>, ApiError> {
     let c = state
@@ -400,8 +391,7 @@ pub async fn create_project(
     Ok((StatusCode::CREATED, Json(p.into())))
 }
 
-/// Replace a project's editable fields (name + overrides). Send the full
-/// representation, not a partial patch.
+/// Replace a project's editable fields; send the full representation.
 #[utoipa::path(
     patch, path = "/api/v1/projects/{id}", tag = "projects",
     security(("api_key" = [])),
@@ -507,8 +497,7 @@ pub async fn create_check(
     Ok((StatusCode::CREATED, Json(c.into())))
 }
 
-/// Replace a check's editable fields (schedule + grace + overrides). Send the
-/// full representation, not a partial patch.
+/// Replace a check's editable fields; send the full representation.
 #[utoipa::path(
     patch, path = "/api/v1/checks/{id}", tag = "checks",
     security(("api_key" = [])),
@@ -742,11 +731,8 @@ pub async fn create_channel(
     Ok((StatusCode::CREATED, Json(ch.into())))
 }
 
-/// Update a notification channel's name and credentials.
-///
-/// A merge, not a replacement: an omitted or blank field keeps the stored value,
-/// so one credential can be rotated without re-sending the others. `kind` is
-/// immutable and ignored here; send `ntfy_token_clear: true` to clear a token.
+/// Update a channel's name and credentials. A merge: a blank field keeps the
+/// stored value, `kind` is immutable, and `ntfy_token_clear: true` clears a token.
 #[utoipa::path(
     patch, path = "/api/v1/channels/{id}", tag = "channels",
     security(("api_key" = [])),

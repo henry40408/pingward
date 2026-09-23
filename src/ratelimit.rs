@@ -1,41 +1,21 @@
-//! Fixed-window limiters for `POST /login`, keyed two different ways.
+//! Fixed-window limiters for `POST /login`, sharing one generic [`RateLimiter`]:
 //!
-//! [`RateLimiter`] is generic over its key so the two cannot diverge in how a
-//! window rolls over or how the tracked-key cap behaves:
+//! - per client IP ([`rate_limit_key`]): [`MAX_ATTEMPTS`] per [`WINDOW_SECS`].
+//! - per account ([`account_key`]): [`ACCOUNT_MAX_ATTEMPTS`] per
+//!   [`ACCOUNT_WINDOW_SECS`] — catches a distributed attack, where N addresses
+//!   would otherwise buy `MAX_ATTEMPTS × N` guesses at one account.
 //!
-//! - per client IP (`RateLimiter<IpAddr>`, keyed by [`rate_limit_key`]) —
-//!   [`MAX_ATTEMPTS`] per [`WINDOW_SECS`]. Stops one source grinding through a
-//!   dictionary.
-//! - per account (`RateLimiter<String>`, keyed by [`account_key`]) —
-//!   [`ACCOUNT_MAX_ATTEMPTS`] per [`ACCOUNT_WINDOW_SECS`]. Stops a distributed
-//!   attack the per-IP limiter cannot see at all: N addresses otherwise buy
-//!   `MAX_ATTEMPTS × N` guesses against one account. OWASP's Authentication
-//!   Cheat Sheet asks for an account-associated counter for this reason; see
-//!   [`ACCOUNT_MAX_ATTEMPTS`] for the denial-of-service trade-off.
+//! In-memory and per-process (a DB counter would add a write per attempt): each
+//! replica counts separately, and a restart resets every counter.
 //!
-//! State is in-memory and per-process: a DB-backed counter would mean a write
-//! per login attempt, which on `SQLite` contends with the scan loop's writer for
-//! the same connection budget (see the `busy_timeout` comment in `src/db.rs`).
-//! Same limitation as `AppState::events` (see ARCHITECTURE.md): each replica
-//! counts separately, and a restart resets every counter.
+//! Invariants, each pinned by a test:
 //!
-//! Four defects of the reference implementation this was ported from, each
-//! closed here and pinned by a test:
-//!
-//! 1. It keyed on the leftmost `X-Forwarded-For` hop, which is attacker-chosen
-//!    under a stock appending proxy (nginx's `$proxy_add_x_forwarded_for`,
-//!    Caddy's `reverse_proxy`), so an attacker could mint a fresh bucket per
-//!    request. [`rate_limit_key`] reads the rightmost hop.
-//! 2. It split the check and the record across two lock acquisitions, so
-//!    concurrent requests could all observe the pre-attack count.
-//!    [`RateLimiter::try_acquire`] does both under one lock.
-//! 3. At the tracked-key cap it called `map.clear()`, handing anyone already
-//!    throttled a way to reset their own budget by spraying fresh keys.
-//!    Expired windows are pruned instead and other counters left alone.
-//! 4. At capacity an address with no bucket of its own was waved through
-//!    unmetered, so holding [`MAX_ENTRIES`] live windows bought an unlimited
-//!    budget from every further address. Such a caller is charged to a shared
-//!    overflow bucket ([`Buckets::overflow`]) — still fail-open, but finitely.
+//! 1. Key on the *rightmost* `X-Forwarded-For` hop; the leftmost is client-chosen.
+//! 2. Check and record under one lock, or concurrent requests all pass.
+//! 3. At the key cap, prune expired windows — never clear live counters, or a
+//!    throttled caller resets itself by spraying fresh keys.
+//! 4. A caller with no room for its own bucket is charged to a shared overflow
+//!    bucket rather than waved through unmetered.
 
 use axum::http::HeaderMap;
 use std::collections::HashMap;
@@ -48,54 +28,34 @@ use std::time::Instant;
 pub const MAX_ATTEMPTS: u32 = 5;
 pub const WINDOW_SECS: u64 = 60;
 
-/// Attempts allowed against one account within [`ACCOUNT_WINDOW_SECS`],
-/// however many addresses they arrive from.
-///
-/// Looser than [`MAX_ATTEMPTS`] and over a longer window because the failure
-/// modes are opposite: exhausting a per-IP bucket inconveniences that address,
-/// exhausting an account bucket locks out the owner. An account lockout is
-/// therefore a denial-of-service primitive handed to whoever knows a username.
-/// 10 per 15 minutes is too few for credential stuffing to be worth running,
-/// while an owner has to fail ten times in fifteen minutes to feel it, and any
-/// success clears the counter ([`RateLimiter::clear`] rather than
-/// [`RateLimiter::release`]).
-///
-/// It is a rolling window, not a latch: nothing has to be unlocked. Two escape
-/// hatches for an operator locked out on purpose — the state is per-process,
-/// so a restart clears it, and forward-auth deployments have no password
-/// login at all.
+/// Attempts against one account within [`ACCOUNT_WINDOW_SECS`], from any address.
+/// Looser than [`MAX_ATTEMPTS`] because exhausting it locks out the owner — an
+/// accepted denial-of-service primitive for anyone who knows a username. A success
+/// [`clear`](RateLimiter::clear)s it; the window expires on its own and a restart
+/// resets it.
 pub const ACCOUNT_MAX_ATTEMPTS: u32 = 10;
 pub const ACCOUNT_WINDOW_SECS: u64 = 900;
 
-/// Hard cap on tracked keys. At the cap expired windows are pruned first, so a
-/// spray of addresses (or invented usernames) cannot grow the map unbounded.
+/// Hard cap on tracked keys, so a spray of addresses or usernames cannot grow the map.
 const MAX_ENTRIES: usize = 10_000;
 
-/// Longest account key retained by [`account_key`]. The username arrives
-/// unvalidated on an unauthenticated form and becomes a `HashMap` key held
-/// until its window elapses; unbounded, `MAX_ENTRIES` oversized keys would be
-/// a memory-exhaustion lever.
+/// Longest key [`account_key`] keeps: the username is unauthenticated input, and
+/// [`MAX_ENTRIES`] oversized keys would be a memory-exhaustion lever.
 const ACCOUNT_KEY_MAX_CHARS: usize = 64;
 
-/// Size of the shared overflow bucket, as a multiple of `max_attempts`. Only
-/// reachable once [`MAX_ENTRIES`] addresses hold a live window at once. The
-/// dial between charging too little (a legitimate sign-in during a spray is
-/// refused) and charging nothing (the spray buys unlimited guesses).
+/// Shared overflow bucket size as a multiple of `max_attempts`: generous so a spray
+/// is not a global lockout, finite so it does not buy unlimited guesses.
 const OVERFLOW_FACTOR: u32 = 10;
 
-/// Everything the limiter mutates, behind one lock. The overflow counter lives
-/// here rather than in its own `Mutex` so finding the map full and charging the
-/// shared bucket happen under one acquisition; splitting them would reintroduce
-/// defect 2 on exactly the path under attack.
+/// Everything the limiter mutates, behind one lock, so finding the map full and
+/// charging the overflow bucket are atomic (invariant 2).
 struct Buckets<K> {
     per_key: HashMap<K, (u32, Instant)>,
-    /// `(attempts, window start)` shared by every key that arrives while
-    /// `per_key` is full of live windows.
+    /// `(attempts, window start)` shared by keys arriving while `per_key` is full.
     overflow: (u32, Instant),
 }
 
-/// Charge one attempt to a `(count, window start)` counter. Shared by the
-/// per-key buckets and the overflow bucket so window roll-over cannot drift.
+/// Charge one attempt to a `(count, window start)` counter; returns whether allowed.
 fn charge(counter: &mut (u32, Instant), max: u32, window_secs: u64) -> bool {
     if counter.1.elapsed().as_secs() >= window_secs {
         *counter = (1, Instant::now());
@@ -108,16 +68,13 @@ fn charge(counter: &mut (u32, Instant), max: u32, window_secs: u64) -> bool {
     true
 }
 
-/// Fixed-window limiter for login attempts, keyed by `K`. Generic so the
-/// per-IP and per-account limiters are the same code: each of the window
-/// roll-over, single-lock check-and-record, tracked-key cap and overflow
-/// bucket fixed a defect, and a second copy could reintroduce one.
+/// Fixed-window limiter keyed by `K`; generic so both login limiters share the
+/// invariants in the module docs.
 pub struct RateLimiter<K> {
     buckets: Mutex<Buckets<K>>,
     max_attempts: u32,
     window_secs: u64,
-    /// A field rather than the [`MAX_ENTRIES`] constant so tests can lower it
-    /// and reach the capacity path without tracking ten thousand keys.
+    /// [`MAX_ENTRIES`], as a field so tests can lower it.
     max_entries: usize,
 }
 
@@ -126,8 +83,6 @@ impl<K: Eq + Hash> RateLimiter<K> {
         Self {
             buckets: Mutex::new(Buckets {
                 per_key: HashMap::new(),
-                // Zero attempts means the first overflow caller rolls the
-                // window over rather than inheriting boot time as its start.
                 overflow: (0, Instant::now()),
             }),
             max_attempts,
@@ -136,15 +91,11 @@ impl<K: Eq + Hash> RateLimiter<K> {
         }
     }
 
-    /// Reserve an attempt for `key`, returning whether it may proceed.
-    ///
-    /// Checking and counting happen under a single lock (defect 2). The
-    /// reservation is taken *before* the credential comparison and handed back
-    /// by [`release`](Self::release) on success, so only failures ultimately
-    /// consume the window.
+    /// Reserve an attempt for `key`, returning whether it may proceed. Taken before
+    /// the credential check; a success hands it back via [`release`](Self::release)
+    /// or [`clear`](Self::clear).
     pub fn try_acquire(&self, key: K) -> bool {
-        // Recover from poisoning: one panicking request under this lock must
-        // not break `POST /login` permanently for everyone after it.
+        // Recover from poisoning: one panic must not break `POST /login` for good.
         let mut buckets = self
             .buckets
             .lock()
@@ -155,13 +106,8 @@ impl<K: Eq + Hash> RateLimiter<K> {
                 .per_key
                 .retain(|_, (_, started)| started.elapsed().as_secs() < window_secs);
             if buckets.per_key.len() >= self.max_entries {
-                // Every entry is still live: a spray from more sources than
-                // the cap. Existing counters are left alone (clearing them is
-                // defect 3), and this untracked source is charged to the
-                // shared bucket rather than waved through unmetered, which
-                // made the cap itself the bypass (defect 4). Refusing outright
-                // would turn the spray into a global login lockout, hence the
-                // generous [`OVERFLOW_FACTOR`].
+                // All live: leave them alone (invariant 3), charge the shared
+                // bucket (invariant 4).
                 let max = self.max_attempts.saturating_mul(OVERFLOW_FACTOR);
                 return charge(&mut buckets.overflow, max, window_secs);
             }
@@ -170,9 +116,8 @@ impl<K: Eq + Hash> RateLimiter<K> {
         charge(entry, self.max_attempts, self.window_secs)
     }
 
-    /// Hand back the attempt reserved by [`try_acquire`](Self::try_acquire).
-    /// Called after a successful login only, so repeated legitimate sign-ins
-    /// never exhaust the window while an attacker's failures still count.
+    /// Refund the attempt reserved by [`try_acquire`](Self::try_acquire) after a
+    /// successful login, so repeated sign-ins never exhaust the window.
     pub fn release(&self, key: &K) {
         let mut buckets = self
             .buckets
@@ -185,26 +130,14 @@ impl<K: Eq + Hash> RateLimiter<K> {
             }
             return;
         }
-        // No bucket of its own: the attempt was charged to the overflow
-        // bucket, so that is what gets the refund. A window that rolled over
-        // between the two calls over-refunds by one, which the saturating
-        // subtraction makes harmless.
+        // Charged to the overflow bucket; saturating in case its window rolled over.
         buckets.overflow.0 = buckets.overflow.0.saturating_sub(1);
     }
 
-    /// Drop `key`'s bucket entirely, rather than refunding one attempt.
-    ///
-    /// The account limiter's success path: refunding one attempt would leave
-    /// an owner who mistyped nine times and then signed in correctly one
-    /// failure from a fifteen-minute lockout, credential already proven.
-    ///
-    /// The per-IP limiter must *not* do this — a success there says nothing
-    /// about the other attempts from a shared NAT or proxy, whereas a success
-    /// here proves the credential the failures were guessing at.
-    ///
-    /// It does reset an account spray's budget whenever the owner signs in;
-    /// bounded by how often a person logs in, so a few extra guesses a day
-    /// against 10 per 15 minutes.
+    /// Drop `key`'s bucket entirely: the account limiter's success path, since the
+    /// credential is proven (a refund would leave nine typos one short of lockout).
+    /// The per-IP limiter must not use this — a success says nothing about other
+    /// clients behind the same NAT or proxy.
     pub fn clear(&self, key: &K) {
         self.buckets
             .lock()
@@ -214,43 +147,22 @@ impl<K: Eq + Hash> RateLimiter<K> {
     }
 }
 
-/// The account limiter's key: the submitted username, bounded in length.
-///
-/// Keyed on what the form carried, not a resolved `users.id`, and looked up
-/// before the account is: an unknown username must exhaust a budget exactly as
-/// a real one does, or "this request was throttled" is a username oracle.
-///
-/// Only the length is normalised, never the case — `find_user_by_username`
-/// compares exactly on both backends, so `Alice` and `alice` need different
-/// buckets. Truncation can make two long usernames share one; that direction
-/// is safe and needs a 64-character common prefix.
+/// The account limiter's key: the *submitted* username, not a resolved id, so an
+/// unknown name throttles exactly like a real one (otherwise a username oracle).
+/// Only length is bounded, never case: `find_user_by_username` matches exactly.
 pub fn account_key(username: &str) -> String {
     username.chars().take(ACCOUNT_KEY_MAX_CHARS).collect()
 }
 
 /// Client address used as the login rate-limit key.
 ///
-/// Do NOT unify this with `crate::auth::client_ip`, which takes the *leftmost*
-/// `X-Forwarded-For` entry: that is right for attribution but wrong for a
-/// security control, since under a stock appending proxy (nginx's
-/// `$proxy_add_x_forwarded_for`, Caddy's `reverse_proxy`) the leftmost entry
-/// is client-supplied and an attacker mints a fresh bucket per request. This
-/// reads the *rightmost* hop, the one the trusted proxy appended. That assumes
-/// exactly one proxy in the chain; a longer chain would need the Nth from the
-/// right, which `PINGWARD_TRUSTED_PROXIES` cannot express.
-///
-/// The trust gate is `crate::auth::is_trusted_proxy`, not a loopback
-/// heuristic: `peer` must be `Some` and trusted before `X-Forwarded-For` is
-/// believed. Peer and resolved IP are compared and returned canonically
-/// (`IpAddr::to_canonical`), so an IPv4-mapped IPv6 peer matches a v4 entry.
-///
-/// A header name may appear on multiple lines and `HeaderMap::get` returns
-/// only the first. A proxy that appends its hop as a *new* line would leave
-/// that first line client-controlled, reopening the bypass one line up, so
-/// this uses `get_all` and takes the last line before splitting on commas.
-///
-/// A missing peer (the router driven without `ConnectInfo`, as in tests) falls
-/// back to a shared loopback bucket rather than disabling the limiter.
+/// Do NOT unify with [`crate::auth::client_ip`], which takes the *leftmost*
+/// `X-Forwarded-For` entry — fine for attribution, but under an appending proxy
+/// (nginx `$proxy_add_x_forwarded_for`, Caddy) it is client-supplied, so an attacker
+/// would mint a fresh bucket per request. This takes the *rightmost* hop of the
+/// *last* header line (a proxy may append a new line), trusted only when the peer
+/// passes [`crate::auth::is_trusted_proxy`]; assumes exactly one proxy. No peer
+/// (no `ConnectInfo`) falls back to a shared loopback bucket.
 pub fn rate_limit_key(
     peer: Option<IpAddr>,
     headers: &HeaderMap,
@@ -309,7 +221,6 @@ mod tests {
         assert!(limiter.try_acquire(ip(4)));
     }
 
-    /// Signing in repeatedly must never exhaust the window.
     #[test]
     fn release_returns_the_reserved_attempt() {
         let limiter = RateLimiter::new(2, 60);
@@ -328,10 +239,6 @@ mod tests {
         );
     }
 
-    // --- the account-keyed limiter ---
-
-    /// The `RateLimiter<String>` account limiter must behave identically to
-    /// the IP one.
     #[test]
     fn a_string_keyed_limiter_counts_per_key() {
         let limiter: RateLimiter<String> = RateLimiter::new(2, 60);
@@ -342,8 +249,6 @@ mod tests {
         assert!(limiter.try_acquire("bob".into()));
     }
 
-    /// Nine failures then a success must leave the owner a full budget, not
-    /// the single attempt `release` would refund.
     #[test]
     fn clear_empties_the_bucket_where_release_refunds_one() {
         let refunded: RateLimiter<String> = RateLimiter::new(10, 60);
@@ -377,18 +282,12 @@ mod tests {
 
     #[test]
     fn account_key_bounds_its_length_without_touching_case() {
-        // `find_user_by_username` compares exactly on both backends, so
-        // these are different accounts and must not share a bucket.
         assert_eq!(account_key("Alice"), "Alice");
         assert_ne!(account_key("Alice"), account_key("alice"));
-        // Nor is anything else normalised away.
         assert_eq!(account_key("  bob  "), "  bob  ");
 
-        // An attacker-chosen username must not become an attacker-chosen
-        // allocation.
         let huge = "x".repeat(10_000);
         assert_eq!(account_key(&huge).chars().count(), ACCOUNT_KEY_MAX_CHARS);
-        // Truncation is by characters, so it never splits a code point.
         let cjk = "漢".repeat(10_000);
         assert_eq!(account_key(&cjk).chars().count(), ACCOUNT_KEY_MAX_CHARS);
     }
@@ -411,10 +310,8 @@ mod tests {
         );
     }
 
-    /// `map_is_pruned_at_capacity` uses a 60-second window, so nothing in it
-    /// expires and it only reaches the fail-open path. Here every window has
-    /// already elapsed, so capacity must trigger a real prune: the length has
-    /// to drop below the cap, not merely stay under it by never growing.
+    /// Unlike `map_is_pruned_at_capacity` (60s window, nothing expires), every
+    /// window here has elapsed, so the length must actually drop below the cap.
     #[test]
     fn expired_entries_are_pruned_when_capacity_is_reached() {
         let mut limiter = RateLimiter::new(5, 0);
@@ -443,8 +340,7 @@ mod tests {
         assert!(len < 4, "map was not pruned: len = {len}");
     }
 
-    /// Defect 3: a spray of fresh keys used to hit `map.clear()`, letting an
-    /// already-throttled source reset its own counter.
+    /// Invariant 3.
     #[test]
     fn capacity_spray_does_not_reset_an_existing_counter() {
         let mut limiter = RateLimiter::new(1, 60);
@@ -459,8 +355,7 @@ mod tests {
         assert!(!limiter.try_acquire(victim), "spray reset the counter");
     }
 
-    /// Defect 2: checking and counting used to take the lock separately, so
-    /// requests arriving together all observed the pre-attack count.
+    /// Invariant 2.
     #[test]
     fn concurrent_attempts_cannot_exceed_the_limit() {
         const THREADS: usize = 64;
@@ -486,8 +381,7 @@ mod tests {
         assert_eq!(5, allowed, "concurrent requests overran the limit");
     }
 
-    /// Defect 4: the capacity path used to admit an untracked address
-    /// unmetered. The shared bucket must eventually refuse.
+    /// Invariant 4: the shared bucket must eventually refuse.
     #[test]
     fn the_overflow_bucket_is_finite() {
         const MAX: u32 = 2;
@@ -513,8 +407,6 @@ mod tests {
         assert!(limiter.try_acquire(ip(0)));
     }
 
-    /// A rollover must refill the shared bucket, or one spray would refuse
-    /// every untracked address forever.
     #[test]
     fn the_overflow_bucket_refills_with_its_window() {
         let mut limiter = RateLimiter::new(1, 0); // zero-second window
@@ -524,7 +416,6 @@ mod tests {
         }
     }
 
-    /// A success charged to the shared bucket must hand its attempt back.
     #[test]
     fn release_refunds_the_overflow_bucket() {
         let mut limiter = RateLimiter::new(1, 60);
@@ -569,9 +460,7 @@ mod tests {
         assert_eq!(stranger, rate_limit_key(Some(stranger), &headers, &proxies));
     }
 
-    /// Defect 1: `$proxy_add_x_forwarded_for` appends the peer, so the
-    /// leftmost entry is whatever the client sent — keying on it let an
-    /// attacker mint a fresh bucket per request.
+    /// Invariant 1.
     #[test]
     fn spoofed_leading_xff_hops_do_not_change_the_key() {
         let proxies = trusted(&["10.0.0.1"]);
@@ -587,9 +476,6 @@ mod tests {
         }
     }
 
-    /// A proxy that appends its hop as a new `X-Forwarded-For` line must not
-    /// let the first, client-controlled line win: `HeaderMap::get` would
-    /// return only that one, so `rate_limit_key` uses `get_all`.
     #[test]
     fn rate_limit_key_uses_the_last_xff_header_line() {
         let proxies = trusted(&["10.0.0.1"]);
@@ -632,8 +518,6 @@ mod tests {
         );
     }
 
-    /// A dual-stack listener reports an IPv4 client as `::ffff:a.b.c.d`; the
-    /// operator writes the plain v4 address in `PINGWARD_TRUSTED_PROXIES`.
     #[test]
     fn rate_limit_key_matches_a_v4_mapped_peer_against_a_v4_pattern() {
         let proxies = trusted(&["10.0.0.1"]);

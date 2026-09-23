@@ -179,7 +179,7 @@ async fn check_pings_are_paginated_newest_first() {
             .unwrap();
     }
 
-    // First page: default 20, more older exist.
+    // Default page size is 20.
     let res = server
         .get(&format!("/api/v1/checks/{cid}/pings"))
         .add_header("authorization", format!("Bearer {token}"))
@@ -189,15 +189,13 @@ async fn check_pings_are_paginated_newest_first() {
     assert_eq!(page["items"].as_array().unwrap().len(), 20);
     assert_eq!(page["has_older"], true);
     assert_eq!(page["has_newer"], false);
-    // `next_before` points at the last (oldest) item on the page; there is no
-    // newer page, so `next_after` is null.
+    // `next_before` is the page's oldest item; no newer page yet.
     let last_id = page["items"].as_array().unwrap()[19]["id"]
         .as_i64()
         .unwrap();
     assert_eq!(page["next_before"], last_id);
     assert!(page["next_after"].is_null());
 
-    // Follow next_before to fetch the older page → remaining 5.
     let res2 = server
         .get(&format!("/api/v1/checks/{cid}/pings?before={last_id}"))
         .add_header("authorization", format!("Bearer {token}"))
@@ -206,7 +204,6 @@ async fn check_pings_are_paginated_newest_first() {
     assert_eq!(page2["items"].as_array().unwrap().len(), 5);
     assert_eq!(page2["has_newer"], true);
     assert_eq!(page2["has_older"], false);
-    // Now the newer direction is populated and the older one is exhausted.
     assert_eq!(
         page2["next_after"],
         page2["items"].as_array().unwrap()[0]["id"]
@@ -238,7 +235,6 @@ async fn limit_is_clamped() {
             .await
             .unwrap();
     }
-    // limit=0 clamps up to 1.
     let res = server
         .get(&format!("/api/v1/checks/{cid}/pings?limit=0"))
         .add_header("authorization", format!("Bearer {token}"))
@@ -373,7 +369,6 @@ async fn keys_endpoint_is_self_scoped() {
         .await;
     res.assert_status_ok();
     let arr = res.json::<Vec<Value>>();
-    // Alice sees only her own single key; no `token_hash` field is ever present.
     assert_eq!(arr.len(), 1);
     assert!(arr[0].get("token_hash").is_none());
     assert!(arr[0]["prefix"].as_str().unwrap().starts_with("pw_"));
@@ -382,8 +377,7 @@ async fn keys_endpoint_is_self_scoped() {
 #[tokio::test]
 async fn docs_require_a_logged_in_session() {
     let (server, _store) = test_app().await;
-    // Both are gated behind a web session, so an unauthenticated request
-    // redirects to /login.
+    // Web-session gated (not bearer): redirect to /login.
     server
         .get("/api/openapi.json")
         .await
@@ -422,26 +416,14 @@ async fn docs_are_served_to_a_logged_in_user() {
     assert!(docs.text().to_lowercase().contains("scalar"));
 }
 
-// --- /api/v1 route guard exhaustiveness ------------------------------------
-//
-// `api::routes()` guards every `/api/v1` handler individually via the `ApiUser`
-// bearer extractor; there is no router-level layer enforcing it.
-//
-// `/api/openapi.json` and `/api/docs` are excluded: they are gated behind a
-// logged-in web session (`CurrentUser`), not a bearer key, and the `/api/v1`
-// prefix filter drops them automatically.
-
-/// Every `/api/v1` route registered by `api::routes()` must reject an
-/// unauthenticated caller with 401, with no exceptions. The route list is
-/// derived from the router's own source rather than hand-maintained
-/// (`axum::Router` exposes no route table at runtime), so a new `/api/v1` route
-/// that forgets its `ApiUser` extractor fails this test.
+/// Every `/api/v1` route must 401 without a bearer key. Each handler carries
+/// its own `ApiUser` extractor (no router layer), and the route list is parsed
+/// from `src/api/mod.rs`, so a new unguarded route fails here.
 #[tokio::test]
 async fn every_api_v1_route_requires_a_bearer_key() {
     let (server, _store) = test_app().await;
 
     let routes = common::routes_in_router_source(include_str!("../src/api/mod.rs"), "/api/v1");
-    // A parser bug returning nothing would make the loop below pass vacuously.
     assert!(
         routes.len() >= 20,
         "parsed only {} /api/v1 routes from src/api/mod.rs — the source parser \
@@ -451,10 +433,7 @@ async fn every_api_v1_route_requires_a_bearer_key() {
 
     for (method, raw_path) in &routes {
         let path = common::normalise_route_path(raw_path);
-        // No body is sent, even for POST/PUT/PATCH: `ApiUser` is a
-        // `FromRequestParts` extractor and runs *before* the `ApiJson` body
-        // extractor, so a handler that took the body first would surface
-        // `400 bad_request` here instead of `401`.
+        // No body: `ApiUser` must run before `ApiJson`, or this would 400.
         let status = match *method {
             "GET" => server.get(&path).await.status_code(),
             "POST" => server.post(&path).await.status_code(),
@@ -471,38 +450,23 @@ async fn every_api_v1_route_requires_a_bearer_key() {
     }
 }
 
-// --- /api/v1 cross-user ownership scoping -----------------------------------
-//
-// `resolve_project`/`resolve_check`/`resolve_channel` in `src/api/v1.rs` are
-// the choke point every parameterised `/api/v1` handler routes an id through:
-// owner-scope first, else an audited admin cross-user access, else `404` (not
-// `403`), so existence is hidden from a caller who neither owns the resource
-// nor is an admin.
-
-/// Every parameterised `/api/v1` route is checked both ways: a non-admin
-/// non-owner caller ("B") gets `404` (not `403`), and the owner ("A") gets
-/// anything *other than* 404 for the same route and id. Without that second
-/// half a 404 from B is indistinguishable from "that id never existed" (broken
-/// seeding, an off-by-one id, a future refactor) and the test passes vacuously.
-/// The route list is derived from the router's own source, so a new route that
-/// resolves an id outside those three choke points fails this test.
+/// Every parameterised `/api/v1` route (parsed from source) must 404 — not
+/// 403 — for a non-admin non-owner, while the owner gets anything but 404 for
+/// the same request, so the 404 is ownership-driven and not a dead id.
 #[tokio::test]
 async fn member_cannot_reach_another_users_resource_on_any_api_route() {
     let (server, store) = test_app().await;
 
     let (owner, owner_token) = user_with_key(&store, "alice", false).await;
 
-    // B is a *non-admin*: an admin is allowed cross-user access, a separate
-    // invariant.
+    // Non-admin: admins are allowed cross-user access.
     let (_member, token) = user_with_key(&store, "mallory", false).await;
 
     let routes = common::routes_in_router_source(include_str!("../src/api/mod.rs"), "/api/v1");
-    // A route with no path parameter has no cross-user surface to test.
     let param_routes: Vec<(&str, String)> = routes
         .into_iter()
         .filter(|(_, raw_path)| raw_path.contains('{'))
         .collect();
-    // A parser bug returning nothing would make the loop below pass vacuously.
     assert!(
         param_routes.len() >= 15,
         "parsed only {} parameterised /api/v1 routes from src/api/mod.rs — the \
@@ -511,12 +475,8 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
         param_routes.len()
     );
 
-    // (method, raw path) -> request body, verified against each DTO's
-    // `Deserialize` impl in `src/api/input.rs`. `ApiJson` runs *before* the
-    // handler calls `resolve_*`, so an absent or schema-invalid body would 400
-    // before the ownership check is reached. Every parameterised route must
-    // appear here exactly once, body or not — see the exhaustiveness assertion
-    // below.
+    // A body that deserializes (`src/api/input.rs`), since `ApiJson` would
+    // otherwise 400 before `resolve_*` runs. One entry per parameterised route.
     let body_table: HashMap<(&str, &str), Option<Value>> = HashMap::from([
         (("GET", "/api/v1/projects/{id}"), None),
         (
@@ -551,15 +511,12 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
             Some(json!({ "channel_ids": [] })),
         ),
         (("GET", "/api/v1/channels/{id}"), None),
-        // A merge patch, so an empty object is a valid (no-op) body — every
-        // field of `ChannelInput` is `#[serde(default)]`.
+        // Every `ChannelInput` field is `#[serde(default)]`.
         (("PATCH", "/api/v1/channels/{id}"), Some(json!({}))),
         (("DELETE", "/api/v1/channels/{id}"), None),
     ]);
 
-    // The table's keys must exactly match the derived routes, so a new route
-    // missing from the table (or a stale entry for a removed one) fails here
-    // rather than silently skipping the invariant.
+    // Keys must match the derived routes exactly, so none is silently skipped.
     let derived_keys: HashSet<(&str, &str)> = param_routes
         .iter()
         .map(|(method, path)| (*method, path.as_str()))
@@ -572,10 +529,8 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
     );
 
     for (i, (method, raw_path)) in param_routes.iter().enumerate() {
-        // Seed per iteration, not once before the loop: several routes are
-        // destructive, so the owner's positive control below would consume a
-        // shared resource and poison later iterations. Names/uuids carry the
-        // loop index because `ping_uuid` is UNIQUE.
+        // Fresh resources per iteration: the owner's request may DELETE them.
+        // Indexed names because `ping_uuid` is UNIQUE.
         let pid = store
             .create_project(
                 owner,
@@ -610,11 +565,8 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
             .get(&(*method, raw_path.as_str()))
             .unwrap_or_else(|| panic!("no body mapping for {method} {raw_path} — add one"));
 
-        // B's request must run before A's: B always 404s and so never mutates
-        // the seeded resource, while A's may be a DELETE that consumes it —
-        // running A first would make B's 404 vacuous again.
+        // Non-owner first: the owner's request may consume the resource.
         let member_res = build_request(&server, method, &path, &token, body.as_ref()).await;
-        // 404, not 403: existence is hidden from a non-owner non-admin.
         assert_eq!(
             member_res.status_code(),
             StatusCode::NOT_FOUND,
@@ -623,12 +575,8 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
             member_res.status_code()
         );
 
-        // Positive control: the same request as the owner against the same id,
-        // proving the id was live so B's 404 is ownership-driven. Only "not
-        // 404" is asserted — the minimal bodies in `body_table` satisfy
-        // `serde`'s `Deserialize` but not the later `validate_*` calls, so
-        // several routes return `400 bad_request` for the owner too; a 400
-        // still proves the id resolved to a real, owned resource.
+        // Positive control. Only "not 404": the minimal bodies may fail
+        // `validate_*` with 400, which still proves the id resolved.
         let owner_res = build_request(&server, method, &path, &owner_token, body.as_ref()).await;
         assert_ne!(
             owner_res.status_code(),
@@ -640,9 +588,7 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
     }
 }
 
-/// Builds and sends one `/api/v1` request with the given bearer token and
-/// optional JSON body, shared by the non-owner and owner requests in the loop
-/// above.
+/// Sends one `/api/v1` request with a bearer token and optional JSON body.
 async fn build_request(
     server: &TestServer,
     method: &str,

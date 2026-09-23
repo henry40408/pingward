@@ -1,14 +1,9 @@
-//! The programmatic REST API: a bearer-authenticated `/api/v1` surface (reads
-//! and writes) plus its `OpenAPI` document and Scalar reference UI.
+//! The bearer-authenticated `/api/v1` REST API plus its `OpenAPI` document and
+//! Scalar reference UI.
 //!
-//! Mounted in [`crate::app`] as a sibling router outside `csrf_guard`: every
-//! `/api/v1` handler authenticates via the [`extract::ApiUser`] bearer
-//! extractor and never reads the session cookie. `/api/docs` and
-//! `/api/openapi.json` do read it ([`CurrentUser`]), but are read-only `GET`s,
-//! so there is no ambient authority for a cross-site request to abuse. They
-//! are session-authenticated responses, so [`crate::web::no_store`] is layered
-//! around just those two — `/api/v1` is bearer-only and changing its headers
-//! would only affect API consumers.
+//! Mounted in [`crate::app`] outside `csrf_guard`: `/api/v1` authenticates only
+//! via [`extract::ApiUser`], never the session cookie. `/api/docs` and
+//! `/api/openapi.json` do use the session, but are read-only `GET`s.
 
 pub mod dto;
 pub mod error;
@@ -24,8 +19,7 @@ use axum::{Json, Router};
 use utoipa::OpenApi;
 use utoipa_scalar::Scalar;
 
-/// The `OpenAPI` document for the `/api/v1` surface. Every operation is
-/// bearer-authenticated (`api_key` security scheme).
+/// The `OpenAPI` document; every operation uses the `api_key` bearer scheme.
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -84,7 +78,7 @@ use utoipa_scalar::Scalar;
 )]
 struct ApiDoc;
 
-/// Registers the `api_key` bearer security scheme referenced by every path.
+/// Registers the `api_key` bearer security scheme.
 struct BearerAuth;
 
 impl utoipa::Modify for BearerAuth {
@@ -103,21 +97,17 @@ impl utoipa::Modify for BearerAuth {
     }
 }
 
-/// Gated behind a logged-in web session ([`CurrentUser`]): the reference
-/// describes the surface but is not itself public. `/api/v1` keeps its
-/// independent bearer authentication.
+/// Session-gated ([`CurrentUser`]): the reference is not itself public.
 async fn openapi_json(_user: CurrentUser) -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
-/// Serve the interactive Scalar API reference. Gated behind a logged-in web
-/// session for the same reason as [`openapi_json`].
+/// The Scalar API reference, session-gated like [`openapi_json`].
 async fn scalar_docs(_user: CurrentUser) -> Html<String> {
     Html(Scalar::new(ApiDoc::openapi()).to_html())
 }
 
-/// A sub-router purely so `no_store` covers just these two
-/// session-authenticated routes, without touching `/api/v1`'s headers.
+/// A sub-router so `no_store` covers only the two session-authenticated routes.
 fn docs_routes() -> Router<AppState> {
     Router::new()
         .route("/api/openapi.json", get(openapi_json))

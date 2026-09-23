@@ -1,9 +1,7 @@
-//! `POST /login` per-client-IP rate limiting (`crate::ratelimit`).
+//! `POST /login` per-IP and per-account rate limiting (`crate::ratelimit`).
 //!
-//! `axum-test` drives the router without `ConnectInfo` (only wired up for the
-//! real listener), so every request here has no socket peer and lands in
-//! `ratelimit::rate_limit_key`'s loopback fallback bucket — the path these tests
-//! exercise.
+//! `axum-test` sets no `ConnectInfo`, so every request shares
+//! `ratelimit::rate_limit_key`'s loopback fallback bucket.
 
 use axum_test::TestServer;
 use pingward::{app, db, state::AppState, store::Store};
@@ -28,8 +26,7 @@ async fn create_user(store: &Store, username: &str, password: &str) -> i64 {
         .unwrap()
 }
 
-/// A wrong-password `POST /login` with a fresh CSRF token — `csrf_guard` has no
-/// path exemptions, so every attempt needs its own anonymous session.
+/// A wrong-password `POST /login`, each with its own anonymous session's CSRF token.
 async fn failed_login(server: &mut TestServer, username: &str) -> axum_test::TestResponse {
     let csrf = common::anonymous_csrf(server).await;
     server
@@ -65,7 +62,6 @@ async fn successful_logins_do_not_consume_the_budget() {
     let (mut server, store) = server().await;
     create_user(&store, "bob", "correct-password").await;
 
-    // Each success releases its own reservation, so none of these is throttled.
     for _ in 0..=pingward::ratelimit::MAX_ATTEMPTS {
         let csrf = common::anonymous_csrf(&mut server).await;
         let res = server
@@ -93,7 +89,7 @@ async fn rate_limited_request_does_not_reach_the_password_check() {
         .await
         .unwrap();
 
-    // Now throttled — even the *correct* password must not create a session.
+    // Throttled: even the correct password must not create a session.
     let csrf = common::anonymous_csrf(&mut server).await;
     let res = server
         .post("/login")
@@ -117,17 +113,12 @@ async fn rate_limited_request_does_not_reach_the_password_check() {
 
 // --- the per-account limiter ---
 //
-// These need the per-address limiter out of the way: `axum-test` gives every
-// request the same loopback bucket (see the module doc), so the 5-per-minute
-// address budget is spent before the 10-per-15-minutes account budget is ever
-// reached. `AppState::login_limiter` is a public field, so swapping in a
-// permissive one needs no test-only seam in the production type.
+// The shared loopback bucket's 5/min would trip before the account's 10/15min,
+// so these swap in a permissive `AppState::login_limiter`.
 
 use pingward::ratelimit::{ACCOUNT_MAX_ATTEMPTS, ACCOUNT_WINDOW_SECS, RateLimiter};
 use std::sync::Arc;
 
-/// A server whose per-address limiter is effectively disabled, leaving the
-/// account limiter as the only thing that can refuse.
 async fn server_without_ip_limiting() -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -157,8 +148,7 @@ async fn an_account_is_locked_after_its_own_budget_regardless_of_source() {
     );
 }
 
-/// Per-account, not a global kill switch — otherwise one sprayed username would
-/// deny the whole instance.
+/// Otherwise one sprayed username would lock out the whole instance.
 #[tokio::test]
 async fn locking_one_account_leaves_another_signable_in() {
     let (mut server, store) = server_without_ip_limiting().await;
@@ -181,9 +171,7 @@ async fn locking_one_account_leaves_another_signable_in() {
         .assert_status(axum::http::StatusCode::SEE_OTHER);
 }
 
-/// The enumeration property: a username that does not exist must trip the limiter
-/// exactly as a real one does, or *being throttled* answers "does this user
-/// exist?" — giving back what `auth::verify_password_or_dummy` protects.
+/// Otherwise being throttled would reveal whether a username exists.
 #[tokio::test]
 async fn an_unknown_username_is_locked_out_just_like_a_real_one() {
     let (mut server, store) = server_without_ip_limiting().await;
@@ -209,9 +197,7 @@ async fn an_unknown_username_is_locked_out_just_like_a_real_one() {
     assert_eq!(real_res.header("retry-after"), res.header("retry-after"));
 }
 
-/// A success clears the account bucket outright rather than refunding the one
-/// attempt it cost (`RateLimiter::clear`): an owner who mistypes to the edge of
-/// the lockout and then signs in correctly must get a *full* budget back.
+/// A success must `clear` the account bucket, not refund one attempt.
 #[tokio::test]
 async fn a_successful_login_clears_the_account_lockout_budget() {
     let (mut server, store) = server_without_ip_limiting().await;
@@ -241,9 +227,8 @@ async fn a_successful_login_clears_the_account_lockout_budget() {
         .assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
 }
 
-/// The accepted cost, pinned so it is a decision rather than a surprise: once the
-/// account budget is spent the correct password is refused too, and no session is
-/// created. This is the `DoS` primitive a lockout hands to whoever knows a username.
+/// Pins the accepted cost: a lockout is a `DoS` primitive for anyone who knows
+/// the username.
 #[tokio::test]
 async fn a_locked_account_refuses_even_the_correct_password() {
     let (mut server, store) = server_without_ip_limiting().await;

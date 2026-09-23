@@ -70,19 +70,15 @@ Feature: Monitoring core
     When I delete the project
     Then the dashboard shows no projects
 
-  # Clicking the row *body* navigates through a delegated handler reading
-  # `data-href` (an inline onclick would need a CSP that allows inline script).
-  # Nothing else exercises that handler — the name inside the row is a real
-  # anchor and takes its own path, which is what makes the row work with JS
-  # off. See the no-JS render assertions in tests/dashboard_view.rs.
+  # The only coverage of app.js's delegated `data-href` handler: the name is a
+  # real anchor (the JS-off route, pinned in tests/no_js.rs).
   Scenario: Clicking a dashboard row opens its check
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60
     When I click the dashboard row for "backup"
     Then I am on the check page
 
-  # The same handler must keep its hands off a real link inside the row —
-  # what the removed `onclick="event.stopPropagation()"` used to do.
+  # The `data-href` handler must not hijack a real link inside the row.
   Scenario: A row's own link wins over the row's navigation
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60

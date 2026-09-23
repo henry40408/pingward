@@ -3,10 +3,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
-/// A JSON error envelope for the programmatic API: every failure is a
-/// `{"error":{"code","message"}}` object with a matching HTTP status, so
-/// clients can branch on a stable machine-readable `code`. The web UI's
-/// [`crate::error::AppError`] renders plain text / redirects instead.
+/// The API's error envelope: `{"error":{"code","message"}}` with a matching
+/// status, so clients can branch on a stable `code`.
 #[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
@@ -36,8 +34,7 @@ impl ApiError {
         }
     }
 
-    /// Used for both "does not exist" and "not yours", so existence is never
-    /// leaked — mirrors the web UI's 404-not-403 ownership hiding.
+    /// Both "does not exist" and "not yours", so existence is never leaked.
     pub fn not_found() -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", "resource not found")
     }

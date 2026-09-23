@@ -35,14 +35,12 @@ impl std::str::FromStr for EventKind {
     }
 }
 
-/// Why a check went down, so a `DOWN` message can distinguish "nothing pinged"
-/// from "the job reported failure".
+/// Why a check went down: "nothing pinged" vs "the job reported failure".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownCause {
     /// No ping arrived before period/cron + grace elapsed.
     Overdue,
-    /// A `start` ping was never followed by a completion within
-    /// `max_runtime_secs`.
+    /// A `start` ping got no completion within `max_runtime_secs`.
     Overrun {
         max_runtime_secs: i64,
         started_at: DateTime<Utc>,
@@ -62,13 +60,11 @@ impl DownCause {
     }
 }
 
-/// Context rendered alongside the state change. Every field is optional so a
-/// failed lookup drops a line rather than the notification;
-/// `EventDetail::default()` renders the bare "<name> is DOWN".
+/// Context around the state change. Every field is optional so a failed lookup
+/// drops a line, not the notification.
 ///
-/// Build it at the call site from the pre-update check snapshot, never re-read
-/// during delivery: on an `Up` event `last_ping_at` must be the ping *before*
-/// the recovery, which a re-read would have already overwritten.
+/// Build it from the pre-update check snapshot, never re-read during delivery:
+/// on `Up`, `last_ping_at` must be the ping *before* the recovery.
 #[derive(Debug, Clone, Default)]
 pub struct EventDetail {
     pub project_name: Option<String>,
@@ -78,15 +74,13 @@ pub struct EventDetail {
     pub schedule: Option<String>,
     /// The check's last completion before this event.
     pub last_ping_at: Option<DateTime<Utc>>,
-    /// The check's timezone; timestamps render in it, falling back to UTC.
+    /// Zone timestamps render in (UTC if unset/unparseable).
     pub timezone: Option<String>,
-    /// Set on `Down` only: `Reminder` fires long after the transition and `Up`
-    /// has no cause to report.
+    /// Set on `Down` only.
     pub cause: Option<DownCause>,
 }
 
 impl EventDetail {
-    /// Build from the check snapshot as it was when the event fired.
     pub fn from_check(check: &Check, project_name: Option<String>, base_url: &str) -> Self {
         Self {
             project_name,
@@ -103,10 +97,8 @@ impl EventDetail {
         self
     }
 
-    /// Override the rendering zone with the instance-wide `display_timezone`
-    /// when one is configured on `/admin`. A notification is the one surface
-    /// with no browser to localise it. Blank keeps the check's own zone, which
-    /// is what a cron schedule is written against.
+    /// Override the zone with the instance-wide `display_timezone`, since a
+    /// notification has no browser to localise it. Blank keeps the check's zone.
     pub fn with_display_timezone(mut self, tz: Option<&str>) -> Self {
         if let Some(t) = tz.map(str::trim).filter(|t| !t.is_empty()) {
             self.timezone = Some(t.to_string());
@@ -129,9 +121,8 @@ pub struct NotificationEvent {
 #[error("notify failed: {0}")]
 pub struct NotifyError(pub String);
 
-/// Report only the error's classification: reqwest's `Display` embeds the
-/// request URL, which for Telegram carries the bot token in its path, and that
-/// would leak into the failure banner and the stored notification error.
+/// Classify only: reqwest's `Display` embeds the URL, which for Telegram holds
+/// the bot token, and would leak into the stored notification error.
 fn transport_err(e: &reqwest::Error) -> NotifyError {
     let kind = if e.is_timeout() {
         "request timed out"
@@ -154,8 +145,7 @@ pub trait Notifier: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>>;
 }
 
-/// The 10s timeout keeps a hung endpoint from blocking delivery forever. Falls
-/// back to a default client rather than unwrapping the builder.
+/// The 10s timeout keeps a hung endpoint from blocking delivery forever.
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -163,8 +153,7 @@ fn http_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
-/// `None` when no base URL is configured, so the message omits the link
-/// instead of rendering a bare `/checks/7`.
+/// `None` without a base URL, so the message omits the link rather than a bare path.
 fn check_url(base_url: &str, check_id: i64) -> Option<String> {
     let base = base_url.trim().trim_end_matches('/');
     if base.is_empty() {
@@ -173,8 +162,7 @@ fn check_url(base_url: &str, check_id: i64) -> Option<String> {
     Some(format!("{base}/checks/{check_id}"))
 }
 
-/// One-line schedule summary. Reuses `duration::fmt_duration`, the rendering
-/// the edit forms use, so `300` reads as `5m` in both places.
+/// One-line schedule summary, in the edit forms' `fmt_duration` format.
 fn schedule_summary(check: &Check) -> String {
     let grace = if check.grace_secs > 0 {
         format!(" (grace {})", fmt_duration(check.grace_secs))
@@ -193,8 +181,7 @@ fn schedule_summary(check: &Check) -> String {
     }
 }
 
-/// Render an instant in the check's timezone (UTC when unset or unparseable),
-/// e.g. `2026-07-29 17:03 CST` — nothing localises it for the reader here.
+/// Render in `tz` (UTC when unset or unparseable), e.g. `2026-07-29 17:03 CST`.
 fn fmt_at(at: DateTime<Utc>, tz: Option<&str>) -> String {
     let zone: chrono_tz::Tz = tz.and_then(|t| t.parse().ok()).unwrap_or(chrono_tz::UTC);
     at.with_timezone(&zone)
@@ -202,7 +189,7 @@ fn fmt_at(at: DateTime<Utc>, tz: Option<&str>) -> String {
         .to_string()
 }
 
-/// `fmt_at` plus how long ago it was, when that is in the past.
+/// `fmt_at` plus "(… ago)" when in the past.
 fn fmt_at_rel(at: DateTime<Utc>, now: DateTime<Utc>, tz: Option<&str>) -> String {
     let secs = (now - at).num_seconds();
     if secs > 0 {
@@ -212,17 +199,15 @@ fn fmt_at_rel(at: DateTime<Utc>, now: DateTime<Utc>, tz: Option<&str>) -> String
     }
 }
 
-/// Replace control characters with spaces. The ntfy `Title` header and the
-/// email `Subject` are single-line: a name holding a newline would make
-/// `HeaderValue` construction fail and abort the send.
+/// Replace control characters with spaces: a newline in the ntfy `Title` header
+/// fails `HeaderValue` construction and aborts the send.
 fn single_line(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
 
-/// `Project: infra · every 5m (grace 1m)` — omitted entirely when neither
-/// half is known.
+/// `Project: infra · every 5m (grace 1m)`; `None` when neither half is known.
 fn context_line(d: &EventDetail) -> Option<String> {
     match (&d.project_name, &d.schedule) {
         (Some(p), Some(s)) => Some(format!("Project: {p} · {s}")),
@@ -232,8 +217,8 @@ fn context_line(d: &EventDetail) -> Option<String> {
     }
 }
 
-/// `Reminder` reports "Last ping" rather than "No ping since": it carries no
-/// `cause`, and a check downed by a `fail` ping did ping.
+/// `Reminder` says "Last ping", not "No ping since": it has no `cause`, and a
+/// check downed by a `fail` ping did ping.
 fn reason_line(ev: &NotificationEvent) -> String {
     let d = &ev.detail;
     let tz = d.timezone.as_deref();
@@ -267,11 +252,8 @@ fn reason_line(ev: &NotificationEvent) -> String {
     }
 }
 
-/// Human summary of a state transition, reused by text-oriented channels
-/// (Telegram, Slack, the ntfy body and the email body).
-///
-/// Capped at four short lines — headline, context, reason, link. Everything
-/// past that is on the linked page.
+/// Message body for every text channel. Capped at four lines — headline,
+/// context, reason, link; everything else is on the linked page.
 fn event_text(ev: &NotificationEvent) -> String {
     let d = &ev.detail;
     let tz = d.timezone.as_deref();
@@ -300,8 +282,7 @@ fn event_text(ev: &NotificationEvent) -> String {
     lines.join("\n")
 }
 
-/// Short title for channels with a separate title field (ntfy, Pushover, and
-/// the email subject).
+/// Title for ntfy, Pushover and the email subject.
 fn event_title(ev: &NotificationEvent) -> String {
     let name = single_line(&ev.check_name);
     let subject = match &ev.detail.project_name {
@@ -336,8 +317,7 @@ impl Notifier for WebhookNotifier {
         ev: &'a NotificationEvent,
     ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
         Box::pin(async move {
-            // The original four keys stay verbatim; additions are strictly
-            // additive, so an existing consumer keeps parsing what it parsed.
+            // The original four keys stay verbatim; everything else is additive.
             let d = &ev.detail;
             let exit_code = match d.cause {
                 Some(DownCause::Failed { exit_code }) => exit_code,
@@ -374,9 +354,7 @@ impl Notifier for WebhookNotifier {
     }
 }
 
-/// Telegram Bot API: `POST {base_url}/bot{token}/sendMessage` with a JSON
-/// `{chat_id, text}` body. `base_url` is injectable so tests can point at a
-/// mock server.
+/// `POST {base_url}/bot{token}/sendMessage`; `base_url` is injectable for tests.
 pub struct TelegramNotifier {
     token: String,
     chat_id: String,
@@ -426,7 +404,7 @@ impl Notifier for TelegramNotifier {
     }
 }
 
-/// Slack incoming webhook: `POST {url}` with a JSON `{text}` body.
+/// Slack incoming webhook: `POST {url}` with `{text}`.
 pub struct SlackNotifier {
     url: String,
     client: reqwest::Client,
@@ -464,9 +442,7 @@ impl Notifier for SlackNotifier {
     }
 }
 
-/// ntfy publish: `POST {base_url}/{topic}` with the message as the body and
-/// `Title`/`Priority`/`Tags` headers. The optional bearer token authenticates
-/// against protected topics / self-hosted servers.
+/// ntfy publish: `POST {base_url}/{topic}`, optional bearer token.
 pub struct NtfyNotifier {
     base_url: String,
     topic: String,
@@ -504,9 +480,8 @@ impl Notifier for NtfyNotifier {
                 .header("Priority", priority)
                 .header("Tags", tags)
                 .body(event_text(ev));
-            // `Click` makes tapping the notification open the check page.
-            // Guarded on the URL being header-safe: a control character in it
-            // would fail `HeaderValue` construction and abort the send.
+            // `Click` opens the check page; skipped unless header-safe, since
+            // an invalid `HeaderValue` would abort the send.
             if let Some(u) = ev.detail.url.as_ref().filter(|u| {
                 !u.is_empty() && !u.chars().any(|c| c.is_control() || c.is_whitespace())
             }) {
@@ -525,9 +500,7 @@ impl Notifier for NtfyNotifier {
     }
 }
 
-/// Pushover: `POST {base_url}/1/messages.json` with a form body carrying the
-/// app `token`, the recipient `user` key, and the `message`. `base_url` is
-/// injectable so tests can point at a mock.
+/// `POST {base_url}/1/messages.json` form; `base_url` is injectable for tests.
 pub struct PushoverNotifier {
     token: String,
     user: String,
@@ -570,7 +543,6 @@ impl Notifier for PushoverNotifier {
                 ("message", message.as_str()),
                 ("priority", priority),
             ];
-            // Pushover renders `url`/`url_title` as a tappable action.
             if let Some(u) = ev.detail.url.as_deref().filter(|u| !u.is_empty()) {
                 form.push(("url", u));
                 form.push(("url_title", "Open in pingward"));
@@ -615,7 +587,7 @@ impl Default for RetryPolicy {
     }
 }
 
-/// Read a required non-empty string field from parsed channel config.
+/// A trimmed, non-empty string field of the channel config.
 fn cfg_str(v: &serde_json::Value, key: &str) -> Option<String> {
     v.get(key)
         .and_then(|x| x.as_str())
@@ -624,8 +596,7 @@ fn cfg_str(v: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Panic-free: a malformed address yields a `NotifyError` rather than
-/// panicking.
+/// A malformed address is a `NotifyError`, not a panic.
 fn build_email(from: &str, to: &str, ev: &NotificationEvent) -> Result<Message, NotifyError> {
     Message::builder()
         .from(
@@ -640,9 +611,8 @@ fn build_email(from: &str, to: &str, ev: &NotificationEvent) -> Result<Message, 
         .map_err(|e| NotifyError(format!("failed to build email: {e}")))
 }
 
-/// Email via the instance SMTP relay. `smtp` is `None` when no relay is
-/// configured; `send` then records a delivery error rather than silently
-/// dropping the alert.
+/// Email via the instance SMTP relay. With none configured, `send` errors so
+/// the failure is recorded rather than the alert silently dropped.
 pub struct EmailNotifier {
     smtp: Option<SmtpConfig>,
     to: String,
@@ -684,8 +654,8 @@ impl Notifier for EmailNotifier {
     }
 }
 
-/// `None` (with a warning) when a required config field is missing or blank —
-/// `deliver_event` skips such channels rather than failing the event.
+/// `None` (with a warning) when a required field is missing or blank;
+/// `deliver_event` skips such channels.
 pub fn notifier_for(channel: &Channel, smtp: Option<&SmtpConfig>) -> Option<Box<dyn Notifier>> {
     let cfg: serde_json::Value = serde_json::from_str(&channel.config_json)
         .map_err(|e| {
@@ -736,8 +706,7 @@ pub fn notifier_for(channel: &Channel, smtp: Option<&SmtpConfig>) -> Option<Box<
     }
 }
 
-/// Send with bounded exponential-backoff retry. Returns the last error if all
-/// attempts fail.
+/// Exponential-backoff retry; returns the last error if every attempt fails.
 pub async fn send_with_retry(
     n: &dyn Notifier,
     ev: &NotificationEvent,
@@ -759,9 +728,8 @@ pub async fn send_with_retry(
     Err(last)
 }
 
-/// Deliver to each bound channel with retry, recording every outcome in
-/// `notifications`. Failures are recorded, never propagated (spec §6: a
-/// failing channel must not affect state).
+/// Deliver to each bound channel with retry and record every outcome. Failures
+/// are recorded, never propagated: a failing channel must not affect state.
 pub async fn deliver_event(
     store: &Store,
     ev: &NotificationEvent,
@@ -852,7 +820,6 @@ mod tests {
             detail: EventDetail::default(),
         };
         n.send(&ev).await.unwrap();
-        // wiremock verifies expect(1) on drop
     }
 
     #[tokio::test]
@@ -894,11 +861,9 @@ mod tests {
             detail: EventDetail::default(),
         };
         n.send(&ev).await.unwrap();
-        // wiremock verifies expect(1) on drop
     }
 
-    /// Adds ~10s of real wall-clock time: reqwest's timer is real, so tokio's
-    /// paused clock does not apply to it.
+    /// Takes ~10s of real time: tokio's paused clock does not drive reqwest.
     #[tokio::test]
     async fn webhook_send_times_out_on_hung_endpoint() {
         let server = MockServer::start().await;
@@ -1018,8 +983,7 @@ mod tests {
 
     #[tokio::test]
     async fn telegram_send_error_does_not_leak_bot_token() {
-        // A closed local port forces a connect error, whose URL carries the
-        // bot token in its path.
+        // A closed port forces a connect error whose URL holds the token.
         let token = "123456:SECRETTOKENVALUE";
         let n = TelegramNotifier::with_base_url(
             token.into(),
@@ -1043,8 +1007,6 @@ mod tests {
 
     #[test]
     fn event_title_strips_control_characters() {
-        // A newline/tab reaching the ntfy `Title` header makes HeaderValue
-        // construction fail and aborts the send.
         let ev = NotificationEvent {
             check_id: 1,
             check_name: "back\nup\tjob".into(),
@@ -1060,8 +1022,6 @@ mod tests {
 
     #[tokio::test]
     async fn ntfy_send_succeeds_with_control_char_check_name() {
-        // Regression guard: before `event_title` sanitized, a control char in
-        // the check name made the `Title` header invalid and `send` failed.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_string("{\"id\":\"x\"}"))
@@ -1291,7 +1251,6 @@ mod tests {
             project_id: 1,
             detail: EventDetail::default(),
         };
-        // fast policy so the test does not sleep for seconds
         let policy = RetryPolicy {
             max_attempts: 2,
             base_backoff: std::time::Duration::from_millis(1),
@@ -1411,8 +1370,6 @@ mod tests {
         );
     }
 
-    // --- message content -------------------------------------------------
-
     fn detail_check() -> Check {
         Check {
             id: 42,
@@ -1511,8 +1468,6 @@ mod tests {
         );
     }
 
-    /// A reminder carries no cause, and a check downed by a `fail` ping did
-    /// ping — so it says "Last ping", never "No ping since".
     #[test]
     fn reminder_text_reports_the_last_ping_neutrally() {
         let text = event_text(&detailed_event(EventKind::Reminder, None));
@@ -1527,8 +1482,6 @@ mod tests {
         assert!(!text.contains("No ping since"), "got: {text}");
     }
 
-    /// The extra context degrades: with nothing resolved the message is still
-    /// the bare one-liner plus a reason.
     #[test]
     fn text_degrades_to_headline_and_reason_without_detail() {
         let ev = NotificationEvent {
@@ -1556,8 +1509,6 @@ mod tests {
         assert!(!title.chars().any(char::is_control));
     }
 
-    /// The instance display timezone beats the check's own zone, which is
-    /// written for the cron schedule rather than for the reader.
     #[test]
     fn display_timezone_overrides_the_checks_own_zone() {
         let mut ev = detailed_event(EventKind::Down, Some(DownCause::Overdue));
@@ -1605,8 +1556,6 @@ mod tests {
         assert_eq!(schedule_summary(&check), "cron \"0 0 * * * *\" Asia/Taipei");
     }
 
-    /// Existing consumers depend on the original four keys; the rest is
-    /// additive.
     #[tokio::test]
     async fn webhook_payload_keeps_old_keys_and_adds_context() {
         let server = MockServer::start().await;

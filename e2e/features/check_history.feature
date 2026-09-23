@@ -44,11 +44,9 @@ Feature: Check history pagination
     Then the pings from date is "2020-01-01T00:00"
     And the pings table shows 3 rows
 
-  # The strip renders more bars than fit and lets CSS clip the overflow, so
-  # two things have to hold that no server-side test can see: the newest run
-  # stays pinned to the right edge (`justify-content: flex-end`), and the
-  # overflow is clipped rather than pushing the page wide (`overflow: hidden`).
-  # 60 runs overrun a phone-width strip several times over.
+  # CSS-only: the newest run stays pinned right (`justify-content: flex-end`)
+  # and the overflow is clipped (`overflow: hidden`), not widening the page.
+  # 60 runs overflow a phone-width strip.
   Scenario: The heartbeat strip clips its oldest runs instead of overflowing
     When I send 60 "success" pings
     And I view the site at 375px wide
@@ -57,9 +55,8 @@ Feature: Check history pagination
     And the oldest heartbeat bars are clipped off the left
     And the page has no horizontal scrollbar
 
-  # The other half of no_js.feature's "captured output is readable": with
-  # script on the panel must still start collapsed. Without this, leaving every
-  # panel permanently open would satisfy that scenario and break nothing here.
+  # Pairs with no_js.feature: with script the panel must start collapsed, so
+  # leaving every panel open cannot pass both.
   Scenario: The captured output stays collapsed until the row is clicked
     When I send a failing ping with output "boom: disk full"
     And I reload the check page

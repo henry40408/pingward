@@ -5,7 +5,6 @@ use cucumber::{given, then, when};
 use pingward_e2e::dom::Dom;
 use pingward_e2e::world::PingwardWorld;
 
-/// Opens the new-check form from the current project page.
 async fn open_new_check_form(world: &PingwardWorld) -> Result<()> {
     world.driver()?.submit("new-check-link").await?;
     world
@@ -20,7 +19,6 @@ async fn given_new_check_form(world: &mut PingwardWorld) -> Result<()> {
 
 #[when(expr = "I create a cron check named {string} with expression {string}")]
 async fn create_cron_check(world: &mut PingwardWorld, name: String, expr: String) -> Result<()> {
-    // `period_secs` is left blank, since cron mode ignores it.
     open_new_check_form(world).await?;
     let driver = world.driver()?;
     driver.fill("check-name-input", &name).await?;
@@ -43,8 +41,7 @@ async fn fill_check_period_int(world: &mut PingwardWorld, period: i64) -> Result
         .await
 }
 
-/// The human-readable duration form (`1h30m`), as opposed to the bare-integer
-/// variant above.
+/// Human-readable durations (`1h30m`).
 #[when(expr = "I fill the check period with {string}")]
 async fn fill_check_period_text(world: &mut PingwardWorld, period: String) -> Result<()> {
     world.driver()?.fill("check-period-input", &period).await
@@ -65,13 +62,12 @@ async fn submit_check_form(world: &mut PingwardWorld) -> Result<()> {
 
 #[then(expr = "the check schedule shows {string}")]
 async fn schedule_shows(world: &mut PingwardWorld, text: String) -> Result<()> {
-    // For a cron check the schedule label is the raw expression.
     world.driver()?.expect_text_somewhere(&text).await
 }
 
 #[then("I am still on the new check form")]
 async fn still_on_new_check_form(world: &mut PingwardWorld) -> Result<()> {
-    // The input's `required` attribute blocks the submit, so no POST fires.
+    // `required` blocks the submit client-side; no POST fires.
     world
         .expect_path_matching(r"/projects/\d+/checks/new$")
         .await?;
@@ -80,8 +76,7 @@ async fn still_on_new_check_form(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("only the period field is shown")]
 async fn only_period_shown(world: &mut PingwardWorld) -> Result<()> {
-    // The kind select drives `:has()` rules in `app.css`, not script, so the
-    // two fields are never visible at once.
+    // Switched by `:has()` rules in `app.css`, not script.
     let driver = world.driver()?;
     driver.expect_visible("check-period-input").await?;
     driver.expect_hidden_css("#cron_expr").await
@@ -112,8 +107,7 @@ async fn name_field_required(world: &mut PingwardWorld) -> Result<()> {
 
 #[then(expr = "the check form shows the error {string}")]
 async fn check_form_error(world: &mut PingwardWorld, message: String) -> Result<()> {
-    // The message quotes the offending name, so the feature file escapes those
-    // quotes and the `{string}` capture arrives with the backslashes intact.
+    // The message contains quotes; `{string}` keeps their escaping backslashes.
     world
         .driver()?
         .expect_exact_text_css(".flash.err", &pingward_e2e::unescape(&message))

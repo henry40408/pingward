@@ -1,11 +1,6 @@
-{# Audit-trail fragment: filter controls + table + keyset pager. Served
-   standalone by GET /admin/audit (JS swaps it into #audit-section) and inlined
-   into admin.html. Rendered content is escaped here; the parent injects it with
-   |safe. Mirrors check_pings.html. #}
-{# Real GET form submitting to /admin, the page this card lives on — see
-   check_pings.html for the reasoning. No hidden fields: unlike the check page,
-   nothing else on /admin reads the query string, so there is no sibling
-   filter to preserve. #}
+{# Audit-trail fragment, served by GET /admin/audit and inlined into admin.html
+   via |safe; see check_pings.html. No hidden fields: nothing else on /admin
+   reads the query string. #}
 <form class="filters" method="get" action="/admin" data-testid="audit-filters" data-nosubmit>
   <label class="fld">From <input type="datetime-local" name="afrom" data-testid="audit-from" data-utc="{{ f_from }}"></label>
   <label class="fld">To <input type="datetime-local" name="ato" data-testid="audit-to" data-utc="{{ f_to }}"></label>

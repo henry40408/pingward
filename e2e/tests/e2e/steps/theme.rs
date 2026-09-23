@@ -8,8 +8,7 @@ use pingward_e2e::world::PingwardWorld;
 
 #[then(expr = "the resolved theme is {string}")]
 async fn resolved_theme_is(world: &mut PingwardWorld, theme: String) -> Result<()> {
-    // `data-theme` on `<html>` is always resolved to `light` or `dark`, never
-    // `system`.
+    // Always `light` or `dark`, never `system`.
     world
         .driver()?
         .expect_attr("html", "data-theme", Some(&theme))
@@ -51,8 +50,7 @@ async fn set_theme_preference(world: &mut PingwardWorld, preference: String) -> 
 
 #[when("the OS prefers dark")]
 async fn os_prefers_dark(world: &mut PingwardWorld) -> Result<()> {
-    // The page's `matchMedia` listener re-resolves while the preference is
-    // `system`.
+    // `app.js`'s `matchMedia` listener re-resolves under `system`.
     world.browser()?.emulate_color_scheme("dark").await
 }
 
@@ -76,16 +74,10 @@ async fn hover_primary_action(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("its label contrasts with its background")]
 async fn label_contrasts(world: &mut PingwardWorld) -> Result<()> {
-    // WCAG relative-luminance contrast between the element's own text and
-    // background. `filter` is not folded into computed colours, so this
-    // measures the declarations a specificity clash would break.
-    //
-    // The `rgb` helper normalises two spellings: Chromium resolves
-    // `color-mix()` to `color(srgb r g b)` in 0–1 floats while plain
-    // declarations stay `rgb(r, g, b)` in 0–255, and without that a mixed
-    // colour reads as near-black and fakes a pass. The script itself carries no
-    // comments: the line continuations strip the newlines, so a `//` would
-    // comment out everything after it.
+    // WCAG contrast of the computed colours (`filter` is not folded in). `rgb`
+    // normalises Chromium's `color(srgb …)` 0–1 floats from `color-mix()`;
+    // read as 0–255 they look near-black and fake a pass. No `//` in the
+    // script: the `\` continuations join it onto one line.
     let button = world.driver()?.css(".btn-primary").await?;
     let ratio = world
         .driver()?

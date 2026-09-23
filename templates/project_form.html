@@ -6,8 +6,7 @@
   <div class="cb">
     <form method="post" action="{{ action }}">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
-      {# The same suggestions the check form offers, from the same source, for
-         the same two fields. See `view::durations`. #}
+      {# See `view::durations`. #}
       <datalist id="dur-list">
         {% for d in crate::view::durations() %}<option value="{{ d }}">{% endfor %}
       </datalist>

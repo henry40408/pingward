@@ -1,11 +1,8 @@
-//! The password length policy (`auth::validate_password`) across the surfaces
-//! that *set* a password: `/setup`, `/admin/users` and
-//! `/admin/users/{id}/password` here, `/account/password` in
-//! `tests/account_web.rs`. Grouped because the failure mode is a *new* surface
-//! quietly not calling the validator, which no per-page test would notice.
+//! `auth::validate_password` on every surface that sets a password: `/setup`,
+//! `/admin/users`, `/admin/users/{id}/password` (`/account/password` is in
+//! `tests/account_web.rs`).
 //!
-//! `/login` is absent and must stay absent: validating on sign-in would lock out
-//! every account whose password predates the policy.
+//! `/login` must never validate: it would lock out passwords predating the policy.
 
 use axum_test::TestServer;
 use pingward::{app, db, state::AppState, store::Store};
@@ -27,7 +24,7 @@ async fn server() -> (TestServer, Store) {
     (server, store)
 }
 
-/// Signed in as an admin, with the session CSRF token set as a default header.
+/// Signed-in admin with the CSRF header set and elevation unlocked.
 async fn admin_server() -> (TestServer, Store, i64) {
     let (mut server, store) = server().await;
     let phc = pingward::auth::hash_password("pw").unwrap();
@@ -80,7 +77,7 @@ async fn setup_refuses_a_password_under_the_floor() {
     );
 }
 
-/// The password policy only speaks once there is a username to go with it.
+/// A blank username still gets the combined "required" message.
 #[tokio::test]
 async fn setup_still_reports_a_missing_username_as_a_pair() {
     let (mut server, store) = server().await;
@@ -139,8 +136,7 @@ async fn admin_user_creation_refuses_a_password_under_the_floor() {
     );
 }
 
-/// A bare redirect back to `/admin` is indistinguishable from success — an admin
-/// would believe they had rotated a credential they had not.
+/// A bare redirect to `/admin` would look like success.
 #[tokio::test]
 async fn admin_password_reset_refuses_and_says_so_rather_than_redirecting() {
     let (server, store, _admin) = admin_server().await;

@@ -1,6 +1,4 @@
-/// mimalloc typically lowers RSS and tail latency for a long-lived,
-/// multi-threaded tokio server. Installed on the binary only (not
-/// `src/lib.rs`), so the test/bench harness keeps the system allocator.
+/// Binary only (not `src/lib.rs`), so tests and benches keep the system allocator.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -18,26 +16,21 @@ use tracing_subscriber::{
     layer::SubscriberExt, util::SubscriberInitExt,
 };
 
-/// How long the drain waits for the pool's connections. Fire-and-forget
-/// notification deliveries can still be retrying against a slow endpoint while
-/// holding one, and a stuck delivery must not turn a graceful stop into a hang
-/// Docker ends with SIGKILL anyway. Well inside its 10s stop grace period.
+/// Bounds the HTTP drain: an open SSE stream (`web::sse_for_check`) never ends
+/// on its own, so an unbounded graceful shutdown would wait on its client.
+const HTTP_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Bounds the pool close: a fire-and-forget delivery may still hold a connection
+/// while retrying. With the drain, still inside Docker's 10s stop grace period.
 const POOL_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// What is logged when `RUST_LOG` says nothing: pingward's own events at INFO,
-/// every dependency at ERROR.
+/// Used when `RUST_LOG` is unset or unparseable.
 const DEFAULT_FILTER: &str = "error,pingward=info";
 
-/// `RUST_LOG` controls verbosity; `format` selects one of the three
-/// human-readable renderers or line-delimited JSON.
 fn init_tracing(format: LogFormat) {
-    // `Targets` rather than `EnvFilter`: same `RUST_LOG` directives without the
-    // regex engine, giving up only span/field filtering, which nothing here
-    // writes. An unparseable *level* falls back to the default rather than
-    // refusing to start; a mistyped *target* cannot be caught at all (a bare
-    // word is a target name at TRACE), so `RUST_LOG=nonsense` parses into a
-    // filter nothing matches and the log goes silent. `EnvFilter` behaves
-    // identically on both inputs.
+    // `Targets` rather than `EnvFilter`: same directives without the regex
+    // engine. A bare word parses as a target at TRACE, so a mistyped
+    // `RUST_LOG` can silence the log rather than fall back to the default.
     let filter: Targets = std::env::var("RUST_LOG")
         .ok()
         .and_then(|directives| directives.parse().ok())
@@ -50,11 +43,9 @@ fn init_tracing(format: LogFormat) {
                 FmtSpan::NONE
             }
         });
-    // Per no-color.org, `NO_COLOR` disables colour only when set and non-empty.
+    // Per no-color.org: only a set, non-empty `NO_COLOR` counts.
     let use_ansi = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
-    // `log_internal_errors(true)` is not a default of `fmt::layer()` (it is of
-    // the `fmt()` builder); without it a subscriber that fails to write is
-    // silent about it.
+    // Not a `fmt::layer()` default; without it a failed write is silent.
     let layer = tracing_subscriber::fmt::layer()
         .with_span_events(span_events)
         .with_ansi(use_ansi)
@@ -68,9 +59,7 @@ fn init_tracing(format: LogFormat) {
     tracing_subscriber::registry().with(layer).init();
 }
 
-/// Warn when the session/CSRF secret is not configured: the consequence, every
-/// browser session ending on restart, is otherwise visible only as an
-/// unexplained logout. Called after `init_tracing` to honour the log format.
+/// Otherwise the only symptom of an unset secret is an unexplained logout on restart.
 fn warn_on_ephemeral_secret(source: SecretSource) {
     let cause = match source {
         SecretSource::Env => return,
@@ -86,10 +75,7 @@ fn warn_on_ephemeral_secret(source: SecretSource) {
     );
 }
 
-/// Warn when a forward-auth logout URL is configured without forward auth
-/// itself: logout still redirects there, but no request is authenticated by a
-/// gateway. A warning rather than a refusal, so an operator staging gateway
-/// config in two steps can still boot.
+/// A warning rather than a refusal, so gateway config can be staged in two steps.
 fn warn_on_orphan_logout_url(config: &Config) {
     if config.forward_auth_logout_url.is_some() && config.forward_auth_header.is_none() {
         tracing::warn!(
@@ -121,13 +107,10 @@ async fn main() {
         .expect("failed to run migrations");
     let store = Store::new(pool);
 
-    // Built before the loops so the scan loop and the HTTP server share one
-    // live-tail event bus (state.events).
+    // Before the loops, so the scan loop and HTTP server share `state.events`.
     let state = AppState::new(store.clone(), config);
 
-    // One flag drives all three long-lived tasks, raised by the first
-    // SIGTERM/SIGINT. See `shutdown::os_signal` for why the handler is
-    // mandatory under Docker.
+    // One flag stops the server and both loops.
     let (shutdown_tx, shutdown) = shutdown::channel();
     tokio::spawn(async move {
         shutdown::os_signal().await;
@@ -151,23 +134,33 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
     tracing::info!("listening on {}", listener.local_addr().unwrap());
-    let served = axum::serve(
+    let server = axum::serve(
         listener,
         pingward::app(state).into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    // Stops accepting new connections and lets in-flight requests finish. An
-    // open SSE stream (`web::sse_for_check`) only ends when the client
-    // disconnects, so `POOL_CLOSE_TIMEOUT` bounds the drain, not this.
-    .with_graceful_shutdown(async move { shutdown.wait().await })
-    .await;
+    .with_graceful_shutdown({
+        let shutdown = shutdown.clone();
+        async move { shutdown.wait().await }
+    });
+    let served = tokio::select! {
+        served = std::future::IntoFuture::into_future(server) => served,
+        () = async {
+            shutdown.wait().await;
+            tokio::time::sleep(HTTP_DRAIN_TIMEOUT).await;
+        } => {
+            tracing::warn!(
+                "http connections still open after {}s; closing them",
+                HTTP_DRAIN_TIMEOUT.as_secs()
+            );
+            Ok(())
+        }
+    };
     if let Err(e) = served {
-        // Logged, not `unwrap`ed: the database still has to close cleanly.
+        // Not `unwrap`ed: the database still has to close cleanly.
         tracing::error!("http server error: {e}");
     }
 
-    // Both loops hold pool connections: join them before closing the pool, or a
-    // scan/prune query races the shutdown and fails with `PoolClosed`. No
-    // deadlock — each loop returns on the same flag that ended the server.
+    // Join before closing the pool, or a loop query fails with `PoolClosed`.
     let (scan, prune) = tokio::join!(scan, prune);
     if let Err(e) = scan {
         tracing::error!("scan loop panicked: {e}");
@@ -176,8 +169,7 @@ async fn main() {
         tracing::error!("prune loop panicked: {e}");
     }
 
-    // The point of the drain for SQLite: a clean close of the last connection
-    // checkpoints the WAL into the main database and removes the `-wal`/`-shm`
+    // For SQLite, a clean close checkpoints the WAL and removes the `-wal`/`-shm`
     // sidecars, which SIGKILL never does.
     if tokio::time::timeout(POOL_CLOSE_TIMEOUT, store.pool.close())
         .await
