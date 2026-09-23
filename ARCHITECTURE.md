@@ -537,7 +537,9 @@ not require finding a password during a suspected compromise. Also ungated:
 - **In-memory, per process** — elevation is short-lived, so a restart or second
   replica just asks again (the safe direction). No migration.
 - **Keyed per session by SHA-256 handle**, never the raw id; unlocking one
-  browser does not unlock another, and `logout` revokes it.
+  browser does not unlock another. Every handler that ends a session (logout,
+  revocation, password change/reset, disable, delete) drops its elevation;
+  expiry leaves it to the far shorter TTL.
 - **A passwordless forward-auth admin is never gated**
   (`Elevation::not_applicable`), same reasoning as above.
 

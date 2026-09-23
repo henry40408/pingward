@@ -536,3 +536,156 @@ async fn only_the_granting_controls_are_marked_and_only_while_locked() {
     common::unlock_admin(&server, ADMIN_PW).await;
     assert!(!server.get("/admin").await.text().contains("data-reauth"));
 }
+
+// --- ending a session drops its elevation ---
+
+const NEW_PW: &str = "a-brand-new-long-password";
+
+/// Two admins (`admin`, `eve`) on one shared `AppState`, so every server sees
+/// the same `Elevations`.
+async fn shared_state() -> (AppState, Store, i64, i64) {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let phc = pingward::auth::hash_password(ADMIN_PW).unwrap();
+    let admin = store
+        .create_user("admin", Some(&phc), true, chrono::Utc::now())
+        .await
+        .unwrap();
+    let eve = store
+        .create_user("eve", Some(&phc), true, chrono::Utc::now())
+        .await
+        .unwrap();
+    let state = AppState::new(store.clone(), common::test_config());
+    (state, store, admin, eve)
+}
+
+/// A signed-in, unlocked browser for `username`, and its session handle.
+async fn unlocked(state: &AppState, store: &Store, username: &str) -> (TestServer, String) {
+    let mut server = TestServer::new(app(state.clone()));
+    server.save_cookies();
+    let csrf = common::anonymous_csrf(&mut server).await;
+    server
+        .post("/login")
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", username),
+            ("password", ADMIN_PW),
+        ])
+        .await;
+    let id = sqlx::query_scalar::<_, String>("SELECT id FROM sessions ORDER BY rowid DESC LIMIT 1")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    server.add_header(
+        "x-csrf-token",
+        pingward::secret::derive_csrf(common::TEST_SECRET.as_bytes(), &id).as_str(),
+    );
+    common::unlock_admin(&server, ADMIN_PW).await;
+    let handle = pingward::apikey::hash_api_key(&id);
+    assert!(elevated(state, &handle));
+    (server, handle)
+}
+
+fn elevated(state: &AppState, handle: &str) -> bool {
+    state.elevations.remaining_secs(handle).is_some()
+}
+
+#[tokio::test]
+async fn logging_out_drops_the_elevation() {
+    let (state, store, _, _) = shared_state().await;
+    let (a, ha) = unlocked(&state, &store, "admin").await;
+    a.post("/logout").await;
+    assert!(!elevated(&state, &ha));
+}
+
+#[tokio::test]
+async fn revoking_a_session_drops_its_elevation() {
+    let (state, store, _, _) = shared_state().await;
+    let (a, ha) = unlocked(&state, &store, "admin").await;
+    let (_b, hb) = unlocked(&state, &store, "admin").await;
+    a.post(&format!("/account/sessions/{hb}/revoke?confirmed=1"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(!elevated(&state, &hb));
+    assert!(elevated(&state, &ha));
+}
+
+#[tokio::test]
+async fn revoking_other_sessions_drops_their_elevations_only() {
+    let (state, store, _, _) = shared_state().await;
+    let (a, ha) = unlocked(&state, &store, "admin").await;
+    let (_b, hb) = unlocked(&state, &store, "admin").await;
+    let (_c, hc) = unlocked(&state, &store, "eve").await;
+    a.post("/account/sessions/revoke-others?confirmed=1")
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(!elevated(&state, &hb));
+    assert!(elevated(&state, &ha), "the current session is kept");
+    assert!(elevated(&state, &hc), "another user is untouched");
+}
+
+#[tokio::test]
+async fn changing_ones_password_drops_the_other_sessions_elevations() {
+    let (state, store, _, _) = shared_state().await;
+    let (a, ha) = unlocked(&state, &store, "admin").await;
+    let (_b, hb) = unlocked(&state, &store, "admin").await;
+    a.post("/account/password")
+        .form(&[
+            ("current_password", ADMIN_PW),
+            ("new_password", NEW_PW),
+            ("confirm_password", NEW_PW),
+        ])
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(!elevated(&state, &hb));
+    assert!(elevated(&state, &ha));
+}
+
+#[tokio::test]
+async fn resetting_another_users_password_drops_their_elevations() {
+    let (state, store, _, eve) = shared_state().await;
+    let (a, ha) = unlocked(&state, &store, "admin").await;
+    let (_c, hc) = unlocked(&state, &store, "eve").await;
+    a.post(&format!("/admin/users/{eve}/password"))
+        .form(&[("password", NEW_PW)])
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(!elevated(&state, &hc));
+    assert!(elevated(&state, &ha));
+}
+
+#[tokio::test]
+async fn resetting_ones_own_password_keeps_only_the_current_elevation() {
+    let (state, store, admin, _) = shared_state().await;
+    let (a, ha) = unlocked(&state, &store, "admin").await;
+    let (_b, hb) = unlocked(&state, &store, "admin").await;
+    a.post(&format!("/admin/users/{admin}/password"))
+        .form(&[("password", NEW_PW)])
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(!elevated(&state, &hb));
+    assert!(elevated(&state, &ha));
+}
+
+#[tokio::test]
+async fn disabling_a_user_drops_their_elevations() {
+    let (state, store, _, eve) = shared_state().await;
+    let (a, _) = unlocked(&state, &store, "admin").await;
+    let (_c, hc) = unlocked(&state, &store, "eve").await;
+    a.post(&format!("/admin/users/{eve}/disabled?confirmed=1"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(!elevated(&state, &hc));
+}
+
+#[tokio::test]
+async fn deleting_a_user_drops_their_elevations() {
+    let (state, store, _, eve) = shared_state().await;
+    let (a, _) = unlocked(&state, &store, "admin").await;
+    let (_c, hc) = unlocked(&state, &store, "eve").await;
+    a.post(&format!("/admin/users/{eve}/delete?confirmed=1"))
+        .await
+        .assert_status(StatusCode::SEE_OTHER);
+    assert!(!elevated(&state, &hc));
+}
