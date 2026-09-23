@@ -157,7 +157,7 @@ async fn postgres_full_round_trip() {
             .unwrap();
     }
     let batch = store
-        .list_recent_pings_for_checks(&[cid, cid2], 2)
+        .list_recent_ping_summaries_for_checks(&[cid, cid2], 2)
         .await
         .unwrap();
     assert_eq!(batch.get(&cid).unwrap().len(), 1);

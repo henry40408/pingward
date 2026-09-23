@@ -1537,42 +1537,6 @@ impl Store {
         Ok(map)
     }
 
-    /// Batched [`Store::list_recent_pings`], newest first; checks with no pings
-    /// are absent. `ROW_NUMBER()` needs `SQLite` >= 3.25.
-    pub async fn list_recent_pings_for_checks(
-        &self,
-        check_ids: &[i64],
-        per_check_limit: i64,
-    ) -> Result<HashMap<i64, Vec<Ping>>, sqlx::Error> {
-        if check_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let placeholders = (1..=check_ids.len())
-            .map(|i| format!("${i}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT * FROM ( \
-               SELECT p.*, ROW_NUMBER() OVER (PARTITION BY p.check_id ORDER BY p.id DESC) AS rn \
-               FROM pings p WHERE p.check_id IN ({placeholders}) \
-             ) sub WHERE rn <= ${} ORDER BY check_id, id DESC",
-            check_ids.len() + 1
-        );
-        // Safe: only `$N` placeholders are interpolated.
-        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
-        for id in check_ids {
-            q = q.bind(*id);
-        }
-        q = q.bind(per_check_limit);
-        let rows = q.fetch_all(&self.pool).await?;
-        let mut map: HashMap<i64, Vec<Ping>> = HashMap::new();
-        for row in &rows {
-            let ping = row_to_ping(row)?;
-            map.entry(ping.check_id).or_default().push(ping);
-        }
-        Ok(map)
-    }
-
     /// A page of a check's pings for the check-detail table. Separate from the
     /// heartbeat strip's [`Store::list_recent_ping_summaries`], which paging and
     /// filtering must never affect.
@@ -3561,88 +3525,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn batch_recent_pings_matches_per_check_and_honors_limit() {
-        let store = seeded().await;
-        let mk = |n: &'static str, u: &'static str| {
-            let store = &store;
-            async move {
-                store
-                    .create_check(&NewCheck {
-                        project_id: 1,
-                        name: n,
-                        ping_uuid: u,
-                        kind: ScheduleKind::Period,
-                        period_secs: Some(60),
-                        grace_secs: 30,
-                        timezone: "UTC",
-                        ..Default::default()
-                    })
-                    .await
-                    .unwrap()
-            }
-        };
-        let a = mk("A", "uuid-a").await;
-        let b = mk("B", "uuid-b").await;
-        let c = mk("C", "uuid-c").await; // will have no pings
-        let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-        // A: 5 pings, B: 2 pings, C: none.
-        for i in 0..5 {
-            store
-                .insert_ping(
-                    a,
-                    PingKind::Success,
-                    Some(0),
-                    "x",
-                    None,
-                    base + chrono::Duration::seconds(i),
-                )
-                .await
-                .unwrap();
-        }
-        for i in 0..2 {
-            store
-                .insert_ping(
-                    b,
-                    PingKind::Success,
-                    Some(0),
-                    "y",
-                    None,
-                    base + chrono::Duration::seconds(i),
-                )
-                .await
-                .unwrap();
-        }
-
-        let batch = store
-            .list_recent_pings_for_checks(&[a, b, c], 3)
-            .await
-            .unwrap();
-        // Per-check limit honored: A capped at 3, B has 2, C absent.
-        assert_eq!(batch.get(&a).unwrap().len(), 3);
-        assert_eq!(batch.get(&b).unwrap().len(), 2);
-        assert!(!batch.contains_key(&c));
-        // Same ids and order as the per-check query.
-        for id in [a, b] {
-            let single: Vec<i64> = store
-                .list_recent_pings(id, 3)
-                .await
-                .unwrap()
-                .iter()
-                .map(|p| p.id)
-                .collect();
-            let batched: Vec<i64> = batch.get(&id).unwrap().iter().map(|p| p.id).collect();
-            assert_eq!(batched, single, "check {id}");
-        }
-        assert!(
-            store
-                .list_recent_pings_for_checks(&[], 3)
-                .await
-                .unwrap()
-                .is_empty()
-        );
-    }
-
     /// A drift from the wide query would silently redraw every strip.
     #[tokio::test]
     async fn ping_summaries_match_the_wide_query_row_for_row() {
@@ -3683,20 +3565,29 @@ mod tests {
             }
         }
 
-        let wide = store.list_recent_pings_for_checks(&ids, 3).await.unwrap();
-        let narrow = store
-            .list_recent_ping_summaries_for_checks(&ids, 3)
+        // A check with no pings must be absent from the batch, not empty.
+        let silent = store
+            .create_check(&NewCheck {
+                project_id: 1,
+                name: "silent",
+                ping_uuid: "u-silent",
+                kind: ScheduleKind::Period,
+                period_secs: Some(60),
+                grace_secs: 10,
+                timezone: "UTC",
+                ..Default::default()
+            })
             .await
             .unwrap();
-        assert_eq!(wide.len(), narrow.len());
-        for cid in &ids {
-            let w = wide.get(cid).unwrap();
-            let n = narrow.get(cid).unwrap();
-            assert_eq!(w.len(), 3, "per-check limit honored");
-            let w_proj: Vec<PingSummary> = w.iter().map(Into::into).collect();
-            assert_eq!(&w_proj, n, "check {cid}");
-        }
+        let mut queried = ids.clone();
+        queried.push(silent);
 
+        let narrow = store
+            .list_recent_ping_summaries_for_checks(&queried, 3)
+            .await
+            .unwrap();
+        assert_eq!(narrow.len(), ids.len());
+        assert!(!narrow.contains_key(&silent));
         for cid in &ids {
             let w: Vec<PingSummary> = store
                 .list_recent_pings(*cid, 3)
@@ -3705,8 +3596,11 @@ mod tests {
                 .iter()
                 .map(Into::into)
                 .collect();
-            let n = store.list_recent_ping_summaries(*cid, 3).await.unwrap();
-            assert_eq!(w, n, "check {cid}");
+            assert_eq!(w.len(), 3, "per-check limit honored");
+            let n = narrow.get(cid).unwrap();
+            assert_eq!(&w, n, "batched, check {cid}");
+            let single = store.list_recent_ping_summaries(*cid, 3).await.unwrap();
+            assert_eq!(w, single, "per-check, check {cid}");
         }
 
         assert!(
