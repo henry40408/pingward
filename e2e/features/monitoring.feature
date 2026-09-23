@@ -90,13 +90,13 @@ Feature: Monitoring core
     Given a project named "Nightly jobs"
     And a check named "backup" with period 60
     And a project named "Weekly jobs"
-    And a check named "report" with period 60
-    When I filter the dashboard by "report"
-    Then the dashboard shows the check "report"
+    And a check named "weekly report" with period 60
+    When I filter the dashboard by "weekly report"
+    Then the dashboard shows the check "weekly report"
     And the dashboard does not show the check "backup"
     When I clear the dashboard filter
     Then the dashboard shows the check "backup"
-    And the dashboard shows the check "report"
+    And the dashboard shows the check "weekly report"
 
   Scenario: The dashboard status filter shows only checks in that state
     Given a project named "Ops"
