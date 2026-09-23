@@ -1,4 +1,4 @@
-//! `/api/v1` handlers. [`resolve_project`]/[`resolve_check`]/[`resolve_channel`]
+//! `/api/v1` handlers. `resolve_project`/`resolve_check`/`resolve_channel`
 //! are the ownership choke point: 404 for another user's resource, except an
 //! admin key, which gets through with an audit entry.
 

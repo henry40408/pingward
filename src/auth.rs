@@ -309,7 +309,7 @@ pub fn peer_ip(extensions: &axum::http::Extensions) -> Option<IpAddr> {
 
 /// The user named by a trusted forward-auth header, auto-provisioning a non-admin,
 /// passwordless account on first sight; `None` if disabled or not applicable. Shared by
-/// [`resolve_user`] and `web::forward_auth_session` so both agree on who is signed in.
+/// `resolve_user` and `web::forward_auth_session` so both agree on who is signed in.
 pub async fn forward_auth_user(
     state: &AppState,
     headers: &HeaderMap,
