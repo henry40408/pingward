@@ -5,9 +5,8 @@
 {% endmacro %}
 {% block body %}
 {% let base %}{% if admin %}/admin{% endif %}{% endlet %}
-{#- The kind whose config block to render. Empty when creating: every block is
-    rendered and the `kind` select toggles between them client-side. When
-    editing, the kind is immutable, so only its own block exists. -#}
+{#- Empty when creating: every block renders and app.css's `:has()` rules
+    show the selected kind's. When editing, only the immutable kind's. -#}
 {% let ek %}{% if let Some(e) = edit %}{{ e.kind }}{% endif %}{% endlet %}
 {% if let Some(e) = edit %}
 <h1>Edit channel</h1>
@@ -88,9 +87,7 @@
           <input id="ntfy_token" name="ntfy_token"{% if edit.is_some() %} placeholder="unchanged"{% endif %}>
           {% if let Some(e) = edit %}
           {% call secret_status(e.has_ntfy_token) %}{% endcall %}
-          {#- The token is the only optional secret, so "blank keeps the stored
-              value" needs an explicit way out — otherwise a token that is set
-              could never be removed. -#}
+          {#- Blank keeps the stored token, so removing it needs this. -#}
           {% if e.has_ntfy_token %}
           <label class="chk"><input type="checkbox" name="ntfy_token_clear" value="true" data-testid="ntfy-token-clear"><span class="nm">Remove the stored token</span></label>
           {% endif %}
@@ -112,8 +109,7 @@
         </div>
       </div>
       {% endif %}
-      {#- An existing email channel stays editable even when instance SMTP is
-          off; only the create-form option is gated on it. -#}
+      {#- Editable even with SMTP off; only creation is gated on it. -#}
       {% if ek == "email" || (ek == "" && smtp_available) %}
       <div class="cfg" data-kind="email">
         <div class="field">

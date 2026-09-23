@@ -1,8 +1,5 @@
-//! Real SMTP delivery test against a live relay (Mailpit).
-//!
-//! Skipped unless `PINGWARD_TEST_SMTP_HOST` is set (CI points it at the Mailpit
-//! service container). It is the one path unit tests cannot cover: a message
-//! crossing a real SMTP connection, asserted back via Mailpit's REST API.
+//! Real SMTP delivery to Mailpit, checked via its REST API. Skipped unless
+//! `PINGWARD_TEST_SMTP_HOST` is set (CI sets it).
 
 use chrono::Utc;
 use pingward::config::{SmtpConfig, SmtpTls};
@@ -24,14 +21,13 @@ async fn email_channel_delivers_over_smtp_to_relay() {
     let api = std::env::var("PINGWARD_TEST_MAILPIT_API")
         .expect("PINGWARD_TEST_MAILPIT_API must be set when PINGWARD_TEST_SMTP_HOST is");
 
-    // Start from an empty mailbox so the assertion is deterministic.
     reqwest::Client::new()
         .delete(format!("{api}/api/v1/messages"))
         .send()
         .await
         .expect("clear mailpit mailbox");
 
-    // Plaintext relay (TLS=none), no auth — matches the Mailpit default.
+    // Mailpit's default: plaintext, no auth.
     let smtp = SmtpConfig {
         host,
         port,
@@ -57,7 +53,6 @@ async fn email_channel_delivers_over_smtp_to_relay() {
         detail: EventDetail::default(),
     };
 
-    // The real notifier path: notifier_for -> build_email -> lettre -> SMTP.
     let notifier = notifier_for(&channel, Some(&smtp)).expect("email notifier for configured SMTP");
     notifier.send(&ev).await.expect("email delivered to relay");
 

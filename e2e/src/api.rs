@@ -1,8 +1,4 @@
 //! Out-of-band HTTP against the server under test.
-//!
-//! The only bootstrap path is the one-time `POST /setup`, CSRF-protected like
-//! every other POST, so this does what a browser does: GET the page first, then
-//! submit its cookie and hidden `_csrf` together.
 
 use std::sync::OnceLock;
 
@@ -12,20 +8,15 @@ use regex::Regex;
 /// Which of the `/ping/*` endpoints to hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PingKind {
-    /// The bare ping URL — a successful run.
     Success,
-    /// `/fail`.
     Fail,
-    /// `/start`.
     Start,
-    /// `/log`.
     Log,
-    /// `/{code}` — an exit code, where 0 succeeds and anything else fails.
+    /// `/{code}`: 0 succeeds, anything else fails.
     ExitCode(i32),
 }
 
 impl PingKind {
-    /// The suffix this kind appends to a check's ping URL.
     fn suffix(self) -> String {
         match self {
             Self::Success => String::new(),
@@ -36,11 +27,7 @@ impl PingKind {
         }
     }
 
-    /// The kind a feature file names.
-    ///
-    /// # Errors
-    ///
-    /// Fails on a name no `/ping/*` endpoint answers.
+    /// Parses a feature-file name (`success`, `fail`, `exit 3`, …).
     pub fn parse(name: &str) -> Result<Self> {
         Ok(match name {
             "success" => Self::Success,
@@ -63,29 +50,21 @@ pub struct Api {
 }
 
 impl Api {
-    /// A client for one server.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the client cannot be built.
     pub fn new(base_url: &str) -> Result<Self> {
         Ok(Self {
             base_url: base_url.to_owned(),
-            // Redirects are followed by default, so a failed `POST /setup`
-            // surfaces as a non-success status rather than a 303.
+            // Redirects are asserted, never followed.
             client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .context("building the HTTP client")?,
         })
     }
 
-    /// Creates the first admin through `POST /setup`. Only ever run against a
-    /// fresh server, so the re-render branches never fire.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the setup page yields no session cookie and token, or when
-    /// the submission is refused.
+    /// Creates the first admin through `POST /setup`, sending the cookie and
+    /// `_csrf` from a prior GET as a browser would. Only a success answers
+    /// 303 → `/`; a validation re-render (200) or a finished setup (→ `/login`)
+    /// is an error.
     pub async fn bootstrap_admin(&self, username: &str, password: &str) -> Result<()> {
         let page = self
             .client
@@ -121,18 +100,17 @@ impl Api {
             .await
             .context("POST /setup")?;
         let status = response.status();
-        if !status.is_success() {
-            bail!("bootstrapping the admin `{username}` answered {status}");
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok());
+        if status != reqwest::StatusCode::SEE_OTHER || location != Some("/") {
+            bail!("bootstrapping the admin `{username}` answered {status} → {location:?}");
         }
         Ok(())
     }
 
-    /// Sends a ping, which must be accepted. Every valid ping answers 200; use
-    /// [`Api::ping_status`] for the scenarios that are *about* a refusal.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the request cannot be sent, or answers anything but 2xx.
+    /// Sends a ping that must be accepted; see [`Api::ping_status`] for refusals.
     pub async fn ping(&self, ping_url: &str, kind: PingKind) -> Result<()> {
         let status = self.ping_status(ping_url, kind).await?;
         if !(200..300).contains(&status) {
@@ -141,12 +119,7 @@ impl Api {
         Ok(())
     }
 
-    /// Sends a ping and reports only its status, without treating a refusal as
-    /// an error — the unknown-uuid 404 path.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the request cannot be sent at all.
+    /// Sends a ping and returns its status, even a refusal (e.g. unknown-uuid 404).
     pub async fn ping_status(&self, ping_url: &str, kind: PingKind) -> Result<u16> {
         let target = format!("{ping_url}{}", kind.suffix());
         let response = self
@@ -158,11 +131,7 @@ impl Api {
         Ok(response.status().as_u16())
     }
 
-    /// Sends a ping whose body the check captures.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the request cannot be sent, or answers anything but 2xx.
+    /// POSTs a ping with a body.
     pub async fn ping_with_body(&self, ping_url: &str, kind: PingKind, body: &str) -> Result<()> {
         let target = format!("{ping_url}{}", kind.suffix());
         let response = self
@@ -179,15 +148,10 @@ impl Api {
         Ok(())
     }
 
-    /// GETs a path and reports its status, following no redirects.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the request cannot be sent.
+    /// GETs a path and reports its status.
     pub async fn status_of(&self, path: &str) -> Result<u16> {
-        let response = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?
+        let response = self
+            .client
             .get(format!("{}{path}", self.base_url))
             .send()
             .await
@@ -195,16 +159,11 @@ impl Api {
         Ok(response.status().as_u16())
     }
 
-    /// POSTs a form and reports its status, following no redirects. Attaches
-    /// neither a cookie nor a token — the CSRF scenarios need it that way.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the request cannot be sent.
+    /// POSTs a form without cookie or CSRF token (for the CSRF scenarios) and
+    /// reports its status.
     pub async fn post_form_status(&self, path: &str, form: &[(&str, &str)]) -> Result<u16> {
-        let response = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?
+        let response = self
+            .client
             .post(format!("{}{path}", self.base_url))
             .form(form)
             .send()

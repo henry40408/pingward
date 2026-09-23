@@ -1,22 +1,17 @@
 //! API-key generation and hashing for the REST API.
 //!
-//! A key is `pw_` + 64 hex characters (two v4 UUIDs, ~244 bits). Only the
-//! SHA-256 hash is persisted (`api_keys.token_hash`, UNIQUE) so authentication
-//! is an indexed equality lookup; the plaintext is shown exactly once, at
-//! creation. The hash is unsalted because it must be deterministic to be
-//! looked up — safe because the input is a high-entropy random secret, not a
-//! low-entropy password.
+//! A key is `pw_` + 64 hex chars (two v4 UUIDs, 244 random bits), shown once.
+//! Only its SHA-256 is stored (`api_keys.token_hash`), unsalted so it can be an
+//! indexed lookup — safe for a high-entropy secret, unlike a password.
 
 use sha2::{Digest, Sha256};
 
 pub const API_KEY_PREFIX: &str = "pw_";
 
-/// Body characters (after the prefix) kept as the non-secret, displayable
-/// `prefix` column.
+/// Body characters kept in the non-secret, displayable `prefix` column.
 const DISPLAY_BODY_CHARS: usize = 8;
 
-/// Returns `(full_token, display_prefix, token_hash)`. `full_token` is shown
-/// to the user once and never stored.
+/// Returns `(full_token, display_prefix, token_hash)`; `full_token` is never stored.
 pub fn generate_api_key() -> (String, String, String) {
     let body = format!(
         "{}{}",
@@ -29,8 +24,7 @@ pub fn generate_api_key() -> (String, String, String) {
     (full, prefix, hash)
 }
 
-/// SHA-256 of a token, lowercase hex — the value `WHERE token_hash = $1`
-/// looks up.
+/// SHA-256 as lowercase hex. Also derives session handles.
 pub fn hash_api_key(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     let mut out = String::with_capacity(digest.len() * 2);

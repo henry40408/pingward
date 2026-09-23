@@ -1,15 +1,6 @@
-//! Regression tests for the `csrf.rejected` audit event (`web::csrf_guard`, via
-//! `web::log_csrf_rejection`). Two properties pulling in opposite directions.
-//!
-//! A rejection must leave a trace: `csrf_guard` answers with a bodyless 403 that
-//! reaches no handler, so a refusal was otherwise indistinguishable from any
-//! other 403 (henry40408/rdrs#477: a token drifting out of step with its session
-//! took a browser down for a week).
-//!
-//! But the guard sits outside every handler, so it refuses before `login_submit`
-//! reaches `login_limiter` — an unauthenticated bot's `POST /login` is rejected
-//! unthrottled. Warning on that drowns the event in scanner traffic, so the
-//! tokenless case stays quieter and the second test locks that in.
+//! The `csrf.rejected` log event. A rejection is a bodyless 403 that reaches no
+//! handler, so this event is its only trace — yet the guard refuses before
+//! `login_limiter`, so tokenless bot traffic must stay at `debug`, not `warn`.
 
 use axum_test::TestServer;
 use pingward::{app, db, secret, state::AppState, store::Store};
@@ -18,9 +9,7 @@ use std::sync::{Arc, Mutex};
 
 mod common;
 
-/// A `Write` sink appending into a shared buffer, as in
-/// `tests/session_logging.rs` — cloning shares the same `Vec<u8>`, which
-/// `tracing_subscriber::fmt`'s clone-per-event `MakeWriter` contract needs.
+/// A `Write` sink whose clones share one buffer, as `MakeWriter` requires.
 #[derive(Clone, Default)]
 struct SharedBuf(Arc<Mutex<Vec<u8>>>);
 
@@ -41,9 +30,6 @@ impl SharedBuf {
 }
 
 /// A server with one account, plus the buffer its logs land in.
-///
-/// The subscriber is JSON and admits `DEBUG`, so a test can assert on the *level*
-/// an event was emitted at and match fields as `"name":"value"`.
 async fn server_with_logs() -> (TestServer, SharedBuf) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -59,10 +45,8 @@ async fn server_with_logs() -> (TestServer, SharedBuf) {
     (server, SharedBuf::default())
 }
 
-/// Installs `buf` as the default subscriber for the guard's lifetime.
-/// Thread-local rather than global: `#[tokio::test]`'s current-thread runtime
-/// keeps everything `TestServer` drives here, and it cannot clash with another
-/// test in the binary.
+/// Installs a JSON, `DEBUG`-level subscriber writing to `buf` for the guard's
+/// lifetime. Thread-local suffices on `#[tokio::test]`'s current-thread runtime.
 fn capture(buf: &SharedBuf) -> tracing::subscriber::DefaultGuard {
     let make_writer = {
         let buf = buf.clone();
@@ -77,15 +61,12 @@ fn capture(buf: &SharedBuf) -> tracing::subscriber::DefaultGuard {
     tracing::subscriber::set_default(subscriber)
 }
 
-/// A token that was presented and did not verify is the event worth alerting on:
-/// it must warn, and must name the session by its `/account` handle rather than
-/// the bearer secret behind it.
+/// A presented-but-invalid token must warn, naming the session by its log
+/// handle, never the raw session id.
 #[tokio::test]
 async fn a_mismatched_token_warns_and_names_the_session_by_handle() {
     let (mut server, buf) = server_with_logs().await;
-    // `common::anonymous_csrf` inlined, to keep the raw session id the negative
-    // assertion needs. A second GET would not do: with `save_cookies()` the
-    // client already holds the cookie, so no second `Set-Cookie` is emitted.
+    // `common::anonymous_csrf` inlined to keep the raw session id.
     server.clear_cookies();
     let res = server.get("/login").await;
     let cookie_value = res
@@ -100,8 +81,7 @@ async fn a_mismatched_token_warns_and_names_the_session_by_handle() {
     let res = server
         .post("/login")
         .form(&[
-            // Well-formed hex of the right shape, so this fails `verify_csrf`
-            // rather than the hex decode in front of it.
+            // Well-formed hex, so this fails `verify_csrf`, not the hex decode.
             ("_csrf", &"00".repeat(32)),
             ("username", &"alice".to_string()),
             ("password", &"correct-horse-battery-staple".to_string()),
@@ -127,23 +107,20 @@ async fn a_mismatched_token_warns_and_names_the_session_by_handle() {
         text.contains(&format!(r#""handle":"{expected_handle}""#)),
         "expected the /account handle {expected_handle} in: {text}"
     );
-    // The bearer secret must never reach a log line (as in `tests/session_logging.rs`).
     assert!(
         !text.contains(&raw_session_id),
         "the raw session id leaked into the log: {text}"
     );
 }
 
-/// The anti-spam lock: `csrf_guard` refuses ahead of `login_limiter`, so a bot's
-/// `POST /login` is rejected unthrottled. Warning there would make the event
-/// unreadable on any internet-facing deployment.
+/// Tokenless posts are what scanners send, unthrottled; warning on them would
+/// drown the event.
 #[tokio::test]
 async fn a_tokenless_post_is_recorded_but_not_warned() {
     let (mut server, buf) = server_with_logs().await;
     let _ = common::anonymous_csrf(&mut server).await;
 
     let guard = capture(&buf);
-    // No `_csrf` at all — what every scanner that finds the login path sends.
     let res = server
         .post("/login")
         .form(&[
@@ -155,7 +132,6 @@ async fn a_tokenless_post_is_recorded_but_not_warned() {
     drop(guard);
 
     let text = buf.text();
-    // Still recorded — the reason is diagnosable, just not at alert volume.
     assert!(
         text.contains(r#""reason":"token_missing""#),
         "expected reason=token_missing, got: {text}"

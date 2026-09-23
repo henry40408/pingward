@@ -6,11 +6,7 @@
   <div class="cb">
     <form method="post" action="{{ action }}">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
-      {# One list for the five duration fields below, declared once here rather
-         than beside any one of them: they are the same kind of field and a
-         browser does not care where in the document the list sits. Suggestions
-         only — `web::validate_check` still validates whatever arrives, so a
-         value nobody thought to list is as acceptable as it ever was. #}
+      {# Suggestions for the five duration fields below; the server still validates. #}
       <datalist id="dur-list">
         {% for d in crate::view::durations() %}<option value="{{ d }}">{% endfor %}
       </datalist>
@@ -52,9 +48,8 @@
         </div>
         <div class="field">
           <label for="timezone">Timezone</label>
-          {# A datalist, not a <select>: it keeps the field type-to-filter for
-             600-odd zones while still accepting a pasted name, and the server
-             validates it either way (web::validate_timezone). #}
+          {# A datalist, not a <select>, for type-to-filter; `web::validate_timezone`
+             checks it either way. #}
           <input id="timezone" name="timezone" value="{{ timezone }}" list="tz-list" autocomplete="off" required>
           <datalist id="tz-list">
             {% for tz in crate::view::timezones() %}<option value="{{ tz }}">{% endfor %}

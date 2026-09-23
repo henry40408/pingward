@@ -1,9 +1,6 @@
-//! Projects, checks, pings and the dashboard.
-//!
-//! `admin.feature` reuses these steps verbatim after navigating into
-//! `/admin/…`: the admin pages are the owner templates with a different base
-//! prefix, so the same `data-testid`s answer and the URL regexes are left
-//! unanchored to match both routes.
+//! Projects, checks, pings and the dashboard. `admin.feature` reuses these
+//! under `/admin/…` (same templates, different prefix), so path regexes are
+//! not anchored at the start.
 
 use anyhow::{Result, ensure};
 use cucumber::{given, then, when};
@@ -33,7 +30,6 @@ async fn a_project_named(world: &mut PingwardWorld, name: String) -> Result<()> 
     Ok(())
 }
 
-/// The "New project" flow, which redirects to the project page on submit.
 async fn open_new_project_form(world: &PingwardWorld, name: &str) -> Result<()> {
     world.goto("/projects/new").await?;
     let driver = world.driver()?;
@@ -49,8 +45,8 @@ async fn on_project_page_for(world: &mut PingwardWorld, name: String) -> Result<
     Ok(())
 }
 
-/// Creates a check from the current project page. Period mode needs a positive
-/// period; grace and timezone are pre-filled.
+/// Creates a check from the current project page; grace and timezone are
+/// pre-filled.
 async fn create_check(world: &PingwardWorld, name: &str, period: i64) -> Result<()> {
     let driver = world.driver()?;
     driver.submit("new-check-link").await?;
@@ -76,8 +72,7 @@ async fn on_check_page(world: &mut PingwardWorld) -> Result<()> {
 
 #[when(expr = "I visit the project page for {string}")]
 async fn visit_project_page(world: &mut PingwardWorld, project: String) -> Result<()> {
-    // The breadcrumb's accessible name is the project name, and it is the only
-    // such link on the page.
+    // The breadcrumb is the only link named exactly after the project.
     let body = world.driver()?.find(thirtyfour::By::Tag("body")).await?;
     let link = body
         .link_named_exact(&project)
@@ -108,15 +103,12 @@ async fn ping_url_shown(world: &mut PingwardWorld) -> Result<()> {
     world.driver()?.expect_visible("ping-url").await
 }
 
-// cucumber-rs matches on the Gherkin keyword, and this step appears under all
-// three: setup, the action under test, and (in `live_tail.feature`) the arrival
-// an assertion is about.
+// cucumber-rs matches on the Gherkin keyword; this step appears under all three.
 #[given(expr = "I send a {string} ping")]
 #[when(expr = "I send a {string} ping")]
 #[then(expr = "I send a {string} ping")]
 async fn send_ping(world: &mut PingwardWorld, kind: String) -> Result<()> {
-    // The rendered URL points at this scenario's server, since the harness sets
-    // PINGWARD_BASE_URL to it.
+    // The harness sets PINGWARD_BASE_URL, so the rendered URL is this server.
     let ping_url = read_ping_url(world).await?;
     world
         .api()?
@@ -161,8 +153,7 @@ async fn regenerate_ping_url(world: &mut PingwardWorld) -> Result<()> {
         .driver()?
         .confirm_and_submit("regenerate-button")
         .await?;
-    // Regenerating mints a new credential, so on the admin route the fresh
-    // render withholds it again — taking the new URL is its own disclosure.
+    // On the admin route the new URL is withheld again until revealed.
     reveal_ping_url_if_withheld(world).await?;
     world
         .driver()?
@@ -172,8 +163,7 @@ async fn regenerate_ping_url(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("the ping URL is different from before")]
 async fn ping_url_changed(world: &mut PingwardWorld) -> Result<()> {
-    // The comparison happens in the `When` step, where the before-value is in
-    // scope; this only confirms a ping URL is still present.
+    // The comparison is made in the `When` step, which holds the old value.
     world.driver()?.expect_visible("ping-url").await
 }
 
@@ -211,9 +201,7 @@ async fn filter_dashboard(world: &mut PingwardWorld, term: String) -> Result<()>
     let driver = world.driver()?;
     driver.fill("dashboard-filter-input", &term).await?;
     driver.submit("dashboard-filter-submit").await?;
-    // A plain GET form, so `q` in the URL proves the term round-tripped through
-    // the server. The form also carries an empty `status`, so `q` may be
-    // followed by `&status=` rather than ending the query string.
+    // A GET form; the empty `status` field may follow `q` in the query.
     world
         .expect_path_matching(&format!(r"\?q={}(&|$)", regex::escape(&term)))
         .await
@@ -227,7 +215,6 @@ async fn filter_dashboard_by_status(world: &mut PingwardWorld, label: String) ->
         .select_label("dashboard-status-filter", &label)
         .await?;
     driver.submit("dashboard-filter-submit").await?;
-    // The canonical `status=` in the URL proves the select round-tripped.
     world
         .expect_path_matching(&format!("status={}(&|$)", label.to_lowercase()))
         .await
@@ -249,8 +236,7 @@ async fn click_dashboard_row(world: &mut PingwardWorld, name: String) -> Result<
     let row = rows
         .first()
         .ok_or_else(|| anyhow::anyhow!("no dashboard row for {name:?}"))?;
-    // The schedule line, not the name: the name is a real `<a>` to the same
-    // place, so clicking it would leave `data-href` untested.
+    // Not the name: it is a real `<a>`, which would leave `data-href` untested.
     let schedule = row
         .css_opt(".sc")
         .await?
@@ -303,8 +289,7 @@ async fn dashboard_hides_check(world: &mut PingwardWorld, name: String) -> Resul
 async fn dashboard_no_results(world: &mut PingwardWorld) -> Result<()> {
     let driver = world.driver()?;
     driver.expect_visible("dashboard-no-results").await?;
-    // "Nothing matched" and "you have no projects" are different statements;
-    // only one may be on the page.
+    // "Nothing matched" must not also claim "no projects".
     driver.expect_absent("dashboard-empty").await
 }
 

@@ -1,13 +1,8 @@
-// Resolve the applied theme before first paint (avoids a flash). The stored
-// preference is 'light' | 'dark' | 'system'; anything else means follow the OS,
-// and 'system' is re-resolved live by the listener in app.js. Render-blocking
-// in its own file because app.js is deferred and runs after the first paint.
+// Render-blocking, unlike the deferred app.js: sets the theme before first paint
+// (no flash). Anything but 'light'/'dark' follows the OS.
 (function () {
-  // Mark the document as scripted, before first paint and before anything
-  // below can throw. CSS that hides content a click would reveal hangs off this
-  // class, so a browser running no script keeps the expandable rows open. Not
-  // in the deferred `app.js`, which runs after the first paint and would show
-  // every panel and then collapse it.
+  // First, before anything can throw: CSS that hides click-to-reveal content
+  // hangs off `.js`, so a scriptless browser keeps it visible.
   document.documentElement.classList.add('js');
   try {
     var p = localStorage.getItem('pw-theme');

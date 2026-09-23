@@ -1,7 +1,4 @@
 //! Server-side validation of the project and check forms.
-//!
-//! The fields these steps drive carry an `id` but no `data-testid`, so they are
-//! addressed by selector.
 
 use anyhow::{Result, ensure};
 use cucumber::{given, then, when};
@@ -54,7 +51,6 @@ async fn fill_max_runtime(world: &mut PingwardWorld, value: String) -> Result<()
 
 #[when(expr = "I fill the check timezone with {string}")]
 async fn fill_timezone(world: &mut PingwardWorld, value: String) -> Result<()> {
-    // A text input with a `<datalist>`, so it fills like a plain field.
     world.driver()?.fill_css("#timezone", &value).await
 }
 
@@ -75,8 +71,7 @@ async fn timezone_offers_zones(world: &mut PingwardWorld) -> Result<()> {
 #[then("every check duration field offers the same list of durations")]
 async fn duration_fields_offer_suggestions(world: &mut PingwardWorld) -> Result<()> {
     let driver = world.driver()?;
-    // Every duration field points at the same list id, so the five cannot drift
-    // into five vocabularies.
+    // One shared list, so the fields cannot drift apart.
     for field in [
         "#period_secs",
         "#grace_secs",
@@ -86,7 +81,7 @@ async fn duration_fields_offer_suggestions(world: &mut PingwardWorld) -> Result<
     ] {
         driver.expect_attr(field, "list", Some("dur-list")).await?;
     }
-    // Non-vacuity guard, as for the zone list.
+    // Non-vacuity guard.
     let count = driver.count_css("#dur-list option").await?;
     ensure!(count > 3, "the duration list offers only {count} options");
     driver

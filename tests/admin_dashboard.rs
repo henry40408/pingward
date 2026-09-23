@@ -160,10 +160,8 @@ async fn admin_dashboard_absolute_times_wrapped_for_local_tz() {
         .unwrap();
 
     let body = server.get("/admin").await.text();
-    // Last scan, last prune, and the recent-failure "When" cell each carry
-    // `.localtime` with a `data-ts`; raw UTC text is only the no-JS fallback.
-    // The heartbeats use a <div>, so match the class+attr pair rather than a tag;
-    // the trailing quote also excludes the script's `.localtime[data-ts]` selector.
+    // Last scan, last prune and the failure "When" cell each carry
+    // `.localtime[data-ts]`. Matched without the tag: the heartbeats are <div>s.
     let spans = body.matches(r#"localtime" data-ts=""#).count();
     assert!(
         spans >= 3,

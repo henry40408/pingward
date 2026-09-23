@@ -1,23 +1,9 @@
-//! What still works with JavaScript switched off.
+//! What must still work with JavaScript off: real row links, fragment endpoints
+//! redirecting a navigation to their page, server-side confirmation gates,
+//! submitting GET filter forms, and server-rendered timestamps/ages.
 //!
-//! `app.js` is progressive enhancement everywhere *except* where these tests
-//! are pointed. Several things had quietly stopped being optional:
-//!
-//! 1. A check row's only route to the check page was the delegated `data-href`
-//!    click handler, so with no JS the dashboard led nowhere.
-//! 2. The history sections' pager and Clear controls are real `<a href>`s
-//!    aimed at fragment endpoints, which answered a plain navigation with a
-//!    bare partial — no `<head>`, so no stylesheet, no nav, no way back.
-//! 3. Every irreversible action asked "are you sure?" through a `data-confirm`
-//!    attribute only `app.js` reads, so with no JS a misclick deleted a project
-//!    outright.
-//! 4. The filter forms had no method, no action, no field names and a
-//!    `type="button"` submit — four reasons one click did nothing.
-//! 5. `/admin`'s heartbeat tiles rendered an empty div where the age goes.
-//!
-//! All of it is invisible to the browser suite, which runs with JS on except for
-//! the `@nojs` scenarios (`e2e/features/no_js.feature`) covering the CSS and
-//! navigation halves. These assertions are the server-side half.
+//! Server-side half; the `@nojs` e2e scenarios (`e2e/features/no_js.feature`)
+//! cover CSS and navigation.
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
@@ -46,9 +32,7 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
             ("password", "pw"),
         ])
         .await;
-    // Destructive POSTs go through `csrf_guard` like any other; sending the
-    // session's token by default means a rejection below can only be the
-    // confirmation gate.
+    // With a valid token, a refusal below can only be the confirmation gate.
     let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
     (server, store, uid)
@@ -77,8 +61,6 @@ async fn check_for(store: &Store, owner: i64, uuid: &str) -> (i64, i64) {
 
 // --- rows reach their page without a click handler ---
 
-/// The row is a `div` (a flex container three templates share), so the link to
-/// the check has to sit inside it.
 #[tokio::test]
 async fn dashboard_check_rows_carry_a_real_link() {
     let (server, store, uid) = logged_in_server().await;
@@ -115,9 +97,7 @@ async fn admin_project_rows_carry_a_real_link() {
     );
 }
 
-/// The row must not go back to simulating a link with ARIA: `role="link"` plus
-/// `tabindex` buys a focus ring and Enter, and still leaves the row dead with
-/// JS off.
+/// `role="link"` gives focus and Enter but still leaves the row dead without JS.
 #[tokio::test]
 async fn rows_do_not_simulate_a_link_with_aria() {
     let (server, store, uid) = logged_in_server().await;
@@ -147,9 +127,7 @@ async fn pings_fragment_redirects_a_real_navigation_to_the_check_page() {
     );
 }
 
-/// The pager cursor and the active filter live in the query string, and the
-/// check page parses the same `CheckPageQuery`, so carrying it across is what
-/// makes an unscripted "Older →" page.
+/// Dropping the query would break the unscripted "Older →" pager.
 #[tokio::test]
 async fn the_redirect_carries_the_cursor_and_filter() {
     let (server, store, uid) = logged_in_server().await;
@@ -213,7 +191,6 @@ async fn audit_fragment_redirects_a_real_navigation_to_admin() {
     );
 }
 
-/// The redirect is presentation only: `app.js` still gets its partial.
 #[tokio::test]
 async fn a_fetch_caller_still_gets_the_bare_fragment() {
     let (server, store, uid) = logged_in_server().await;
@@ -235,8 +212,7 @@ async fn a_fetch_caller_still_gets_the_bare_fragment() {
     );
 }
 
-/// Ownership is resolved *before* the redirect decision, so the fallback
-/// cannot become a cheap way to confirm that someone else's check exists.
+/// Ownership is resolved before the redirect, so it cannot leak existence.
 #[tokio::test]
 async fn the_redirect_never_answers_for_another_users_check() {
     let (server, store, _uid) = logged_in_server().await;
@@ -258,10 +234,8 @@ async fn the_redirect_never_answers_for_another_users_check() {
 
 // --- absolute timestamps read as text, not as a machine stamp ----------------
 
-/// Every absolute time sits in a `.localtime[data-ts]` span that `app.js`
-/// rewrites into the viewer's zone. The text inside is what a scriptless browser
-/// keeps, and on `/account` and `/admin` that was chrono's `Display` output,
-/// nanoseconds and all — or the raw RFC3339 string for the heartbeat tiles.
+/// The `.localtime[data-ts]` fallback text must be `view::fmt_utc`, not chrono's
+/// `Display` (nanoseconds) or raw RFC3339.
 #[tokio::test]
 async fn absolute_timestamps_fall_back_to_readable_utc() {
     let (server, store, _uid) = logged_in_server().await;
@@ -272,11 +246,8 @@ async fn absolute_timestamps_fall_back_to_readable_utc() {
 
     for path in ["/account", "/admin"] {
         let body = server.get(path).await.text();
-        // Two spans can share a line, so the text is whatever sits between the
-        // tag's `>` and the next `<`. Split on the class *name*, not
-        // `class="localtime"`: the heartbeat tiles carry
-        // `class="hb-time localtime"`, so an exact-attribute match silently
-        // skips the only ones `/admin` has.
+        // Split on the class name, not `class="localtime"`: the heartbeat
+        // tiles are `class="hb-time localtime"`.
         let texts: Vec<&str> = body
             .split("localtime")
             .skip(1)
@@ -290,9 +261,8 @@ async fn absolute_timestamps_fall_back_to_readable_utc() {
             "{path} renders no localizable timestamps — assertion is vacuous"
         );
         for text in texts {
-            // Not a `!contains('T')` check for the RFC3339 separator: "UTC"
-            // has one. The space at index 10 distinguishes
-            // `2026-08-13 17:54:27 UTC` from `2026-08-13T17:54:27+00:00`.
+            // Index 10 is a space in `fmt_utc`, a `T` in RFC3339 ("UTC" has a
+            // `T` too, so `!contains('T')` would not work).
             assert!(
                 text.ends_with(" UTC") && !text.contains('.') && text.chars().nth(10) == Some(' '),
                 "{path} renders an unformatted timestamp fallback: {text:?}"
@@ -303,9 +273,6 @@ async fn absolute_timestamps_fall_back_to_readable_utc() {
 
 // --- the scheduler heartbeat states its own age ------------------------------
 
-/// `/admin`'s heartbeat tiles used to render an empty `.hb-ago` div for `app.js`
-/// to fill in, so with no script the number an operator reads off them — how
-/// long ago the loop last ran — was blank.
 #[tokio::test]
 async fn the_scheduler_heartbeat_renders_its_age_server_side() {
     let (server, store, _uid) = logged_in_server().await;
@@ -322,8 +289,6 @@ async fn the_scheduler_heartbeat_renders_its_age_server_side() {
     );
 }
 
-/// An unparseable stamp renders no age rather than a wrong one — the absolute
-/// timestamp beside it still shows either way.
 #[tokio::test]
 async fn an_unparseable_heartbeat_stamp_renders_no_age() {
     let (server, store, _uid) = logged_in_server().await;
@@ -341,8 +306,7 @@ async fn an_unparseable_heartbeat_stamp_renders_no_age() {
 
 // --- the light palette exists twice, and must stay identical -----------------
 
-/// Every `--token: value` pair inside the first `{ … }` block following
-/// `marker`. Brace-counting is overkill here: neither block nests.
+/// `--token: value` pairs in the first `{ … }` after `marker` (blocks don't nest).
 fn palette_after(css: &str, marker: &str) -> Vec<(String, String)> {
     let start = css
         .find(marker)
@@ -363,11 +327,8 @@ fn palette_after(css: &str, marker: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The light palette is written twice — once for the `data-theme` attribute
-/// `theme-init.js` sets, once inside a `prefers-color-scheme` query for a
-/// browser that never ran it — because a selector list cannot span a media
-/// query. A token added or retuned in one block only is invisible until someone
-/// opens the app with script off.
+/// A selector list cannot span a media query, so the light palette exists for
+/// `[data-theme="light"]` and for the scriptless `prefers-color-scheme` case.
 #[test]
 fn the_two_light_palettes_are_identical() {
     let css = include_str!("../assets/app.css");
@@ -389,9 +350,8 @@ fn the_two_light_palettes_are_identical() {
 
 // --- the filter forms submit on their own ------------------------------------
 
-/// A GET submission replaces the whole query string, so the pings form has to
-/// re-send the notifications filter as hidden state or narrowing one section
-/// would silently clear the other.
+/// A GET submit replaces the whole query string, so each form must re-send the
+/// other section's filter.
 #[tokio::test]
 async fn each_filter_form_carries_the_other_sections_filter() {
     let (server, store, uid) = logged_in_server().await;
@@ -410,13 +370,16 @@ async fn each_filter_form_carries_the_other_sections_filter() {
         body.contains("<input type=\"hidden\" name=\"pk\" value=\"fail\">"),
         "notifications form drops the pings filter: {body}"
     );
-    // Neither re-sends its own keys as hidden state: the visible controls carry
-    // those, and a duplicate would submit the stale value alongside.
-    assert!(
-        !body.contains("<input type=\"hidden\" name=\"pk\" value=\"fail\">\n  <input"),
-        "a form re-sent its own filter as hidden state: {body}"
-    );
-    // Clear drops only its own section's filter.
+    // Exactly once each: a form re-sending its own keys as hidden state would
+    // submit a stale duplicate next to the live control.
+    for key in ["pk", "ne"] {
+        assert_eq!(
+            body.matches(&format!("<input type=\"hidden\" name=\"{key}\""))
+                .count(),
+            1,
+            "{key} is carried as hidden state by more than the other form: {body}"
+        );
+    }
     assert!(
         body.contains(&format!("/checks/{cid}/pings?ne=down")),
         "the pings Clear link drops the notifications filter: {body}"
@@ -427,8 +390,7 @@ async fn each_filter_form_carries_the_other_sections_filter() {
     );
 }
 
-/// The forms post to the page rather than the fragment endpoint, and the button
-/// is a real submit.
+/// The forms target the page, not the fragment endpoint.
 #[tokio::test]
 async fn the_filter_forms_are_real_get_forms() {
     let (server, store, uid) = logged_in_server().await;
@@ -453,13 +415,10 @@ async fn the_filter_forms_are_real_get_forms() {
 
 // --- irreversible actions ask before they run --------------------------------
 //
-// With JS the question is a native `confirm()` driven by the form's
-// `data-confirm` attribute, which the server never sees. Every one of these
-// actions therefore runs only when the request carries `?confirmed=1`, and
-// otherwise answers with the same question as a page. Each test asserts *both*
-// halves, since a gate that refused everything would satisfy either alone.
+// `data-confirm` is JS-only, so these actions run only with `?confirmed=1` and
+// otherwise render a confirmation page. Tests assert both halves, since a gate
+// refusing everything would pass either alone.
 
-/// The interstitial, identified by the button that goes through with it.
 fn is_confirmation_page(body: &str) -> bool {
     body.contains("data-testid=\"confirm-submit\"")
 }
@@ -473,7 +432,6 @@ async fn deleting_a_check_asks_first_and_deletes_only_when_confirmed() {
     res.assert_status_ok();
     let body = res.text();
     assert!(is_confirmation_page(&body), "no confirmation page: {body}");
-    // The page's own form re-posts the same action, now confirmed.
     assert!(
         body.contains(&format!("action=\"/checks/{cid}/delete?confirmed=1\"")),
         "the page does not offer to complete the action: {body}"
@@ -513,8 +471,7 @@ async fn deleting_a_project_asks_first() {
     assert!(store.find_project(pid).await.unwrap().is_none());
 }
 
-/// Regenerating is not a delete, but it breaks every job still pinging the old
-/// URL — the same "cannot be undone by clicking again" shape.
+/// Irreversible too: it breaks every job still pinging the old URL.
 #[tokio::test]
 async fn regenerating_a_ping_url_asks_first() {
     let (server, store, uid) = logged_in_server().await;
@@ -563,9 +520,7 @@ async fn deleting_a_user_asks_first() {
     assert!(store.find_user_by_id(victim).await.unwrap().is_none());
 }
 
-/// The two toggles are gated in one direction only, matching what the template
-/// renders `data-confirm` for: taking access away asks, handing it back does
-/// not.
+/// Mirrors where the template renders `data-confirm`.
 #[tokio::test]
 async fn the_user_toggles_ask_only_in_the_direction_that_takes_access_away() {
     let (server, store, _uid) = logged_in_server().await;
@@ -576,7 +531,6 @@ async fn the_user_toggles_ask_only_in_the_direction_that_takes_access_away() {
     let disabled = async |id: i64| store.find_user_by_id(id).await.unwrap().unwrap().disabled;
     let is_admin = async |id: i64| store.find_user_by_id(id).await.unwrap().unwrap().is_admin;
 
-    // Disabling asks; the account stays enabled until confirmed.
     let res = server
         .post(&format!("/admin/users/{member}/disabled"))
         .await;
@@ -589,16 +543,15 @@ async fn the_user_toggles_ask_only_in_the_direction_that_takes_access_away() {
         .assert_status(StatusCode::SEE_OTHER);
     assert!(disabled(member).await);
 
-    // Re-enabling does not ask at all.
+    // Re-enabling does not ask.
     server
         .post(&format!("/admin/users/{member}/disabled"))
         .await
         .assert_status(StatusCode::SEE_OTHER);
     assert!(!disabled(member).await);
 
-    // Promoting is gated by the elevation check rather than a confirmation, so
-    // unlock first or the redirect below is the elevation bounce instead of a
-    // completed promotion.
+    // Promoting needs elevation, not confirmation; unlock so the redirect below
+    // is the promotion, not the elevation bounce.
     server
         .post("/admin/unlock")
         .form(&[("password", "pw")])
@@ -610,7 +563,6 @@ async fn the_user_toggles_ask_only_in_the_direction_that_takes_access_away() {
         .assert_status(StatusCode::SEE_OTHER);
     assert!(is_admin(member).await, "promotion did not go through");
 
-    // Demoting asks.
     let res = server.post(&format!("/admin/users/{member}/admin")).await;
     res.assert_status_ok();
     assert!(is_confirmation_page(&res.text()));
@@ -643,8 +595,6 @@ async fn revoking_an_api_key_asks_first() {
     assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
 }
 
-/// Signing a browser out is not undoable from that browser, so it asks too,
-/// including the "revoke every other session" bulk control.
 #[tokio::test]
 async fn revoking_sessions_asks_first() {
     let (server, store, uid) = logged_in_server().await;
@@ -673,7 +623,7 @@ async fn revoking_sessions_asks_first() {
         "the session was revoked before anyone confirmed"
     );
 
-    // Confirming revokes the current session, which signs this browser out.
+    // Revokes the current session, signing this browser out.
     server
         .post(&format!("/account/sessions/{handle}/revoke?confirmed=1"))
         .await
@@ -687,8 +637,7 @@ async fn revoking_sessions_asks_first() {
     );
 }
 
-/// The `/admin` twins share the owner templates but not the handlers, so each
-/// needs its own gate.
+/// The `/admin` twins share templates but not handlers, so each needs a gate.
 #[tokio::test]
 async fn the_admin_twins_ask_first_too() {
     let (server, store, _uid) = logged_in_server().await;
@@ -719,7 +668,6 @@ async fn the_admin_twins_ask_first_too() {
     assert!(is_confirmation_page(&res.text()));
     assert!(store.find_project(pid).await.unwrap().is_some());
 
-    // ...and confirming each still works, deepest first.
     server
         .post(&format!("/admin/checks/{cid}/regenerate?confirmed=1"))
         .await
@@ -740,8 +688,7 @@ async fn the_admin_twins_ask_first_too() {
     assert!(store.find_project(pid).await.unwrap().is_none());
 }
 
-/// Authorization still comes first: a stranger's resource is a 404, not an
-/// invitation to confirm deleting something they cannot see.
+/// Authorization precedes the gate: another user's resource is a 404.
 #[tokio::test]
 async fn the_confirmation_never_answers_for_another_users_resource() {
     let (server, store, _uid) = logged_in_server().await;

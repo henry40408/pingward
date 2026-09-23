@@ -15,12 +15,8 @@ pub mod world;
 pub use api::{Api, PingKind};
 pub use server::Server;
 
-/// Undoes the backslash escaping a Gherkin `{string}` argument keeps.
-///
-/// cucumber-rs passes the raw capture, backslashes and all, so
-/// `"unknown timezone \"Asia/Taipeh\""` would be compared against text no page
-/// renders. Only the two escapes Gherkin defines are recognised, so a Windows
-/// path or a regex in a step argument survives intact.
+/// Undoes the backslash escaping cucumber-rs leaves in a `{string}` argument.
+/// Only `\"` and `\\` are recognised, so other backslashes survive intact.
 pub fn unescape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars();

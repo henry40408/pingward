@@ -7,9 +7,8 @@ use pingward_e2e::world::PingwardWorld;
 
 #[then("the footer shows the build version")]
 async fn footer_shows_version(world: &mut PingwardWorld) -> Result<()> {
-    // `git describe` output has no single shape — a tag, a tag plus distance,
-    // or a bare short SHA from a shallow checkout — so this only asserts the
-    // footer rendered something.
+    // `git describe` may yield a tag, tag+distance or bare SHA, so only the
+    // `pingward <token>` shape is asserted.
     let driver = world.driver()?;
     driver.expect_visible("app-version").await?;
     let version = driver.text_of("app-version").await?;
@@ -22,9 +21,8 @@ async fn footer_shows_version(world: &mut PingwardWorld) -> Result<()> {
 
 #[then(expr = "{string} is well-formed XML")]
 async fn asset_is_well_formed_xml(world: &mut PingwardWorld, asset: String) -> Result<()> {
-    // `DOMParser` with `image/svg+xml` is the parser the browser uses for the
-    // asset, and it reports failure with a `<parsererror>` root rather than by
-    // throwing. Fetching from inside the page keeps the request same-origin.
+    // `DOMParser` (`image/svg+xml`) signals failure with a `<parsererror>`
+    // element rather than by throwing.
     let result = world
         .driver()?
         .execute_async(

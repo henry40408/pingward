@@ -1,7 +1,4 @@
-/* ==========================================================================
-   pingward design system
-   Source of truth: docs/superpowers/specs/2026-07-14-ui-redesign-design.md
-   ========================================================================== */
+/* pingward design system; see docs/superpowers/specs/2026-07-14-ui-redesign-design.md */
 
 /* ---- Fonts (self-hosted, latin subset) ---- */
 @font-face {
@@ -91,9 +88,8 @@
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
 }
 
-/* Set by `theme-init.js` before first paint. Keep in sync with the
-   `prefers-color-scheme` copy below: a token added to one and not the other is
-   invisible in the browser that reads the other. */
+/* Set by `theme-init.js`. Keep identical to the scriptless copy below
+   (tests/no_js.rs compares them). */
 :root[data-theme="light"] {
   --brand: #5654d4;
   --brand-ink: #ffffff;
@@ -128,10 +124,8 @@
   --shadow: 0 8px 24px rgba(20, 30, 60, 0.08);
 }
 
-/* The same palette for a browser running no script, where `data-theme` is
-   never set. `:not([data-theme])` keeps it inert once the script has run, since
-   that always sets the attribute. Duplicated rather than shared because a
-   selector list cannot span a media query boundary — keep the two in sync. */
+/* The same palette without script, where `data-theme` is never set. Duplicated
+   because a selector list cannot span a media query — keep the two in sync. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --brand: #5654d4;
@@ -193,9 +187,7 @@ body {
     background-color 0.25s,
     color 0.25s;
 }
-/* Bare content links only: component anchors (.btn, .pill, nav, breadcrumbs)
-   are more specific and override this. Without it they fall back to the browser
-   default blue, invisible in dark mode. */
+/* Bare content links; the browser's default blue is invisible in dark mode. */
 a {
   color: var(--brand);
 }
@@ -213,8 +205,7 @@ a:hover {
 }
 
 /* ---- Footer ---- */
-/* Outside .wrap so the rule spans the full width. Quiet: it exists to be
-   quoted in a bug report, not read. */
+/* Outside .wrap so the rule spans the full width. */
 .foot {
   padding: 16px 22px 26px;
   border-top: 1px solid var(--border);
@@ -239,9 +230,7 @@ header.bar {
   display: flex;
   align-items: center;
   gap: 20px;
-  /* Without this the row can never shrink below its min-content width, so an
-     extra nav link would bring back a horizontal scrollbar on narrow
-     viewports. */
+  /* Lets the row shrink below min-content instead of scrolling sideways. */
   flex-wrap: wrap;
 }
 .brand {
@@ -377,9 +366,7 @@ nav.links a:hover {
 }
 .btn-primary:hover {
   filter: brightness(1.06);
-  /* The global `a:hover` (0-1-1) outranks `.btn-primary` (0-1-0), so without
-     this an anchor-styled button loses `--brand-ink` on hover and vanishes into
-     the brand background. */
+  /* `a:hover` (0-1-1) outranks `.btn-primary` (0-1-0) on an anchor. */
   color: var(--brand-ink);
 }
 
@@ -477,7 +464,7 @@ nav.links a:hover {
   background: var(--brand);
   animation: hb-pulse 2.4s ease-out infinite;
 }
-/* An idle loop (never run) gets a static, faint dot — no false "alive" pulse. */
+/* A never-run loop gets no "alive" pulse. */
 .hb-dot.idle {
   background: var(--faint);
   animation: none;
@@ -543,18 +530,14 @@ nav.links a:hover {
   font-size: 11.5px;
   color: var(--faint);
 }
-/* The description is the only expendable item here; everything else gets
-   `flex: none`. With the default `flex-shrink: 1` a long description squeezed
-   the short labels down to their min-content width, breaking them over two
-   lines. */
+/* Only the description may shrink; the labels would otherwise wrap. */
 .group .gh h2,
 .group .gh .count,
 .group .gh a {
   flex: none;
   white-space: nowrap;
 }
-/* The name no longer shrinks, so cap and ellipsise it. The cap is wide enough
-   that a normal name is never truncated — the description gives first. */
+/* The name cannot shrink, so cap it; the description gives first. */
 .group .gh h2 {
   max-width: 45%;
   text-overflow: ellipsis;
@@ -565,8 +548,7 @@ nav.links a:hover {
   height: 1px;
   background: var(--border);
 }
-/* Truncated plain-text project description (markdown::truncate_plain).
-   Single-line + shrinkable so it never pushes "Manage →" out of the row. */
+/* `markdown::truncate_plain` output; shrinks so "Manage →" stays in the row. */
 .group .gh .gdesc {
   font-size: 12.5px;
   color: var(--muted);
@@ -594,8 +576,7 @@ nav.links a:hover {
   overflow: hidden;
   box-shadow: var(--shadow);
 }
-/* Flex, not grid: three templates reuse this row with different children, so
-   a fixed column count can only ever fit one of them. */
+/* Flex, not grid: several templates reuse this row with different children. */
 .check {
   display: flex;
   align-items: center;
@@ -604,7 +585,6 @@ nav.links a:hover {
   cursor: pointer;
   transition: background 0.12s;
 }
-/* min-width lets a long name truncate instead of pushing the row wide. */
 .cmeta {
   flex: 1;
   min-width: 0;
@@ -674,9 +654,7 @@ nav.links a:hover {
   font-weight: 600;
   font-size: 14px;
 }
-/* The row's real link (see `app.js`'s `data-href` note). Styled to disappear
-   into the row, which already reads as clickable, so it does not announce a
-   second narrower target; it still focuses, rings and opens in a new tab. */
+/* The row's real link (see `data-href` in `app.js`), styled to blend in. */
 .cmeta .nm a {
   color: inherit;
   text-decoration: none;
@@ -688,10 +666,7 @@ nav.links a:hover {
   color: var(--muted);
   margin-top: 3px;
 }
-/* Truncated plain-text description (markdown::truncate_plain) under a check
-   row's schedule line. Single-line so it can never break the row's fixed
-   height. The gap above is larger than the 3px between name and schedule:
-   those two are one identity block. */
+/* `markdown::truncate_plain` output under a check row; single-line. */
 .cdesc {
   font-size: 12px;
   color: var(--muted);
@@ -741,9 +716,7 @@ nav.links a:hover {
 .spark i.bad {
   background: var(--down);
 }
-/* A success with no `/start` before it, so its duration is unknown. Green like
-   any other success: fill-vs-outline carries "measured or not" on its own, and
-   a wall of grey read as broken. Only red and amber may pull the eye. */
+/* Unknown duration: hollow green, since only red and amber may pull the eye. */
 .spark i.none {
   background: color-mix(in srgb, var(--up) 22%, transparent);
   border: 1.5px solid var(--up);
@@ -805,10 +778,8 @@ nav.links a:hover {
   border-color: var(--paused-bd);
 }
 
-/* A check row's "no channel" warning chip. Amber (the `late` tokens) rather
-   than `--down`, which is reserved for a check that is actually failing.
-   Unlike .spark/.cwhen it survives the phone breakpoint below — it is the one
-   thing on the row a reader has to act on. */
+/* "No channel" chip: amber, since `--down` means actually failing. Unlike
+   .spark/.cwhen it survives the phone breakpoint. */
 .nochan {
   flex: none;
   font-size: 11px;
@@ -826,11 +797,7 @@ nav.links a:hover {
   .cwhen {
     display: none;
   }
-  /* The chip stays but stops competing with the name for width: `.cmeta` is
-     `min-width: 0` and `.nm` has no ellipsis, so a squeeze costs a whole line
-     rather than a few characters. `order` + `flex-basis: 100%` moves it to its
-     own row underneath. `row-gap` keeps that line tight — `.check`'s 16px `gap`
-     applies to both axes. */
+  /* Move the chip to its own row so it doesn't squeeze the name. */
   .check {
     flex-wrap: wrap;
     row-gap: 6px;
@@ -888,9 +855,7 @@ nav.links a:hover {
   color: var(--faint);
   margin: 0 7px;
 }
-/* Emphasis inside muted prose has to lift the colour as well as the weight:
-   bold at `--muted` reads as noise, not emphasis. `em` does not lift, leaving
-   two levels — `strong` for the thing named, `em` for a contrastive word. */
+/* Bold at `--muted` reads as noise, so `strong` lifts the colour too. */
 .crumb strong,
 .note strong {
   color: var(--ink);
@@ -910,9 +875,7 @@ nav.links a:hover {
   letter-spacing: -0.02em;
   margin: 0;
 }
-/* "updated 3m ago · due in 1h" held in one group so a narrow viewport wraps
-   both facts together instead of stranding the deadline (and its leading
-   separator) on a line of its own. */
+/* Keeps "updated … · due …" wrapping as one group. */
 .chead .cmeta {
   margin-left: auto;
   display: flex;
@@ -931,8 +894,7 @@ nav.links a:hover {
 .chead .since.late {
   color: var(--late);
 }
-/* The dot separator is drawn here rather than typed into the label, so the
-   rendered text stays exactly what `view::next_due` produced. */
+/* The separator is CSS so the text stays exactly `view::next_due`'s label. */
 .chead .due {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
     monospace;
@@ -944,9 +906,7 @@ nav.links a:hover {
   color: var(--faint);
   margin-right: 9px;
 }
-/* Too narrow for both facts side by side: two flex columns each wrap into
-   ragged half-lines. Stacked, the deadline's separator would lead nothing, so
-   drop it. */
+/* Narrow: stack the two facts and drop the separator. */
 @media (max-width: 560px) {
   .chead .cmeta {
     display: block;
@@ -1016,8 +976,7 @@ nav.links a:hover {
   border-color: var(--down-bd);
   background: var(--down-bg);
 }
-/* A shown-but-inert button (e.g. a pager end reached), rendered as a <span>:
-   this only mutes it and blocks hover cues. */
+/* A shown-but-inert <span> button, e.g. a pager end. */
 .btn.disabled {
   cursor: default;
   opacity: 0.45;
@@ -1068,8 +1027,7 @@ nav.links a:hover {
 .filters .btn {
   align-self: flex-end;
 }
-/* One free-text box, so it wants more room than the narrow date/select fields
-   the check-history filters are sized for. */
+/* A free-text box wants more room than the date/select fields. */
 .filters .fld input[type="search"] {
   min-width: 260px;
 }
@@ -1119,15 +1077,14 @@ nav.links a:hover {
   border-color: var(--up);
   color: var(--brand-ink);
 }
-/* Live mode is "newest page, unfiltered", so hide the pager and filter form
-   rather than offer interactions the next refresh silently resets. Toggled on
+/* Live mode shows the newest unfiltered page, so hide pager and filters. On
    the card, not the section, so it survives the section's innerHTML swap. */
 .card.live-on .pager,
 .card.live-on .filters {
   display: none;
 }
 
-/* Matches a card body's padding so the text isn't flush against the border. */
+/* Matches a card body's padding. */
 .empty {
   margin: 0;
   padding: 16px 18px;
@@ -1169,10 +1126,9 @@ nav.links a:hover {
 }
 
 /* ---- Big heartbeat (detail) ---- */
-/* The server renders more bars than fit (`web::HEARTBEAT_BARS`); pinning the
-   row right drops the overflow off the *left*, so the newest run is always last
-   and the strip fills any viewport without the server knowing it. The mask
-   fades the clipped edge so a half-cut bar reads as "there is more history". */
+/* The server renders more bars than fit (`web::HEARTBEAT_BARS`); pinned
+   right, the overflow clips off the left, so the newest run stays visible at
+   any width. The mask fades the clipped edge. */
 .beat {
   display: flex;
   align-items: flex-end;
@@ -1183,8 +1139,7 @@ nav.links a:hover {
   margin-top: 16px;
   mask-image: linear-gradient(to right, transparent 0, #000 28px);
 }
-/* Fixed-width by design: a `flex: 1` strip would stretch to fill (or shrink to
-   fit), and so could never say "more history exists off the left". */
+/* Fixed width, so the strip overflows instead of stretching or shrinking. */
 .beat i {
   flex: none;
 }
@@ -1199,10 +1154,7 @@ nav.links a:hover {
 .beat i.bad {
   background: var(--down);
 }
-/* Green like any other success (see `.spark i.none`), but taller than any
-   measured bar: a neutral height would hide exactly the runs nothing timed.
-   `.beatcap` scopes "taller = longer" to solid bars and names hollow
-   separately, so fill-vs-outline keeps the two readable apart. */
+/* Like `.spark i.none`, but full height so untimed runs are not hidden. */
 .beat i.none {
   background: color-mix(in srgb, var(--up) 22%, transparent);
   border: 1.5px solid var(--up);
@@ -1225,9 +1177,7 @@ nav.links a:hover {
   font-size: 11px;
   color: var(--faint);
 }
-/* Below ~640px the three captions no longer fit on one line and, each being
-   its own flex item, wrapped independently and interleaved side by side. Give
-   the legend its own full-width row underneath instead. */
+/* Narrow: the legend gets its own row. */
 @media (max-width: 640px) {
   .beatcap .key {
     order: 1;
@@ -1290,10 +1240,7 @@ nav.links a:hover {
   border-radius: 6px;
 }
 
-/* Explicit ON/OFF per notify-channel row — an unticked checkbox is easy to
-   overlook, the word OFF is not. Both words are in the DOM and the sibling
-   selector picks one from the checkbox's live state, so it never goes stale.
-   min-width keeps the two the same width so the column stays aligned. */
+/* Explicit ON/OFF, driven by the checkbox's live state via `:checked ~`. */
 .chk .onoff {
   flex: none;
   min-width: 42px;
@@ -1349,9 +1296,7 @@ tbody td.mono {
   font-size: 12px;
   color: var(--muted);
 }
-/* A cell that is both `.mono` and a colored utility must keep its status
-   colour: `tbody td.mono` above would otherwise mute it, so re-assert at equal
-   specificity. */
+/* Outrank `tbody td.mono`'s muted colour on a status cell. */
 tbody td.ok-txt {
   color: var(--up);
 }
@@ -1403,8 +1348,7 @@ tbody td.fail-txt {
 .caret.open {
   transform: rotate(90deg);
 }
-/* Row hover cue for the check-history tables; the expandable output panel
-   (.exp) keeps its own background. */
+/* Row hover for the history tables; `.exp` keeps its own background. */
 #pings-section tbody tr,
 #notifs-section tbody tr {
   transition: background 0.12s;
@@ -1413,24 +1357,19 @@ tbody td.fail-txt {
 #notifs-section tbody tr:hover {
   background: var(--hover);
 }
-/* The card body already scrolls horizontally, so keep history cells on one
-   line and let a narrow viewport scroll rather than wrap into ragged rows.
-   `.exp` is excluded — its captured body must wrap. */
+/* One line per cell and scroll instead; `.exp` output must wrap. */
 #pings-section table th,
 #pings-section tbody tr:not(.exp) td,
 #notifs-section table th,
 #notifs-section tbody td {
   white-space: nowrap;
 }
-/* The table gets its own horizontal scroll so the filter controls above it
-   don't pan with it on a narrow screen. */
+/* Scroll the table alone, not the filter controls above it. */
 .tscroll {
   overflow-x: auto;
 }
-/* Environment card: values stay on one line and .tscroll takes the overflow —
-   a wrapping database URL turned one row into a 13-line block at phone width.
-   The description is prose so it still wraps, but needs a floor or it squeezes
-   toward min-content into ~195px rows. */
+/* Environment card: values stay on one line; the prose column wraps with a
+   floor so it doesn't squeeze into a tall sliver. */
 .envtable th,
 .envtable td {
   white-space: nowrap;
@@ -1440,12 +1379,8 @@ tbody td.fail-txt {
   white-space: normal;
   min-width: 56ch;
 }
-/* Collapsed only where a click can open it again: `.open` is added by
-   `app.js`, so hiding it unconditionally would put a failed job's captured
-   output out of reach of a browser running no script. `:root.js` comes from the
-   render-blocking `theme-init.js`, so the collapse precedes the first paint.
-   `:not(.open)` rather than a second rule to re-show it — `:root.js tr.exp`
-   would outrank a plain `tr.exp.open`. */
+/* Collapsed only with script, since only `app.js` can open it again;
+   `:root.js` is set by `theme-init.js` before first paint. */
 :root.js tr.exp:not(.open) {
   display: none;
 }
@@ -1507,8 +1442,7 @@ tr.exp > td {
   display: none;
 }
 .pinghelp > summary::before {
-  /* U+25B6 (▶) not U+25B8 (▸): the small triangle carries so much internal
-     whitespace it reads tiny even at 14px. */
+  /* ▶, not ▸, which reads tiny. */
   content: "\25B6";
   font-size: 13px;
   line-height: 1;
@@ -1571,25 +1505,19 @@ tr.exp > td {
 .crumb.tight {
   margin: 2px 0 0;
 }
-/* `.crumb.tight`'s 2px is tuned for a single line under a heading; stacked as
-   prose it collapses into one wall of text. Space only the subsequent siblings,
-   so the first still hugs whatever it follows. */
+/* Stacked `.crumb.tight` paragraphs need spacing; the first still hugs. */
 .crumb.tight + .crumb.tight {
   margin-top: 14px;
 }
-/* `.desc`'s -6px top margin is tuned for following a `.phead` with its own
-   18px bottom margin; `.crumb.tight` has none, so the pull left the description
-   touching the schedule line. */
+/* `.desc`'s -6px top margin assumes a `.phead` above it. */
 .crumb.tight + .desc {
   margin-top: 12px;
 }
-/* Same problem one class over: `.crumb.tight` has no bottom margin and a
-   form's first `.field` no top one, so the two would touch. */
+/* `.crumb.tight` has no bottom margin. */
 .crumb.tight + form {
   margin-top: 18px;
 }
-/* Unrevealed ping-URL row: the credential's slot is held by the explanation
-   plus the reveal control, so the card does not reflow when it is disclosed. */
+/* Unrevealed ping-URL row (admin viewing another user's check). */
 .urlrow.withheld {
   display: flex;
   align-items: center;
@@ -1603,15 +1531,14 @@ tr.exp > td {
 .chk.readonly {
   cursor: default;
 }
-/* A secondary heading inside a card body. Spacing alone falls through to the
-   global h2 (21px/700), which outweighs the 13px card heading containing it, so
-   match `.group .gh h2` instead — same weight, at content colour. */
+/* Heading inside a card body, sized like `.group .gh h2` so it doesn't
+   outweigh the card's own heading. */
 .subhead {
   margin: 20px 0 8px;
   font-size: 14px;
   font-weight: 600;
 }
-/* The history section bodies lead with a filter form, so tighten their top pad. */
+/* History sections lead with a filter form. */
 #pings-section,
 #notifs-section {
   padding-top: 6px;
@@ -1625,20 +1552,16 @@ tr.exp > td {
 .mb-12 {
   margin-bottom: 12px;
 }
-/* The caret placeholder keeps the layout on non-toggle rows. */
+/* Keeps the layout on non-toggle rows. */
 .caret.blank {
   opacity: 0;
 }
-/* Both affordances are lies without script: the panel is already open and the
-   row ignores a click. Hidden with opacity, not display, like `.caret.blank`,
-   so the column keeps its width either way. */
+/* Without script the panel is already open and the row ignores clicks;
+   opacity keeps the column width. */
 :root:not(.js) .caret {
   opacity: 0;
 }
-/* Controls whose entire behaviour lives in `app.js`, removed rather than left
-   there to be clicked at. `display: none`, not the carets' `opacity: 0`, since
-   none of these is holding a column open. Nothing is lost: the URL and token
-   copy by hand, and the theme follows the OS on its own. */
+/* Controls that only work via `app.js` are not drawn without it. */
 :root:not(.js) .copy,
 :root:not(.js) .live-toggle,
 :root:not(.js) #pw-theme-toggle {
@@ -1646,12 +1569,10 @@ tr.exp > td {
 }
 
 /* ---- Forms whose visible fields depend on a <select> ---- */
-/* The check form's period-vs-cron fields and the channel form's per-kind
-   blocks, switched declaratively so they work with or without script. Not JS
-   setting an inline `style.display`, which outranks any rule here — two
-   mechanisms would mean the CSS silently losing wherever they disagreed. One
-   selector per option value, since a selector cannot compare one attribute
-   against another; the channel *edit* form has no `#kind` select at all. */
+/* Declarative, so it works without script; never set an inline
+   `style.display` from JS, which would outrank this. One selector per option
+   value, since a selector cannot compare two attributes. The channel *edit*
+   form has no `#kind` select, so shows only its own kind's block. */
 form:has(#schedule_kind option[value="period"]:checked)
   .sched:not([data-sched="period"]),
 form:has(#schedule_kind option[value="cron"]:checked)
@@ -1673,7 +1594,7 @@ tr.exp > td {
   border-top: none;
   padding-top: 9px;
 }
-/* Heartbeat legend: the "Heartbeat" caption + the fixed-size swatch bars. */
+/* Heartbeat legend swatches. */
 .legendhead {
   color: var(--ink);
   font-weight: 600;
@@ -1716,9 +1637,7 @@ tr.exp > td {
   color: var(--ink-2);
   margin-bottom: 6px;
 }
-/* A .chk as a field's sole control shouldn't stack its own trailing margin on
-   the field's — check.html's stacked checkboxes aren't last children, so they
-   are unaffected. */
+/* A sole .chk shouldn't stack its margin on the field's. */
 .field > .chk:last-child {
   margin-bottom: 0;
 }
@@ -1753,8 +1672,7 @@ tr.exp > td {
 .field input::placeholder {
   color: var(--faint);
 }
-/* Inputs inline in a table action cell aren't wrapped in a .field, so give
-   them a compact styled look instead of the raw browser default. */
+/* Inputs in a table action cell, outside any .field. */
 .inline input[type="text"],
 .inline input[type="password"] {
   font-family: "Inter", system-ui, sans-serif;
@@ -1783,8 +1701,7 @@ tr.exp > td {
   .two {
     grid-template-columns: 1fr;
   }
-  /* The header row's min-content is ~476px, so it overflowed every phone: put
-     the brand and controls on one row and the links on their own. */
+  /* Brand and controls on one row, links on the next. */
   .bar .inner {
     gap: 8px 14px;
     padding: 10px 14px;
@@ -1852,17 +1769,13 @@ h3.sec {
   background: var(--down-bg);
   border-color: var(--down-bd);
 }
-/* Amber sibling of .flash.ok/.flash.err: a warning, not an error. */
 .flash.warn {
   color: var(--late);
   background: var(--late-bg);
   border-color: var(--late-bd);
 }
 
-/* A flash ending a card body must not stack its own bottom gap on the body's
-   padding: the project page's empty-channels warning is the only child of its
-   `.card .cb` (padding: 16px 18px), which would leave 32px below against 16px
-   above. */
+/* Don't stack a margin on the card body's padding. */
 .cb > .flash:last-child {
   margin-bottom: 0;
 }
@@ -1890,8 +1803,7 @@ select:focus-visible {
 }
 
 /* ---- Admin re-authentication dialog (app.js `askToConfirm`) ---- */
-/* A native <dialog>, so focus trapping, Esc and the backdrop come from the
-   browser rather than from script. Styled as a card like every other panel. */
+/* Native <dialog>: focus trapping, Esc and the backdrop come for free. */
 dialog.reauth {
   padding: 0;
   border: 1px solid var(--border);
@@ -1911,8 +1823,7 @@ dialog.reauth::backdrop {
   margin: 0 0 6px;
   font-size: 17px;
 }
-/* `.crumb.tight` carries no bottom margin, which would butt the explanation
-   straight against the field. */
+/* `.crumb.tight` has no bottom margin. */
 .reauth-body .crumb.tight {
   margin-bottom: 14px;
 }

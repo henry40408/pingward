@@ -1,8 +1,5 @@
-//! Web-surface twin of
-//! `tests/api_v1.rs::member_cannot_reach_another_users_resource_on_any_api_route`:
-//! every parameterised owner-scoped browser route hides another user's
-//! project/check/channel from a signed-in non-admin caller behind a `404`
-//! (`owned_project`/`owned_check` in `src/web.rs`).
+//! Web twin of `tests/api_v1.rs::member_cannot_reach_another_users_resource_on_any_api_route`:
+//! every parameterised owner-scoped route 404s for a non-admin non-owner.
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
@@ -12,35 +9,21 @@ use pingward::{app, db, state::AppState, store::Store};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-/// Uniform per-request timeout for the ownership loop below.
-/// `/checks/{id}/events` is a Server-Sent Events route whose body never ends,
-/// so `axum_test`'s request helpers (which await the *entire* body) would hang
-/// forever on it. Every request goes through this same timeout rather than a
-/// per-route carve-out, with opposite pass/fail meanings at the two call sites
-/// below.
-///
-/// Generous (seconds) because its only job is to tell "streams forever" from
-/// "completes"; a tight bound risks a false failure on a loaded CI runner.
-/// Only the owner's SSE positive control ever waits it out.
+/// `/checks/{id}/events` streams forever and `axum_test` awaits the whole body,
+/// so every request is bounded. Generous, to avoid flakes on a loaded runner;
+/// only the owner's SSE request ever waits it out.
 const ROUTE_TIMEOUT: Duration = Duration::from_secs(5);
 
 mod common;
 
-/// A fresh, empty, migrated in-memory-SQLite store.
 async fn test_store() -> Store {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     Store::new(pool)
 }
 
-/// Log a fresh `TestServer` (its own cookie jar) into `store` as `username`,
-/// with that session's CSRF token attached as a default `X-CSRF-Token` header
-/// so protected POSTs pass `csrf_guard` (duplicated from
-/// `tests/admin.rs::set_csrf`; test binaries share code only through
-/// `tests/common/`). Without a valid token the rejection would be a `403`, so
-/// the token is what proves every `404` below comes from owner scoping. The
-/// session is found by `rowid`, since this test logs two users into one store
-/// within the same second.
+/// A separate cookie jar with a valid CSRF header, so every `404` below comes
+/// from owner scoping rather than a CSRF `403`.
 async fn login_server(store: &Store, username: &str, password: &str) -> TestServer {
     let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
@@ -59,8 +42,6 @@ async fn login_server(store: &Store, username: &str, password: &str) -> TestServ
     server
 }
 
-/// Send one web request with an optional url-encoded form body, shared by the
-/// non-owner and owner requests in the loop below.
 async fn build_request(
     server: &TestServer,
     method: &str,
@@ -80,26 +61,12 @@ async fn build_request(
 
 // --- web-surface cross-user ownership scoping -------------------------------
 //
-// `owned_project`/`owned_check` in `src/web.rs` are the choke point every
-// parameterised owner-scoped browser handler routes an id through: owner-scope
-// or `404` (not `403`), so existence is hidden. Excluded here: `/admin*`, which
-// resolves ids through `admin_project`/`admin_check`/`admin_channel` because
-// admins are *allowed* cross-user access (covered by
-// `tests/admin.rs::non_admin_forbidden_on_every_admin_route`), and `/account/*`,
-// owner-scoped by a different mechanism (a key belongs to a user; a session is
-// found by SHA-256 handle) and covered in `tests/account_web.rs`.
-//
-// The test below derives every such route, substitutes another user's resource
-// id, and asserts the non-owner 404s AND that the owner does not. Without that
-// second half a 404 is indistinguishable from "that id never existed at all"
-// (broken seeding, an off-by-one id, a future refactor) and the test passes
-// vacuously.
+// Excluded: `/admin*` (admins may cross users; see `tests/admin.rs`) and
+// `/account/*` (scoped differently; see `tests/account_web.rs`).
 
-/// Every parameterised, non-admin, non-account `web::routes()` route is checked
-/// both ways: a non-owner caller ("B") gets `404` (not `403`), and the owner
-/// ("A") gets anything *other than* `404` for the same route and id. The route
-/// list is derived from the router's own source, so a new owner-scoped route
-/// that resolves an id without `owned_project`/`owned_check` fails this test.
+/// Routes are derived from `src/web.rs`, so a new one that skips
+/// `owned_project`/`owned_check` fails. The non-owner ("B") must get `404`, and
+/// the owner ("A") must not, or B's 404 could mean the id never existed.
 #[tokio::test]
 async fn member_cannot_reach_another_users_resource_on_any_web_route() {
     let store = test_store().await;
@@ -111,31 +78,22 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
         .unwrap();
     let owner_server = login_server(&store, "alice", "pw").await;
 
-    // B is a *non-admin*: an admin is allowed cross-user access, a separate
-    // invariant tested in tests/admin.rs.
     store
         .create_user("mallory", Some(&phc), false, Utc::now())
         .await
         .unwrap();
     let member_server = login_server(&store, "mallory", "pw").await;
 
-    // A single empty prefix, not one call per known prefix: a future
-    // owner-scoped resource type under a new path prefix is then in scope
-    // automatically instead of being silently missed.
+    // Empty prefix, so routes under a future new prefix are included too.
     let routes = common::routes_in_router_source(include_str!("../src/web.rs"), "");
     let param_routes: Vec<(&str, String)> = routes
         .into_iter()
         .filter(|(_, raw_path)| {
-            // No path parameter ⇒ no cross-user surface to test.
             raw_path.contains('{')
-                // `/admin*` is a different invariant (see module doc above).
                 && !raw_path.starts_with("/admin")
-                // `/account/*` is owner-scoped differently (see above).
                 && !raw_path.starts_with("/account")
         })
         .collect();
-    // A parser bug or an over-broad filter returning nothing would make the
-    // loop below pass vacuously.
     assert!(
         param_routes.len() >= 15,
         "parsed only {} parameterised non-admin, non-account web routes from \
@@ -144,13 +102,8 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
         param_routes.len()
     );
 
-    // (method, raw path) -> request form body, verified against each handler's
-    // `Form<...>`/`HtmlForm<...>` struct in `src/web.rs`. Those extractors run
-    // during parameter binding, *before* the handler calls
-    // `owned_project`/`owned_check`, so a route given an incomplete body fails
-    // extraction (400/422) and its "B" request would be 400 rather than 404.
-    // Every parameterised route must appear here exactly once, body or not —
-    // see the exhaustiveness assertion below.
+    // Form extractors run before `owned_project`/`owned_check`, so an
+    // incomplete body would fail extraction instead of 404ing.
     let project_form: Vec<(&str, &str)> = vec![
         ("name", "x"),
         ("description", ""),
@@ -170,8 +123,7 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
         ("nag_interval_secs", ""),
     ];
     let channel_form: Vec<(&str, &str)> = vec![("name", "x"), ("kind", "webhook")];
-    // `BindForm.channel_ids` is `#[serde(default)]`, so an empty form is a
-    // valid (empty) selection.
+    // `BindForm.channel_ids` is `#[serde(default)]`.
     let bind_form: Vec<(&str, &str)> = vec![("_", "")];
 
     type FormBody<'a> = Option<Vec<(&'a str, &'a str)>>;
@@ -199,17 +151,13 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
             Some(channel_form.clone()),
         ),
         (("GET", "/channels/{id}/edit"), None),
-        // An edit merges over the stored config: every `ChannelForm` field is
-        // `#[serde(default)]` and a blank one keeps its stored value.
+        // Every `ChannelForm` field is `#[serde(default)]`.
         (("POST", "/channels/{id}"), Some(vec![("_", "")])),
         (("POST", "/channels/{id}/delete"), None),
         (("POST", "/channels/{id}/test"), None),
         (("POST", "/checks/{id}/channels"), Some(bind_form.clone())),
     ]);
 
-    // The table's keys must exactly match the derived routes, so a new route
-    // missing from the table (or a stale entry for a removed one) fails here
-    // rather than silently skipping the invariant.
     let derived_keys: HashSet<(&str, &str)> = param_routes
         .iter()
         .map(|(method, path)| (*method, path.as_str()))
@@ -223,10 +171,7 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
     );
 
     for (i, (method, raw_path)) in param_routes.iter().enumerate() {
-        // Seed per iteration, not once before the loop: several routes are
-        // destructive, so the owner's positive control below would consume a
-        // shared resource and poison later iterations. Names/uuids carry the
-        // loop index because `ping_uuid` is UNIQUE.
+        // Seeded per iteration: the owner's request may delete it.
         let pid = store
             .create_project(
                 owner,
@@ -267,21 +212,12 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
             .get(&(*method, raw_path.as_str()))
             .unwrap_or_else(|| panic!("no body mapping for {method} {raw_path} — add one"));
 
-        // B's request must run before A's: B always 404s and so never mutates
-        // the seeded resource, while A's may be a delete that consumes it —
-        // running A first would make B's 404 vacuous again.
-        //
-        // Both go through `ROUTE_TIMEOUT`, which means opposite things for
-        // each: for the non-owner, never resolving is itself a failure; for
-        // the owner, a timeout counts as "not 404" and satisfies the positive
-        // control, since a body that streams instead of completing (the SSE
-        // route) proves the id resolved and the handler was entered.
+        // B before A: A's request may delete the resource.
         let member_res = tokio::time::timeout(
             ROUTE_TIMEOUT,
             build_request(&member_server, method, &path, body.as_deref()),
         )
         .await;
-        // 404, not 403: existence is hidden from a non-owner non-admin.
         let Ok(member_res) = member_res else {
             panic!(
                 "{method} {raw_path} (requested as {path}): non-owner request did not \
@@ -297,19 +233,14 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
             member_res.status_code()
         );
 
-        // Positive control: the same request as the owner against the same id,
-        // proving the id was live so B's 404 is ownership-driven. Only "not
-        // 404" is asserted — several routes redirect (303), and a minimal
-        // channel-create body re-renders the form with a validation error
-        // (200); either proves the id resolved to a real, owned resource.
+        // Positive control: only "not 404", since routes variously redirect or
+        // re-render a form.
         let owner_res = tokio::time::timeout(
             ROUTE_TIMEOUT,
             build_request(&owner_server, method, &path, body.as_deref()),
         )
         .await;
-        // A timeout here means the response is still streaming (the SSE body)
-        // rather than a completed 404, which already satisfies the positive
-        // control, so only the `Ok` case needs an assertion.
+        // A timeout is the SSE body still streaming, which is also "not 404".
         if let Ok(owner_res) = owner_res {
             assert_ne!(
                 owner_res.status_code(),

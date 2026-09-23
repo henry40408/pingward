@@ -1,11 +1,6 @@
-//! The pingward server under test: one fresh binary and one throwaway
-//! `SQLite` file per scenario.
-//!
-//! A shared server is not available — every scenario bootstraps the first admin
-//! through the one-time `POST /setup`, which a second scenario would find
-//! already closed. The binary is spawned directly rather than through
-//! `cargo run`, so the PID held here is the server's own; killing `cargo` would
-//! leave the server it spawned holding the port.
+//! The server under test: one process and throwaway `SQLite` file per
+//! scenario, since `POST /setup` works only once. Spawned directly, not via
+//! `cargo run`, so killing the PID kills the server itself.
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -15,32 +10,28 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use tokio::process::{Child, Command};
 
-/// How long to wait for `/healthz` to answer.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The environment a scenario's server starts with, as its tags select it.
+/// The server environment a scenario's tags select.
 #[derive(Debug, Default, Clone)]
 pub struct Options {
-    /// `PINGWARD_SCAN_INTERVAL`, for `@fast-scan`.
-    ///
-    /// The scan loop's *first* post-startup sleep is the env default (~30 s)
-    /// whatever a per-check override says, so scenarios waiting for a check to
-    /// go down must shorten it here.
+    /// `PINGWARD_SCAN_INTERVAL`, for `@fast-scan`: on a fresh DB the scan
+    /// loop's first sleep is the env default (30 s), since no per-check
+    /// override exists yet.
     pub scan_interval_secs: Option<u64>,
-    /// Extra environment, for `@smtp-env` and `@trusted-proxy`.
+    /// For `@smtp-env` and `@trusted-proxy`.
     pub extra_env: Vec<(String, String)>,
 }
 
 impl Options {
-    /// The options a scenario's tags ask for.
     pub fn from_tags(tags: &[String]) -> Self {
         let tagged = |name: &str| tags.iter().any(|tag| tag == name);
         let mut options = Self::default();
         if tagged("fast-scan") {
             options.scan_interval_secs = Some(1);
         }
-        // Gives the `/admin` Environment card's SMTP group something to report
-        // as configured, and a password it must report without printing.
+        // Gives `/admin`'s Environment card an SMTP config, and a password it
+        // must not print.
         if tagged("smtp-env") {
             options.extra_env.extend([
                 ("PINGWARD_SMTP_HOST".to_owned(), "smtp.e2e.test".to_owned()),
@@ -54,8 +45,7 @@ impl Options {
                 ),
             ]);
         }
-        // Trusts the harness's loopback address, so `auth::client_ip` honours
-        // the scenario's `X-Forwarded-For` instead of recording the peer.
+        // So `auth::client_ip` honours the scenario's `X-Forwarded-For`.
         if tagged("trusted-proxy") {
             options.extra_env.push((
                 "PINGWARD_TRUSTED_PROXIES".to_owned(),
@@ -66,23 +56,17 @@ impl Options {
     }
 }
 
-/// A running pingward server and the database behind it. Both are torn down
-/// when this is dropped.
+/// A running server and its database, both torn down on drop.
 #[derive(Debug)]
 pub struct Server {
     base_url: String,
     child: Child,
-    // Held for its Drop: removes the directory containing the test database.
+    // Dropping removes the test database's directory.
     _temp: tempfile::TempDir,
 }
 
 impl Server {
     /// Starts a server against a fresh database and waits for `/healthz`.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the binary cannot be built or spawned, or when the server
-    /// does not answer within [`STARTUP_TIMEOUT`].
     pub async fn start(options: &Options) -> Result<Self> {
         let binary = ensure_binary()?;
         let temp = tempfile::Builder::new()
@@ -104,15 +88,12 @@ impl Server {
             .env("PINGWARD_BIND", format!("127.0.0.1:{port}"))
             .env("PINGWARD_BASE_URL", &base_url)
             .env("RUST_LOG", "warn")
-            // Unset, this is randomised per process and warned about on every
-            // start; pinning it keeps the output to what a failure produced.
+            // Pinned to silence the random-secret startup warning.
             .env("PINGWARD_SECRET", "pingward-e2e-secret-0123456789abcdef")
-            // A scenario's server is killed mid-request at teardown, and the
-            // resulting noise would bury the one failure worth reading.
+            // Teardown kills it mid-request; the noise would bury real failures.
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            // Reaped by `Drop` below, which cannot await — so the child must
-            // not be killed by tokio's own async reaper first.
+            // `Drop` below issues the kill itself.
             .kill_on_drop(false);
         if let Some(secs) = options.scan_interval_secs {
             command.env("PINGWARD_SCAN_INTERVAL", secs.to_string());
@@ -125,8 +106,7 @@ impl Server {
             .spawn()
             .with_context(|| format!("spawning the pingward server at {}", binary.display()))?;
 
-        // Bound before the wait, so a server that never answers is still
-        // killed when the error propagates.
+        // Built before the wait so a server that never answers is still killed.
         let server = Self {
             base_url,
             child,
@@ -136,7 +116,6 @@ impl Server {
         Ok(server)
     }
 
-    /// Where the browser and the API helper address this server.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -159,18 +138,14 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
+        // Issued before the temp directory is removed; reaped later by tokio.
         let _ = self.child.start_kill();
-        // Not awaited — `Drop` cannot — so the child is reaped on the next
-        // tokio poll. What matters is that the kill is issued before the
-        // temporary directory is removed underneath it.
     }
 }
 
-/// Path to the server binary, building it first when it is not there.
-///
-/// The dev profile: release is tuned for the Docker image (`lto = true`,
-/// `codegen-units = 1`), while dev shares artefacts with `cargo nextest run`.
-/// CI builds it in an earlier step, so this is the local-developer path.
+/// Path to the dev-profile server binary, building it if missing. Dev, not
+/// release: release uses `lto = true`/`codegen-units = 1` and shares no
+/// artefacts with `cargo nextest run`.
 fn ensure_binary() -> Result<PathBuf> {
     let binary = repo_root().join("target/debug/pingward");
     if binary.is_file() {
@@ -192,14 +167,13 @@ fn ensure_binary() -> Result<PathBuf> {
     Ok(binary)
 }
 
-/// An unused TCP port. Inherently a race: the port is released before the
-/// server claims it.
+/// An unused TCP port; racy, as it is released before the server binds it.
 pub fn free_port() -> Result<u16> {
     let listener = TcpListener::bind("127.0.0.1:0").context("probing for a free port")?;
     Ok(listener.local_addr()?.port())
 }
 
-/// The repository root — the parent of this crate's directory.
+/// The repository root (parent of `e2e/`).
 pub fn repo_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

@@ -46,8 +46,7 @@ async fn password_change_rejected(world: &mut PingwardWorld) -> Result<()> {
 
 #[when(expr = "I create an API key named {string} with my password {string}")]
 async fn create_api_key(world: &mut PingwardWorld, name: String, password: String) -> Result<()> {
-    // Minting a key re-authenticates, since the key outlives the session that
-    // created it.
+    // Re-authenticates: a key outlives the session that minted it.
     let driver = world.driver()?;
     driver.fill("api-key-name-input", &name).await?;
     driver.fill("api-key-password-input", &password).await?;
@@ -90,8 +89,7 @@ async fn no_api_keys(world: &mut PingwardWorld) -> Result<()> {
 
 #[given(expr = "requests arrive through a trusted proxy as {string}")]
 async fn requests_through_proxy(world: &mut PingwardWorld, ip: String) -> Result<()> {
-    // Every later request carries the header a proxy would add. Only honoured
-    // alongside the `@trusted-proxy` tag.
+    // Honoured only under the `@trusted-proxy` tag.
     world
         .browser()?
         .set_extra_headers(serde_json::json!({ "x-forwarded-for": ip }))
@@ -100,8 +98,7 @@ async fn requests_through_proxy(world: &mut PingwardWorld, ip: String) -> Result
 
 #[then(expr = "the current session shows the IP {string}")]
 async fn current_session_shows_ip(world: &mut PingwardWorld, ip: String) -> Result<()> {
-    // Covers what `auth::client_ip`'s unit tests cannot: that the login handler
-    // calls it and stores the result, rather than the raw socket peer.
+    // Proves login stores `auth::client_ip`'s result, not the socket peer.
     let driver = world.driver()?;
     driver.expect_visible("session-current").await?;
     let row = driver

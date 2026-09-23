@@ -3,8 +3,8 @@ use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
 
-/// After a session exists, send its CSRF token as a default `X-CSRF-Token`
-/// header so protected POSTs pass `csrf_guard`. Call after every (re)login.
+/// Installs the newest session's CSRF token as a default header. Call after
+/// every (re)login.
 async fn set_csrf(server: &mut TestServer, store: &Store) {
     let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
@@ -42,7 +42,6 @@ async fn setup_creates_admin_then_dashboard_loads() {
     let admin = store.find_user_by_username("admin").await.unwrap().unwrap();
     assert!(admin.is_admin);
 
-    // Authenticated by the saved cookie.
     server.get("/").await.assert_status_ok();
 }
 
@@ -66,10 +65,8 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
     (server, store, uid)
 }
 
-/// An active session's idle timer slides forward on use rather than counting
-/// down to a fixed cutoff. Time-independent by construction: `expires_at` is
-/// moved to just shy of expiry directly in the database, then one authenticated
-/// request is issued and the row re-read.
+/// The idle window slides forward on use. `expires_at` is set near expiry in
+/// the database, so the test needs no clock.
 #[tokio::test]
 async fn an_active_session_survives_past_the_original_ttl() {
     let (server, store, _uid) = logged_in_server().await;
@@ -87,7 +84,6 @@ async fn an_active_session_survives_past_the_original_ttl() {
         .await
         .unwrap();
 
-    // One authenticated request — this is what triggers the slide.
     server.get("/").await.assert_status_ok();
 
     let expires_at: String =
@@ -109,16 +105,12 @@ async fn an_active_session_survives_past_the_original_ttl() {
 async fn disabling_user_invalidates_session() {
     let (server, store, uid) = logged_in_server().await;
     server.get("/").await.assert_status_ok();
-    // Mirrors `web::users_set_disabled` (set the flag, then revoke sessions).
-    // The HTTP route is bypassed because it refuses to let an admin disable
-    // themselves, and `uid` is the sole admin.
+    // Mirrors `web::users_set_disabled`, whose route refuses self-disable.
     store.set_user_disabled(uid, true).await.unwrap();
     store.delete_sessions_for_user(uid).await.unwrap();
     let res = server.get("/projects/new").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(res.header("location"), "/login");
-    // The session row itself must be gone, not merely rejected by
-    // `resolve_user`'s disabled check.
     assert!(
         store
             .list_sessions_for_user(uid, chrono::Utc::now())
@@ -146,7 +138,7 @@ async fn disabled_user_cannot_log_in() {
             ("password", "pw"),
         ])
         .await;
-    // Login page re-renders with an error (200), no session cookie set.
+    // The login page re-renders with an error.
     res.assert_status_ok();
 }
 
@@ -213,8 +205,7 @@ async fn server_with_project_and_smtp() -> (TestServer, Store, i64) {
         .await
         .unwrap();
     let store = Store::new(pool);
-    // Pins the same secret `common::test_config` uses, so `set_csrf` derives a
-    // token this server accepts — an unpinned secret is random per call.
+    // Pinned so `set_csrf` derives an accepted token.
     let cfg = Config::from_map(|k| match k {
         "PINGWARD_SMTP_HOST" => Some("mail.example.com".into()),
         "PINGWARD_SMTP_FROM" => Some("alerts@example.com".into()),
@@ -478,7 +469,6 @@ async fn login_page_uses_auth_card_and_error_is_restyled() {
     res.assert_status_ok();
     assert!(res.text().contains("class=\"auth\""));
 
-    // Wrong password → re-rendered login page, error still reachable.
     let csrf = common::anonymous_csrf(&mut server).await;
     let res = server
         .post("/login")
@@ -499,9 +489,7 @@ async fn login_page_uses_auth_card_and_error_is_restyled() {
 
 #[tokio::test]
 async fn login_page_bounces_an_already_signed_in_visitor() {
-    // Mostly for forward auth, where `logout` lands on `/login` only to be
-    // re-authenticated by the gateway header before the page renders; the rule
-    // is unconditional, so it is testable without a proxy.
+    // Matters mostly for forward auth, but the rule is unconditional.
     let (mut server, store) = server().await;
     let phc = pingward::auth::hash_password("secret1").unwrap();
     store
@@ -534,7 +522,6 @@ async fn login_logout_cycle() {
         .await
         .unwrap();
 
-    // wrong password → back to login with 200 + error
     let csrf = common::anonymous_csrf(&mut server).await;
     server
         .post("/login")
@@ -546,7 +533,6 @@ async fn login_logout_cycle() {
         .await
         .assert_status_ok();
 
-    // right password → redirect, cookie set
     let csrf = common::anonymous_csrf(&mut server).await;
     let res = server
         .post("/login")
@@ -563,18 +549,15 @@ async fn login_logout_cycle() {
     set_csrf(&mut server, &store).await;
     server.get("/").await.assert_status_ok();
 
-    // logout → redirect, then root bounces to /login
     let logout_res = server.post("/logout").await;
     logout_res.assert_status(axum::http::StatusCode::SEE_OTHER);
-    // The removal cookie must carry `Path=/` and the same `Secure` attribute as
-    // the cookie it clears, or a browser can fail to clear it. See
-    // `web::session_removal_cookie`.
+    // The removal cookie must match the original's `Path` and `Secure`, or a
+    // browser may not clear it.
     let removal_cookie = logout_res.cookie(pingward::auth::session_cookie_name(false));
     assert_eq!(removal_cookie.path(), Some("/"));
     assert_eq!(removal_cookie.secure(), login_secure);
-    // A password logout drops this origin's cache — never "cookies"
-    // (registrable-domain-scoped, would reach a gateway on a sibling subdomain)
-    // or "storage", which would wipe the pw-theme preference.
+    // Only "cache": "cookies" would reach a gateway on a sibling subdomain, and
+    // "storage" would wipe the pw-theme preference.
     let clear_site_data = logout_res
         .header("clear-site-data")
         .to_str()
@@ -587,8 +570,7 @@ async fn login_logout_cycle() {
     assert_eq!(res.header("location"), "/login");
 }
 
-/// A server whose `Config` is pinned to [`common::TEST_SECRET`] and, when
-/// given, `PINGWARD_BASE_URL` — otherwise built exactly like [`server`].
+/// Like [`server`], with an optional `PINGWARD_BASE_URL`.
 async fn server_with_base_url(base_url: Option<&str>) -> (TestServer, Store) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -604,8 +586,7 @@ async fn server_with_base_url(base_url: Option<&str>) -> (TestServer, Store) {
     (server, store)
 }
 
-/// Signs `alice` in and returns the login response, whose `Set-Cookie` carries
-/// the freshly minted session cookie.
+/// Signs `alice` in and returns the login response.
 async fn login_alice(server: &mut TestServer, store: &Store) -> axum_test::TestResponse {
     let phc = pingward::auth::hash_password("pw").unwrap();
     store
@@ -623,12 +604,9 @@ async fn login_alice(server: &mut TestServer, store: &Store) -> axum_test::TestR
         .await
 }
 
-/// The raw `Set-Cookie` header value for the session cookie, attributes and all.
-/// `cookie::Cookie::secure()` cannot tell "explicitly not Secure" from "Secure
-/// never mentioned" once a header round-trips through the parser (an absent flag
-/// parses to `None`, not `Some(false)`), so the raw header is the unambiguous
-/// way to check both presence and absence. `cookie_secure` is taken because it
-/// decides the cookie's *name*: `__Host-pingward_session` or `pingward_session`.
+/// The raw session `Set-Cookie` header. Parsed `Cookie::secure()` returns `None`
+/// for an absent flag, so the raw header is the only way to assert absence.
+/// `cookie_secure` picks the cookie name.
 fn raw_session_set_cookie(res: &axum_test::TestResponse, cookie_secure: bool) -> String {
     let name = pingward::auth::session_cookie_name(cookie_secure);
     res.headers()
@@ -640,15 +618,9 @@ fn raw_session_set_cookie(res: &axum_test::TestResponse, cookie_secure: bool) ->
         .to_string()
 }
 
-/// The session cookie's `Secure` attribute follows `PINGWARD_BASE_URL`'s scheme
-/// (`config::parse_cookie_secure`), and it never carries `Max-Age`/`Expires`:
-/// expiry is enforced server-side through `sessions.expires_at`. See
-/// `web::session_cookie`.
-///
-/// On the `https://` server the name also carries the `__Host-` prefix, with all
-/// three of the prefix's browser-enforced conditions — `Secure`, `Path=/`, no
-/// `Domain` — so a sibling subdomain or a downgraded HTTP response cannot
-/// overwrite it.
+/// `Secure` and the `__Host-` prefix (with `Path=/`, no `Domain`) follow
+/// `PINGWARD_BASE_URL`'s scheme; there is never `Max-Age`/`Expires`, since
+/// expiry is server-side (`sessions.expires_at`).
 #[tokio::test]
 async fn session_cookie_carries_secure_only_when_configured() {
     let (mut https_server, https_store) =
@@ -691,10 +663,8 @@ async fn session_cookie_carries_secure_only_when_configured() {
     );
 }
 
-/// The `__Host-` prefixed name is consistent across the write side
-/// (`session_cookie`, exercised by login) and the read side
-/// (`secret::session_id_from_jar`, exercised by every authenticated route and by
-/// `logout`'s removal cookie) on a `Secure` deployment.
+/// On a `Secure` deployment, the `__Host-` name is read back by authenticated
+/// routes and cleared by `logout`.
 #[tokio::test]
 async fn host_prefixed_cookie_round_trips() {
     let (mut server, store) = server_with_base_url(Some("https://pingward.example")).await;
@@ -707,9 +677,8 @@ async fn host_prefixed_cookie_round_trips() {
     let res = server.post("/logout").await;
     res.assert_status(axum::http::StatusCode::SEE_OTHER);
 
-    // The session row itself must be gone: asserting only the 303 would still
-    // pass if `logout` cleared the *unprefixed* cookie name on this Secure
-    // deployment and left the real `__Host-` cookie, and its row, alone.
+    // The row must be gone: a 303 alone would pass if `logout` read the
+    // unprefixed name and left the `__Host-` session alive.
     let alice = store.find_user_by_username("alice").await.unwrap().unwrap();
     assert!(
         store
@@ -720,9 +689,7 @@ async fn host_prefixed_cookie_round_trips() {
         "logout must delete the session row"
     );
 
-    // The removal `Set-Cookie` must target the `__Host-` prefixed name with the
-    // attributes the prefix requires, read through `raw_session_set_cookie` to
-    // dodge `secure()`'s `None`-vs-`Some(false)` ambiguity.
+    // The removal cookie targets the `__Host-` name with its required attributes.
     let removal_cookie = raw_session_set_cookie(&res, true);
     assert!(
         removal_cookie.starts_with("__Host-pingward_session="),
@@ -732,10 +699,8 @@ async fn host_prefixed_cookie_round_trips() {
     assert!(removal_cookie.contains("; Path=/"), "{removal_cookie}");
 }
 
-/// Every response from `web::routes()` carries `Cache-Control: no-store`, so an
-/// authenticated page, the pre-login CSRF-bearing forms and even a `csrf_guard`
-/// rejection are never cached by the browser, a shared computer or an
-/// intermediary proxy. See `web::no_store`.
+/// Every `web::routes()` response carries `Cache-Control: no-store`, including
+/// pre-login forms and `csrf_guard` rejections.
 #[tokio::test]
 async fn browser_responses_are_not_cacheable() {
     let (auth_server, store, uid) = logged_in_server().await;
@@ -765,14 +730,11 @@ async fn browser_responses_are_not_cacheable() {
     res.assert_status_ok();
     assert_eq!(res.header("cache-control"), "no-store");
 
-    // A fresh, logged-out server still carries the header on the pre-login
-    // forms, which embed a cookie-bound `_csrf`.
     let (logged_out, _store) = server().await;
     let res = logged_out.get("/login").await;
     assert_eq!(res.header("cache-control"), "no-store");
 
-    // A POST rejected by `csrf_guard` (403) still carries it: `no_store` sits
-    // outermost so early returns are covered too.
+    // `no_store` sits outside `csrf_guard`, so its early 403 is covered.
     let res = logged_out
         .post("/login")
         .form(&[("username", "admin"), ("password", "pw")])
@@ -781,10 +743,8 @@ async fn browser_responses_are_not_cacheable() {
     assert_eq!(res.header("cache-control"), "no-store");
 }
 
-/// `/api/docs` and `/api/openapi.json` accept a logged-in web session
-/// (`CurrentUser`) alongside `/api/v1`'s bearer auth, so they carry
-/// `Cache-Control: no-store` too while `/api/v1` itself stays exempt. See
-/// `web::no_store` and `api::docs_routes`.
+/// The session-authenticated `/api/docs` and `/api/openapi.json` are
+/// `no-store` too (`api::docs_routes`); `/api/v1` is exempt.
 #[tokio::test]
 async fn api_docs_are_not_cacheable() {
     let (auth_server, _store, _uid) = logged_in_server().await;
@@ -797,10 +757,8 @@ async fn api_docs_are_not_cacheable() {
     res.assert_status_ok();
     assert_eq!(res.header("cache-control"), "no-store");
 
-    // `/api/v1` stays exempt (see `web::no_store`'s doc comment and
-    // `ARCHITECTURE.md`), so this locks in that hoisting `.layer(no_store)` from
-    // `docs_routes()` up to `api::routes()` would silently break the contract.
-    // A 401 proves it: `no_store` would apply regardless of status.
+    // Catches `no_store` hoisted from `docs_routes()` to `api::routes()`; it
+    // would apply to a 401 too.
     let res = auth_server.get("/api/v1/projects").await;
     res.assert_status(axum::http::StatusCode::UNAUTHORIZED);
     assert!(res.maybe_header("cache-control").is_none());
@@ -871,8 +829,7 @@ async fn admin_sets_retention_days() {
 #[tokio::test]
 async fn admin_creates_and_deletes_user() {
     let (server, store, _uid) = logged_in_server().await;
-    // Creating an account is access-granting and sits behind the elevation gate;
-    // deleting one is not.
+    // Creating (not deleting) an account is behind the elevation gate.
     common::unlock_admin(&server, "pw").await;
     server
         .post("/admin/users")
@@ -936,7 +893,7 @@ async fn create_channel_and_bind_to_check() {
         .assert_status(axum::http::StatusCode::SEE_OTHER);
     assert_eq!(store.bound_channel_ids(cid).await.unwrap(), vec![chid]);
 
-    // unbind by submitting no channel_ids
+    // No `channel_ids` unbinds all.
     server
         .post(&format!("/checks/{cid}/channels"))
         .form(&[("_", "")])
@@ -1040,7 +997,6 @@ async fn create_pushover_channel_persists_config() {
 #[tokio::test]
 async fn channel_create_rejects_blank_required_field() {
     let (server, store, pid) = server_with_project().await;
-    // telegram with a blank chat_id → re-rendered form (200), nothing persisted.
     let res = server
         .post(&format!("/projects/{pid}/channels"))
         .form(&[
@@ -1060,8 +1016,7 @@ async fn channel_create_rejects_blank_required_field() {
     );
 }
 
-/// Set up a second user owning a project + check + channel, for authorization
-/// negative-path tests run as the logged-in `admin`.
+/// A second user's `(project, check, channel)`.
 async fn other_users_project(store: &Store) -> (i64, i64, i64) {
     let now = chrono::Utc::now();
     let other = store
@@ -1115,7 +1070,6 @@ async fn cannot_operate_on_another_users_check() {
         .post(&format!("/checks/{ocid}/delete?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::NOT_FOUND);
-    // No cross-user mutation happened.
     assert!(store.find_check(ocid).await.unwrap().is_some());
 }
 
@@ -1132,7 +1086,6 @@ async fn non_owner_cannot_acknowledge() {
         .post(&format!("/checks/{ocid}/ack"))
         .await
         .assert_status(axum::http::StatusCode::NOT_FOUND);
-    // No cross-user mutation happened.
     assert!(!store.find_check(ocid).await.unwrap().unwrap().acknowledged);
 }
 
@@ -1162,7 +1115,6 @@ async fn cannot_create_channel_in_another_users_project() {
         ])
         .await
         .assert_status(axum::http::StatusCode::NOT_FOUND);
-    // Only the other user's own channel remains; nothing was injected.
     let channels = store.list_channels_for_project(opid).await.unwrap();
     assert_eq!(channels.len(), 1);
     assert!(channels[0].config_json.contains("other.test"));
@@ -1175,7 +1127,6 @@ async fn admin_cannot_delete_self() {
         .post(&format!("/admin/users/{uid}/delete?confirmed=1"))
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
-    // Self-delete is a no-op guard.
     assert!(store.find_user_by_id(uid).await.unwrap().is_some());
 }
 
@@ -1247,7 +1198,6 @@ async fn send_test_notification_reports_failure() {
 async fn admin_page_uses_restyled_field_class() {
     let (server, _store, _uid) = logged_in_server().await; // admin
 
-    // Settings and add-user are sections of the same merged /admin page.
     let res = server.get("/admin").await;
     res.assert_status_ok();
     assert!(res.text().contains("class=\"field\""));
@@ -1298,18 +1248,10 @@ async fn check_page_shows_notification_channel_and_error() {
     assert!(body.contains("status 500"), "error text missing: {body}");
 }
 
-/// A login for an unknown username must cost what a login for a known one with
-/// the wrong password costs (`auth::verify_password_or_dummy`).
-///
-/// The "quick exit" this replaced skipped argon2 entirely when there was no
-/// stored hash, so *response time* separated "no such user" from "wrong
-/// password" however generic the message. Timing is noisy, so the assertion is
-/// loose: a miss must be within the same order of magnitude as a hit — without
-/// the fix it is a bare database lookup against a full argon2 verification,
-/// three orders apart rather than the 2x this allows.
-///
-/// A warm-up miss runs first: the process-wide dummy hash is minted on the first
-/// one and would otherwise land inside the measurement.
+/// An unknown username must still pay for an argon2 verification
+/// (`auth::verify_password_or_dummy`), or response time is a username oracle.
+/// Loose (within 2x) because timing is noisy; skipping argon2 is ~1000x faster.
+/// The warm-up keeps minting the dummy hash out of the measurement.
 #[tokio::test]
 async fn an_unknown_username_costs_the_same_as_a_wrong_password() {
     use std::time::Instant;
@@ -1318,8 +1260,7 @@ async fn an_unknown_username_costs_the_same_as_a_wrong_password() {
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
     let mut state = AppState::new(store.clone(), common::test_config());
-    // Enough attempts to measure with: the default budget is five, and a 429 is
-    // not a comparable measurement.
+    // The default per-IP budget (5) is too small for 7 attempts.
     state.login_limiter = std::sync::Arc::new(pingward::ratelimit::RateLimiter::new(1_000, 60));
     let mut server = TestServer::new(app(state));
     server.save_cookies();
@@ -1345,8 +1286,7 @@ async fn an_unknown_username_costs_the_same_as_a_wrong_password() {
 
     attempt(&mut server, "nobody-warmup").await;
 
-    // Interleaved, so a machine that slows down partway through skews both
-    // measurements rather than only the later one.
+    // Interleaved, so a mid-run slowdown skews both equally.
     let (mut hit, mut miss) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
     for _ in 0..3 {
         let t = Instant::now();

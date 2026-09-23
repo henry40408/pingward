@@ -37,8 +37,8 @@ async fn admin_exists(world: &mut PingwardWorld, username: String, password: Str
     world.api()?.bootstrap_admin(&username, &password).await
 }
 
-// cucumber-rs matches on the Gherkin keyword, so every keyword a step is
-// written under has to be declared; `authz.feature` uses this one as a `Then`.
+// cucumber-rs matches on the Gherkin keyword; `users.feature` uses this under
+// `Then`.
 #[when(expr = "I sign in as {string} with password {string}")]
 #[then(expr = "I sign in as {string} with password {string}")]
 async fn sign_in_as(world: &mut PingwardWorld, username: String, password: String) -> Result<()> {

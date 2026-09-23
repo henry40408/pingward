@@ -1,17 +1,12 @@
-//! Cooperative shutdown: one broadcast flag shared by the HTTP server and the
-//! background loops, plus the OS-signal listener that raises it.
-//!
-//! A `watch` rather than a oneshot because every consumer must observe the
-//! same request: axum's `with_graceful_shutdown` takes one future, and each
-//! background loop selects on another.
+//! Cooperative shutdown: one `watch` flag shared by the HTTP server and the
+//! background loops (a oneshot has only one receiver), plus the OS-signal listener.
 
 use tokio::sync::watch;
 
-/// The sending half, held by `main`. Dropping it counts as a shutdown request,
-/// so a lost controller cannot leave the background loops running forever.
+/// Held by `main`. Dropping it counts as a shutdown request.
 pub struct ShutdownTx(watch::Sender<bool>);
 
-/// The receiving half. Cheap to clone: hand one to every task that must stop.
+/// Cheap to clone: hand one to every task that must stop.
 #[derive(Clone)]
 pub struct Shutdown(watch::Receiver<bool>);
 
@@ -22,36 +17,29 @@ pub fn channel() -> (ShutdownTx, Shutdown) {
 }
 
 impl ShutdownTx {
-    /// Idempotent — the value stays observable after this handle drops, so a
-    /// late `Shutdown::wait` still resolves.
+    /// Idempotent.
     pub fn trigger(&self) {
         let _ = self.0.send(true);
     }
 }
 
 impl Shutdown {
-    /// Resolve once shutdown has been requested — immediately if it already
-    /// has, so a task that starts late still stops. Cancel-safe: usable both as
-    /// a `select!` branch and as axum's `with_graceful_shutdown` future.
+    /// Resolve once shutdown has been requested, immediately if it already has.
+    /// Cancel-safe, so usable as a `select!` branch.
     pub async fn wait(&self) {
-        // `wait_for` inspects the current value before parking, so the
-        // already-triggered case resolves instead of hanging; plain `changed()`
-        // only fires on a *new* value. `Err` means the `ShutdownTx` was
-        // dropped, which counts as a request.
+        // `wait_for` checks the current value first (`changed()` would miss an
+        // earlier trigger). `Err` means the sender dropped: also a request.
         let mut rx = self.0.clone();
         let _ = rx.wait_for(|down| *down).await;
     }
 }
 
-/// Resolve on the first SIGTERM (`docker stop`, systemd) or SIGINT (Ctrl-C).
+/// Resolve on the first SIGTERM or SIGINT.
 ///
-/// A handler is mandatory in the container image: the exec-form `ENTRYPOINT`
-/// makes pingward PID 1, and Linux discards any signal still at its default
-/// disposition for PID 1 — without one, SIGTERM is ignored and
-/// `docker compose down` waits out its full 10s grace period before SIGKILL.
-///
-/// A listener that fails to install is logged and then pends forever, so a
-/// broken registration cannot masquerade as a shutdown request.
+/// Mandatory in the image: the exec-form `ENTRYPOINT` makes pingward PID 1, and
+/// Linux drops default-disposition signals to PID 1, so without a handler
+/// `docker compose down` waits out its 10s grace period before SIGKILL.
+/// A listener that fails to install pends forever rather than faking a shutdown.
 pub async fn os_signal() {
     let interrupt = async {
         if let Err(e) = tokio::signal::ctrl_c().await {

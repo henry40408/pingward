@@ -1,8 +1,8 @@
-//! Phone-width layout invariants, asserted by measurement rather than markup
-//! because what is tested lives entirely in CSS.
+//! Phone-width layout invariants, measured rather than read from markup: the
+//! behaviour lives entirely in CSS.
 //!
-//! The probes are raw strings with real newlines so their own comments survive;
-//! a `\` continuation would fold them onto one line and comment out the rest.
+//! Probes are raw strings with real newlines; a `\` continuation would fold
+//! them onto one line, where a JS `//` comment swallows the rest.
 
 use std::time::Duration;
 
@@ -13,11 +13,10 @@ use pingward_e2e::dom::{Dom, submit_element};
 use pingward_e2e::wait::eventually_within;
 use pingward_e2e::world::PingwardWorld;
 
-/// The three admin health tables, which only render once there is failing
-/// data.
+/// The admin health tables; they render only once there is failing data.
 const HEALTH_TABLE_IDS: [&str; 3] = ["health-down", "health-channels", "health-recent"];
 
-/// How long to keep reloading while the failure notification lands.
+/// How long to keep reloading until the failed delivery is recorded.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[when(expr = "I view the site at {int}px wide")]
@@ -25,7 +24,6 @@ async fn view_at_width(world: &mut PingwardWorld, width: u32) -> Result<()> {
     world.resize(Viewport::new(width, 667)).await
 }
 
-/// Reads a number out of a probe's result object.
 fn number(value: &serde_json::Value, field: &str) -> f64 {
     value
         .get(field)
@@ -33,8 +31,7 @@ fn number(value: &serde_json::Value, field: &str) -> f64 {
         .unwrap_or_default()
 }
 
-/// Reads a whole number out of a probe's result object. Line-box and rect
-/// counts are integers; comparing them as floats would be `f64` equality.
+/// Integer counts, so comparisons avoid `f64` equality.
 fn count(value: &serde_json::Value, field: &str) -> u64 {
     value
         .get(field)
@@ -42,7 +39,6 @@ fn count(value: &serde_json::Value, field: &str) -> u64 {
         .unwrap_or_default()
 }
 
-/// Reads a string out of a probe's result object.
 fn text(value: &serde_json::Value, field: &str) -> String {
     value
         .get(field)
@@ -72,9 +68,8 @@ async fn no_horizontal_scrollbar(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("only the users table scrolls sideways, not the card around it")]
 async fn users_table_contained(world: &mut PingwardWorld) -> Result<()> {
-    // A card body sets its own `overflow-x`, so a table placed directly in one
-    // scrolls the whole body and drags the Add-user form off-screen with it.
-    // `.tscroll` confines the overflow to the table.
+    // `.cb` has its own `overflow-x`, so an unwrapped table scrolls the whole
+    // body, Add-user form included; `.tscroll` confines it to the table.
     let measured = world
         .driver()?
         .eval(
@@ -86,7 +81,7 @@ async fn users_table_contained(world: &mut PingwardWorld) -> Result<()> {
                };"#,
         )
         .await?;
-    // Symptom first so a failure names it; the wrapper check is a diagnostic.
+    // Symptom first; the wrapper check is a diagnostic.
     let overflow = number(&measured, "bodyOverflow");
     ensure!(
         overflow <= 0.0,
@@ -102,12 +97,9 @@ async fn users_table_contained(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("Environment rows do not wrap")]
 async fn environment_rows_do_not_wrap(world: &mut PingwardWorld) -> Result<()> {
-    // The Environment table already scrolls inside `.tscroll`, so wrapping its
-    // cells only costs height: a breakable database URL made one row 331px tall.
-    //
-    // Two assertions with different failure modes. The one-line-box check is
-    // exact and font-independent; the height bound is not (58px on macOS, 78px
-    // in Linux CI), so it is set from the defect side rather than the fixed one.
+    // The table already scrolls inside `.tscroll`, so wrapping only costs
+    // height. The one-line check is exact; the height bound is font-dependent
+    // (58px macOS, 78px Linux CI), so it is set well below the wrapped case.
     let measured = world
         .driver()?
         .eval(
@@ -144,9 +136,8 @@ async fn environment_rows_do_not_wrap(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("the admin health tables are shown")]
 async fn health_tables_shown(world: &mut PingwardWorld) -> Result<()> {
-    // The tables only render once there is failing data, and delivery is a
-    // background `tokio::spawn`, so the notification can land after this page
-    // load. Polling keeps the next step's failure from meaning "not there yet".
+    // Delivery is a background `tokio::spawn`, so the failure can be recorded
+    // after this page load; poll so the next step never fails on "not yet".
     let driver = world.driver()?;
     eventually_within(HEALTH_TIMEOUT, "the admin health tables", || async {
         driver.refresh().await?;
@@ -162,13 +153,10 @@ async fn health_tables_shown(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("each admin health table scrolls inside its card, not the card around it")]
 async fn health_tables_contained(world: &mut PingwardWorld) -> Result<()> {
-    // Containment, for all three tables: the wrapper must be `.tscroll`, it
-    // must actually overflow (or containment is vacuous), and the card body
-    // must not scroll.
-    //
-    // Wrapper checks come before the body check here, unlike the users table:
-    // the two Notification health tables share one `.cb`, so the shared-body
-    // symptom cannot say which table caused it.
+    // Per table: wrapped in `.tscroll`, actually overflowing (or the test is
+    // vacuous), card body not scrolling. Wrapper checks go first because the
+    // two Notification health tables share one `.cb`, so the body symptom
+    // cannot name the culprit.
     let results = world
         .driver()?
         .execute(
@@ -223,12 +211,9 @@ async fn health_tables_contained(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("the heartbeat legend sits on its own row below the edge captions")]
 async fn heartbeat_legend_below_captions(world: &mut PingwardWorld) -> Result<()> {
-    // Range-based line-box counting: these captions are flex items, so
-    // measuring the element itself reports one rect however its text wraps.
-    //
-    // One line each is the reported symptom; the legend starting *below* them
-    // is what distinguishes fixed from broken, since without the full-width row
-    // its top sits level with theirs.
+    // Count line boxes via a Range: a flex item's own rects report one box
+    // however its text wraps. The legend starting *below* the captions is what
+    // proves the full-width row; without it its top is level with theirs.
     let measured = world
         .driver()?
         .eval(
@@ -279,10 +264,8 @@ async fn open_project_from_breadcrumb(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("the check row's status dot sits next to the name")]
 async fn status_dot_next_to_name(world: &mut PingwardWorld) -> Result<()> {
-    // `.check` hard-coded `dashboard.html`'s child list, so `project.html`'s
-    // extra child wrapped the badge onto a second grid row, widening the
-    // auto-sized first column and stranding the dot ~74px from the name. The
-    // row's own gap is 16px.
+    // `.check`'s own gap is 16px; a layout that fits only `dashboard.html`'s
+    // children strands the dot far from the name on `project.html`.
     let gap = world
         .driver()?
         .eval(
@@ -300,12 +283,8 @@ async fn status_dot_next_to_name(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("the group header's count and manage link each stay on one line")]
 async fn group_header_labels_unwrapped(world: &mut PingwardWorld) -> Result<()> {
-    // Line-box counting via a Range over the contents: a flex item is
-    // blockified, so `getClientRects()` on the element reports one rect however
-    // its text wraps, while a Range reports one rect per line box.
-    //
-    // The description must also be truncating, or a header that simply fits
-    // satisfies the count and link checks vacuously.
+    // Range-based line-box counting, as above. The description must be
+    // truncating, or a header that simply fits passes vacuously.
     let measured = world
         .driver()?
         .eval(
@@ -352,14 +331,9 @@ async fn group_header_labels_unwrapped(world: &mut PingwardWorld) -> Result<()> 
 
 #[then(expr = "the check row's name stays on one line beside the {string} chip")]
 async fn name_stays_beside_chip(world: &mut PingwardWorld, chip: String) -> Result<()> {
-    // Range-based measurement again, but counted by *distinct line tops*: `.nm`
-    // wraps its text in the row's real link, and a Range spanning an element
-    // yields a rect for the element box on top of the one for its text — two
-    // rects at the same y, still one line. The raw count rides along in the
-    // failure message so a genuine wrap stays distinguishable.
-    //
-    // The chip assertion is the non-vacuity guard: a row rendering no chip
-    // trivially leaves the name on one line.
+    // Counted by *distinct line tops*: `.nm` holds a link, and a Range over an
+    // element yields a rect for its box plus one for its text at the same y.
+    // The chip assertions are the non-vacuity guard.
     let measured = world
         .driver()?
         .eval(
@@ -402,8 +376,8 @@ async fn name_stays_beside_chip(world: &mut PingwardWorld, chip: String) -> Resu
         "the check name {name:?} spans {lines} lines ({rects} client rects) — \
          the chip squeezed .cmeta until it wrapped"
     );
-    // The name only fits on one line because the chip wrapped onto a row of
-    // its own; sharing the row makes the check above hold for short names only.
+    // The chip must sit on its own row below; sharing the name's row only
+    // works for short names.
     let (chip_top, meta_bottom) = (
         number(&measured, "chipTop"),
         number(&measured, "metaBottom"),
@@ -418,8 +392,7 @@ async fn name_stays_beside_chip(world: &mut PingwardWorld, chip: String) -> Resu
 
 #[then("the check row is a single line")]
 async fn check_row_single_line(world: &mut PingwardWorld) -> Result<()> {
-    // A badge wrapped to another line has its centre far below the dot's; on
-    // one line the two coincide.
+    // On one line the badge's and dot's vertical centres coincide.
     let drop = world
         .driver()?
         .eval(

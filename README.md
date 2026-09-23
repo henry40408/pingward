@@ -11,56 +11,35 @@
 [![Casual Maintenance Intended](https://casuallymaintained.tech/badge.svg)](https://casuallymaintained.tech/)
 [![Vibe Coded](https://img.shields.io/badge/vibe_coded-Claude-d97757?logo=anthropic&logoColor=white)](https://claude.com/claude-code)
 
-Monitor cron jobs, backups, and any recurring task by having them "ping" a
-per-check URL. A background loop marks a check **down** when a ping is overdue
-and delivers a notification through the channels bound to that check. Ships as a
-single binary with an embedded, server-rendered web UI — dark/light follows your
-OS preference and the layout adapts to phones.
+Monitor cron jobs, backups and other recurring tasks by having them "ping" a
+per-check URL. When a ping is overdue, pingward marks the check **down** and
+notifies the channels bound to it. Ships as a single binary with an embedded,
+server-rendered web UI (light/dark, phone-friendly, works without JavaScript).
 
 ## Features
 
-- **Two schedule kinds** — fixed `period` (interval) or a 6-field `cron`
-  expression (`sec min hour dom mon dow`), evaluated in each check's timezone,
-  with a configurable grace window and max-runtime.
-- **Machine ping endpoints** — `success` / `fail` / `start` / `log` and
-  `exitcode` pings (`/ping/<uuid>[/<kind>]`); a `start` ping opens an in-flight
-  run so an overrun can be detected.
-- **Six notification channels** — webhook, Telegram, Slack, ntfy, Pushover, and
-  email (SMTP). Delivery is fire-and-forget with a retry policy, so a ping
-  response is never blocked on notification I/O. Channels can be renamed and
-  their credentials rotated later; the edit form never prints a stored
-  credential back into the page — leave a field blank to keep it.
-- **REST API** — a bearer-authenticated `/api/v1` for projects, checks,
-  channels, and ping/notification history: read them, create/update/delete them,
-  and drive the check actions (pause, resume, acknowledge, regenerate ping URL,
-  bind channels). Authenticate with account-bound API keys
-  (`Authorization: Bearer pw_…`), created and revoked from the **Account** page.
-  An OpenAPI document (`/api/openapi.json`) and an interactive Scalar reference
-  (`/api/docs`) are available to logged-in users.
-- **Multi-user with admin** — session-cookie auth (argon2), per-user project /
-  check ownership (other users' resources return 404, not 403), plus an
-  `/admin/*` area for cross-user management. Optional trusted forward-auth header
-  auto-provisions a passwordless user. Every user can change their own password
-  from the **Account** page (it asks for the current one, and signs out every
-  other session). Passwords must be 15–128 characters — length is the only
-  rule, so passphrases, spaces and any script are all fine. Creating an API key
-  asks for that password again, since a key outlives the session that made it,
-  and the admin actions that hand out access (creating a user, resetting a
-  password, granting admin) sit behind a 15-minute confirmation, on a page that
-  explains what it covers — the ones that *remove* access never ask.
-  Login is throttled
-  both per source address (5/minute) and per account (10/15 minutes, so a
-  distributed attempt cannot just add addresses), and failed sign-ins are
-  logged (`pingward::auth`) so a spray is visible.
-- **SQLite or Postgres** — one connection pool dispatches by URL scheme; no code
-  change to switch backends.
-- **Configurable retention** — a prune loop deletes old pings and notifications.
+- **Schedules** — fixed `period` or 6-field `cron` (`sec min hour dom mon dow`)
+  in the check's timezone, with grace window, max-runtime and optional repeat
+  reminders.
+- **Ping endpoints** — `/ping/<uuid>` (success), `/fail`, `/start`, `/log`, and
+  `/<exit-code>`; a `start` opens a run so overruns are detected. `POST` bodies
+  are kept as run output.
+- **Notifications** — webhook, Telegram, Slack, ntfy, Pushover, email (SMTP),
+  with retries. Stored credentials are never shown again; leave an edit field
+  blank to keep it.
+- **REST API** — bearer-authenticated `/api/v1` with an OpenAPI document and
+  Scalar reference (see [REST API](#rest-api)).
+- **Multi-user** — per-user ownership, an `/admin` area with an audit trail, and
+  optional forward-auth. Passwords are 15–128 characters (length is the only
+  rule). Creating an API key re-asks for the password; admin actions that grant
+  access (create user, reset password, promote) need a 15-minute re-unlock,
+  while removing access never does. Login is throttled per address (5/min) and
+  per account (10/15 min); failures are logged under `pingward::auth`.
+- **SQLite or Postgres**, chosen by `DATABASE_URL` scheme.
+- **Retention** — optional pruning of old pings, notifications and audit entries
+  (off by default; set on `/admin`).
 
 ## Screenshots
-
-The UI is server-rendered and embedded in the binary — no build step, no
-JavaScript bundle. Dark/light follows your OS preference (with a manual
-override), and the layout adapts to phones.
 
 ![Dashboard — one group per project, status tiles, per-check heartbeat strips and a name/status filter](docs/screenshots/dashboard-dark.png)
 
@@ -90,7 +69,7 @@ override), and the layout adapts to phones.
 
 ### Docker
 
-Multi-arch (`amd64` / `arm64`) images are published to GitHub Container Registry:
+Multi-arch (`amd64`/`arm64`) images on GitHub Container Registry:
 
 ```sh
 docker run -d \
@@ -98,27 +77,25 @@ docker run -d \
   -p 8080:8080 \
   -v pingward-data:/data \
   -e PINGWARD_BASE_URL=https://pingward.example.com \
+  -e PINGWARD_SECRET=replace-with-openssl-rand-hex-32 \
   ghcr.io/henry40408/pingward:latest
 ```
 
-The container binds HTTP on `0.0.0.0:8080` and stores its SQLite database at
-`/data/pingward.sqlite3`. Set `PINGWARD_BASE_URL` to the externally reachable URL
-so the ping URLs rendered in the UI are correct. Open the UI and create the first
-admin account on first run.
+The container listens on `0.0.0.0:8080` and keeps its SQLite database at
+`/data/pingward.sqlite3`. Set `PINGWARD_BASE_URL` to the external URL so
+rendered ping URLs are correct, and generate `PINGWARD_SECRET` once and keep
+it — a new value signs everyone out. Then open the UI and create the first
+admin.
+For Postgres, pass `-e DATABASE_URL=postgres://user:pass@host/db`.
 
-To use Postgres instead, pass `-e DATABASE_URL=postgres://user:pass@host/db`.
-
-`docker stop` / `docker compose down` shuts down gracefully: pingward handles
-SIGTERM, stops accepting new connections, lets in-flight requests and the
-current scan/prune pass finish, and closes the database pool — which
-checkpoints SQLite's WAL and removes the `-wal`/`-shm` files — typically well
-under a second, rather than waiting out Docker's 10s grace period.
+pingward handles SIGTERM, so `docker stop` finishes in-flight work and closes
+the database cleanly (SQLite's `-wal`/`-shm` files are removed) instead of
+waiting out Docker's 10s timeout.
 
 ### From source
 
 ```sh
-cargo run
-# defaults: SQLite file pingward.sqlite3, bind 127.0.0.1:8080
+cargo run   # SQLite file pingward.sqlite3, bind 127.0.0.1:8080
 ```
 
 ## Configuration
@@ -127,125 +104,77 @@ All configuration is via environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | `sqlite://pingward.sqlite3?mode=rwc` | SQLite (`sqlite://…`) or Postgres (`postgres://…`) — backend is chosen by scheme. |
-| `PINGWARD_BIND` | `127.0.0.1:8080` | Listen address for the HTTP server. |
-| `PINGWARD_BASE_URL` | `http://localhost:8080` | Base URL used to render ping URLs in the UI. |
-| `PINGWARD_SCAN_INTERVAL` | `30s` | How often the scan loop re-evaluates checks. Accepts raw seconds or a duration (`5m`, `1h30m`). |
-| `PINGWARD_PRUNE_INTERVAL_SECS` | — | How often the prune loop runs. |
-| `PINGWARD_LOG_FORMAT` | `full` | Log renderer: `full`, `compact` or `pretty` (human-readable) or `json` (one JSON object per line for a log aggregator). Verbosity is set with `RUST_LOG`. |
-| `RUST_LOG` | `error,pingward=info` | Log level filter, e.g. `pingward=debug` or `info,pingward::session=warn`. When unset, pingward's own INFO events are visible while dependencies stay at ERROR. Filters on targets and levels only — not on spans or fields. |
-| `PINGWARD_TRUSTED_PROXIES` | — | Comma-separated addresses or CIDR blocks whose `X-Forwarded-For` (and forward-auth header) is believed. See below. |
-| `PINGWARD_FORWARD_AUTH_HEADER` | — | Header carrying a pre-authenticated username; honoured only from a trusted proxy. |
-| `PINGWARD_FORWARD_AUTH_LOGOUT_URL` | — | Where **Log out** sends the browser. Point it at your gateway's sign-out endpoint so signing out ends the SSO session too. Unset means `/login`. |
-| `PINGWARD_SECRET` | generated per process | Signing key for session cookies and CSRF tokens; at least 16 bytes. See below. |
-| `PINGWARD_COOKIE_SECURE` | derived from `PINGWARD_BASE_URL`'s scheme | Whether the session cookie carries `Secure` (`true`/`false`/`1`/`0`). Leave unset unless TLS terminates upstream and `PINGWARD_BASE_URL` cannot say so. **Changing this value (or `PINGWARD_BASE_URL`'s scheme) also changes the session cookie's name** (plain `pingward_session` vs. the `__Host-`-prefixed `__Host-pingward_session`) **and signs everyone out once** — see below. |
-| `PINGWARD_HSTS_MAX_AGE` | — (off) | `max-age` in seconds for a `Strict-Transport-Security` header sent on every response. Off by default: pingward does not terminate TLS, so sending HSTS unconditionally would be wrong on a plain-HTTP internal deployment — set this only when the reverse proxy in front of it can't add the header itself. |
-| `PINGWARD_SMTP_*` | — | Instance SMTP for the email channel (`HOST`/`FROM` required to enable; port/TLS defaulted). |
+| `DATABASE_URL` | `sqlite://pingward.sqlite3?mode=rwc` | `sqlite://…` or `postgres://…`; the scheme picks the backend. |
+| `PINGWARD_BIND` | `127.0.0.1:8080` (image: `0.0.0.0:8080`) | HTTP listen address. |
+| `PINGWARD_BASE_URL` | `http://localhost:8080` | External URL, used for ping URLs and links in notifications. Its scheme also sets the cookie's `Secure` flag. |
+| `PINGWARD_SECRET` | random per process | Signs session cookies and CSRF tokens; at least 16 bytes. See below. |
+| `PINGWARD_SCAN_INTERVAL` | `30s` | How often checks are re-evaluated. |
+| `PINGWARD_PRUNE_INTERVAL_SECS` | `3600` | How often the retention prune runs. |
+| `PINGWARD_LOG_FORMAT` | `full` | `full`, `compact`, `pretty`, or `json` (one object per line). |
+| `RUST_LOG` | `error,pingward=info` | Log filter by target and level, e.g. `pingward=debug`. |
+| `PINGWARD_TRUSTED_PROXIES` | — | Comma-separated addresses or CIDR blocks whose `X-Forwarded-For` and forward-auth header are believed. |
+| `PINGWARD_FORWARD_AUTH_HEADER` | — | Header carrying a pre-authenticated username (trusted proxies only). |
+| `PINGWARD_FORWARD_AUTH_LOGOUT_URL` | — | Where **Log out** redirects, e.g. your gateway's sign-out URL. |
+| `PINGWARD_COOKIE_SECURE` | from `PINGWARD_BASE_URL` | Force the cookie's `Secure` flag (`true`/`false`/`1`/`0`). |
+| `PINGWARD_HSTS_MAX_AGE` | `0` (off) | Send `Strict-Transport-Security` with this `max-age`. |
+| `PINGWARD_SMTP_HOST`, `PINGWARD_SMTP_FROM` | — | Both required to enable the email channel. |
+| `PINGWARD_SMTP_TLS` | `starttls` | `starttls`, `tls` (implicit) or `none`. |
+| `PINGWARD_SMTP_PORT` | `587` (`465` with `tls`) | SMTP port. |
+| `PINGWARD_SMTP_USERNAME`, `PINGWARD_SMTP_PASSWORD` | — | Optional SMTP AUTH. |
 
-Session creation, renewal and destruction are logged as `pingward::session`
-events (timestamp, a truncated hash of the session — never the raw id —
-source IP, user agent) and are visible at the **default** `error,pingward=info` filter. To
-keep those but quiet everything else down, or vice versa, scope `RUST_LOG` to
-the target, e.g. `RUST_LOG=info,pingward::session=warn` silences them without
-touching the rest of the `info` output.
+Durations (env intervals, `PINGWARD_HSTS_MAX_AGE`, and the period, grace,
+max-runtime and interval fields in the UI and API) accept raw seconds or
+strings like `5m`, `1h30m`, `2d`. An unparseable env value falls back to its
+default. `/admin` shows the parsed values on its **Environment** card.
+
+Session creation, renewal and destruction are logged under `pingward::session`
+(hashed session id, IP, user agent); `RUST_LOG=info,pingward::session=warn`
+silences them.
 
 ### `PINGWARD_SECRET`
 
-Session cookies are signed with this key, and each session's CSRF token is
-derived from it. **Set it on any real deployment:**
-
-```
-PINGWARD_SECRET=$(openssl rand -hex 32)
-```
-
-Leave it unset and pingward generates a fresh key at every start, which
-invalidates every signed-in browser session — so each restart signs all users
-out (a warning at startup says so). A value shorter than 16 bytes is ignored
-and treated the same way. Changing the key has the same effect and is the way
-to force a global sign-out on purpose.
-
-API keys are not affected by any of this: they are independent bearer tokens,
-so programmatic clients keep working across restarts and key changes.
-
-Duration-valued settings (scan/nag/prune intervals and per-check period, grace,
-max-runtime) accept either raw seconds or a human-readable string (`5m`,
-`1h30m`, `2d`). In the web UI every one of those fields offers the common
-values as browser suggestions, so the suffixes are visible without reading the
-help text; they are suggestions only, and any value the parser accepts is still
-accepted whether or not it is on the list. The API key expiry field on
-**Account** works the same way, on its own scale.
+**Set it on any real deployment** (`openssl rand -hex 32`). Unset or shorter
+than 16 bytes, a random key is generated at each start, so every restart signs
+all users out (startup warns). Changing it signs everyone out on purpose. API
+keys are unaffected.
 
 ### Running behind a reverse proxy
 
-The address recorded for a login session (**Account** page) and for each ping
-(the **Source** column on a check) is the socket peer — which behind a reverse
-proxy is the proxy itself, the same value on every row. To record the real
-client instead, list the proxy in `PINGWARD_TRUSTED_PROXIES`; its
-`X-Forwarded-For` is then believed, and its first entry is stored. A request
-from any other address has its `X-Forwarded-For` ignored, so a public `/ping/*`
-endpoint cannot be used to forge a source address.
+- **Client addresses.** Behind a proxy every request appears to come from the
+  proxy. List it in `PINGWARD_TRUSTED_PROXIES` so its `X-Forwarded-For` is used
+  for session and ping source IPs (first entry) and for login rate limiting
+  (last entry, assuming exactly one trusted proxy). Otherwise all clients share
+  one rate-limit bucket: five failed logins anywhere lock sign-in for a minute.
+  Headers from other addresses are ignored, so `/ping/*` callers cannot forge
+  their source.
+- Entries are addresses (`10.0.0.1`, `::1`) or CIDR blocks (`172.16.0.0/12`,
+  `fd00::/8`). Hostnames are not resolved. For a proxy container prefer a
+  block, since its address changes when the network is recreated:
 
-Entries are bare addresses (`10.0.0.1`, `::1`) or CIDR blocks
-(`172.16.0.0/12`, `fd00::/8`), comma-separated. Prefer a block when the proxy
-runs in a container: its address comes from the bridge network's pool and
-changes whenever the network is recreated. Hostnames are **not** resolved and
-match nothing. For pingward and Caddy in the same Compose project:
+  ```yaml
+  environment:
+    PINGWARD_TRUSTED_PROXIES: "172.16.0.0/12"
+  ```
 
-```yaml
-environment:
-  PINGWARD_TRUSTED_PROXIES: "172.16.0.0/12"
-```
-
-Confirm the peer's actual address with `docker inspect -f
-'{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' <caddy-container>`,
-and note that `/admin` shows the value pingward parsed on its **Environment**
-card.
-
-`PINGWARD_TRUSTED_PROXIES` also governs login rate limiting: `POST /login`
-allows 5 attempts per client IP per 60-second window. Leaving it unset behind
-a reverse proxy means every request's peer *is* the proxy, so every client
-shares one bucket — five failed logins from anywhere lock out sign-in for the
-whole site for 60 seconds. The limiter keys on the **rightmost**
-`X-Forwarded-For` hop (and assumes exactly one trusted proxy in the chain),
-the opposite end from the **leftmost** hop used for session/ping IP
-attribution above — the leftmost entry is client-controlled, which is fine
-for a value a human reads later but would let an attacker bypass the rate
-limit by varying it.
-
-On an HTTPS deployment, `PINGWARD_BASE_URL` must use `https://` — the session
-cookie's `Secure` attribute is derived from its scheme, so an `http://` value
-(even behind a TLS-terminating proxy) leaves the cookie without `Secure`.
-
-When `Secure` is on, the session cookie also switches to the
-`__Host-pingward_session` name (the `__Host-` prefix, which the browser
-enforces alongside `Secure`, `Path=/`, and no `Domain`, so the cookie cannot
-be overwritten by a sibling subdomain or a downgraded HTTP response). Because
-the name itself changes, **toggling `PINGWARD_COOKIE_SECURE` or the scheme of
-`PINGWARD_BASE_URL` signs every existing session out once** — browsers still
-hold a cookie under the old name, which the server no longer reads. This is
-the same one-time inconvenience a `PINGWARD_SECRET` rotation or restart (with
-no `PINGWARD_SECRET` set) already causes; just sign in again.
+- **HTTPS.** Use an `https://` `PINGWARD_BASE_URL`, or the cookie will lack
+  `Secure`. With `Secure` on, the cookie is named `__Host-pingward_session`, so
+  toggling `PINGWARD_COOKIE_SECURE` or the base URL's scheme signs everyone out
+  once.
 
 #### Security headers
 
-Sent on every response, no configuration needed: `X-Content-Type-Options:
-nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin` and an empty
-`Permissions-Policy` allowlist. The web UI additionally carries a
-Content-Security-Policy whose `script-src` is `'self'` — no inline script, no
-nonce — because every script it runs is a file under `/assets`. If you put
-pingward behind a proxy that adds its own copies of these, they win: the app
-only fills in a header the response does not already carry.
+Every response carries `X-Content-Type-Options: nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: same-origin` and a
+`Permissions-Policy` disabling geolocation, camera, microphone, payment and
+USB. The web UI adds a Content-Security-Policy with `script-src 'self'`. Headers
+already set by your proxy win. `/api/docs` is outside the CSP because Scalar
+loads from `cdn.jsdelivr.net`; offline deployments can use
+`/api/openapi.json` with a local viewer.
 
-The one page outside that CSP is `/api/docs`, whose Scalar reference loads its
-bundle from `cdn.jsdelivr.net`. If your deployment must not reach a CDN at all,
-use `/api/openapi.json` with a local viewer instead.
+#### HSTS
 
-#### HSTS (Strict-Transport-Security)
-
-pingward does not terminate TLS, so it does not send
-`Strict-Transport-Security` by default — only your reverse proxy knows the
-deployment is actually HTTPS, and only it can scope `includeSubDomains`
-correctly. Set it there:
+pingward does not terminate TLS, so it sends no HSTS header by default. Set it
+on the proxy:
 
 ```caddyfile
 # Caddy
@@ -266,35 +195,17 @@ http:
         stsSeconds: 31536000
 ```
 
-**`includeSubDomains` and `preload` are effectively irreversible.** Once a
-browser has fetched a response carrying `includeSubDomains`, it refuses plain
-HTTP for *every* subdomain of that domain until `max-age` elapses — a typo or
-an unrelated subdomain that cannot yet do HTTPS goes dark with no easy way
-back. `preload` is worse: it submits the domain to a list baked into browser
-source, and removal can take months even after you stop sending the header.
-Add either only once you are certain every subdomain is HTTPS-only for good.
+`includeSubDomains` and `preload` are effectively irreversible — add them only
+when every subdomain is permanently HTTPS.
 
-If your proxy cannot be configured to add response headers, pingward can send
-this one itself:
-
-```yaml
-environment:
-  PINGWARD_HSTS_MAX_AGE: "300"
-```
-
-`0` (the default) sends no header at all — byte-identical to today's
-behaviour. The value is `max-age` in seconds, accepting a raw integer or a
-duration string (`300`, `365d`, `31536000`). Ramp it up the way HSTS deployment
-guides recommend — `300` (5 minutes) → `86400` (1 day) → `31536000` (1 year)
-— rather than jumping straight to a year, since a browser that has cached the
-policy cannot be talked out of it before `max-age` expires. This knob
-deliberately does **not** offer `includeSubDomains` or `preload` — set those
-on the reverse proxy if you need them, once you're sure.
+If the proxy cannot add headers, set `PINGWARD_HSTS_MAX_AGE` (e.g. `300`, or
+`365d`). Ramp up `300` → `86400` → `31536000`; a cached policy cannot be
+withdrawn before it expires. pingward never sends `includeSubDomains` or
+`preload`.
 
 ### Forward authentication
 
-To let an authentication gateway (Authelia, Authentik, `oauth2-proxy`, …) sign
-users in, point `PINGWARD_FORWARD_AUTH_HEADER` at the header your proxy sets:
+To let a gateway (Authelia, Authentik, `oauth2-proxy`, …) sign users in:
 
 ```yaml
 environment:
@@ -302,57 +213,40 @@ environment:
   PINGWARD_FORWARD_AUTH_HEADER: "Remote-User"
 ```
 
-The header is honoured **only** from an address listed in
-`PINGWARD_TRUSTED_PROXIES` — otherwise anyone could set it and log in as
-anybody. A username seen for the first time gets a non-admin, password-less
-account provisioned automatically; promote it from `/admin`.
-
-Such a user is given a normal pingward session on first request, so the
-**Account** page lists it and it can be revoked like any other. Note that
-revoking it only ends that session — the next request through the proxy is
-authenticated again by the header.
+The header is honoured **only** from a trusted proxy. An unknown username gets
+a passwordless non-admin account (promote it on `/admin`). Revoking its session
+on **Account** lasts only until the next proxied request.
 
 #### Signing out
 
-The same applies to the **Log out** button: it deletes the session, but the very
-next request still carries your gateway's header, so you are signed back in
-before the page renders. Only the gateway can end that identity. Give pingward
-its sign-out URL and logging out hands off to it:
+**Log out** deletes the local session, but the gateway re-authenticates the next
+request. Point pingward at the gateway's sign-out URL:
 
 ```yaml
 environment:
   PINGWARD_FORWARD_AUTH_LOGOUT_URL: "https://auth.example.com/logout"
 ```
 
-For Authelia that is `https://<your-authelia-domain>/logout`; Authentik uses
-`https://<domain>/application/o/<slug>/end-session/`, and `oauth2-proxy`
-`https://<domain>/oauth2/sign_out`. The local session is deleted either way —
-the URL only decides where the browser goes next.
-
-Leave it unset and **Log out** lands on `/`, not on a login form: you are still
-signed in, and pretending otherwise would be a lie. This redirect applies to
-every account, including password ones, so set it only on deployments that are
-actually behind a gateway.
+Authelia: `https://<domain>/logout`; Authentik:
+`https://<domain>/application/o/<slug>/end-session/`; `oauth2-proxy`:
+`https://<domain>/oauth2/sign_out`. When set, it applies to every account,
+including password ones. Unset, logging out lands on `/login` — or, for a
+gateway-authenticated request, on `/` with a notice that only the gateway can
+end the session.
 
 #### Exclude the machine endpoints from the gateway
 
-**This part is not optional.** An authentication gateway in front of pingward
-protects *everything* by default, including the endpoints that have no browser
-and no session to redirect. Leave them covered and your monitoring silently
-stops working: every `curl` from a cron job gets the gateway's login page (a
-`302`, which most ping scripts treat as success), so checks never receive a
-heartbeat and pingward reports them all down.
-
-Exclude at least these:
+**Required.** Otherwise every ping gets the gateway's login redirect (a `302`
+most scripts treat as success), no heartbeat arrives, and every check goes
+down. Bypass at least:
 
 | Path | Why |
 | --- | --- |
-| `/ping/*` | The heartbeat endpoints. Public and unauthenticated by design — this is what your jobs call. |
-| `/api/v1/*` | Bearer-token API. It authenticates with its own key and never reads a session cookie. |
-| `/healthz` | Container/uptime health probes. |
+| `/ping/*` | Heartbeat endpoints, unauthenticated by design. |
+| `/api/v1/*` | Authenticates with its own bearer key. |
+| `/healthz` | Health probes. |
 
-With Authelia, add a `bypass` rule *above* your catch-all — rules are matched
-in order, so a `bypass` listed after the `one_factor` rule never fires:
+Authelia (the `bypass` rule must come **before** the catch-all):
 
 ```yaml
 access_control:
@@ -369,13 +263,10 @@ access_control:
       policy: one_factor
 ```
 
-If you also serve the OpenAPI docs to machines, add `^/api/openapi\.json$`.
-The equivalent in other gateways is the same idea under a different name —
-`skip_auth_routes` in `oauth2-proxy`, an unauthenticated path in Authentik.
-
-To verify, `curl -sS -o /dev/null -w '%{http_code}\n' https://pingward.example.com/ping/<uuid>`
-from outside your network: `200` means the bypass works, `302` means the
-gateway is still intercepting it.
+(`skip_auth_routes` in `oauth2-proxy`, an unauthenticated path in Authentik.)
+Verify from outside your network:
+`curl -sS -o /dev/null -w '%{http_code}\n' https://pingward.example.com/ping/<uuid>`
+should print `200`, not `302`.
 
 ## REST API
 
@@ -402,17 +293,14 @@ curl -s "$BASE/api/v1/checks/1/pings?limit=20" -H "authorization: Bearer $KEY"
 curl -s -X POST "$BASE/api/v1/checks/1/pause" -H "authorization: Bearer $KEY"
 ```
 
-Duration fields (`period_secs`, `grace_secs`, the interval overrides) accept
-either an integer number of seconds or a human-readable string (`"5m"`,
-`"1h30m"`). Paginated list responses carry `has_newer`/`has_older` plus
-`next_after`/`next_before` cursor ids — pass `next_before` as `?before=` to
-fetch the next (older) page. An admin key may reach another user's resources;
-every such cross-user access is recorded in the audit log.
+Duration fields accept seconds or strings like `"5m"`. Paginated lists return
+`has_newer`/`has_older` and `next_after`/`next_before` cursors; pass
+`next_before` as `?before=` for the next (older) page. An admin key can reach
+other users' resources, and each such access is audited.
 
-The full operation list — with request/response schemas — is served as an
-OpenAPI document at `/api/openapi.json`, with an interactive
-[Scalar](https://github.com/scalar/scalar) reference at `/api/docs` (both
-require a logged-in session).
+The full schema is at `/api/openapi.json`, with an interactive
+[Scalar](https://github.com/scalar/scalar) reference at `/api/docs` (both need a
+logged-in session).
 
 ## Development
 
@@ -428,45 +316,33 @@ cargo nextest run                 # Rust tests (use nextest, not `cargo test`)
 cargo deny check                  # supply-chain / license checks
 ```
 
-Postgres integration tests (`tests/pg_store.rs`) and SMTP delivery tests
-(`tests/smtp_e2e.rs`) skip unless their backends are configured. Start both with
-`docker compose up -d`, then export `TEST_DATABASE_URL`,
-`PINGWARD_TEST_SMTP_HOST=localhost`, `PINGWARD_TEST_SMTP_PORT=1025`, and
+Postgres (`tests/pg_store.rs`) and SMTP (`tests/smtp_e2e.rs`) tests skip unless
+configured: `docker compose up -d`, then export
+`TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres`,
+`PINGWARD_TEST_SMTP_HOST=localhost`, `PINGWARD_TEST_SMTP_PORT=1025`,
 `PINGWARD_TEST_MAILPIT_API=http://localhost:8025`.
 
 ### End-to-end tests
 
-Browser E2E (cucumber + thirtyfour) lives in `e2e/`, a cargo workspace of its
-own; each scenario spawns a fresh compiled binary against a temporary SQLite
-database:
+Browser tests (cucumber + thirtyfour) live in `e2e/`, a separate cargo
+workspace. Each scenario runs a freshly built binary against a temporary SQLite
+database. Requires a local Chrome or Chromium (the driver is downloaded
+automatically; on macOS: `brew install --cask ungoogled-chromium`).
 
 ```sh
-cd e2e && cargo test --test e2e
+cargo build && cd e2e && cargo test --test e2e
 ```
 
-A local Chrome or Chromium is the only prerequisite — the driver is downloaded
-and supervised for you, but the browser is not
-(`brew install --cask ungoogled-chromium` on macOS).
+### Screenshots and app icon
 
-### Regenerating the screenshots and the app icon
+`docs/screenshots/` is generated by seeding demo data into a throwaway database
+and capturing each page. Re-run after UI changes and commit the PNGs.
+`assets/apple-touch-icon.png` is rendered from `assets/favicon.svg`.
 
-The images in `docs/screenshots/` come from a repeatable pipeline: it wipes a
-throwaway SQLite database, creates the first admin through the product's own
-`/setup` form, seeds backdated demo history, boots `pingward` on a throwaway
-port, and re-captures every framed shot. Re-run it after a UI change and commit
-the updated PNGs:
-
-~~~sh
-cargo build            # the UI is compiled into the binary
-cd e2e && cargo run --bin screenshots
-~~~
-
-`assets/apple-touch-icon.png` is rendered from `assets/favicon.svg` with resvg,
-which needs no browser at all. Re-run it after editing the SVG:
-
-~~~sh
+```sh
+cargo build && cd e2e && cargo run --bin screenshots
 cd e2e && cargo run --bin icons
-~~~
+```
 
 ## License
 

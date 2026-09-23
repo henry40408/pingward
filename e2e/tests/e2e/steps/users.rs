@@ -8,11 +8,8 @@ use pingward_e2e::dom::{
 use pingward_e2e::world::PingwardWorld;
 use thirtyfour::WebElement;
 
-/// A user's `<tr>`.
-///
-/// Every control and status pill carries a row-local `data-testid`, so scoping
-/// to the row keeps selectors unambiguous when a username collides with another
-/// row's role-pill text ("member").
+/// A user's `<tr>`. Row-local test ids stay unambiguous even when a username
+/// matches another row's pill text ("member").
 async fn user_row(world: &PingwardWorld, username: &str) -> Result<WebElement> {
     world
         .driver()?
@@ -20,7 +17,6 @@ async fn user_row(world: &PingwardWorld, username: &str) -> Result<WebElement> {
         .await
 }
 
-/// An element's tag name.
 async fn tag_name(world: &PingwardWorld, element: &WebElement) -> Result<String> {
     Ok(world
         .driver()?
@@ -32,17 +28,12 @@ async fn tag_name(world: &PingwardWorld, element: &WebElement) -> Result<String>
         .to_owned())
 }
 
-/// Drives one of a row's mutating controls and waits for the redirect back to
-/// `/admin`.
+/// Drives a row's mutating control and waits for the document to be replaced:
+/// the redirect returns to `/admin`, so a URL check would pass on the stale DOM.
 ///
-/// The redirect target is the page it came from, so checking the URL would
-/// resolve instantly against the stale DOM — a false pass for the
-/// "state unchanged" guards, and a race with the next navigation.
-///
-/// On the signed-in admin's own row, demote / disable / delete render as an
-/// inert `<span>`, so the handler is driven directly with a POST carrying the
-/// page's CSRF token — proving the self-guard refuses independently of the UI.
-/// The base path comes off the row's always-live password-reset form.
+/// On the admin's own row the control is an inert `<span>`, so the handler is
+/// Posted directly to prove the server-side self-guard. The base path comes
+/// off the row's password-reset form, which is always live.
 async fn submit_row_action(
     world: &PingwardWorld,
     row: &WebElement,
@@ -66,9 +57,7 @@ async fn submit_row_action(
             .prop("value")
             .await?
             .unwrap_or_default();
-        // The 303 is asserted explicitly: a 403 from `csrf_guard` or an auth
-        // bounce would leave the state unchanged too, and pass for the wrong
-        // reason.
+        // Assert the 303: a `csrf_guard` 403 would also leave state unchanged.
         let status = world
             .post_form_as_user(&format!("{base}/{action}"), &[("_csrf", csrf.as_str())])
             .await?;
@@ -79,14 +68,11 @@ async fn submit_row_action(
         world.goto("/admin").await?;
         return Ok(());
     }
-    // Destructive controls confirm (delete always, revoke-admin and disable
-    // when state would change) while promote and enable never do;
-    // `submit_element_confirming` covers both.
+    // Only some controls confirm (delete, revoke admin, disable).
     submit_element_confirming(world.driver()?, control).await
 }
 
-/// Fills the "Add user" form and submits it, returning once the new row has
-/// rendered.
+/// Submits "Add user" and waits for the new row.
 async fn add_user(
     world: &PingwardWorld,
     username: &str,
@@ -133,8 +119,7 @@ async fn toggle_admin(world: &mut PingwardWorld, username: String) -> Result<()>
 #[when(expr = "I disable {string}")]
 #[when(expr = "I enable {string}")]
 async fn toggle_disabled(world: &mut PingwardWorld, username: String) -> Result<()> {
-    // Enable and disable are the same toggle control; the direction comes from
-    // the row's current state.
+    // One toggle; direction comes from the row's current state.
     row_action(world, &username, "user-toggle-disabled", "disabled").await
 }
 
@@ -162,8 +147,7 @@ async fn reset_password(
     username: String,
     password: String,
 ) -> Result<()> {
-    // The refusal case shares this body: the handler re-renders `/admin` with
-    // an error, and either way the document is replaced.
+    // A refusal re-renders `/admin`, so the document is replaced either way.
     let row = user_row(world, &username).await?;
     let field = row.test_id("user-reset-input").await?;
     field.clear().await?;
@@ -174,8 +158,7 @@ async fn reset_password(
 
 #[when(expr = "I attempt to delete {string} but dismiss the confirmation")]
 async fn dismiss_delete_confirmation(world: &mut PingwardWorld, username: String) -> Result<()> {
-    // Answers the prompt no, so the form never submits. The message is read
-    // first because a missing dialog would leave the row standing too.
+    // The message is read first: a missing dialog would leave the row too.
     let row = user_row(world, &username).await?;
     let control = row.test_id("user-delete").await?;
     click_when_ready(&control).await?;
@@ -189,7 +172,6 @@ async fn dismiss_delete_confirmation(world: &mut PingwardWorld, username: String
     Ok(())
 }
 
-/// The Gherkin action name, and the `data-testid` of its per-row control.
 fn self_row_test_id(action: &str) -> Result<&'static str> {
     Ok(match action {
         "demote" => "user-toggle-admin",
@@ -201,7 +183,7 @@ fn self_row_test_id(action: &str) -> Result<&'static str> {
 
 #[then(expr = "the {word} control on my own row is inert")]
 async fn own_row_control_inert(world: &mut PingwardWorld, action: String) -> Result<()> {
-    // The signed-in admin is always "admin" in this feature's Background.
+    // The Background signs in as "admin".
     let row = user_row(world, "admin").await?;
     let control = row.test_id(self_row_test_id(&action)?).await?;
     let tag = tag_name(world, &control).await?;
@@ -263,8 +245,7 @@ async fn user_not_listed(world: &mut PingwardWorld, username: String) -> Result<
 
 #[when(expr = "I try to add a user {string} with password {string}")]
 async fn try_add_user(world: &mut PingwardWorld, username: String, password: String) -> Result<()> {
-    // Unlike `add_user`, expects a refusal: `/admin` re-renders with an error
-    // instead of redirecting, so no new row appears.
+    // Expects a refusal (re-render, no new row), unlike `add_user`.
     let driver = world.driver()?;
     driver.fill("user-username-input", &username).await?;
     driver.fill("user-password-input", &password).await?;
@@ -281,9 +262,8 @@ async fn user_form_error(world: &mut PingwardWorld, message: String) -> Result<(
 
 #[when(expr = "I try to grant admin to {string}")]
 async fn try_grant_admin(world: &mut PingwardWorld, username: String) -> Result<()> {
-    // The locked case, where the click does not navigate: `app.js` intercepts
-    // it and opens the re-auth dialog. The scriptless server-side bounce is
-    // covered in `tests/admin_elevation.rs`.
+    // Locked: `app.js` opens the re-auth dialog instead of navigating. The
+    // scriptless bounce is covered in `tests/admin_elevation.rs`.
     let row = user_row(world, &username).await?;
     let control = row.test_id("user-toggle-admin").await?;
     click_when_ready(&control).await

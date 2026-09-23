@@ -8,14 +8,12 @@ use pingward::{
 
 mod common;
 
-/// Sends the current session's CSRF token as a default `X-CSRF-Token` header,
-/// so protected POSTs are not rejected by `csrf_guard`. Call after every login.
+/// Default `X-CSRF-Token` header for the current session; call after every login.
 async fn set_csrf(server: &mut TestServer, store: &Store) {
     let tok = common::newest_session_csrf(&store.pool).await;
     server.add_header("x-csrf-token", tok.as_str());
 }
 
-/// A `TestServer` on a fresh in-memory DB, signed in as a new user (id returned).
 async fn server_as(username: &str, is_admin: bool) -> (TestServer, Store, i64) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -49,8 +47,8 @@ async fn admin_server() -> (TestServer, Store, i64) {
     server_as("admin", true).await
 }
 
-/// `validate_project` only checks `trim().is_empty()`, so a handler could still
-/// hand the raw, untrimmed name to the store.
+/// `validate_project` returns the trimmed name; a handler could still store the
+/// raw form field instead.
 #[tokio::test]
 async fn project_create_stores_a_trimmed_name() {
     let (server, store, _uid) = logged_in_server().await;
@@ -111,8 +109,7 @@ async fn check_create_stores_a_trimmed_name() {
     assert_eq!(stored.name, "backup");
 }
 
-/// `check_update_core` validates via `validate_check`, which trims the name — a
-/// reverted handler could still hand the raw one to the store.
+/// `validate_check` trims the name; `check_update_core` could still store the raw one.
 #[tokio::test]
 async fn check_update_stores_a_trimmed_name() {
     let (server, store, uid) = logged_in_server().await;
@@ -174,8 +171,7 @@ async fn project_update_stores_a_trimmed_name() {
     assert_eq!(stored.name, "Renamed jobs");
 }
 
-/// `admin_project_update` is a separate, admin-only route that shares
-/// `validate_project`.
+/// The admin route shares `validate_project` but is a separate handler.
 #[tokio::test]
 async fn admin_project_update_stores_a_trimmed_name() {
     let (server, store, admin_id) = admin_server().await;

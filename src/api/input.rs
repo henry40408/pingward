@@ -1,14 +1,11 @@
-//! Request bodies for the write API. Each input normalizes into the all-string
-//! web form structs ([`crate::web::ProjectForm`] etc.) so the write handlers
-//! reuse the browser UI's validators ([`crate::web::validate_project`] /
-//! [`crate::web::validate_check`] / [`crate::web::validate_channel`]).
+//! Write-API request bodies. Each converts into its web form struct so the
+//! handlers reuse the UI's validators ([`crate::web::validate_project`] etc.).
 
 use crate::web::{ChannelForm, CheckForm, ProjectForm};
 use serde::Deserialize;
 use utoipa::ToSchema;
 
-/// A JSON string (`"5m"`, `"1h30m"`, `"90"`) or integer (raw seconds). Both
-/// normalize to the string the web validators feed `duration::parse_duration`.
+/// A duration string (`"5m"`, `"90"`) or integer seconds, as the form string.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum DurationInput {
@@ -25,19 +22,16 @@ impl DurationInput {
     }
 }
 
-/// A blank string means "unset / inherit", as an empty form field does:
-/// `validate_*` maps it to `None`.
+/// Omitted becomes blank, which the validators read as "unset / inherit".
 fn opt_form(v: Option<DurationInput>) -> String {
     v.map(DurationInput::into_form_string).unwrap_or_default()
 }
 
-/// Create/replace body for a project. On `PATCH` this replaces the editable
-/// fields in full — send the complete representation, not a partial patch.
+/// Create/replace body for a project. `PATCH` replaces every editable field.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ProjectInput {
     pub name: String,
-    /// Raw markdown (the subset in `src/markdown.rs`); API responses carry it
-    /// unrendered.
+    /// Raw markdown (the subset in `src/markdown.rs`).
     #[serde(default)]
     pub description: Option<String>,
     /// Per-project scan-interval override: seconds or a duration string.
@@ -70,14 +64,11 @@ fn default_timezone() -> String {
     "UTC".to_string()
 }
 
-/// Create/replace body for a check. On `PATCH` this replaces the editable
-/// fields in full — send the complete representation. The `ping_uuid`, status
-/// and history are never set here.
+/// Create/replace body for a check. `PATCH` replaces every editable field.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CheckInput {
     pub name: String,
-    /// Raw markdown (the subset in `src/markdown.rs`); API responses carry it
-    /// unrendered.
+    /// Raw markdown (the subset in `src/markdown.rs`).
     #[serde(default)]
     pub description: Option<String>,
     /// Schedule type: `period` (default) or `cron`.
@@ -123,8 +114,7 @@ impl From<CheckInput> for CheckForm {
             schedule_kind: i.schedule_kind,
             period_secs: opt_form(i.period_secs),
             cron_expr: i.cron_expr.unwrap_or_default(),
-            // `validate_check` rejects a blank grace, so an omitted one
-            // becomes "0" (a valid "no grace").
+            // `validate_check` rejects a blank grace; omitted means none.
             grace_secs: i
                 .grace_secs
                 .map_or_else(|| "0".to_string(), DurationInput::into_form_string),
@@ -136,14 +126,9 @@ impl From<CheckInput> for CheckForm {
     }
 }
 
-/// Create/patch body for a notification channel. The kind-specific credential
-/// fields are flat and optional; `validate_channel` enforces which are required
-/// for the chosen `kind`.
-///
-/// On `PATCH` this is a merge, not a replacement (unlike [`ProjectInput`] /
-/// [`CheckInput`]): an omitted or blank field keeps the stored value, so one
-/// credential can be rotated without re-sending the others. `kind` is ignored
-/// on `PATCH` — a channel's kind is immutable.
+/// Create/patch body for a channel; `validate_channel` decides which
+/// kind-specific fields are required. Unlike the other inputs, `PATCH` merges:
+/// a blank field keeps the stored value, and `kind` is immutable.
 #[derive(Debug, Default, Deserialize, ToSchema)]
 pub struct ChannelInput {
     /// Required when creating; blank on `PATCH` keeps the stored name.
@@ -168,8 +153,7 @@ pub struct ChannelInput {
     pub ntfy_topic: String,
     #[serde(default)]
     pub ntfy_token: String,
-    /// Send `true` on `PATCH` to remove a stored ntfy token — a blank
-    /// `ntfy_token` means "keep", so it could not be cleared otherwise.
+    /// `true` on `PATCH` removes the stored ntfy token (blank means "keep").
     #[serde(default)]
     pub ntfy_token_clear: bool,
     #[serde(default)]

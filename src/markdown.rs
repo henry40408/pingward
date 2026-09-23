@@ -1,31 +1,18 @@
 //! A minimal, escape-first markdown subset for project and check descriptions.
 //!
-//! [`render`] HTML-escapes the entire input before any markdown transform runs,
-//! then emits only a whitelist of tags (`<p>`, `<br>`, `<ul>`, `<li>`,
-//! `<strong>`, `<em>`, `<code>`, `<a>`) built from the already-escaped text, so
-//! raw HTML injection is structurally impossible. Do not swap this for a
-//! sanitizer pass over generated HTML — escaping must happen first.
+//! [`render`] HTML-escapes the whole input first, then emits only whitelisted
+//! tags built from the escaped text, so raw HTML injection is structurally
+//! impossible. Do not swap this for a sanitizer pass over generated HTML.
 //!
 //! Supported: `**bold**`, `*italic*`, `` `code` ``, `[text](url)` (only
-//! `http://`/`https://`/`mailto:` become links; `javascript:` and friends stay
-//! literal), bare `http(s)://` autolinks, and `- ` bullet lists (a block where
-//! every line starts with `- `). Unsupported, rendering as literal escaped
-//! text: headings, images, tables, blockquotes, code fences, reference links,
-//! nested lists, `_underscore_` emphasis.
+//! `http(s)://`/`mailto:` become links), bare `http(s)://` autolinks, and `- `
+//! lists (every line of the block). Anything else renders as literal text.
+//! Inline constructs do not nest, and generated output is never re-scanned.
 //!
-//! Inline constructs do not nest: each matcher copies its content verbatim
-//! rather than re-entering [`render`]'s inline pass, so `**[text](url)**`
-//! renders the link syntax literally. Not re-scanning generated output is what
-//! guarantees an emitted tag can never be reinterpreted as new markup.
-//!
-//! Complexity: [`render`] is worst-case O(n²) — repeated `[` with no closing
-//! `]` makes `match_link`'s `find(']')` rescan to the end of the string on
-//! every one-character fallback advance. Only safe because every caller
-//! enforces `web::MAX_DESCRIPTION_CHARS` first (~2000 chars is sub-millisecond,
-//! ~80000 chars is ~83ms). Raising that cap, or adding a caller that passes
-//! unbounded input, must account for this.
+//! [`render`] is worst-case O(n²) (repeated unclosed `[`); only safe because
+//! descriptions are capped at `web::MAX_DESCRIPTION_CHARS` (2000).
 
-/// Render `src` (raw markdown from a user) to a whitelisted HTML subset.
+/// Render user markdown to the whitelisted HTML subset.
 pub fn render(src: &str) -> String {
     let normalized = normalize_newlines(src);
     let escaped = escape_html(&normalized);
@@ -52,16 +39,15 @@ pub fn render(src: &str) -> String {
     out
 }
 
-/// Strip markdown markers and collapse whitespace into single spaces. Not
-/// HTML-escaped — callers pass this through Askama, which escapes on render.
+/// Strip markdown markers and collapse whitespace. Not HTML-escaped: Askama
+/// escapes on render.
 pub fn to_plain(src: &str) -> String {
     let normalized = normalize_newlines(src);
     let stripped = strip_markdown_markers(&normalized);
     stripped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// [`to_plain`], truncated to `max_chars` characters (never bytes — safe on
-/// multi-byte input), appending `…` when truncation happened.
+/// [`to_plain`] truncated to `max_chars` characters (not bytes), plus `…`.
 pub fn truncate_plain(src: &str, max_chars: usize) -> String {
     let plain = to_plain(src);
     if plain.chars().count() <= max_chars {
@@ -91,7 +77,7 @@ fn escape_html(s: &str) -> String {
     out
 }
 
-/// Split escaped text into blocks on blank lines; each block is non-empty.
+/// Split on blank lines; each block is non-empty.
 fn split_blocks(s: &str) -> Vec<Vec<&str>> {
     let mut blocks = Vec::new();
     let mut current = Vec::new();
@@ -114,17 +100,13 @@ fn is_list_block(block: &[&str]) -> bool {
     block.iter().all(|line| line.trim_start().starts_with("- "))
 }
 
-/// Only these schemes ever become a live `<a href>`; anything else (notably
-/// `javascript:` and `data:`) must render as literal text.
+/// The only schemes that become a live `<a href>` (never `javascript:`/`data:`).
 fn is_allowed_scheme(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:")
 }
 
-/// Render one line's inline markdown: a single left-to-right pass over the
-/// escaped text, trying constructs in priority order (code, bold, italic,
-/// link, autolink) and otherwise copying one literal character. Generated
-/// output is never re-scanned, so an emitted `<a href>` cannot be re-matched
-/// by a later autolink.
+/// One left-to-right pass: code, bold, italic, link, autolink, else a literal
+/// char. Output is never re-scanned, so an emitted `<a href>` cannot re-match.
 fn render_inline(line: &str) -> String {
     let mut out = String::new();
     let mut rest = line;
@@ -141,9 +123,7 @@ fn render_inline(line: &str) -> String {
                 rest = &rest[consumed..];
                 continue;
             }
-            // No closing `**`: emit two literal asterisks rather than
-            // falling through to `match_italic`, which would consume them as
-            // an empty `*...*` pair and emit a stray `<em></em>`.
+            // Unclosed `**` is literal; `match_italic` would emit `<em></em>`.
             out.push_str("**");
             rest = &rest[2..];
             continue;
@@ -173,8 +153,6 @@ fn render_inline(line: &str) -> String {
 }
 
 /// `` `code` `` → `<code>code</code>`; `rest` must start with a backtick.
-/// Content is copied verbatim. `None` with no closing backtick, leaving it to
-/// the caller's literal-character fallback.
 fn match_code(rest: &str) -> Option<(usize, String)> {
     let after = &rest[1..];
     let p = after.find('`')?;
@@ -198,8 +176,7 @@ fn match_italic(rest: &str) -> Option<(usize, String)> {
     Some((1 + p + 1, format!("<em>{content}</em>")))
 }
 
-/// `[text](url)` → an anchor, or the original literal text when `url`'s scheme
-/// isn't whitelisted. `rest` must start with `[`.
+/// `[text](url)` → an anchor, or literal text for a non-whitelisted scheme.
 fn match_link(rest: &str) -> Option<(usize, String)> {
     let after_bracket = &rest[1..];
     let close_idx = after_bracket.find(']')?;
@@ -219,9 +196,8 @@ fn match_link(rest: &str) -> Option<(usize, String)> {
     }
 }
 
-/// A bare `http(s)://` run of non-whitespace becomes an autolink, trimming
-/// trailing `.,;:!?)` back into literal text. `rest` must start with the
-/// scheme; always consumes at least one character, so the scan makes progress.
+/// A bare `http(s)://` run becomes a link, minus trailing `.,;:!?)`. Always
+/// consumes at least one character, so the scan makes progress.
 fn match_autolink(rest: &str) -> (usize, String) {
     let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
     let run = &rest[..end];
@@ -346,15 +322,12 @@ mod tests {
 
     #[test]
     fn unmatched_bold_opener_is_literal_not_empty_em() {
-        // Must not fall through to `match_italic`, which would consume the
-        // asterisks as an empty pair and emit a stray `<em></em>`.
         assert_eq!(render("**bold"), "<p>**bold</p>");
         assert!(!render("**bold").contains("<em>"));
     }
 
     #[test]
     fn unmatched_bold_opener_then_real_italic() {
-        // `**` is emitted literally, then scanning finds a genuine `*b*`.
         assert_eq!(render("**a*b*"), "<p>**a<em>b</em></p>");
     }
 
@@ -449,8 +422,7 @@ mod tests {
 
     #[test]
     fn nested_list_is_not_supported_stays_flat_text() {
-        // Leading whitespace before `- ` still counts as a marker, so this
-        // asserts one flat list rather than a nested <ul>.
+        // Indented `- ` still counts as a marker: one flat list.
         let out = render("- one\n  - two");
         assert!(!out.contains("<ul><li><ul>"));
     }
@@ -505,10 +477,9 @@ mod tests {
 
     #[test]
     fn truncate_plain_is_char_boundary_safe_on_multibyte() {
-        // A byte-based slice at an arbitrary offset would panic here.
         let src = "你好世界这是一段測試文字用來確認多位元組字元不會導致崩潰";
         let out = truncate_plain(src, 5);
-        assert_eq!(out.chars().count(), 6); // 5 chars + the ellipsis
+        assert_eq!(out.chars().count(), 6);
         assert!(out.ends_with('…'));
     }
 }

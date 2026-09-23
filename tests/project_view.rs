@@ -1,6 +1,4 @@
-//! Renders `/projects/{id}`'s check list. `tests/auth_web.rs` hits this URL too,
-//! but only for ownership/authorization; nothing there asserts what the page
-//! renders.
+//! What `/projects/{id}` renders (`tests/auth_web.rs` covers its authorization).
 use axum_test::TestServer;
 use pingward::{app, db, state::AppState, store::Store};
 
@@ -55,7 +53,6 @@ async fn project_page_shows_running_badge_for_in_flight_check() {
         })
         .await
         .unwrap();
-    // In-flight start, no finish: stored `new`, display-status `running`.
     store
         .mark_ping(
             cid,
@@ -80,8 +77,7 @@ async fn project_page_shows_running_badge_for_in_flight_check() {
     );
 }
 
-/// Asserted both directions in one test, so a template that always (or never)
-/// emits the chip fails.
+/// Both directions, so a template that always (or never) emits the chip fails.
 #[tokio::test]
 async fn project_page_no_channel_chip_reflects_binding_state() {
     let (server, store, pid) = server_with_project().await;
@@ -150,8 +146,7 @@ async fn project_page_no_channel_chip_reflects_binding_state() {
     );
 }
 
-/// `project.html` renders through `view::display_status`, not the raw stored
-/// status — a stored-`up` check inside its grace window shows "late".
+/// The page must use `view::display_status`, not the raw stored status.
 #[tokio::test]
 async fn project_page_shows_late_for_stored_up_check_in_grace_window() {
     let (server, store, pid) = server_with_project().await;
@@ -169,7 +164,7 @@ async fn project_page_shows_late_for_stored_up_check_in_grace_window() {
         .await
         .unwrap();
     let now = chrono::Utc::now();
-    // due in 2m, grace 300s → the expected run was 3m ago: `now` is in (expected, due].
+    // Due in 2m with 300s grace, so `now` is inside (expected, due].
     store
         .mark_ping(
             cid,
@@ -194,9 +189,7 @@ async fn project_page_shows_late_for_stored_up_check_in_grace_window() {
     );
 }
 
-/// XSS regression: `markdown::render` escapes before any markdown transform, so
-/// `<img onerror=...>` arrives as `&lt;img` and a `javascript:` link never
-/// becomes an `<a href>`.
+/// `markdown::render` must escape before transforming.
 #[tokio::test]
 async fn project_description_neutralizes_xss_payloads() {
     let (server, store, pid) = server_with_project().await;
@@ -214,9 +207,8 @@ async fn project_description_neutralizes_xss_payloads() {
     let res = server.get(&format!("/projects/{pid}")).await;
     res.assert_status_ok();
     let body = res.text();
-    // The escaped payload still appears as inert page *content*, so a bare
-    // `!contains("onerror=alert(1)")` would be wrong and `!contains("onerror")`
-    // would false-positive on base.html's own `liveSource.onerror`.
+    // The escaped payload still appears as text, so `!contains("onerror")`
+    // would be the wrong assertion.
     assert!(
         !body.contains("<img "),
         "a raw <img> tag leaked into rendered page: {body}"
@@ -235,8 +227,6 @@ async fn project_description_neutralizes_xss_payloads() {
     );
 }
 
-/// The project description renders as markdown; the check row shows the
-/// truncated plain-text form (`ProjectCheckRow`).
 #[tokio::test]
 async fn project_and_check_descriptions_render_on_project_page() {
     let (server, store, pid) = server_with_project().await;
@@ -272,8 +262,6 @@ async fn project_and_check_descriptions_render_on_project_page() {
         body.contains("<strong>bold</strong>"),
         "project description markdown not rendered: {body}"
     );
-    // A bullet list must render through the real pipeline, not only through
-    // `src/markdown.rs`'s own unit tests.
     assert!(body.contains("<ul>"), "list block missing <ul>: {body}");
     assert!(
         body.contains("<li>alpha item</li>"),
@@ -283,7 +271,6 @@ async fn project_and_check_descriptions_render_on_project_page() {
         body.contains("<li>beta item</li>"),
         "list item 'beta item' missing: {body}"
     );
-    // `ProjectCheckRow.description` is `markdown::truncate_plain`: markers stripped.
     assert!(
         body.contains(
             "class=\"cdesc\" data-testid=\"check-description-summary\">Runs nightly backups.</div>"
@@ -296,11 +283,8 @@ async fn project_and_check_descriptions_render_on_project_page() {
     );
 }
 
-/// The channel list renders name and kind but never the stored `config_json`.
-///
-/// The real guarantee is structural — the template only sees
-/// `web::ProjectChannelRow` — which this test cannot observe from outside, so it
-/// pins the rendered output both directions instead.
+/// The real guarantee is structural (the template only sees
+/// `web::ProjectChannelRow`); this pins the rendered output.
 #[tokio::test]
 async fn project_page_lists_channels_without_their_secrets() {
     let (server, store, pid) = server_with_project().await;

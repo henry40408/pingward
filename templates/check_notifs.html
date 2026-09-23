@@ -1,8 +1,5 @@
-{# Recent-notifications fragment: filter controls + table + keyset pager.
-   Served standalone by GET /checks/{id}/notifications (JS swaps it into
-   #notifs-section) and inlined into check.html via |safe. #}
-{# Real GET form submitting to the check page — see check_pings.html for why,
-   including what the hidden fields and the raw `datetime-local` values mean. #}
+{# Recent-notifications fragment, served by GET /checks/{id}/notifications
+   and inlined into check.html via |safe; see check_pings.html. #}
 <form class="filters" method="get" action="{{ base }}/checks/{{ check_id }}" data-testid="notifs-filters" data-nosubmit>
   {% for f in carry %}<input type="hidden" name="{{ f.name }}" value="{{ f.value }}">{% endfor %}
   <label class="fld">From <input type="datetime-local" name="nfrom" data-testid="notifs-from" data-utc="{{ f_from }}"></label>

@@ -2,9 +2,7 @@ use sqlx::any::{AnyConnectOptions, AnyPoolOptions, install_default_drivers};
 use sqlx::migrate::Migrator;
 use std::str::FromStr;
 
-// Migrations are embedded at compile time: the release image ships the binary
-// alone and runs from the mounted data volume, so reading `migrations/` at
-// startup would panic there.
+// Embedded: the release image ships only the binary, with no `migrations/` on disk.
 static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("migrations/sqlite");
 static POSTGRES_MIGRATOR: Migrator = sqlx::migrate!("migrations/postgres");
 
@@ -20,21 +18,16 @@ fn is_sqlite_url(url: &str) -> bool {
 }
 
 pub async fn connect(url: &str) -> Result<Pool, sqlx::Error> {
-    // The `Any` driver needs its default drivers registered before connecting.
     install_default_drivers();
 
     let sqlite = is_sqlite_url(url);
-    // In-memory SQLite is capped at one connection so every operation shares
-    // the same database.
     let max_connections = if sqlite && is_in_memory_url(url) {
         1
     } else {
         5
     };
 
-    // The `Any` driver has no `create_if_missing`; the SQLite backend honours
-    // `?mode=rwc` in the URL instead. Append it for file URLs that don't
-    // already set `mode=`, so a missing database file is created.
+    // The `Any` driver has no `create_if_missing`; `?mode=rwc` creates the file instead.
     let created_url;
     let url = if sqlite && !is_in_memory_url(url) && !url.contains("mode=") {
         created_url = if url.contains('?') {
@@ -47,8 +40,7 @@ pub async fn connect(url: &str) -> Result<Pool, sqlx::Error> {
         url
     };
 
-    // WAL and `synchronous=NORMAL` only apply on disk: an in-memory database
-    // has no concurrent writers and reports its journal mode as `memory`.
+    // An in-memory database's journal mode is always `memory`.
     let sqlite_file = sqlite && !is_in_memory_url(url);
 
     let opts = AnyConnectOptions::from_str(url)?;
@@ -57,24 +49,19 @@ pub async fn connect(url: &str) -> Result<Pool, sqlx::Error> {
         .max_connections(max_connections)
         .after_connect(move |conn, _meta| {
             Box::pin(async move {
-                // Per-connection SQLite pragmas: the `Any` driver offers no
-                // `SqliteConnectOptions` to set them on. Postgres needs none.
+                // Per connection: the `Any` driver has no `SqliteConnectOptions`.
                 if sqlite {
                     // Without this, `ON DELETE CASCADE` is silently unenforced.
                     sqlx::query("PRAGMA foreign_keys = ON")
                         .execute(&mut *conn)
                         .await?;
-                    // A writer blocked by another writer retries for up to 5s
-                    // instead of failing with `SQLITE_BUSY` ("database is
-                    // locked").
+                    // Retry a blocked write for up to 5s instead of `SQLITE_BUSY`.
                     sqlx::query("PRAGMA busy_timeout = 5000")
                         .execute(&mut *conn)
                         .await?;
                 }
                 if sqlite_file {
-                    // WAL lets readers run concurrently with a writer;
-                    // `synchronous = NORMAL` is the safe durability level
-                    // under WAL.
+                    // Readers run alongside a writer; NORMAL is safe under WAL.
                     sqlx::query("PRAGMA journal_mode = WAL")
                         .execute(&mut *conn)
                         .await?;
@@ -159,8 +146,6 @@ mod tests {
         assert_eq!(check_count, 0, "check should cascade-delete with project");
     }
 
-    /// File `SQLite` needs WAL + a busy timeout so a blocked writer retries
-    /// instead of failing with `SQLITE_BUSY`.
     #[tokio::test]
     async fn sqlite_file_connection_sets_busy_timeout_and_wal() {
         let path = std::env::temp_dir().join("pingward_dbtest_pragmas.sqlite3");
@@ -189,9 +174,7 @@ mod tests {
         }
     }
 
-    /// A clean pool close (what `main` does on SIGTERM) must checkpoint and
-    /// remove the WAL sidecars; SIGKILL leaves them behind. Asserting they
-    /// exist before the close keeps this a test of the close.
+    /// Asserting the sidecars exist before the close keeps this a test of the close.
     #[tokio::test]
     async fn closing_the_pool_checkpoints_and_removes_wal_sidecars() {
         let path = std::env::temp_dir().join("pingward_dbtest_close.sqlite3");
@@ -227,8 +210,6 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// A `:memory:` database reports its journal mode as `memory`, so WAL does
-    /// not apply; the busy timeout still does.
     #[tokio::test]
     async fn sqlite_memory_sets_busy_timeout_but_not_wal() {
         let pool = connect("sqlite::memory:").await.unwrap();
@@ -253,10 +234,7 @@ mod tests {
         );
     }
 
-    /// Regression: the release image runs from `/data` with no source tree, so
-    /// resolving `migrations/` against the working directory panicked at
-    /// startup. `cargo nextest` gives each test its own process, so the
-    /// `set_current_dir` here cannot affect another test.
+    /// `set_current_dir` is safe only because nextest runs each test in its own process.
     #[tokio::test]
     async fn migrate_works_without_migrations_dir_on_disk() {
         let cwd = std::env::temp_dir();
@@ -279,8 +257,6 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    /// Regression: a `SQLite` file URL with no `?mode=` must still auto-create
-    /// the database file, via the appended `mode=rwc`.
     #[tokio::test]
     async fn connect_creates_sqlite_file_without_mode_param() {
         let path = std::env::temp_dir().join("pingward_dbtest_autocreate.sqlite3");

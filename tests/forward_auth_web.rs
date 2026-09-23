@@ -1,9 +1,7 @@
 //! Forward-auth (trusted-header) users driving the browser surface.
 //!
-//! Not `axum_test`: it never populates `ConnectInfo<SocketAddr>`, so the peer
-//! would be absent and `forward_auth_username` would reject every request before
-//! reading the header. The router is driven with `tower::ServiceExt::oneshot` and
-//! the peer injected as a request extension, as in `tests/ping_source_ip.rs`.
+//! Driven with `oneshot` and an injected `ConnectInfo`: `axum_test` has no peer,
+//! so `forward_auth_username` would reject every request.
 
 mod common;
 
@@ -17,16 +15,15 @@ use tower::ServiceExt;
 const PROXY_PEER: &str = "172.18.0.5:44321";
 const UNTRUSTED_PEER: &str = "8.8.8.8:44321";
 
-/// A migrated, empty store. Forward-auth auto-provisions its user on first
-/// sight, so no user row is seeded.
+/// No user seeded: forward-auth auto-provisions on first sight.
 async fn empty_store() -> Store {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     Store::new(pool)
 }
 
-/// `PINGWARD_SECRET` is pinned so the two requests of a flow share one signing
-/// key — `Config` otherwise generates a random one per instance.
+/// Secret pinned to `common::TEST_SECRET` so tests can sign/verify the flash
+/// cookie and derive CSRF tokens themselves.
 fn forward_auth_config() -> Config {
     Config::from_map(|k| match k {
         "PINGWARD_FORWARD_AUTH_HEADER" => Some("Remote-User".into()),
@@ -85,16 +82,13 @@ async fn body_text(resp: Response<Body>) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
-/// The value of the hidden `_csrf` input in `html`.
 fn csrf_of(html: &str) -> String {
     let marker = r#"name="_csrf" value=""#;
     let start = html.find(marker).expect("the form has a _csrf input") + marker.len();
     html[start..start + html[start..].find('"').unwrap()].to_string()
 }
 
-/// The session cookie's `name=...` pair from a response's `Set-Cookie` headers.
-/// This file's server uses the default `http://` base URL, so `cookie_secure` is
-/// false and the name is the unprefixed `pingward_session`.
+/// Default `http://` base URL, so the cookie name is the unprefixed one.
 fn session_cookie_of(resp: &Response<Body>) -> Option<String> {
     set_cookie_of(
         resp,
@@ -102,8 +96,7 @@ fn session_cookie_of(resp: &Response<Body>) -> Option<String> {
     )
 }
 
-/// The first `Set-Cookie` pair (`name=value`, attributes stripped) whose name
-/// starts with `prefix`.
+/// First `Set-Cookie` `name=value` (attributes stripped) starting with `prefix`.
 fn set_cookie_of(resp: &Response<Body>, prefix: &str) -> Option<String> {
     resp.headers()
         .get_all(header::SET_COOKIE)
@@ -127,8 +120,7 @@ fn csrf_body(csrf: &str) -> Body {
     ))
 }
 
-/// Signs `alice` in through the gateway; returns her session cookie and the CSRF
-/// token of the nav's log-out form.
+/// Returns `alice`'s session cookie and the page's CSRF token.
 async fn signed_in_via_gateway(state: &AppState) -> (String, String) {
     let page = request(
         state,
@@ -153,8 +145,7 @@ async fn session_count(store: &Store) -> i64 {
 
 #[tokio::test]
 async fn forward_auth_user_can_create_a_project() {
-    // The real deployment: pingward reached only through the proxy, so no user
-    // ever visits `/login` and no session cookie is minted by it.
+    // No `/login` visit: the session comes only from the proxy header.
     let store = empty_store().await;
     let state = AppState::new(store.clone(), forward_auth_config());
 
@@ -193,7 +184,6 @@ async fn forward_auth_user_can_create_a_project() {
 
 #[tokio::test]
 async fn forward_auth_session_is_reused_across_requests() {
-    // One session row per browser: the second GET already carries the cookie.
     let store = empty_store().await;
     let state = AppState::new(store.clone(), forward_auth_config());
 
@@ -233,7 +223,6 @@ async fn forward_auth_session_is_reused_across_requests() {
 
 #[tokio::test]
 async fn forward_auth_header_from_an_untrusted_peer_mints_nothing() {
-    // Anyone can set `Remote-User`; only the configured proxy is believed.
     let store = empty_store().await;
     let state = AppState::new(store.clone(), forward_auth_config());
 
@@ -247,8 +236,7 @@ async fn forward_auth_header_from_an_untrusted_peer_mints_nothing() {
         Body::empty(),
     )
     .await;
-    // A cookie *is* set (the anonymous-session layer gives one to every visitor)
-    // but must address nothing: no account, no session row, and a bounce to /login.
+    // The anonymous cookie it gets must address no account or session row.
     assert_eq!(resp.status(), StatusCode::SEE_OTHER);
     assert_eq!(resp.headers()["location"], "/login");
     for (table, sql) in [
@@ -265,8 +253,6 @@ async fn forward_auth_header_from_an_untrusted_peer_mints_nothing() {
 
 #[tokio::test]
 async fn logout_hands_off_to_the_gateway_when_a_url_is_configured() {
-    // The local session is still ended; the redirect additionally lets the
-    // gateway end the identity that would sign the visitor straight back in.
     let store = empty_store().await;
     let state = AppState::new(store.clone(), logout_url_config());
     let (cookie, csrf) = signed_in_via_gateway(&state).await;
@@ -300,9 +286,8 @@ async fn logout_hands_off_to_the_gateway_when_a_url_is_configured() {
 
 #[tokio::test]
 async fn without_a_logout_url_a_forward_auth_logout_warns_on_the_dashboard() {
-    // While the gateway keeps sending an identity header, nothing pingward
-    // deletes survives the redirect, so `logout` lands on `/` with a one-shot
-    // flash rather than bouncing to `/login` and silently re-authenticating.
+    // The gateway re-authenticates on the next request, so a bounce to `/login`
+    // would silently sign the user back in; warn instead.
     let store = empty_store().await;
     let state = AppState::new(store.clone(), forward_auth_config());
     let (cookie, csrf) = signed_in_via_gateway(&state).await;
@@ -328,15 +313,11 @@ async fn without_a_logout_url_a_forward_auth_logout_warns_on_the_dashboard() {
         0,
         "the local session is deleted"
     );
-    // This exit must not send Clear-Site-Data: it is not a credential teardown
-    // (the gateway re-mints on the next request), and its job is delivering the
-    // flash cookie below.
     assert!(
         !out.headers().contains_key("clear-site-data"),
         "the flash exit must omit Clear-Site-Data, or the warning below can never render"
     );
     let flash = set_cookie_of(&out, "pingward_flash=").expect("the warning flash cookie is set");
-    // The cookie is signed (`<payload>.<hmac>`), so the payload must be verified out.
     let payload = flash
         .strip_prefix("pingward_flash=")
         .and_then(common::flash_payload);
@@ -346,7 +327,6 @@ async fn without_a_logout_url_a_forward_auth_logout_warns_on_the_dashboard() {
         "the flash must carry a forward_auth_logout payload signed by this server: {flash}"
     );
 
-    // The dashboard: the gateway re-mints the session and the flash renders once.
     let dash = request(
         &state,
         PROXY_PEER,
@@ -359,7 +339,6 @@ async fn without_a_logout_url_a_forward_auth_logout_warns_on_the_dashboard() {
     .await;
     assert_eq!(dash.status(), StatusCode::OK);
     assert_eq!(session_count(&store).await, 1, "a fresh session was minted");
-    // The one-shot cookie is cleared on this render so the warning shows once.
     let cleared = set_cookie_of(&dash, "pingward_flash=").expect("the flash cookie is cleared");
     assert_eq!(cleared, "pingward_flash=");
     let html = body_text(dash).await;
@@ -375,9 +354,8 @@ async fn without_a_logout_url_a_forward_auth_logout_warns_on_the_dashboard() {
 
 #[tokio::test]
 async fn a_forward_auth_logout_flash_does_not_leak_onto_other_pages() {
-    // The flash cookie is path-scoped to `/`, so every page sees it, but only the
-    // dashboard consumes it: a page that cleared it would silently swallow the
-    // warning when a redirect skips the dashboard.
+    // Every page sees the cookie; one that cleared it would swallow the warning
+    // before the dashboard renders it.
     let store = empty_store().await;
     let state = AppState::new(store.clone(), forward_auth_config());
     let (cookie, _csrf) = signed_in_via_gateway(&state).await;
@@ -432,8 +410,8 @@ async fn forward_auth_session_is_flagged_sso_on_the_account_page() {
 
 #[tokio::test]
 async fn a_stale_session_cookie_is_replaced_rather_than_trusted() {
-    // The cookie outlives its row (pruned, or wiped by the 0012 migration).
-    // Without replacement the user keeps a phantom session, absent from /account.
+    // A cookie outliving its row (pruned, or wiped by a migration) would
+    // otherwise be a phantom session, absent from /account.
     let store = empty_store().await;
     let state = AppState::new(store.clone(), forward_auth_config());
 
@@ -466,8 +444,7 @@ async fn a_stale_session_cookie_is_replaced_rather_than_trusted() {
     assert_eq!(resp.status(), StatusCode::OK);
     let fresh = session_cookie_of(&resp).expect("a stale cookie must be replaced");
     assert_ne!(fresh, stale);
-    // The form rendered in *this* request must match the fresh cookie, which is
-    // what the request-side cookie rewrite buys.
+    // This request's own form must already use the fresh cookie's token.
     let id = fresh
         .trim_start_matches(&format!("{}=", pingward::auth::session_cookie_name(false)))
         .split('.')

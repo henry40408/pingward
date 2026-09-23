@@ -37,10 +37,8 @@ Feature: Notification channels
     When I delete the channel named "hook1"
     Then the project shows no channels
 
-  # A rename must not require re-typing the delivery secret: the edit form
-  # renders the stored URL as a blank "unchanged" input (it is a capability
-  # token, so it is never printed back into the page), which means the only
-  # proof the merge worked is that delivery still reaches the same mock server.
+  # The stored URL (a capability token) renders as a blank "unchanged" input,
+  # so delivery still reaching the mock server is the proof a blank field kept it.
   Scenario: Renaming a channel keeps its stored webhook URL working
     Given a project named "Notify"
     And I remember the current project
@@ -53,9 +51,8 @@ Feature: Notification channels
     Then a channel success banner is shown
     And the mock server receives a "test" notification
 
-  # The mirror image: a submitted URL overwrites. "hook1" starts pointed at a
-  # dead port (as in the unreachable-webhook scenario above), so a successful
-  # delivery afterwards can only come from the rotated value.
+  # "hook1" starts at a dead port, so a successful delivery can only come from
+  # the submitted URL.
   Scenario: Rotating a channel's webhook URL redirects delivery
     Given a project named "Notify"
     And I remember the current project
@@ -118,12 +115,8 @@ Feature: Notification channels
     And the recent notifications table shows a "down" event
     And the recent notifications table shows a "up" event
 
-  # Ordering matters here: a check created AFTER a channel already exists is
-  # now auto-bound to it (check creation binds every channel the project
-  # already has). To end up with an unbound channel on a check, the check
-  # must be created BEFORE the channel — so both channels below are created
-  # only after "backup" exists, leaving it unbound to either until the
-  # explicit bind step runs.
+  # Check creation auto-binds the project's existing channels, so the
+  # channels are created after "backup" to leave it unbound.
   Scenario: A check page shows explicit ON/OFF state per channel
     Given a project named "Notify"
     And I remember the current project
@@ -135,9 +128,7 @@ Feature: Notification channels
     Then the channel "hook-on" shows as ON on the check page
     And the channel "hook-off" shows as OFF on the check page
 
-  # Same ordering caveat as above: "solo" must be created before any channel
-  # exists in the project so auto-bind leaves it unbound, while "covered" is
-  # created after "hook1" exists so auto-bind binds it automatically.
+  # Same auto-bind ordering: "solo" predates "hook1", "covered" follows it.
   Scenario: The dashboard flags a check with no notification channel
     Given a project named "Notify"
     And I remember the current project

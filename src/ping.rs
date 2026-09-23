@@ -27,18 +27,12 @@ fn truncate(bytes: &Bytes) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-/// The address to record for a request: the `ConnectInfo<SocketAddr>` peer,
-/// or the client behind it when that peer is a trusted proxy
-/// (`auth::client_ip`). `None` when the peer is unknown — `ConnectInfo` is
-/// only populated by `into_make_service_with_connect_info`, so under
-/// `axum-test` there is no peer at all. `pub(crate)` so `web.rs` can reuse it
-/// when stamping a session's IP at login, keeping pings and sessions on one
-/// rule.
+/// The request's client address per `auth::client_ip` (the peer, or the client
+/// behind a trusted proxy); shared with `web.rs` so pings and sessions use one
+/// rule. `None` without `ConnectInfo`, e.g. under `axum-test`.
 ///
-/// A local wrapper rather than `Option<ConnectInfo<SocketAddr>>`: as of axum
-/// 0.8.9 `Option<T>` only implements `FromRequestParts` for extractors that
-/// opt into `OptionalFromRequestParts`, and `ConnectInfo` does not, so the
-/// handlers would not compile.
+/// A wrapper because `ConnectInfo` does not implement `OptionalFromRequestParts`,
+/// so `Option<ConnectInfo<_>>` is not an extractor (axum 0.8).
 pub(crate) struct ClientIp(pub(crate) Option<String>);
 
 impl<S> FromRequestParts<S> for ClientIp
@@ -215,15 +209,12 @@ async fn apply(
         )
         .await?;
 
-    // Signal the check page's live tail. Gated on receiver_count so a ping
-    // costs nothing when nobody is watching; a send error just means no
-    // subscribers.
+    // Live-tail signal; free when nobody is watching.
     if events.receiver_count() > 0 {
         let _ = events.send(check.id);
     }
 
-    // Spec §6: a paused check is excluded from monitoring. Its ping is still
-    // recorded above, but must not resurrect it into up/down.
+    // A paused check's ping is recorded but must not move it to up/down.
     if check.status == CheckStatus::Paused {
         return Ok(StatusCode::OK);
     }
@@ -264,18 +255,14 @@ async fn apply(
                 .await?;
         }
         PingKind::Log => { /* recorded only */ }
-        PingKind::Exitcode => unreachable!("exitcode maps to Success/Fail above"),
+        PingKind::Exitcode => unreachable!("the exitcode handler maps it to Success/Fail"),
     }
     Ok(StatusCode::OK)
 }
 
-/// Spawn a fire-and-forget delivery so the ping response is not blocked by
-/// notification I/O. `store` is cheap to clone (holds an `Arc` pool).
-///
-/// `check` must be the snapshot from *before* this ping was applied, so
-/// `EventDetail::last_ping_at` is the previous ping — what an `Up` message
-/// reports. The project-name lookup happens inside the spawned task, keeping
-/// that query off the ping response path.
+/// Fire-and-forget, so notification I/O (and the project lookup) stays off the
+/// ping response path. `check` must be the pre-ping snapshot: an `Up` message
+/// reports the ping *before* the recovery.
 fn spawn_delivery(
     store: Store,
     check: &Check,

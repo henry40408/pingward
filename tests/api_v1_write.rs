@@ -1,6 +1,4 @@
-//! Integration tests for the `/api/v1` write API: create/update/delete, the
-//! check actions (pause/resume/ack/regenerate), channel binding, admin
-//! cross-user write auditing and JSON error envelopes.
+//! Integration tests for the `/api/v1` write API.
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
@@ -62,14 +60,12 @@ async fn create_project_appears_in_list() {
     assert_eq!(arr[0]["id"], pid);
 }
 
-/// GET returns `description` as raw markdown, never through `markdown::render`;
-/// omitting it on create yields `""`.
+/// `description` is returned as raw markdown, never rendered; omitted → `""`.
 #[tokio::test]
 async fn project_description_is_raw_markdown_and_defaults_to_empty() {
     let (server, store) = test_app().await;
     let (_uid, token) = user_with_key(&store, "alice", false).await;
 
-    // Omitted on create → "".
     let created = server
         .post("/api/v1/projects")
         .add_header("authorization", bearer(&token))
@@ -80,7 +76,6 @@ async fn project_description_is_raw_markdown_and_defaults_to_empty() {
     assert_eq!(body["description"], "");
     let pid = body["id"].as_i64().unwrap();
 
-    // PATCH sets it; GET must return the raw markdown, not rendered HTML.
     let patched = server
         .patch(&format!("/api/v1/projects/{pid}"))
         .add_header("authorization", bearer(&token))
@@ -133,7 +128,6 @@ async fn duration_field_accepts_both_int_and_string() {
     a.assert_status(StatusCode::CREATED);
     assert_eq!(a.json::<Value>()["scan_interval_secs"], 90);
 
-    // Human-readable string is parsed to seconds.
     let b = server
         .post("/api/v1/projects")
         .add_header("authorization", bearer(&token))
@@ -161,7 +155,7 @@ async fn patch_project_replaces_fields() {
     let body = res.json::<Value>();
     assert_eq!(body["name"], "new");
     assert_eq!(body["nag_interval_secs"], 3600);
-    // scan override was omitted → cleared (full replacement, not partial).
+    // Omitted → cleared: full replacement, not a merge.
     assert!(body["scan_interval_secs"].is_null());
 }
 
@@ -252,7 +246,6 @@ async fn create_check_period_and_reject_bad_schedule() {
     assert_eq!(body["status"], "new");
     assert!(!body["ping_uuid"].as_str().unwrap().is_empty());
 
-    // Cron kind without an expression is rejected as a 400 envelope.
     let bad = server
         .post(&format!("/api/v1/projects/{pid}/checks"))
         .add_header("authorization", bearer(&token))
@@ -262,8 +255,7 @@ async fn create_check_period_and_reject_bad_schedule() {
     assert_eq!(bad.json::<Value>()["error"]["code"], "bad_request");
 }
 
-/// `Store::bind_all_project_channels` via `api::v1::create_check` — the same
-/// guarantee as the web form.
+/// As on the web form, a new check is bound to the project's channels.
 #[tokio::test]
 async fn create_check_is_bound_to_existing_project_channels() {
     let (server, store) = test_app().await;
@@ -321,7 +313,6 @@ async fn check_description_is_raw_markdown_and_defaults_to_empty() {
         .await
         .unwrap();
 
-    // Omitted on create → "".
     let created = server
         .post(&format!("/api/v1/projects/{pid}/checks"))
         .add_header("authorization", bearer(&token))
@@ -332,7 +323,6 @@ async fn check_description_is_raw_markdown_and_defaults_to_empty() {
     assert_eq!(body["description"], "");
     let cid = body["id"].as_i64().unwrap();
 
-    // PATCH sets it; GET must return the raw markdown, not rendered HTML.
     let patched = server
         .patch(&format!("/api/v1/checks/{cid}"))
         .add_header("authorization", bearer(&token))
@@ -441,13 +431,11 @@ async fn patch_check_replaces_schedule() {
     assert_eq!(body["name"], "renamed");
     assert_eq!(body["period_secs"], 7200);
     assert_eq!(body["grace_secs"], 45);
-    // The ping UUID is preserved across a schedule update.
     assert_eq!(body["ping_uuid"], "uuid-x");
 }
 
-/// The per-check overrides are accepted on write and returned on read —
-/// `CheckDto` once omitted them, so read-modify-write was impossible. Asserted
-/// on POST, GET and PATCH, since the DTO is what each renders.
+/// Per-check overrides round-trip through `CheckDto` on POST, GET and PATCH;
+/// without them read-modify-write is impossible.
 #[tokio::test]
 async fn check_override_fields_round_trip() {
     let (server, store) = test_app().await;
@@ -475,7 +463,6 @@ async fn check_override_fields_round_trip() {
     assert_eq!(body["nag_interval_secs"], 7200);
     let cid = body["id"].as_i64().unwrap();
 
-    // Read back: the same values must survive a round-trip through the store.
     let fetched = server
         .get(&format!("/api/v1/checks/{cid}"))
         .add_header("authorization", bearer(&token))
@@ -486,8 +473,7 @@ async fn check_override_fields_round_trip() {
     assert_eq!(body["max_runtime_secs"], 600);
     assert_eq!(body["nag_interval_secs"], 7200);
 
-    // PATCH replaces the whole check (see `patch_project_replaces_fields`), so an
-    // override left out of the body comes back null rather than retained.
+    // Full replacement: omitted overrides come back null.
     let patched = server
         .patch(&format!("/api/v1/checks/{cid}"))
         .add_header("authorization", bearer(&token))
@@ -532,7 +518,7 @@ async fn set_check_channels_honors_only_same_project_channels() {
         .await
         .unwrap();
 
-    // Bind the valid channel plus a bogus foreign id (9999) → only the valid one sticks.
+    // A nonexistent id (9999) is dropped.
     let res = server
         .put(&format!("/api/v1/checks/{cid}/channels"))
         .add_header("authorization", bearer(&token))
@@ -541,7 +527,6 @@ async fn set_check_channels_honors_only_same_project_channels() {
     res.assert_status_ok();
     assert_eq!(res.json::<Value>()["channel_ids"], json!([ch]));
 
-    // Sending an empty set unbinds everything.
     let cleared = server
         .put(&format!("/api/v1/checks/{cid}/channels"))
         .add_header("authorization", bearer(&token))
@@ -573,7 +558,6 @@ async fn create_channel_hides_secrets_then_delete() {
     );
     assert!(!body.contains("config_json"));
     let chid = res.json::<Value>()["id"].as_i64().unwrap();
-    // But the config was stored (the channel is usable).
     let stored = store.find_channel(chid).await.unwrap().unwrap();
     assert!(stored.config_json.contains(secret));
 
@@ -585,9 +569,8 @@ async fn create_channel_hides_secrets_then_delete() {
     assert!(store.find_channel(chid).await.unwrap().is_none());
 }
 
-/// `PATCH /channels/{id}` merges rather than replaces: a field the caller does
-/// not send keeps its stored value. A client cannot re-send the secrets — no API
-/// response contains them — so a replacing patch would make a rename impossible.
+/// `PATCH /channels/{id}` merges: an omitted field keeps its stored value, since
+/// a client can never read the secrets back to re-send them.
 #[tokio::test]
 async fn patch_channel_renames_without_touching_the_stored_secret() {
     let (server, store) = test_app().await;
@@ -631,8 +614,7 @@ async fn patch_channel_renames_without_touching_the_stored_secret() {
     );
 }
 
-/// The other half of the merge rule: a submitted field overwrites, so rotating
-/// one credential does not require re-sending the rest.
+/// A submitted field overwrites, without re-sending the rest.
 #[tokio::test]
 async fn patch_channel_rotates_only_the_submitted_credential() {
     let (server, store) = test_app().await;
@@ -666,8 +648,8 @@ async fn patch_channel_rotates_only_the_submitted_credential() {
     assert_eq!(stored.name, "tg", "an omitted name must be kept");
 }
 
-/// `kind` is immutable: `config_json` only has meaning for the kind that wrote
-/// it, so a submitted `kind` is ignored rather than reinterpreting the config.
+/// `kind` is immutable: a submitted `kind` is ignored, since `config_json` only
+/// means something to the kind that wrote it.
 #[tokio::test]
 async fn patch_channel_ignores_a_submitted_kind() {
     let (server, store) = test_app().await;
@@ -697,14 +679,12 @@ async fn patch_channel_ignores_a_submitted_kind() {
 
     let stored = store.find_channel(chid).await.unwrap().unwrap();
     assert_eq!(stored.kind, ChannelKind::Webhook);
-    // The webhook block reads `webhook_url`, which was blank, so the stored URL
-    // stands; the slack field is ignored.
+    // `webhook_url` was blank, so the stored URL stands.
     let cfg: Value = serde_json::from_str(&stored.config_json).unwrap();
     assert_eq!(cfg["url"], "https://hooks.example.com/SECRET");
 }
 
-/// The one optional secret needs an explicit clear: "blank keeps the stored
-/// value" would otherwise make a set ntfy token impossible to remove.
+/// Blank keeps a stored value, so the optional ntfy token needs an explicit clear.
 #[tokio::test]
 async fn patch_channel_clears_the_ntfy_token_on_request() {
     let (server, store) = test_app().await;
@@ -724,8 +704,7 @@ async fn patch_channel_clears_the_ntfy_token_on_request() {
         .await
         .unwrap();
 
-    // A blank token alone keeps it, so the clear below is proven to be what did
-    // the work.
+    // Blank alone keeps it.
     server
         .patch(&format!("/api/v1/channels/{chid}"))
         .add_header("authorization", bearer(&token))
@@ -753,8 +732,7 @@ async fn patch_channel_clears_the_ntfy_token_on_request() {
     );
 }
 
-/// The merge shares one rule set with create: a patch that would leave a
-/// required credential empty is still rejected.
+/// A patch leaving a required credential empty is rejected, as on create.
 #[tokio::test]
 async fn patch_channel_rejects_blanking_a_required_credential() {
     let (server, store) = test_app().await;
@@ -763,7 +741,7 @@ async fn patch_channel_rejects_blanking_a_required_credential() {
         .create_project(uid, "p", "", None, None, Utc::now())
         .await
         .unwrap();
-    // A config with no `url` at all: a blank submission has nothing to fall back to.
+    // No stored `url` for a blank submission to fall back to.
     let chid = store
         .create_channel(
             pid,

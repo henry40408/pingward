@@ -4,9 +4,7 @@ use pingward::{apikey, app, db, state::AppState, store::Store};
 
 mod common;
 
-/// A store shared by every `TestServer` built against it, plus one *non-admin*
-/// member: account management is available to every authenticated user, not
-/// just admins.
+/// A store plus one *non-admin* member: `/account` is not admin-only.
 async fn member_store() -> (Store, i64) {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -19,10 +17,8 @@ async fn member_store() -> (Store, i64) {
     (store, uid)
 }
 
-/// Log a fresh `TestServer` (its own cookie jar) into `store` as `username`,
-/// with that session's CSRF token attached as a default header so protected
-/// POSTs pass `csrf_guard`. The session is found by `rowid`: a second session
-/// for the same user is indistinguishable by `created_at`/`username`.
+/// A fresh `TestServer` (own cookie jar) logged in as `username`, with its
+/// session's CSRF token installed as a default header.
 async fn login_server(store: &Store, username: &str, password: &str) -> TestServer {
     let state = AppState::new(store.clone(), common::test_config());
     let mut server = TestServer::new(app(state));
@@ -41,8 +37,7 @@ async fn login_server(store: &Store, username: &str, password: &str) -> TestServ
     server
 }
 
-/// Pull the one-time plaintext token out of the create response (it's on the
-/// copy button's `data-copy` attribute).
+/// The one-time plaintext token from the copy button's `data-copy` attribute.
 fn extract_token(html: &str) -> String {
     let marker = "data-copy=\"";
     let start = html.find(marker).expect("token banner present") + marker.len();
@@ -69,8 +64,7 @@ async fn account_page_lists_and_marks_current_session() {
     res.assert_status_ok();
     let body = res.text();
 
-    // The session id IS the cookie's bearer secret: it must never be
-    // rendered. Rows are identified by its SHA-256 handle instead.
+    // The session id is the cookie's bearer secret; rows use its SHA-256 handle.
     let sessions = store
         .list_sessions_for_user(uid, chrono::Utc::now())
         .await
@@ -87,7 +81,6 @@ async fn account_page_lists_and_marks_current_session() {
 
     assert!(body.contains("session-current"), "current session marker");
     assert!(body.contains("session-row-"), "at least one session row");
-    // Only the current session exists yet — no "revoke others" control.
     assert!(!body.contains("session-revoke-others"));
 }
 
@@ -97,8 +90,7 @@ async fn password_login_session_has_no_sso_pill() {
     let server = login_server(&store, "member", "pw").await;
 
     let body = server.get("/account").await.text();
-    // Guard against a vacuous pass: a session row must have rendered before
-    // asserting the SSO pill is absent from it.
+    // Non-vacuity: a session row rendered.
     assert!(
         body.contains("session-current"),
         "account page rendered a session"
@@ -153,8 +145,6 @@ async fn revoking_the_current_session_logs_out() {
         .await
         .assert_status(StatusCode::SEE_OTHER);
 
-    // The session row and the cookie are both gone: the next request bounces
-    // to /login instead of the dashboard.
     assert!(
         store
             .list_sessions_for_user(uid, chrono::Utc::now())
@@ -191,13 +181,12 @@ async fn unknown_or_foreign_handle_revokes_nothing() {
         .unwrap();
     let other_handle = apikey::hash_api_key("other-session");
 
-    // A garbage handle never 500s.
     server
         .post("/account/sessions/not-a-real-handle/revoke")
         .await
         .assert_status(StatusCode::SEE_OTHER);
 
-    // Nor does another user's real handle — that session survives.
+    // Another user's real handle: their session survives.
     server
         .post(&format!(
             "/account/sessions/{other_handle}/revoke?confirmed=1"
@@ -212,7 +201,6 @@ async fn unknown_or_foreign_handle_revokes_nothing() {
             .len(),
         1
     );
-    // The caller's own session (used above to authenticate) is unaffected.
     assert_eq!(
         store
             .list_sessions_for_user(uid, chrono::Utc::now())
@@ -225,14 +213,11 @@ async fn unknown_or_foreign_handle_revokes_nothing() {
 
 // --- password section ---
 
-/// The replacement password these tests set. It has to clear
-/// `auth::validate_password`'s length floor, which applies to every surface that
-/// *sets* a password — never to `/login`, so the fixtures' short `"pw"` still
-/// signs in.
+/// Clears `auth::validate_password`'s floor, which `/login` never applies —
+/// hence the fixtures' short `"pw"` still signs in.
 const NEW_PW: &str = "a whole new passphrase";
 
-/// The stored PHC hash, read straight out of the table so a test can assert on
-/// the credential itself rather than on a login round-trip.
+/// The stored PHC hash, to assert on the credential without a login round-trip.
 async fn stored_hash(store: &Store, uid: i64) -> String {
     store
         .find_user_by_id(uid)
@@ -264,12 +249,10 @@ async fn changing_the_password_rotates_it_and_signs_out_other_sessions() {
     assert!(pingward::auth::verify_password(NEW_PW, &phc));
     assert!(!pingward::auth::verify_password("pw", &phc));
 
-    // The session that made the change survives; the other is gone, so changing
-    // a password to evict someone actually evicts them.
+    // The changing session survives; the other is evicted.
     assert_eq!(session_count(&store, uid).await, 1);
     let body = server1.get("/account").await.text();
     assert!(body.contains("password-changed-flash"), "{body}");
-    // One-shot: a reload does not repeat the notice.
     assert!(
         !server1
             .get("/account")
@@ -309,16 +292,15 @@ async fn changing_the_password_leaves_api_keys_alone() {
     );
 }
 
-/// Each rejection path: the credential is untouched and no session is revoked,
-/// so a wrong guess is never a way to sign someone else's browser out.
+/// A rejected change touches neither the credential nor any session, so a
+/// wrong guess cannot sign another browser out.
 #[tokio::test]
 async fn rejected_changes_touch_neither_the_password_nor_the_sessions() {
     for (label, current, new, confirm) in [
         ("wrong current password", "nope", NEW_PW, NEW_PW),
         ("mismatched confirmation", "pw", NEW_PW, "different"),
         ("blank new password", "pw", "", ""),
-        // Below `auth::MIN_PASSWORD_CHARS`, rejected on the same path as a
-        // blank one.
+        // Below `auth::MIN_PASSWORD_CHARS`.
         (
             "new password under the floor",
             "pw",
@@ -347,9 +329,8 @@ async fn rejected_changes_touch_neither_the_password_nor_the_sessions() {
     }
 }
 
-/// A forward-auth account has no local password to verify against, so it gets no
-/// form, and posting anyway is refused rather than setting a first one — that
-/// would be a second way in the gateway's sign-out cannot end.
+/// A forward-auth account gets no form, and posting anyway is refused: a local
+/// password would be a second way in the gateway's sign-out cannot end.
 #[tokio::test]
 async fn a_passwordless_account_has_no_form_and_cannot_set_one() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -429,7 +410,6 @@ async fn create_shows_token_once_then_only_the_prefix() {
     assert!(token.starts_with("pw_"));
     assert_eq!(token.len(), 67); // "pw_" + 64 hex
 
-    // Persisted for this user, and the hash resolves back to the user.
     let keys = store.list_api_keys_for_user(uid).await.unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(
@@ -440,7 +420,6 @@ async fn create_shows_token_once_then_only_the_prefix() {
         Some(uid)
     );
 
-    // Reloading the list never re-exposes the plaintext — only the prefix.
     let body = server.get("/account").await.text();
     assert!(!body.contains(&token), "plaintext token must not reappear");
     assert!(body.contains(&keys[0].prefix));
@@ -513,12 +492,11 @@ async fn keys_are_caller_scoped() {
         .await
         .unwrap();
 
-    // The member's list shows nothing belonging to `other`.
     let body = server.get("/account").await.text();
     assert!(!body.contains("theirs"));
     assert!(!body.contains(&prefix));
 
-    // And they can't revoke it — the delete is a silent no-op, key survives.
+    // Revoking it is a silent no-op.
     server
         .post(&format!("/account/api-keys/{other_kid}/delete?confirmed=1"))
         .await
@@ -546,8 +524,7 @@ async fn revoke_own_key() {
 
 #[tokio::test]
 async fn create_without_csrf_is_forbidden() {
-    // Log in but never install the CSRF header, proving the route sits inside
-    // csrf_guard (unlike the machine ping API).
+    // Logs in but never installs the CSRF header.
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
@@ -648,17 +625,14 @@ async fn validate_rejects_expired_and_unknown_keys() {
     assert_eq!(store.validate_api_key("deadbeef", now).await.unwrap(), None);
 }
 
-/// A session past the absolute cap (`created_at + 30d`) is already inert —
-/// `find_session_user` refuses it — but it used to stay in the table, hidden
-/// from `/account` until the next prune pass, so its owner could neither see it
-/// nor revoke it. Opening the page reaps it, so "not listed" means "gone".
+/// A session past the absolute cap (`created_at + 30d`) is inert but was left
+/// in the table, invisible and unrevocable; opening `/account` must delete it.
 #[tokio::test]
 async fn opening_the_account_page_reaps_a_session_past_the_absolute_cap() {
     let (store, uid) = member_store().await;
     let now = chrono::Utc::now();
-    // Older than the cap yet carrying a still-future `expires_at`: the shape a
-    // build that *lowers* the cap leaves behind, and the only one neither
-    // refused by the `expires_at` predicate nor reaped by prune's.
+    // Past the cap but with a future `expires_at`, so neither the `expires_at`
+    // predicate nor prune removes it.
     store
         .create_session(
             "capped-session",
@@ -692,8 +666,7 @@ async fn opening_the_account_page_reaps_a_session_past_the_absolute_cap() {
     );
 }
 
-/// The reap is scoped to the caller: one user opening `/account` must not
-/// touch another user's rows.
+/// The reap is scoped to the caller's own sessions.
 #[tokio::test]
 async fn the_reap_does_not_touch_another_users_sessions() {
     let (store, uid) = member_store().await;
@@ -721,8 +694,7 @@ async fn the_reap_does_not_touch_another_users_sessions() {
     let server = login_server(&store, "member", "pw").await;
     server.get("/account").await.assert_status_ok();
 
-    // Two-sided: the caller's own capped row must be gone, or "the other user's
-    // survived" would hold vacuously with no reap running at all.
+    // Two-sided, so the survival assertion isn't vacuous.
     assert_eq!(
         session_count(&store, uid).await,
         1,
@@ -735,8 +707,7 @@ async fn the_reap_does_not_touch_another_users_sessions() {
     );
 }
 
-/// Sessions belonging to `user_id`, counted straight out of the table so the
-/// assertion sees rows the handlers deliberately hide.
+/// Raw row count, including sessions the handlers hide.
 async fn session_count(store: &Store, user_id: i64) -> i64 {
     sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions WHERE user_id = $1")
         .bind(user_id)
@@ -747,10 +718,8 @@ async fn session_count(store: &Store, user_id: i64) -> i64 {
 
 // --- re-authentication before minting an API key ---
 //
-// An API key outlives the session that minted it: it is bound by neither the
-// idle nor the absolute session cap, and `users_set_password` leaves it alone.
-// A borrowed browser would otherwise turn one session's access into permanent
-// access — the one gated action signing out cannot undo.
+// A key outlives its session (no session cap, survives `users_set_password`),
+// so a borrowed browser must not be able to mint one.
 
 #[tokio::test]
 async fn creating_a_key_without_the_password_is_refused() {
@@ -789,9 +758,7 @@ async fn creating_a_key_with_the_wrong_password_is_refused() {
     assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
 }
 
-/// The gate is checked *before* the name and expiry, so the validation errors
-/// cannot serve as an oracle and a wrong password never reaches the rest of the
-/// handler.
+/// The password is checked before name/expiry validation.
 #[tokio::test]
 async fn the_password_is_checked_before_the_rest_of_the_form() {
     let (store, _uid) = member_store().await;
@@ -812,8 +779,6 @@ async fn the_password_is_checked_before_the_rest_of_the_form() {
     assert!(!body.contains("expiry must be a duration"), "{body}");
 }
 
-/// The form renders the field, so the requirement is discoverable rather than
-/// a submission-time surprise.
 #[tokio::test]
 async fn the_key_form_asks_for_the_password() {
     let (store, _uid) = member_store().await;
@@ -822,9 +787,8 @@ async fn the_key_form_asks_for_the_password() {
     assert!(body.contains("api-key-password-input"), "{body}");
 }
 
-/// Guessing the owner's password from a stolen session lands in the same account
-/// bucket as guessing it at the login form. The form was previously an unmetered
-/// password oracle.
+/// Wrong re-auth passwords spend the same per-account budget as `/login`, so
+/// the form is not an unmetered password oracle.
 #[tokio::test]
 async fn repeated_wrong_passwords_exhaust_the_account_budget() {
     let (store, uid) = member_store().await;
@@ -842,8 +806,7 @@ async fn repeated_wrong_passwords_exhaust_the_account_budget() {
             .assert_status_ok();
     }
 
-    // Budget spent: even the *correct* password is now refused, and the
-    // message says so rather than claiming the password was wrong.
+    // Even the correct password is now refused, with a rate-limit message.
     let res = server
         .post("/account/api-keys")
         .form(&[
@@ -856,8 +819,7 @@ async fn repeated_wrong_passwords_exhaust_the_account_budget() {
     assert!(store.list_api_keys_for_user(uid).await.unwrap().is_empty());
 }
 
-/// A success clears the bucket, so an owner who fumbles their way to the edge
-/// and then gets it right is not left one mistake from a lockout.
+/// A success clears the bucket rather than refunding one attempt.
 #[tokio::test]
 async fn a_correct_password_clears_the_account_budget() {
     let (store, uid) = member_store().await;
@@ -884,7 +846,6 @@ async fn a_correct_password_clears_the_account_budget() {
         .assert_status_ok();
     assert_eq!(store.list_api_keys_for_user(uid).await.unwrap().len(), 1);
 
-    // A full budget again: a refund of one would have run out immediately.
     for _ in 0..pingward::ratelimit::ACCOUNT_MAX_ATTEMPTS {
         let res = server
             .post("/account/api-keys")
@@ -898,15 +859,9 @@ async fn a_correct_password_clears_the_account_budget() {
     }
 }
 
-/// A passwordless forward-auth account passes the gate unchallenged, and is not
-/// shown a field it could never fill in.
-///
-/// There is no stored credential to verify and no protocol for asking the
-/// gateway to re-assert its authority, so a *borrowed* forward-auth session can
-/// still mint a key; refusing would leave those users with no way to get one.
-/// The opposite outcome to `/account/password`, which 403s such an account —
-/// that one would be *setting* a local password, a second way in the gateway's
-/// sign-out cannot end.
+/// A passwordless forward-auth account passes the gate unchallenged and gets no
+/// field: there is nothing to verify, and refusing would leave it no way to get
+/// a key. (Contrast `/account/password`, which 403s such an account.)
 #[tokio::test]
 async fn a_passwordless_account_mints_a_key_without_re_authenticating() {
     let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -948,8 +903,7 @@ async fn a_passwordless_account_mints_a_key_without_re_authenticating() {
         "no stored password means no field to render: {body}"
     );
 
-    // The posted form genuinely has no `current_password` key — which is why
-    // `NewApiKeyForm` defaults it rather than requiring it.
+    // No `current_password` key at all; `NewApiKeyForm` must default it.
     server
         .post("/account/api-keys")
         .form(&[("name", "ci"), ("expires_in", "")])

@@ -45,7 +45,7 @@ async fn admin_env_card_never_leaks_secrets() {
     assert!(body.contains("configured"));
     assert!(body.contains("db.internal"));
     assert!(body.contains("smtp.example.com"));
-    // The username row is an identity, not a credential, and is unset here.
+    // `PINGWARD_SMTP_USERNAME` (shown verbatim, not a secret) is left unset.
     assert!(body.contains(r#"data-testid="env-smtp-password""#));
 }
 

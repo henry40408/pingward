@@ -43,13 +43,10 @@ async fn server_with_project() -> (TestServer, Store, i64) {
     (server, store, pid)
 }
 
-/// The current session's CSRF token, read straight from the DB.
 async fn csrf_token(store: &Store) -> String {
     common::newest_session_csrf(&store.pool).await
 }
 
-/// The `.field` class from `assets/app.css`, plus every input name the handler
-/// in `src/web.rs` depends on.
 #[tokio::test]
 async fn channel_form_is_restyled_and_keeps_fields() {
     let (server, _store, pid) = server_with_project().await;
@@ -60,7 +57,7 @@ async fn channel_form_is_restyled_and_keeps_fields() {
     assert!(body.contains("name=\"webhook_url\""), "webhook field lost");
 }
 
-/// The `.field` class, plus every field name the handler reads via `CheckForm`.
+/// Every field name `CheckForm` reads.
 #[tokio::test]
 async fn check_form_is_restyled_and_keeps_fields() {
     let (server, _store, pid) = server_with_project().await;
@@ -87,7 +84,7 @@ async fn check_form_is_restyled_and_keeps_fields() {
     }
 }
 
-/// The `.field` class, plus every field name the handler reads via `ProjectForm`.
+/// Every field name `ProjectForm` reads.
 #[tokio::test]
 async fn project_form_is_restyled_and_keeps_fields() {
     let (server, _store, _uid) = logged_in_server().await;
@@ -108,8 +105,6 @@ async fn project_form_is_restyled_and_keeps_fields() {
     }
 }
 
-/// The stored description renders (escaped) into the edit form's textarea, and
-/// the length limit is checked at both boundary values.
 #[tokio::test]
 async fn project_description_round_trips_and_is_length_validated() {
     let (server, store, uid) = logged_in_server().await;
@@ -137,7 +132,7 @@ async fn project_description_round_trips_and_is_length_validated() {
         "edit form must round-trip the stored description into the textarea"
     );
 
-    // 2001 characters is rejected with the spec'd message, 2000 accepted.
+    // Both sides of `MAX_DESCRIPTION_CHARS` (2000).
     let too_long = "a".repeat(2001);
     let res = server
         .post(&format!("/projects/{pid}"))
@@ -180,7 +175,6 @@ async fn project_description_round_trips_and_is_length_validated() {
     );
 }
 
-/// As `project_description_round_trips_and_is_length_validated`, for checks.
 #[tokio::test]
 async fn check_description_round_trips_and_is_length_validated() {
     let (server, store, pid) = server_with_project().await;
@@ -263,8 +257,7 @@ async fn check_description_round_trips_and_is_length_validated() {
     );
 }
 
-/// `Store::bind_all_project_channels`, called from `check_create_core`: a new
-/// check comes out bound to every channel the project already has.
+/// Pins `check_create_core`'s call to `Store::bind_all_project_channels`.
 #[tokio::test]
 async fn check_created_via_web_form_is_bound_to_existing_channels() {
     let (server, store, pid) = server_with_project().await;
@@ -323,17 +316,12 @@ async fn check_created_via_web_form_is_bound_to_existing_channels() {
     );
 }
 
-/// Every credential field carries an `autocomplete` token, so a password manager
-/// can fill and store them.
-///
-/// The tokens are not interchangeable: `current-password` makes a manager offer
-/// the *saved* credential, `new-password` stops it and prompts a generated one.
-/// The wrong way round is invisible until a user finds their manager unhelpful.
+/// `current-password` offers the saved credential, `new-password` a generated
+/// one; swapping them fails silently in the password manager.
 #[tokio::test]
 async fn credential_fields_declare_their_autocomplete_role() {
     let (server, _store) = server().await;
 
-    // Logged out, with no users: /setup is the first-run form.
     let setup = server.get("/setup").await.text();
     assert!(
         setup.contains(r#"name="username" autocomplete="username""#),
@@ -346,8 +334,7 @@ async fn credential_fields_declare_their_autocomplete_role() {
 
     let (server, store, _uid) = logged_in_server().await;
 
-    // /login, once a user exists — reached from a second, logged-out server on
-    // the same store, since `logged_in_server`'s jar would bounce to `/`.
+    // A logged-out server on the same store; the signed-in jar would bounce to `/`.
     let mut anon = TestServer::new(app(AppState::new(store, common::test_config())));
     anon.save_cookies();
     let login = anon.get("/login").await.text();
@@ -360,8 +347,7 @@ async fn credential_fields_declare_their_autocomplete_role() {
         "/login submits an existing credential: {login}"
     );
 
-    // `/admin` manages *other* people's accounts, so its username field opts out
-    // of autofill entirely and both password fields set a new credential.
+    // `/admin` edits *other* accounts, so its username field opts out of autofill.
     let admin = server.get("/admin").await.text();
     assert!(
         admin.contains(r#"name="username" autocomplete="off""#),
@@ -373,7 +359,6 @@ async fn credential_fields_declare_their_autocomplete_role() {
         "both the reset field and the add-user field must be new-password: {admin}"
     );
 
-    // /account already had these; pinned here so the set stays complete.
     let account = server.get("/account").await.text();
     assert!(
         account.contains(r#"autocomplete="current-password""#),
@@ -384,23 +369,17 @@ async fn credential_fields_declare_their_autocomplete_role() {
 
 // --- duration suggestion lists ---------------------------------------------
 //
-// Every duration-valued field carries a `<datalist>` so the unit suffixes its
-// help text mentions are visible. These tests assert both that the markup wires
-// the fields to the list and that every value it offers is one the handler
-// accepts — a suggestion the form would reject is worse than none, since the
-// user picks it from the browser's own dropdown.
+// Duration fields are wired to a `<datalist>`, and every suggestion must be one
+// the handler accepts — the user picks it from the browser's own dropdown.
 
-/// The opening `<input …>` tag carrying `id="{id}"`, as raw markup.
 fn input_tag<'a>(body: &'a str, id: &str) -> &'a str {
     body.split('<')
         .find(|tag| tag.starts_with("input") && tag.contains(&format!("id=\"{id}\"")))
         .unwrap_or_else(|| panic!("no <input id=\"{id}\"> on the page"))
 }
 
-/// Assert `body` renders exactly one `<datalist id="{id}">`, offering an
-/// `<option>` for every entry in `want`.
+/// Exactly one `<datalist id="{id}">`, with an `<option>` for each of `want`.
 fn assert_list(body: &str, id: &str, want: &[&str]) {
-    // Non-vacuity: an empty list would satisfy every assertion below.
     assert!(!want.is_empty(), "the suggestion list itself is empty");
     assert_eq!(
         body.matches(&format!("<datalist id=\"{id}\">")).count(),
@@ -416,7 +395,6 @@ fn assert_list(body: &str, id: &str, want: &[&str]) {
     }
 }
 
-/// Assert each named field is wired to `list="{id}"`.
 fn assert_wired(body: &str, id: &str, fields: &[&str]) {
     for field in fields {
         let tag = input_tag(body, field);
@@ -427,7 +405,6 @@ fn assert_wired(body: &str, id: &str, fields: &[&str]) {
     }
 }
 
-/// The check form's five duration fields all point at one shared list.
 #[tokio::test]
 async fn check_form_duration_fields_offer_the_shared_suggestions() {
     let (server, _store, pid) = server_with_project().await;
@@ -449,7 +426,6 @@ async fn check_form_duration_fields_offer_the_shared_suggestions() {
     );
 }
 
-/// The project form's two overrides point at the same shared list.
 #[tokio::test]
 async fn project_form_duration_fields_offer_the_shared_suggestions() {
     let (server, _store, _uid) = logged_in_server().await;
@@ -462,9 +438,7 @@ async fn project_form_duration_fields_offer_the_shared_suggestions() {
     );
 }
 
-/// `/admin`'s two global intervals get the list; the retention fields beside
-/// them are a count of days (`SettingKind::Days`), so offering them `5m` would
-/// offer a value the save rejects.
+/// The retention fields are `SettingKind::Days`, so `5m` would be rejected.
 #[tokio::test]
 async fn admin_settings_duration_fields_offer_the_shared_suggestions() {
     let (server, _store, _uid) = logged_in_server().await;
@@ -485,7 +459,6 @@ async fn admin_settings_duration_fields_offer_the_shared_suggestions() {
     }
 }
 
-/// The API key expiry is a duration on a different scale, so it gets its own list.
 #[tokio::test]
 async fn api_key_expiry_offers_its_own_suggestions() {
     let (server, _store, _uid) = logged_in_server().await;
@@ -498,9 +471,7 @@ async fn api_key_expiry_offers_its_own_suggestions() {
     );
 }
 
-/// Every value the browser offers is one the form actually stores: each
-/// suggestion goes into all five duration fields at once and is read back, so a
-/// `view::durations` entry `parse_duration` cannot handle fails here.
+/// Each `view::durations` entry must survive all five duration fields.
 #[tokio::test]
 async fn every_suggested_duration_is_accepted_by_the_check_form() {
     let (server, store, pid) = server_with_project().await;

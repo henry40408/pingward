@@ -5,10 +5,8 @@
 //!   -> seed backdated demo history -> boot #2 -> log in -> capture -> stop
 //! ```
 //!
-//! Run from `e2e/`:  `cargo run --bin screenshots`
-//!
-//! Seeding goes through `sqlx`, so WAL recovery on open covers the plain kill
-//! used to stop the server between phases.
+//! Run from `e2e/`: `cargo run --bin screenshots`. The server is stopped with
+//! a plain kill; `sqlx` recovers the WAL when seeding opens the database.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -25,12 +23,10 @@ use thirtyfour::WebElement;
 use thirtyfour::prelude::*;
 use tokio::process::{Child, Command};
 
-/// The rendered ping URLs come from `PINGWARD_BASE_URL`, so this keeps a random
-/// loopback port out of the check-page screenshot.
+/// Rendered in ping URLs, keeping the random port out of the screenshots.
 const PUBLIC_BASE_URL: &str = "https://pingward.example.com";
 
-/// Padding below the element a shot is cut at, so it ends on a card boundary
-/// instead of slicing through a table.
+/// Padding past a shot's cut, so it ends on a card boundary.
 const PAD: f64 = 16.0;
 
 const DESKTOP: Device = Device {
@@ -45,7 +41,7 @@ const MOBILE: Device = Device {
     mobile: true,
 };
 
-/// Freezes anything that would make two runs of the same page differ.
+/// Removes animation and caret nondeterminism.
 const FREEZE_CSS: &str =
     "*{animation:none !important;transition:none !important;caret-color:transparent !important}";
 
@@ -56,50 +52,44 @@ struct Device {
     mobile: bool,
 }
 
-/// A page region, named so the shot list reads as intent, not selectors.
 #[derive(Clone, Copy)]
 enum Region {
-    /// The card wrapping a selector — `.card:has(…)`.
+    /// `.card:has(selector)`.
     CardWith(&'static str),
-    /// The card containing this text.
+    /// The first card containing this text.
     CardSaying(&'static str),
-    /// A plain CSS selector.
     Css(&'static str),
-    /// The last element matching a selector.
+    /// The last match.
     Last(&'static str),
-    /// The nth element carrying a `data-testid`.
+    /// The nth (0-based) element with this `data-testid`.
     NthTestId(&'static str, usize),
 }
 
 /// How much of the page a shot keeps.
 #[derive(Clone, Copy)]
 enum Frame {
-    /// The whole page. Only for the pages that end on their own — the check
-    /// and admin pages read as a strip in a README.
+    /// Whole page; too long for the check and admin pages.
     Full,
-    /// From the top down to just past a region. `pad` is 0 when the cut lands
-    /// on a list divider, where padding would leak a sliver of the next row.
+    /// Top down to a region plus padding (0 on a list divider, or the next
+    /// row leaks in).
     DownTo(Region, f64),
-    /// The band spanned by two regions, for the middle of a long page.
+    /// From one region to another, for the middle of a long page.
     Band(Region, Region),
 }
 
-/// What to do after loading, to leave the page in the state worth
-/// photographing.
+/// Post-load steps that put the page in the state to photograph.
 #[derive(Clone, Copy)]
 enum Settle {
-    /// Wait for the nth dashboard row.
+    /// Wait for the dashboard row at this 0-based index.
     DashboardRows(usize),
     /// Open the down check from the dashboard.
     DownCheck,
-    /// Open it and expand the failed run, so its captured output is in frame.
+    /// Also expand the newest failed run's captured output.
     DownCheckExpanded,
     /// Follow the first "Manage →" link.
     ManageProject,
-    /// Wait for the admin scale tiles.
     AdminScale,
-    /// Expand the newest audit entry, so the request and detail behind it are
-    /// in shot.
+    /// Expand the newest audit entry.
     AuditExpanded,
 }
 
@@ -203,9 +193,7 @@ async fn main() -> Result<()> {
     let port = free_port()?;
     let base = format!("http://127.0.0.1:{port}");
 
-    // Phase 1 — migrate, then create the first admin through the product's own
-    // setup form so the password hash is a real argon2 one. `/setup` is
-    // CSRF-protected, hence the GET-then-submit helper.
+    // Phase 1: migrate, and create the admin via `/setup` for a real argon2 hash.
     let mut server = start_pingward(&db, port, &base).await?;
     let bootstrap = Api::new(&base)?
         .bootstrap_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
@@ -213,10 +201,10 @@ async fn main() -> Result<()> {
     stop_pingward(&mut server).await;
     bootstrap?;
 
-    // Phase 2 — backdated demo data, written against the stopped database.
+    // Phase 2: seed the stopped database.
     apply_seed(&db).await?;
 
-    // Phase 3 — boot on the seeded database and photograph it.
+    // Phase 3: boot on it and capture.
     let mut server = start_pingward(&db, port, &base).await?;
     let result = capture_all(&base, &out).await;
     stop_pingward(&mut server).await;
@@ -235,9 +223,8 @@ async fn capture_all(base: &str, out: &Path) -> Result<()> {
 
 async fn capture_with(browser: &mut Browser, base: &str, out: &Path) -> Result<()> {
     let driver = browser.driver().clone();
-    // One session for the whole run: viewport, scale factor and colour scheme
-    // are CDP overrides that can be re-issued per shot, and sharing the session
-    // means signing in once.
+    // One session for all shots (sign in once); device and scheme overrides
+    // are re-issued per shot.
     driver
         .cdp()
         .send_raw(
@@ -291,7 +278,6 @@ async fn capture_with(browser: &mut Browser, base: &str, out: &Path) -> Result<(
     Ok(())
 }
 
-/// Applies a device's metrics, touch emulation included.
 async fn set_device(driver: &WebDriver, device: Device) -> Result<()> {
     driver
         .cdp()
@@ -315,8 +301,7 @@ async fn set_device(driver: &WebDriver, device: Device) -> Result<()> {
     Ok(())
 }
 
-/// Emulates the colour scheme *and* reduced motion in one command — the second
-/// call would otherwise replace the first's feature list.
+/// Both features in one call: a second call would replace the first's list.
 async fn emulate_media(driver: &WebDriver, scheme: &str) -> Result<()> {
     driver
         .cdp()
@@ -380,7 +365,7 @@ async fn open_down_check(driver: &WebDriver) -> Result<()> {
     driver.expect_visible("ping-row").await
 }
 
-/// A clip rectangle, in document coordinates.
+/// In document coordinates.
 struct Clip {
     x: f64,
     y: f64,
@@ -428,11 +413,8 @@ async fn document_height(driver: &WebDriver) -> Result<f64> {
         .context("the document height probe did not return a number")
 }
 
-/// A region's document-relative box, as `(x, y, width, height)`.
-///
-/// The page is scrolled to the top first, so the viewport-relative box the
-/// browser reports *is* the document box — the space a beyond-the-viewport
-/// capture expects.
+/// A region's document box `(x, y, width, height)`: scrolling to the top
+/// first makes the viewport-relative rect equal it.
 async fn region_box(driver: &WebDriver, region: Region) -> Result<(f64, f64, f64, f64)> {
     driver.execute("window.scrollTo(0, 0);", vec![]).await?;
     let element = resolve(driver, region).await?;
@@ -485,11 +467,9 @@ async fn resolve(driver: &WebDriver, region: Region) -> Result<WebElement> {
     }
 }
 
-/// Captures a clipped PNG.
-///
-/// `captureBeyondViewport` is what makes a clip taller than the window work.
-/// The clip's own `scale` stays 1: the metrics override's device scale factor
-/// is already applied, and multiplying the two would render mobile at 9x.
+/// Captures a clipped PNG. `captureBeyondViewport` allows clips taller than
+/// the window; clip `scale` stays 1 since the device scale factor already
+/// applies (3 x 3 would render mobile at 9x).
 async fn capture(driver: &WebDriver, clip: &Clip) -> Result<Vec<u8>> {
     let response = driver
         .cdp()
@@ -515,15 +495,13 @@ async fn capture(driver: &WebDriver, clip: &Clip) -> Result<Vec<u8>> {
     Ok(base64::engine::general_purpose::STANDARD.decode(data)?)
 }
 
-/// Runs the seed script against the stopped database.
 async fn apply_seed(db: &Path) -> Result<()> {
     let now = chrono::Utc::now().timestamp_millis();
     let sql = seed_sql(now)?;
     let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", db.display()))
         .await
         .with_context(|| format!("opening {}", db.display()))?;
-    // `AssertSqlSafe`: every value goes through `seed`'s own quoting and the
-    // script is built from constants in this repository, not user input.
+    // Safe: built from in-repo constants, every value quoted by `seed`.
     sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
         .execute(&pool)
         .await
@@ -547,7 +525,6 @@ async fn start_pingward(db: &Path, port: u16, base: &str) -> Result<Child> {
             format!("sqlite://{}?mode=rwc", db.display()),
         )
         .env("PINGWARD_BIND", format!("127.0.0.1:{port}"))
-        // The rendered ping URLs come from this, not from the bind address.
         .env("PINGWARD_BASE_URL", PUBLIC_BASE_URL)
         .env("RUST_LOG", "warn")
         .env("PINGWARD_SECRET", "pingward-screenshots-0123456789abcdef")

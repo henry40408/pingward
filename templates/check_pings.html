@@ -1,18 +1,10 @@
-{# Recent-pings fragment: filter controls + table + keyset pager. Served
-   standalone by GET /checks/{id}/pings (JS swaps it into #pings-section) and
-   inlined into check.html. Rendered content is escaped here; the parent injects
-   it with |safe. #}
-{# A real GET form submitting to the check page, so it filters with no script:
-   the page parses the very same query params the fragment endpoint does. With
-   script, `app.js`'s `data-apply` handler cancels the submit and swaps the
-   fragment in place instead, and `data-nosubmit` stops a stray Enter
-   navigating away. The hidden fields carry the *notifications* filter, which a
-   GET submission would otherwise drop — it replaces the whole query string.
-
-   The `datetime-local` values are the viewer's local wall clock, converted to
-   UTC by `app.js` before it fetches. Submitted raw they are read as UTC
-   (`web::parse_date_bound`), which is the same zone the page prints times in
-   when no script localizes them — so each mode agrees with what it shows. #}
+{# Recent-pings fragment, served by GET /checks/{id}/pings and inlined into
+   check.html via |safe (content is escaped here).
+   A real GET form to the check page, so it filters without script; with
+   script, `app.js` swaps the fragment instead. The hidden fields carry the
+   sibling section's filter, since a GET submit replaces the whole query.
+   `datetime-local` is local time with JS (converted before fetch) and read as
+   UTC without (`web::parse_date_bound`), matching what each mode displays. #}
 <form class="filters" method="get" action="{{ base }}/checks/{{ check_id }}" data-testid="pings-filters" data-nosubmit>
   {% for f in carry %}<input type="hidden" name="{{ f.name }}" value="{{ f.value }}">{% endfor %}
   <label class="fld">From <input type="datetime-local" name="pfrom" data-testid="pings-from" data-utc="{{ f_from }}"></label>

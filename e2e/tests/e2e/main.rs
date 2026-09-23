@@ -1,15 +1,8 @@
-//! The Cucumber runner.
+//! The Cucumber runner (`harness = false`; run `cargo test --test e2e` from `e2e/`).
 //!
-//! `harness = false`: cucumber drives the scenarios itself, so there is no
-//! libtest harness collecting `#[test]` functions. Run it from `e2e/` with
-//! `cargo test --test e2e`.
-//!
-//! A `before` hook reads the scenario's tags: `@nojs` decides whether the
-//! page's scripts run, and `@fast-scan` / `@smtp-env` / `@trusted-proxy` select
-//! the server's environment (see [`pingward_e2e::server::Options`]).
-//!
-//! Every scenario gets its own server and database: `POST /setup` creates the
-//! first admin once and only once, and almost every scenario walks through it.
+//! Scenario tags pick the environment: `@nojs` disables page scripts, the rest
+//! go to [`pingward_e2e::server::Options`]. Each scenario gets its own server
+//! and database, since `POST /setup` succeeds only once.
 
 mod steps;
 
@@ -22,15 +15,11 @@ use pingward_e2e::world::PingwardWorld;
 
 const FEATURES: &str = "features";
 
-/// The most scenarios — and so browsers, servers and databases — to run at
-/// once, whatever the machine.
+/// Upper bound on concurrent scenarios (each is a browser + server + DB).
 const CONCURRENCY_CEILING: usize = 4;
 
-/// How many scenarios run at once, one per core up to [`CONCURRENCY_CEILING`].
-///
-/// A fixed four is too many for a two-core CI runner, where the browsers
-/// contend until pages take longer to settle than the steps wait for — and each
-/// scenario here also carries a whole pingward process.
+/// One scenario per core up to [`CONCURRENCY_CEILING`]: a fixed four overloads
+/// a two-core CI runner until pages settle slower than the steps wait.
 fn max_concurrent_scenarios() -> usize {
     std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
@@ -39,8 +28,8 @@ fn max_concurrent_scenarios() -> usize {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Before anything runs in parallel: on a cold driver cache (every CI run)
-    // concurrent sessions contend on the same download and the run wedges.
+    // Download the driver once up front: concurrent sessions on a cold cache
+    // contend on the same download and wedge.
     Browser::prepare().await?;
 
     let writer = PingwardWorld::cucumber()
@@ -75,11 +64,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Every tag in scope for a scenario.
-///
-/// Gherkin scopes tags by inheritance (`@fast-scan` sits on the whole of
-/// `time_states.feature`), but `Scenario::tags` reports only the ones written
-/// on the scenario itself, so the options are read from the union.
+/// Feature, rule and scenario tags combined: `Scenario::tags` omits inherited
+/// ones (e.g. `@fast-scan` on all of `time_states.feature`).
 fn tags_of(
     feature: &gherkin::Feature,
     rule: Option<&gherkin::Rule>,

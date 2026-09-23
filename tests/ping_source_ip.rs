@@ -1,9 +1,7 @@
 //! What address a ping is recorded from (`pings.source_ip`).
 //!
-//! Not `axum_test`: it never populates `ConnectInfo<SocketAddr>`, so the
-//! trusted-proxy decision would be skipped entirely. The router is driven with
-//! `tower::ServiceExt::oneshot` and the peer injected as a request extension,
-//! as `into_make_service_with_connect_info` does in `main.rs`.
+//! Driven with `oneshot` and an injected `ConnectInfo`: `axum_test` has no
+//! peer, so the trusted-proxy decision would be skipped.
 
 use axum::body::Body;
 use axum::extract::ConnectInfo;
@@ -19,7 +17,7 @@ use pingward::{
 use std::net::SocketAddr;
 use tower::ServiceExt;
 
-/// Migrated in-memory store: one user, one project, one check with ping UUID `abc`.
+/// One user, project and check (ping UUID `abc`).
 async fn seeded_store() -> Store {
     let pool = db::connect("sqlite::memory:").await.unwrap();
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
@@ -50,7 +48,6 @@ async fn seeded_store() -> Store {
     store
 }
 
-/// Pings `/ping/abc` from `peer` and returns the recorded `source_ip`.
 async fn ping_from(
     trusted_proxies: Option<&str>,
     peer: &str,
@@ -84,8 +81,7 @@ async fn ping_from(
 
 #[tokio::test]
 async fn ping_behind_a_trusted_proxy_records_the_forwarded_client() {
-    // The real deployment: containerised behind a proxy, so the peer is always
-    // the proxy's bridge-network address.
+    // The peer is the proxy's bridge-network address, matched by CIDR.
     let ip = ping_from(
         Some("172.16.0.0/12"),
         "172.18.0.5:44321",
@@ -97,7 +93,6 @@ async fn ping_behind_a_trusted_proxy_records_the_forwarded_client() {
 
 #[tokio::test]
 async fn ping_from_an_untrusted_peer_records_the_peer() {
-    // Ping endpoints are public: an untrusted peer's header must be ignored.
     let ip = ping_from(Some("172.16.0.0/12"), "8.8.8.8:44321", Some("203.0.113.7")).await;
     assert_eq!(ip.as_deref(), Some("8.8.8.8"));
 }

@@ -17,8 +17,8 @@ fn anchor(check: &Check) -> DateTime<Utc> {
     check.last_ping_at.unwrap_or(check.created_at)
 }
 
-/// The instant at/after which `check` is overdue, or `None` if it cannot be
-/// computed (period check with no `period_secs`, invalid cron expression).
+/// When `check` becomes overdue (grace included); `None` without a usable
+/// `period_secs` or cron expression.
 pub fn due_time(check: &Check) -> Option<DateTime<Utc>> {
     let grace = Duration::seconds(check.grace_secs);
     match check.schedule_kind {
@@ -44,10 +44,8 @@ pub fn due_time(check: &Check) -> Option<DateTime<Utc>> {
     }
 }
 
-/// Deadline (`last_start_at + max_runtime_secs`) after which an in-flight run
-/// counts as overrun, or `None` when overrun detection does not apply. In
-/// flight means `max_runtime_secs > 0` plus a `last_start_at` newer than the
-/// last completion (`last_ping_at`): a `start` ping with no success/fail after it.
+/// `last_start_at + max_runtime_secs` for a run in flight (a `start` newer than
+/// `last_ping_at`); `None` when no run is in flight or `max_runtime_secs <= 0`.
 pub fn overrun_time(check: &Check) -> Option<DateTime<Utc>> {
     let max = check.max_runtime_secs?;
     if max <= 0 {
@@ -61,9 +59,8 @@ pub fn overrun_time(check: &Check) -> Option<DateTime<Utc>> {
     Some(start + Duration::seconds(max))
 }
 
-/// Downs every active check (status `new`/`up`) whose `due_time` has passed or
-/// whose in-flight run has exceeded `max_runtime_secs`. Per-check failures are
-/// logged and skipped rather than aborting the round.
+/// Downs every active (`new`/`up`) check that is overdue or overrun. A per-check
+/// failure is logged and skipped rather than aborting the round.
 pub async fn scan_once(
     store: &Store,
     now: DateTime<Utc>,
@@ -85,8 +82,7 @@ pub async fn scan_once(
         if let Err(e) = store.begin_down_alert(check.id, now).await {
             tracing::error!("failed to set alert baseline for {}: {e}", check.id);
         }
-        // Overrun wins over overdue: it is the more specific cause, and a run
-        // that blew its budget is overdue almost by definition.
+        // Overrun wins over overdue: it is the more specific cause.
         let cause = match (overrun, check.max_runtime_secs, check.last_start_at) {
             (true, Some(max), Some(started_at)) => DownCause::Overrun {
                 max_runtime_secs: max,
@@ -112,9 +108,8 @@ pub async fn scan_once(
     Ok(events)
 }
 
-/// Emit a `Reminder` for every down, un-acknowledged check whose nag interval
-/// has elapsed since its last alert, advancing `last_alert_at` so the next
-/// reminder is one interval later. `now` is injected to stay deterministic.
+/// A `Reminder` for every down, unacknowledged check whose nag interval has
+/// elapsed since `last_alert_at`, which is advanced to `now`.
 pub async fn nag_once(
     store: &Store,
     now: DateTime<Utc>,
@@ -139,7 +134,7 @@ pub async fn nag_once(
             continue; // nag off for this check
         };
         let Some(last) = check.last_alert_at else {
-            continue; // no baseline yet (e.g. downed before this feature shipped)
+            continue; // no alert baseline
         };
         if now < last + Duration::seconds(interval) {
             continue; // not yet due
@@ -165,9 +160,8 @@ pub async fn nag_once(
     Ok(events)
 }
 
-/// The loop's sleep interval: the smallest effective scan interval across all
-/// active checks (spec §8 cascade), or `env_default` when there are none.
-/// Bounded to `>= 1s`.
+/// The smallest effective scan interval across active checks, else
+/// `env_default`; at least 1s.
 fn loop_interval_secs(
     checks: &[Check],
     project_intervals: &std::collections::HashMap<i64, Option<i64>>,
@@ -184,16 +178,10 @@ fn loop_interval_secs(
         .unwrap_or(env_default.max(1))
 }
 
-/// Runs the scan loop until `shutdown`. Each pass re-reads active checks,
-/// resolves the cascade sleep interval, scans for overdue checks and delivers
-/// each `Down` event to that check's bound channels; `Utc::now()` is called
-/// only here so `scan_once` stays deterministic. Every transition also
-/// publishes its `check_id` on `live_tx`, the live-tail bus (see
-/// `state::AppState::events`), refreshing an open check-detail page.
-///
-/// `shutdown` is awaited at the sleep, so a pass in flight finishes and the
-/// loop returns rather than being aborted mid-await — that is what leaves no
-/// query outstanding for `main`'s pool close (see `shutdown::os_signal`).
+/// Each pass runs `scan_once` then `nag_once`, delivers their events, and
+/// publishes each `Down` on `live_tx` (`AppState::events`). `Utc::now()` is read
+/// only here so both stay deterministic. `shutdown` is checked only at the
+/// sleep, so an in-flight pass finishes before `main` closes the pool.
 pub async fn run_scan_loop(
     store: Store,
     env_default_secs: u64,
@@ -229,7 +217,7 @@ pub async fn run_scan_loop(
             Err(e) => tracing::error!("scan_once failed: {e}"),
         }
 
-        // Heartbeat read by the admin dashboard.
+        // Heartbeat shown on `/admin`.
         let _ = store.set_setting("last_scan_at", &now.to_rfc3339()).await;
 
         match nag_once(&store, Utc::now(), &base_url).await {
@@ -252,7 +240,7 @@ pub async fn run_scan_loop(
             Err(e) => tracing::error!("nag_once failed: {e}"),
         }
 
-        // Next sleep from the cascade; query failures fall back to the env default.
+        // A failed query falls back to the env default.
         let active = store.list_active_checks().await.unwrap_or_default();
         let projects = store.all_project_scan_intervals().await.unwrap_or_default();
         let global = store
@@ -365,7 +353,6 @@ mod tests {
         expected.timezone = "UTC".into();
 
         assert_eq!(due_time(&c).unwrap(), due_time(&expected).unwrap());
-        // last_ping 12:00 UTC → next trigger 13:00 UTC + 300s grace = 13:05 UTC
         assert_eq!(
             due_time(&c).unwrap(),
             Utc.with_ymd_and_hms(2026, 7, 12, 13, 5, 0).unwrap()
@@ -442,7 +429,6 @@ mod tests {
             start,
             Some(Utc.with_ymd_and_hms(2026, 7, 12, 11, 0, 0).unwrap()),
         );
-        // deadline = 12:00:60
         assert_eq!(overrun_time(&c), Some(start + Duration::seconds(60)));
     }
 

@@ -7,9 +7,7 @@
   </div>
 </div>
 
-{# Bare .tiles, exactly as dashboard.html uses them: a tile is already a card,
-   so wrapping the row in another one nested a card inside a card. Each tile
-   labels itself, which is what the dropped "Scale" heading was saying. #}
+{# Bare .tiles, as on the dashboard: a tile is already a card. #}
 <div class="tiles" data-testid="admin-scale">
   <div class="tile total"><span class="edge"></span><div class="n">{{ user_count }}</div><div class="l">Users</div></div>
   <div class="tile total"><span class="edge"></span><div class="n">{{ project_count }}</div><div class="l">Projects</div></div>
@@ -132,10 +130,7 @@
     {% if let Some(f) = settings_flash %}<p class="flash ok" data-testid="settings-flash">{{ f }}</p>{% endif %}
     <form method="post" action="/admin/settings">
       <input type="hidden" name="_csrf" value="{{ csrf }}">
-      {# The same suggestions the check and project forms offer, from the same
-         source. The retention fields below are deliberately not on it: they
-         are a count of days, not a duration, and do not go through
-         `duration::parse_duration`. #}
+      {# Not for the retention fields below: those are plain day counts. #}
       <datalist id="dur-list">
         {% for d in crate::view::durations() %}<option value="{{ d }}">{% endfor %}
       </datalist>
@@ -237,8 +232,7 @@
   <div class="cb">
     {% if let Some(f) = user_flash %}<p class="flash err" data-testid="users-flash">{{ f }}</p>{% endif %}
     {% if let Some(f) = password_reset_flash %}<p class="flash warn" data-testid="password-reset-flash">{{ f }}</p>{% endif %}
-    {# .tscroll confines the overflow to the table: without it the card body's
-       own overflow-x scrolls the Add-user form below off-screen with it. #}
+    {# .tscroll keeps the Add-user form below from scrolling with the table. #}
     <div class="tscroll">
     <table>
       <thead><tr><th>Username</th><th>Admin</th><th></th></tr></thead>
@@ -325,8 +319,7 @@
   </div>
 </div>
 
-{# Rendered from admin_audit.html by the handler, so this card body and the
-   GET /admin/audit fragment endpoint emit the same markup. #}
+{# admin_audit.html, the same markup GET /admin/audit serves. #}
 <div class="card">
   <div class="ch"><h2>Audit trail</h2></div>
   <div class="cb" id="audit-section" data-endpoint="/admin/audit">

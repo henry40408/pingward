@@ -83,9 +83,8 @@ Feature: User management
     And the delete control on my own row is inert
     And the password reset control on my own row is usable
 
-  # The password length policy (`auth::validate_password`). Both admin-facing
-  # surfaces are covered because the reset one used to answer a bad password
-  # with a bare redirect back to /admin — indistinguishable from success.
+  # `auth::validate_password` on both admin surfaces; a refused reset must say
+  # so rather than redirect as if it succeeded.
   Scenario: A new user's password below the length floor is rejected
     When I try to add a user "carol" with password "short pass"
     Then the user form shows the error "Password must be at least 15 characters."
@@ -98,10 +97,8 @@ Feature: User management
     And I sign in as "member" with password "hunter2 correct"
     Then I land on the dashboard signed in
 
-  # The elevation gate (src/elevate.rs). The line is granting versus removing
-  # access: handing out access that outlives this browser needs the password
-  # again; taking access away must stay available to an operator who thinks
-  # they are under attack.
+  # The elevation gate (src/elevate.rs) covers granting access, never removing
+  # it: an operator under attack must not need their password to lock someone out.
   Scenario: Granting admin asks for confirmation before it happens
     Given a member "member" with password "hunter2 correct" exists
     And I lock admin actions
@@ -115,9 +112,8 @@ Feature: User management
     When I disable "member"
     Then the user "member" is marked disabled
 
-  # The in-page dialog (assets/app.js). Its whole point is that the form
-  # survives: bouncing to /admin/unlock discards what was typed, and an admin
-  # who confirms then finds their work gone is the bug this replaced.
+  # The in-page dialog (assets/app.js) exists so the filled-in form survives;
+  # bouncing to /admin/unlock would discard it.
   Scenario: Confirming in place keeps the filled-in form and creates the user
     Given I lock admin actions
     When I fill in the new user "carol" with password "a long enough phrase"
@@ -142,9 +138,7 @@ Feature: User management
     Then no confirmation dialog appears
     And the user "carol" is listed with role "member"
 
-  # The page behind the dialog. It is what a browser without JavaScript gets
-  # when the server bounces a refused action, and it is reachable on purpose
-  # from /admin so the requirement is visible before anything is refused.
+  # /admin/unlock is the scriptless fallback, linked from /admin up front.
   Scenario: The confirmation page is reachable before anything is refused
     Given I lock admin actions
     When I follow the confirm link on the admin page

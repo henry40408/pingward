@@ -1,10 +1,5 @@
 //! Response headers other than `Strict-Transport-Security` (see `tests/hsts.rs`).
-//!
-//! `script-src 'self'` with no `'unsafe-inline'` holds only because every script
-//! is a file under `/assets` and no template carries an inline event attribute;
-//! the regression caught here is one being reintroduced and the policy widened.
-//! `/api/docs` loads from a CDN, so it is outside the CSP but still carries the
-//! origin-wide headers.
+//! Guards against the CSP's `script-src 'self'` being widened.
 
 use axum_test::TestServer;
 use pingward::{app, db, state::AppState, store::Store};
@@ -50,7 +45,6 @@ async fn the_browser_ui_carries_a_script_src_self_policy() {
     let csp = res.header("content-security-policy");
     let csp = csp.to_str().unwrap();
 
-    // No `'unsafe-inline'` and no nonce: either makes an injected script runnable.
     assert!(csp.contains("script-src 'self';"), "{csp}");
     assert!(!csp.contains("script-src 'self' 'unsafe-inline'"), "{csp}");
     assert!(!csp.contains("nonce-"), "{csp}");
@@ -60,23 +54,21 @@ async fn the_browser_ui_carries_a_script_src_self_policy() {
         "base-uri 'none'",
         "form-action 'self'",
         "frame-ancestors 'none'",
-        // The live tail's EventSource: blocking it silently breaks the LIVE toggle.
+        // The live tail's EventSource.
         "connect-src 'self'",
     ] {
         assert!(csp.contains(directive), "missing {directive}: {csp}");
     }
-    // The heartbeat bars carry a computed `style="height:Npx"`, so inline styles
-    // stay allowed — for styles only.
+    // For the heartbeat bars' computed `style="height:Npx"`.
     assert!(csp.contains("style-src 'self' 'unsafe-inline'"), "{csp}");
 }
 
-/// `/api/docs` renders Scalar from `cdn.jsdelivr.net`, so it is left outside the
-/// CSP layer rather than widening the policy for everyone.
+/// Scalar loads from `cdn.jsdelivr.net`, so `/api/docs` skips the CSP rather
+/// than widening it for everyone.
 #[tokio::test]
 async fn the_api_docs_page_is_outside_the_csp_but_not_the_rest() {
     let server = server().await;
     let res = server.get("/api/docs").await;
-    // Signed out it redirects; either way the layers below have run.
     assert!(
         !res.headers().contains_key("content-security-policy"),
         "/api/docs must not inherit the browser UI's CSP"
@@ -102,7 +94,7 @@ async fn the_scripts_are_served_as_javascript_and_do_not_shadow_the_stylesheet()
             "{script}"
         );
     }
-    // `/assets/{file}` is a wildcard: the literal `/assets/app.css` must still win.
+    // The literal `/assets/app.css` route must beat the `/assets/{file}` wildcard.
     let css = server.get("/assets/app.css").await;
     css.assert_status_ok();
     assert!(

@@ -85,8 +85,7 @@ async fn dashboard_shows_project_group_and_check_row() {
     );
 }
 
-/// Both directions in one test, so a template that always (or never) emits the
-/// chip fails one half.
+/// Both directions, so a template that always (or never) emits the chip fails.
 #[tokio::test]
 async fn dashboard_no_channel_chip_reflects_binding_state() {
     let (server, store, pid, unbound_cid) = server_with_project_and_check().await;
@@ -123,9 +122,7 @@ async fn dashboard_no_channel_chip_reflects_binding_state() {
         1,
         "exactly one row (the unbound check) must render the chip"
     );
-    // The rows are independent `<div class="check" …>…</div>` blocks; split on
-    // that marker so the chip is asserted inside the right row rather than
-    // "somewhere in the page".
+    // Split per row so the chip is asserted in the right row, not just the page.
     let rows: Vec<&str> = body.split("class=\"check\"").collect();
     let unbound_row = rows
         .iter()
@@ -145,13 +142,9 @@ async fn dashboard_no_channel_chip_reflects_binding_state() {
     );
 }
 
-/// A running check has no tile of its own — it counts under Up — but keeps its
-/// per-row running badge.
 #[tokio::test]
 async fn dashboard_counts_running_check_under_up_and_keeps_the_row_badge() {
     let (server, store, pid, cid) = server_with_project_and_check().await;
-    // Give `cid` an in-flight start (no finish) so `display_status` resolves
-    // it to Running.
     store
         .mark_ping(
             cid,
@@ -162,8 +155,7 @@ async fn dashboard_counts_running_check_under_up_and_keeps_the_row_badge() {
         )
         .await
         .unwrap();
-    // A second, untouched check is "new", so the Up tile is shown to count the
-    // running check specifically rather than every check.
+    // A second, "new" check proves Up counts the running check, not every check.
     store
         .create_check(&pingward::store::NewCheck {
             project_id: pid,
@@ -181,13 +173,11 @@ async fn dashboard_counts_running_check_under_up_and_keeps_the_row_badge() {
     let res = server.get("/").await;
     res.assert_status_ok();
     let body = res.text();
-    // The running check folds into Up, and there is no Running tile.
     assert_tile(&body, "Up", 1);
     assert!(
         !body.contains(">Running</div>"),
         "the Running tile must be gone (running now counts under Up): {body}"
     );
-    // The per-row running indicator survives the tile merge.
     assert_eq!(
         body.matches("class=\"badge running\"").count(),
         1,
@@ -195,9 +185,6 @@ async fn dashboard_counts_running_check_under_up_and_keeps_the_row_badge() {
     );
 }
 
-/// A project's and a check's `markdown::truncate_plain` output must reach the
-/// rendered page inside `gdesc`/`cdesc`, with markdown markers stripped and the
-/// check's long description actually truncated.
 #[tokio::test]
 async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
     let (server, store, uid) = logged_in_server().await;
@@ -233,8 +220,7 @@ async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
         })
         .await
         .unwrap();
-    // Negative control: a check with an empty description must render no `cdesc`
-    // element, pinning the `{% if !c.description.is_empty() %}` guard.
+    // Negative control for the template's empty-description guard.
     store
         .create_check(&pingward::store::NewCheck {
             project_id: pid,
@@ -253,7 +239,6 @@ async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
     res.assert_status_ok();
     let body = res.text();
 
-    // Project description: markers stripped, rendered inside `gdesc`.
     assert!(
         body.contains("class=\"gdesc\">Web services project</span>"),
         "project description missing/not stripped in gdesc: {body}"
@@ -263,10 +248,8 @@ async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
         "raw markdown markers leaked into gdesc, truncate_plain did not run: {body}"
     );
 
-    // Check description: truncated and stripped inside `cdesc` — 120 characters
-    // plus the ellipsis. Asserted against a literal rather than a
-    // `truncate_plain` call, so a broken truncation cannot make this test agree
-    // with itself.
+    // 120 chars + ellipsis, as a literal so a broken `truncate_plain` cannot
+    // agree with itself.
     let expected = "Nightly backups of the primary database run every day and verify checksum integrity end to end, catching silent corrupti…";
     assert!(
         body.contains(&format!(
@@ -288,7 +271,6 @@ async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
         "raw markdown markers leaked into cdesc, truncate_plain did not run: {body}"
     );
 
-    // Exactly one check row has a non-empty description.
     assert_eq!(
         body.matches("data-testid=\"check-description-summary\"")
             .count(),
@@ -297,16 +279,13 @@ async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
     );
 }
 
-/// A description whose distinctive term sits past the 120-character summary
-/// cut-off, so a test can tell "matched the raw description" apart from
-/// "matched what the row happens to display".
+/// Its distinctive term ("glacier") sits past the 120-char summary cut-off.
 const LONG_DESC: &str = "Copies the primary database to cold storage every night and verifies \
     checksums end to end so silent corruption is caught before it spreads, then uploads the \
     result to the offsite glacier vault.";
 
-/// Two projects with four checks between them, shaped so every dashboard filter
-/// dimension (project name, project description, check name, check description)
-/// can be exercised by a term unique to it.
+/// Two projects, four checks: each filter dimension (project/check name and
+/// description) has a term unique to it.
 async fn server_with_two_projects() -> TestServer {
     let (server, store, uid) = logged_in_server().await;
     let now = chrono::Utc::now();
@@ -347,9 +326,7 @@ async fn server_with_two_projects() -> TestServer {
     server
 }
 
-/// Assert a summary tile shows exactly `n`, matching the tile's own markup so a
-/// counter that stops following the filter fails here rather than passing on a
-/// bare `body.contains("1")`.
+/// Matches the tile's own markup, not a bare `body.contains("1")`.
 fn assert_tile(body: &str, label: &str, n: usize) {
     let want = format!("<div class=\"n\">{n}</div><div class=\"l\">{label}</div>");
     assert!(
@@ -374,8 +351,6 @@ async fn dashboard_unfiltered_shows_every_project_and_no_clear_link() {
     );
 }
 
-/// A blank or whitespace-only `q` is the unfiltered view, not a filter that
-/// matches everything by accident — the "clear" link must stay hidden.
 #[tokio::test]
 async fn dashboard_blank_query_is_treated_as_unfiltered() {
     let server = server_with_two_projects().await;
@@ -405,7 +380,6 @@ async fn dashboard_filter_by_check_name_drops_other_projects_and_narrows_counter
         !shows_check(&body, "vacuum"),
         "a sibling check that does not match must not render: {body}"
     );
-    // The counters follow the filter: one visible check, and it is "new".
     assert_tile(&body, "Total", 1);
     assert_tile(&body, "Up", 0);
     assert!(
@@ -418,9 +392,7 @@ async fn dashboard_filter_by_check_name_drops_other_projects_and_narrows_counter
     );
 }
 
-/// A project-level hit shows the project whole: a term found only in the
-/// project's own description must still list checks that do not match it, not a
-/// header above an empty list.
+/// A project-level hit lists all its checks, not a header above an empty list.
 #[tokio::test]
 async fn dashboard_filter_by_project_description_keeps_all_of_its_checks() {
     let server = server_with_two_projects().await;
@@ -451,9 +423,7 @@ async fn dashboard_filter_by_project_name_keeps_all_of_its_checks() {
     assert_tile(&body, "Total", 2);
 }
 
-/// Matching runs over the raw description, not the 120-character summary the row
-/// displays. The term below appears only in the truncated-away tail, so this
-/// fails if the filter is ever pointed at `CheckRow::description`.
+/// Fails if the filter is pointed at the truncated `CheckRow::description`.
 #[tokio::test]
 async fn dashboard_filter_matches_description_text_beyond_the_visible_summary() {
     let server = server_with_two_projects().await;
@@ -465,8 +435,6 @@ async fn dashboard_filter_matches_description_text_beyond_the_visible_summary() 
 
     let body = server.get("/?q=glacier").await.text();
     assert!(shows_check(&body, "backup"), "match missing: {body}");
-    // "glacier" appears once, echoed into the search box; the tail it came from
-    // must not render, proving the match came from the stored description.
     assert!(
         !body.contains("offsite glacier vault"),
         "the matched tail is past the summary cut-off, so it must not render: {body}"
@@ -486,7 +454,6 @@ async fn dashboard_filter_matches_description_text_beyond_the_visible_summary() 
 #[tokio::test]
 async fn dashboard_filter_is_case_insensitive() {
     let server = server_with_two_projects().await;
-    // An uppercase query against lowercase stored data.
     let body = server.get("/?q=ROTATE-Certs").await.text();
     assert!(
         shows_check(&body, "rotate-certs"),
@@ -494,9 +461,7 @@ async fn dashboard_filter_is_case_insensitive() {
     );
     assert_tile(&body, "Total", 1);
 
-    // ...and the other direction, which folding the *haystack* buys: "TLS" is
-    // stored uppercase, so a lowercase query must still find it. Without this,
-    // dropping `to_lowercase()` on the haystack passes the suite.
+    // Pins the haystack's `to_lowercase()`: "TLS" is stored uppercase.
     let body = server.get("/?q=tls").await.text();
     assert!(
         shows_check(&body, "rotate-certs"),
@@ -505,8 +470,6 @@ async fn dashboard_filter_is_case_insensitive() {
     assert_tile(&body, "Total", 1);
 }
 
-/// "Nothing matched" must not collapse into "you have no projects", or a user
-/// with a typo is told to create a project they already have.
 #[tokio::test]
 async fn dashboard_no_results_state_is_distinct_from_the_empty_state() {
     let server = server_with_two_projects().await;
@@ -527,7 +490,6 @@ async fn dashboard_no_results_state_is_distinct_from_the_empty_state() {
     assert_tile(&body, "Total", 0);
 }
 
-/// One project whose four checks each resolve to a different display status:
 /// `web` → Up, `job` → Running, `cron` → Late, `db` → Down.
 async fn server_with_mixed_statuses() -> TestServer {
     use pingward::models::CheckStatus;
@@ -552,7 +514,6 @@ async fn server_with_mixed_statuses() -> TestServer {
             .await
             .unwrap()
     }
-    // Up: pinged, next run comfortably in the future (not late), not in flight.
     let web = mk(&store, pid, "web", "cu-web").await;
     store
         .mark_ping(
@@ -564,14 +525,12 @@ async fn server_with_mixed_statuses() -> TestServer {
         )
         .await
         .unwrap();
-    // Running: an in-flight start with no finish (last_start > last_ping).
     let job = mk(&store, pid, "job", "cu-job").await;
     store
         .mark_ping(job, CheckStatus::New, None, Some(now), None)
         .await
         .unwrap();
-    // Late: stored Up, but `now` sits inside (expected, due] — due 100s out,
-    // 300s grace, so expected was 200s ago.
+    // Late: due in 100s with 300s grace, so `now` is inside (expected, due].
     let cron = mk(&store, pid, "cron", "cu-cron").await;
     store
         .mark_ping(
@@ -583,7 +542,6 @@ async fn server_with_mixed_statuses() -> TestServer {
         )
         .await
         .unwrap();
-    // Down.
     let db = mk(&store, pid, "db", "cu-db").await;
     store
         .mark_ping(db, CheckStatus::Down, Some(now), None, None)
@@ -592,8 +550,6 @@ async fn server_with_mixed_statuses() -> TestServer {
     server
 }
 
-/// Whether a check row for `name` is rendered. Reads the row's `nm` cell, so the
-/// name appearing in the search box or a project header cannot fool it.
 fn shows_check(body: &str, name: &str) -> bool {
     check_order(body).iter().any(|n| n == name)
 }
@@ -602,7 +558,6 @@ fn shows_check(body: &str, name: &str) -> bool {
 async fn dashboard_mixed_statuses_populate_the_merged_tiles() {
     let server = server_with_mixed_statuses().await;
     let body = server.get("/").await.text();
-    // Up folds in the running check; late and down stand alone; no Running tile.
     assert_tile(&body, "Total", 4);
     assert_tile(&body, "Up", 2);
     assert_tile(&body, "Late", 1);
@@ -624,7 +579,6 @@ async fn dashboard_status_filter_narrows_the_list_but_not_the_tiles() {
     let server = server_with_mixed_statuses().await;
     let body = server.get("/?status=down").await.text();
 
-    // Only the down check is listed...
     assert!(shows_check(&body, "db"), "down check missing: {body}");
     for name in ["web", "job", "cron"] {
         assert!(
@@ -632,13 +586,11 @@ async fn dashboard_status_filter_narrows_the_list_but_not_the_tiles() {
             "{name} must be hidden by status=down: {body}"
         );
     }
-    // ...but the tiles still show the full breakdown, so the other buckets stay
-    // switchable: the counters follow `q`, not the status select.
+    // Tiles follow `q`, not the status select, so other buckets stay switchable.
     assert_tile(&body, "Total", 4);
     assert_tile(&body, "Up", 2);
     assert_tile(&body, "Late", 1);
     assert_tile(&body, "Down", 1);
-    // The select re-selects the active option, and the clear affordance shows.
     assert!(
         body.contains("value=\"down\" selected"),
         "the status select must re-select the active option: {body}"
@@ -649,8 +601,6 @@ async fn dashboard_status_filter_narrows_the_list_but_not_the_tiles() {
     );
 }
 
-/// The merge again in the filter: `status=up` includes the in-flight running
-/// check, not just the plain-up one.
 #[tokio::test]
 async fn dashboard_status_up_filter_includes_running_checks() {
     let server = server_with_mixed_statuses().await;
@@ -672,7 +622,6 @@ async fn dashboard_status_up_filter_includes_running_checks() {
 #[tokio::test]
 async fn dashboard_status_and_text_filters_combine_with_and() {
     let server = server_with_mixed_statuses().await;
-    // `job` is up-bucket but its name doesn't contain "web"; `web` matches both.
     let body = server.get("/?q=web&status=up").await.text();
 
     assert!(
@@ -686,8 +635,7 @@ async fn dashboard_status_and_text_filters_combine_with_and() {
     assert!(!shows_check(&body, "db"), "db matches neither: {body}");
 }
 
-/// An unrecognised `?status=` value degrades to "no filter" (full list, no
-/// selected option, no clear link) rather than a 400 or an empty page.
+/// Degrades to "no filter" rather than a 400 or an empty page.
 #[tokio::test]
 async fn dashboard_unknown_status_value_is_ignored() {
     let server = server_with_mixed_statuses().await;
@@ -700,7 +648,6 @@ async fn dashboard_unknown_status_value_is_ignored() {
         !body.contains("dashboard-filter-clear"),
         "a bogus status is not an active filter: {body}"
     );
-    // A bogus value collapses to "All".
     assert!(
         body.contains("value=\"\" selected"),
         "the All option should be selected for a bogus status: {body}"
@@ -713,12 +660,10 @@ async fn dashboard_unknown_status_value_is_ignored() {
     }
 }
 
-/// A status filter that matches nothing is the no-results state, not the "no
-/// projects yet" state, even though `q` is empty.
+/// Even with `q` empty, a status filter matching nothing is "no results".
 #[tokio::test]
 async fn dashboard_status_filter_with_no_matches_shows_no_results_not_empty() {
     let (server, store, uid) = logged_in_server().await;
-    // A single project with one never-pinged ("new") check: nothing is down.
     let pid = store
         .create_project(uid, "svc", "", None, None, chrono::Utc::now())
         .await
@@ -746,7 +691,6 @@ async fn dashboard_status_filter_with_no_matches_shows_no_results_not_empty() {
         !body.contains("dashboard-empty"),
         "a user who owns projects must not be told they have none: {body}"
     );
-    // The clear link must show even though only the status filter is active.
     assert!(
         body.contains("dashboard-filter-clear"),
         "a status-only filter must still offer clear: {body}"
@@ -765,9 +709,7 @@ async fn dashboard_empty_state_when_no_projects() {
     );
 }
 
-/// Names in the order the dashboard renders them. Tests assert the whole
-/// sequence, so a sort that moves the pair being checked but scrambles the rest
-/// still fails.
+/// Names in render order; tests assert the whole sequence, not just one pair.
 fn rendered_order(body: &str, open: &str, close: &str) -> Vec<String> {
     body.split(open)
         .skip(1)
@@ -776,16 +718,13 @@ fn rendered_order(body: &str, open: &str, close: &str) -> Vec<String> {
         .collect()
 }
 
-/// Project group headers, top to bottom. `<h2>` is used nowhere else in the
-/// dashboard or its base template.
+/// `<h2>` appears nowhere else in the dashboard or its base template.
 fn project_order(body: &str) -> Vec<String> {
     rendered_order(body, "<h2>", "</h2>")
 }
 
-/// Check rows, top to bottom, flattened across groups. Matches the row's `nm`
-/// cell, so the search box and project headers cannot contribute. The cell wraps
-/// its text in the row's real link to the check (see `tests/no_js.rs`), so the
-/// name starts after the anchor's own `>`.
+/// Check rows across groups, read from the `nm` cell's link so the search box
+/// and project headers cannot contribute.
 fn check_order(body: &str) -> Vec<String> {
     rendered_order(body, "class=\"nm\"><a href=\"", "</a>")
         .iter()
@@ -795,8 +734,7 @@ fn check_order(body: &str) -> Vec<String> {
 
 #[tokio::test]
 async fn dashboard_orders_projects_by_name_not_creation() {
-    // The fixture creates "web" before "infra", so id order and name order
-    // disagree — a dashboard still on id order fails here.
+    // "web" is created before "infra", so id order would fail.
     let server = server_with_two_projects().await;
     let body = server.get("/").await.text();
     assert_eq!(
@@ -810,8 +748,7 @@ async fn dashboard_orders_projects_by_name_not_creation() {
 async fn dashboard_project_order_by_name_is_case_insensitive() {
     let (server, store, uid) = logged_in_server().await;
     let now = chrono::Utc::now();
-    // Byte order would put every uppercase name ahead of every lowercase one,
-    // splitting the list on case instead of reading alphabetically.
+    // Byte order would put every uppercase name first.
     for name in ["Zulu", "alpha", "Mike"] {
         store
             .create_project(uid, name, "", None, None, now)
@@ -826,8 +763,8 @@ async fn dashboard_project_order_by_name_is_case_insensitive() {
     );
 }
 
-/// Four checks in one project whose creation order is the reverse of their
-/// activity order, plus one that has never been pinged.
+/// Four checks whose creation order disagrees with their activity order, plus
+/// one never pinged.
 async fn server_with_staggered_activity() -> TestServer {
     use pingward::models::CheckStatus;
     let (server, store, uid) = logged_in_server().await;
@@ -853,28 +790,24 @@ async fn server_with_staggered_activity() -> TestServer {
     }
     let ago = |s: i64| now - chrono::Duration::seconds(s);
 
-    // Created first, pinged longest ago — must render last of the pinged rows.
     let stale = mk(&store, pid, "stale", "cu-stale").await;
     store
         .mark_ping(stale, CheckStatus::Up, Some(ago(900)), None, None)
         .await
         .unwrap();
-    // Never pinged: no ping and no start, so it sorts below everything.
     mk(&store, pid, "untouched", "cu-untouched").await;
     let middle = mk(&store, pid, "middle", "cu-middle").await;
     store
         .mark_ping(middle, CheckStatus::Up, Some(ago(600)), None, None)
         .await
         .unwrap();
-    // In flight: only a start, no finish. The start dates it, and it is the most
-    // recent activity of the four.
+    // In flight: only a start, which alone dates it.
     let running = mk(&store, pid, "running", "cu-running").await;
     store
         .mark_ping(running, CheckStatus::New, None, Some(ago(60)), None)
         .await
         .unwrap();
-    // Started long ago but finished recently: the finish wins, putting it
-    // second. Guards against a sort that reads only `last_start_at`.
+    // Old start, recent finish: guards against sorting on `last_start_at` alone.
     let finished = mk(&store, pid, "finished", "cu-finished").await;
     store
         .mark_ping(
@@ -908,8 +841,7 @@ async fn dashboard_never_pinged_checks_keep_creation_order_at_the_bottom() {
         .create_project(uid, "services", "", None, None, now)
         .await
         .unwrap();
-    // No check has any activity, so every sort key ties and the order must fall
-    // back to creation rather than to whatever the sort does with equal keys.
+    // All sort keys tie, so order must fall back to creation (id).
     for (name, uuid) in [("zeta", "cu-z"), ("alpha", "cu-a"), ("mu", "cu-m")] {
         store
             .create_check(&pingward::store::NewCheck {
@@ -935,8 +867,6 @@ async fn dashboard_never_pinged_checks_keep_creation_order_at_the_bottom() {
 
 #[tokio::test]
 async fn dashboard_check_order_survives_the_status_filter() {
-    // Filtering preserves relative order, so the newest-first sequence must
-    // still hold once rows are removed.
     let server = server_with_staggered_activity().await;
     let body = server.get("/?status=up").await.text();
     assert_eq!(
