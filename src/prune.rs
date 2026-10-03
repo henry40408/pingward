@@ -109,6 +109,7 @@ pub async fn run_prune_loop(store: Store, interval_secs: u64, shutdown: Shutdown
             }
             Err(e) => tracing::error!("prune_once failed: {e}"),
         }
+        // Like `last_scan_at`, a failed heartbeat write is dropped unlogged.
         let _ = store
             .set_setting("last_prune_at", &Utc::now().to_rfc3339())
             .await;

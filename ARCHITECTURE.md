@@ -34,7 +34,10 @@ SQLite or Postgres.
 - `src/web.rs` — the browser UI: `routes()`, page/form handlers, the session,
   CSRF and response-header middleware, and owner/admin scoping helpers
   (`owned_project`, `owned_check`, `admin_project`, `admin_check`).
-- `src/ping.rs` — `/ping/{uuid}[/fail|/start|/log|/{code}]`.
+- `src/ping.rs` — `/ping/{uuid}[/fail|/start|/log|/{code}]`. The `ping_uuid`
+  is the only credential, so it is UUID **v4** (122 random bits); v7's index
+  locality is useless for an exact-match lookup and would leak creation time
+  and cut randomness to 74 bits.
 - `src/api/` — `mod.rs` (router, OpenAPI/Scalar handlers), `v1.rs` (handlers),
   `dto.rs` (response shapes), `input.rs` (request bodies), `extract.rs`
   (`ApiUser` bearer extractor), `error.rs` (JSON error type).
@@ -630,6 +633,14 @@ hex chars — **never the raw id**. Bulk teardowns log `count` instead.
 `owned_project`/`owned_check` return **404, not 403**, for another user's
 resource, hiding its existence.
 
+Admin reach across users goes through the separate `/admin*` routes and
+`admin_project`/`admin_check`/`admin_channel`, so privileged access is a code
+boundary and therefore an audit point. Rejected: an `|| is_admin` bypass in
+`owned_*` (admin over-reach becomes indistinguishable from normal access, with
+nowhere to audit); mounting the same handlers under both prefixes (blurs the
+boundary, hard to test); audit middleware over `/admin/*` (cannot see the
+target's owner or the action). Shared `*_core` handlers keep the bodies single.
+
 Neither `/admin*` nor `/api/v1` has a router-level guard: every handler
 extracts `AdminUser`/`ApiUser` itself, before any body extractor, so the guard
 rejects before the body is parsed. Tests derive the route list from the router
@@ -680,6 +691,26 @@ server share `state.events`:
 Scan and nag intervals cascade check → project → global setting → env
 (`effective_scan_interval`/`effective_nag_interval`); non-positive or unset
 falls through. Nag has no env default — off unless a level opts in.
+
+One polling loop, stateless across restarts (every pass recomputes from the
+DB), was chosen over per-check `tokio` timers (restart and race handling, hard
+to test) and over an external cron driving scans (another deployment piece).
+Detection latency is bounded by one scan interval, and so is reminder cadence:
+a nag interval shorter than the tick cannot fire faster.
+
+**Nag state lives on `checks`** (`last_alert_at`, `acknowledged`), not derived
+from `notifications`: failed deliveries are recorded there too, and nag timing
+must not depend on delivery. `last_alert_at` is stamped when an alert is
+*scheduled*. Acknowledging silences exactly one incident — it is reset on
+recovery and on every fresh down transition, and cannot be undone by hand.
+Not built: manual un-acknowledge, per-channel nag opt-out, escalation to
+another channel, a cap on reminders per incident.
+
+**Pruning cannot affect monitoring**: the scheduler and ping handler read the
+denormalised state on `checks` (`status`, `last_ping_at`, …), never the history
+rows. The cutoff is a TEXT comparison (`created_at < $cutoff`), correct on both
+backends only because every timestamp is written as UTC RFC 3339 — do not
+store a mixed-offset or differently formatted timestamp.
 
 ## Graceful shutdown
 
@@ -799,6 +830,16 @@ Per-channel extras: ntfy `Click` (only if header-safe — an invalid
 `exit_code`/`text`, added **strictly additively** to the original `check`,
 `event`, `at`, `project_id`.
 
+**Email uses one instance-level SMTP relay** (`PINGWARD_SMTP_*`); a channel
+stores only its recipient. That keeps relay credentials out of the plaintext
+`config_json` and matches a single-operator deployment. If the env is removed
+after email channels exist, `notifier_for` still builds them and each send is
+recorded as a failed delivery ("instance SMTP not configured") rather than
+skipped silently. Not built: per-channel SMTP, HTML bodies, XOAUTH2.
+
+A channel's **Send test** delivers once, without retry, and is not recorded in
+the notification history (it has no check).
+
 Project names cost one query: `Store::all_project_names()` once per scan/nag
 pass, and inside the spawned delivery task in `ping::apply` so it stays off the
 response path.
@@ -884,7 +925,9 @@ starts both backends.
 `e2e/tests/e2e/steps/`, run with `cd e2e && cargo test --test e2e`. It is its
 own workspace, so root `--workspace` runs never drive a browser. Each scenario
 gets a fresh binary and temp SQLite DB on a random port, because `POST /setup`
-creates the first admin once and nearly every scenario walks through it.
+creates the first admin once and nearly every scenario walks through it. A
+shared server with a DB reset between scenarios was rejected (mutating a live
+WAL database from outside); revisit only if spawn cost comes to dominate.
 
 `@nojs` scenarios (`no_js.feature`) run in a session opened with
 `Emulation.setScriptExecutionDisabled`, which applies to the next document, so
@@ -897,7 +940,11 @@ the JS-on suite, so an always-open "fix" cannot pass alone.
 
 - **DB column/table**: migration SQL in **both** `migrations/sqlite/` and
   `migrations/postgres/`, then the `models.rs` struct and `Store` methods
-  (`$N` placeholders).
+  (`$N` placeholders). Keep the portable types: timestamps `TEXT` (UTC RFC
+  3339), integers and booleans `INTEGER`/`BIGINT` — no `TIMESTAMPTZ`/`BOOLEAN`.
+  SQLite cannot alter a `CHECK` constraint, so widening one means rebuilding
+  the table (`0004_nag.sql`). A stray `?` placeholder passes on SQLite and
+  fails only on Postgres, so run `tests/pg_store.rs`.
 - **Enum variant**: extend the `str_enum!` invocation in `models.rs`.
 - **Notifier**: implement `Notifier` in `notify.rs`, add a `ChannelKind`
   variant, wire it into `notifier_for`.

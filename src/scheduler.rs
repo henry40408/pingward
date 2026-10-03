@@ -217,7 +217,8 @@ pub async fn run_scan_loop(
             Err(e) => tracing::error!("scan_once failed: {e}"),
         }
 
-        // Heartbeat shown on `/admin`.
+        // Heartbeat shown on `/admin`. A failed write is dropped unlogged, so it
+        // only surfaces as a stale heartbeat; a `warn!` here is a known gap.
         let _ = store.set_setting("last_scan_at", &now.to_rfc3339()).await;
 
         match nag_once(&store, Utc::now(), &base_url).await {
