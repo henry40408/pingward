@@ -1,4 +1,6 @@
-/* pingward design system; see docs/superpowers/specs/2026-07-14-ui-redesign-design.md */
+/* pingward design system. Dark "Console" (cyan) and light "Pulse" (indigo)
+   themes; --brand is deliberately distinct from every status colour so it
+   never reads as up/late/down. Fonts are self-hosted: no runtime CDN. */
 
 /* ---- Fonts (self-hosted, latin subset) ---- */
 @font-face {
