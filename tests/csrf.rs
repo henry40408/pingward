@@ -246,14 +246,14 @@ async fn login_and_setup_pages_embed_a_token() {
     server.save_cookies();
 
     // No users yet: `/setup` renders, `/login` redirects to it.
-    assert!(!extract_csrf(&server.get("/setup").await.text()).is_empty());
+    assert_ne!(extract_csrf(&server.get("/setup").await.text()), "");
 
     let phc = pingward::auth::hash_password("pw").unwrap();
     store
         .create_user("admin", Some(&phc), true, chrono::Utc::now())
         .await
         .unwrap();
-    assert!(!extract_csrf(&server.get("/login").await.text()).is_empty());
+    assert_ne!(extract_csrf(&server.get("/login").await.text()), "");
 }
 
 // The anonymous session must cost no `sessions` row, or a crawler hitting

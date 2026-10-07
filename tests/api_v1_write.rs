@@ -244,7 +244,7 @@ async fn create_check_period_and_reject_bad_schedule() {
     assert_eq!(body["period_secs"], 3600);
     assert_eq!(body["grace_secs"], 300);
     assert_eq!(body["status"], "new");
-    assert!(!body["ping_uuid"].as_str().unwrap().is_empty());
+    assert_ne!(body["ping_uuid"].as_str().unwrap(), "");
 
     let bad = server
         .post(&format!("/api/v1/projects/{pid}/checks"))
