@@ -2685,7 +2685,10 @@ mod tests {
         assert_eq!(store.bound_channel_ids(chk).await.unwrap(), vec![cid]);
         assert_eq!(store.channels_for_check(chk).await.unwrap().len(), 1);
         store.unbind_channel(chk, cid).await.unwrap();
-        assert!(store.bound_channel_ids(chk).await.unwrap().is_empty());
+        assert_eq!(
+            store.bound_channel_ids(chk).await.unwrap(),
+            Vec::<i64>::new()
+        );
 
         store
             .record_notification(chk, cid, EventKind::Down, NotifyStatus::Ok, None, now)

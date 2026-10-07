@@ -899,7 +899,10 @@ async fn create_channel_and_bind_to_check() {
         .form(&[("_", "")])
         .await
         .assert_status(axum::http::StatusCode::SEE_OTHER);
-    assert!(store.bound_channel_ids(cid).await.unwrap().is_empty());
+    assert_eq!(
+        store.bound_channel_ids(cid).await.unwrap(),
+        Vec::<i64>::new()
+    );
 }
 
 #[tokio::test]
