@@ -137,7 +137,8 @@ function buildReauthDialog() {
   });
   d.querySelector('[data-testid="reauth-submit"]').addEventListener('click', submitReauth);
   d.querySelector('[data-testid="reauth-input"]').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') { e.preventDefault(); submitReauth(); }
+    // Enter that confirms an IME candidate must not submit; 229 covers Safari, which ends composition before keydown.
+    if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); submitReauth(); }
   });
   return d;
 }
