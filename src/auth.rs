@@ -1,8 +1,7 @@
 use crate::models::User;
 use crate::state::AppState;
 use argon2::Argon2;
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use axum::extract::FromRequestParts;
 use axum::http::{HeaderMap, StatusCode, request::Parts};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -244,8 +243,7 @@ pub fn validate_password(plain: &str) -> Result<(), String> {
 
 /// Hash a plaintext password into a PHC string (`$argon2id$...`).
 pub fn hash_password(plain: &str) -> Result<String, argon2::password_hash::Error> {
-    let salt = SaltString::generate(&mut OsRng);
-    let phc = Argon2::default().hash_password(plain.as_bytes(), &salt)?;
+    let phc = Argon2::default().hash_password(plain.as_bytes())?;
     Ok(phc.to_string())
 }
 
@@ -255,7 +253,7 @@ fn dummy_password_hash() -> &'static str {
     static HASH: OnceLock<String> = OnceLock::new();
     HASH.get_or_init(|| {
         hash_password(&uuid::Uuid::new_v4().to_string())
-            .expect("hashing a fixed-length uuid cannot fail")
+            .expect("hashing a fixed-length uuid failed (OS RNG unavailable?)")
     })
 }
 
@@ -274,12 +272,9 @@ pub fn verify_password_or_dummy(plain: &str, stored: Option<&str>) -> bool {
 
 /// A malformed stored hash is a non-match, never a panic.
 pub fn verify_password(plain: &str, phc: &str) -> bool {
-    match PasswordHash::new(phc) {
-        Ok(parsed) => Argon2::default()
-            .verify_password(plain.as_bytes(), &parsed)
-            .is_ok(),
-        Err(_) => false,
-    }
+    Argon2::default()
+        .verify_password(plain.as_bytes(), phc)
+        .is_ok()
 }
 
 /// The user from the session cookie, else from a trusted forward-auth header.
@@ -386,6 +381,15 @@ mod tests {
         assert!(phc.starts_with("$argon2"));
         assert!(verify_password("hunter2", &phc));
         assert!(!verify_password("wrong", &phc));
+    }
+
+    /// PHC string produced by argon2 0.5.3 (argon2id, default params): hashes stored
+    /// before a dependency upgrade must keep verifying.
+    #[test]
+    fn verify_accepts_hash_from_argon2_0_5() {
+        let phc = "$argon2id$v=19$m=19456,t=2,p=1$7GpHNWosgZqygblv9zwMuA$mZ2ug4DZpfCWRzPvF3HZwnIhPZyrsljPLgfNdsPKXuk";
+        assert!(verify_password("correct horse", phc));
+        assert!(!verify_password("wrong horse", phc));
     }
 
     #[test]

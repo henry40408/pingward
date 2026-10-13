@@ -328,7 +328,7 @@ async fn setup_submit(
         })?
         .into_response());
     }
-    // argon2's error is not `std::error::Error`, so box its `Display` text.
+    // Box the hashing error's `Display` text into `AppError::Other`.
     let phc = hash_password(&creds.password).map_err(|e| AppError::Other(e.to_string().into()))?;
     // Two racing first visitors both pass the check above; tell the loser, don't 500.
     let uid = match state
