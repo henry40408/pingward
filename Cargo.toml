@@ -12,7 +12,7 @@ name = "pingward"
 path = "src/main.rs"
 
 [dependencies]
-argon2 = { version = "0.5", features = ["rand"] }
+argon2 = "0.6"
 askama = "0.16"
 axum = "0.8"
 axum-extra = { version = "0.12", default-features = false, features = ["cookie", "form"] }
