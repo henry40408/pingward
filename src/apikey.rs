@@ -27,12 +27,7 @@ pub fn generate_api_key() -> (String, String, String) {
 /// SHA-256 as lowercase hex. Also derives session handles.
 pub fn hash_api_key(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
-    let mut out = String::with_capacity(digest.len() * 2);
-    for b in digest {
-        use std::fmt::Write;
-        let _ = write!(out, "{b:02x}");
-    }
-    out
+    crate::secret::hex_encode(&digest)
 }
 
 #[cfg(test)]
