@@ -30,8 +30,8 @@ the machine `/ping/*` endpoints.
   `PINGWARD_TEST_MAILPIT_API=http://localhost:8025`.
 
 Version stamp: `build.rs` derives `GIT_VERSION` (footer) from `git describe
---tags --always --dirty`, or from the `GIT_VERSION` env var when `.git` is absent
-(non-empty, non-`dev`; it wins when set). `docker.yml` passes it as a build arg
+--tags --always --dirty`; a non-empty, non-`dev` `GIT_VERSION` env var wins when
+set. `docker.yml` passes it as a build arg
 since `.dockerignore` excludes `.git`. With neither, the footer shows `dev`.
 Releases are `gh release create --generate-notes`; **never bump `Cargo.toml`'s
 `version`**.
