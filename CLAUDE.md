@@ -17,8 +17,9 @@ the machine `/ping/*` endpoints.
 - `cargo run` — SQLite `pingward.sqlite3`, bind `127.0.0.1:8080`.
 - CI lint: `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`,
   `cargo deny check`.
-- Tests: `cargo nextest run` (never `cargo test`). One test:
-  `cargo nextest run -E 'test(success_ping_marks_up)'` or a substring.
+- Tests: `cargo nextest run` (never `cargo test`). One test: a name
+  substring `cargo nextest run success_ping_marks_up`, a filterset
+  `-E 'test(success_ping_marks_up)'`, or a file `--test ping_api`.
   Exception: `e2e/` is a separate workspace whose test target sets
   `harness = false`, which nextest cannot drive — run it with `cargo test` from
   `e2e/` (see Browser E2E).
@@ -28,20 +29,25 @@ the machine `/ping/*` endpoints.
   `PINGWARD_TEST_SMTP_HOST=localhost`, `PINGWARD_TEST_SMTP_PORT=1025`,
   `PINGWARD_TEST_MAILPIT_API=http://localhost:8025`.
 
-Version stamp: `build.rs` sets `GIT_VERSION` from `git describe --tags --always
---dirty` (footer). An explicit non-empty, non-`dev` `GIT_VERSION` env wins —
-`docker.yml` passes it as a build arg since `.dockerignore` excludes `.git`.
+Version stamp: `build.rs` derives `GIT_VERSION` (footer) from `git describe
+--tags --always --dirty`; a non-empty, non-`dev` `GIT_VERSION` env var wins when
+set. `docker.yml` passes it as a build arg
+since `.dockerignore` excludes `.git`. With neither, the footer shows `dev`.
 Releases are `gh release create --generate-notes`; **never bump `Cargo.toml`'s
 `version`**.
 GitHub Actions are pinned by commit SHA with the tag as a trailing comment.
 
 ### Browser E2E (`e2e/`, cucumber + thirtyfour)
 
-- Its **own cargo workspace**: root `fmt`/`clippy`/`--workspace` never reach it —
-  run `cargo fmt --all --check` and clippy inside `e2e/` too (CI does).
+- Its **own cargo workspace**: root `fmt`/`clippy`/nextest/coverage/`--workspace`
+  never reach it — run `cargo fmt --all --check` and clippy inside `e2e/` too (CI
+  does), and keep its `[lints]` in sync with the root's (its `Cargo.toml` mirrors
+  them). Root `cargo deny check` does not cover it either.
 - `cd e2e && cargo test --test e2e` — whole suite (`harness = false`; scenarios run
   concurrently, one per core, max 4). One feature: `-- -i features/ping_kinds.feature`;
   one scenario: `--name "POST body"`; `--tags` works.
+- The suite does not rebuild an existing `target/debug/pingward`: run
+  `cargo build` after changing code before E2E.
 - Each scenario gets a fresh binary + temp SQLite DB on a random port (almost all
   walk through `POST /setup`). Selectors use `data-testid`.
 - Needs a **local Chrome/Chromium**; only the driver is downloaded
