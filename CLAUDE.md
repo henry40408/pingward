@@ -19,6 +19,9 @@ the machine `/ping/*` endpoints.
   `cargo deny check`.
 - Tests: `cargo nextest run` (never `cargo test`). One test:
   `cargo nextest run -E 'test(success_ping_marks_up)'` or a substring.
+  Exception: `e2e/` is a separate workspace whose test target sets
+  `harness = false`, which nextest cannot drive — run it with `cargo test` from
+  `e2e/` (see Browser E2E).
 - `tests/pg_store.rs` **silently skips** without `TEST_DATABASE_URL=postgres://…`;
   `tests/smtp_e2e.rs` skips without `PINGWARD_TEST_SMTP_HOST`. `docker compose up -d`
   (Postgres 5432, mailpit 1025/8025), then export `TEST_DATABASE_URL`,
@@ -28,7 +31,9 @@ the machine `/ping/*` endpoints.
 Version stamp: `build.rs` sets `GIT_VERSION` from `git describe --tags --always
 --dirty` (footer). An explicit non-empty, non-`dev` `GIT_VERSION` env wins —
 `docker.yml` passes it as a build arg since `.dockerignore` excludes `.git`.
-Releases are `gh release create`; **never bump `Cargo.toml`'s `version`**.
+Releases are `gh release create --generate-notes`; **never bump `Cargo.toml`'s
+`version`**.
+GitHub Actions are pinned by commit SHA with the tag as a trailing comment.
 
 ### Browser E2E (`e2e/`, cucumber + thirtyfour)
 
@@ -56,9 +61,9 @@ Releases are `gh release create`; **never bump `Cargo.toml`'s `version`**.
   `e2e/src/seed.rs` must keep seeded timestamps inside each schedule's budget or
   the boot `scan_once` rewrites the status. Cron `dow` is **Sunday = 1** (the
   `cron` crate's numbering).
-- **After any change to a template, `assets/app.css` or rendered copy, say
-  unprompted whether the screenshots are now stale** — nothing fails when they
-  drift. Compare the affected PNG, then regenerate or state it's out of frame.
+- **Visual changes (CSS, template layout, front-end JS) regenerate the
+  screenshots in the same change**; copy-only or logic-only edits do not need it.
+  Nothing fails when they drift, so compare the affected PNG when unsure.
   Build from a clean tree (or set `GIT_VERSION`): the footer stamp is in frame and
   `build.rs` can reuse a stale `-dirty` stamp.
 - `cd e2e && cargo run --bin icons` → `assets/apple-touch-icon.png` from
