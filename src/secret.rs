@@ -71,7 +71,8 @@ fn verify(secret: &[u8], domain: &[u8], signed: &str) -> Option<String> {
     Some(value.to_string())
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+/// Lowercase hex, two chars per byte.
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -140,6 +141,21 @@ mod tests {
 
     const SECRET: &[u8] = b"test-secret-at-least-16-bytes";
     const ID: &str = "0b3c9a1e-4f2d-4a7b-9c8e-1d2f3a4b5c6d";
+
+    #[test]
+    fn hex_encode_fixed_vectors() {
+        assert_eq!(hex_encode(&[]), "");
+        assert_eq!(hex_encode(&[0x00]), "00");
+        assert_eq!(hex_encode(&[0xff]), "ff");
+        assert_eq!(hex_encode(&[0x0f]), "0f");
+        assert_eq!(hex_encode(&[0x00, 0x0f, 0xf0, 0xff]), "000ff0ff");
+        let long: Vec<u8> = (0..=255u8).collect();
+        let enc = hex_encode(&long);
+        assert_eq!(enc.len(), 512);
+        assert!(enc.starts_with("000102"));
+        assert!(enc.ends_with("fdfeff"));
+        assert_eq!(hex_decode(&enc).unwrap(), long);
+    }
 
     #[test]
     fn signed_cookie_round_trips() {
