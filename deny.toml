@@ -15,16 +15,6 @@ ignore = [
     # spin 0.9.8 is yanked but pulled in transitively via flume -> sqlx-sqlite;
     # we don't control the version and there is no non-yanked 0.9.x to move to.
     "spin@0.9.8",
-    # rustls 0.23.45 advisories; fixed in 0.23.46 (published 2026-10-14 09:54
-    # UTC), which is still inside our 168h dependency cooldown. Upgrade on or
-    # after 2026-10-21 09:54 UTC and remove these ignores.
-    # Reachability: 0347 (ECH) and 0348 (brotli feature, not in Cargo.lock) are
-    # not used by this repo. 0346 (Debug of client session values) and 0349
-    # (key-share downgrade via session store) are not assessed.
-    "RUSTSEC-2026-0346",
-    "RUSTSEC-2026-0347",
-    "RUSTSEC-2026-0348",
-    "RUSTSEC-2026-0349",
     # basic-toml is unmaintained; build-time only, via askama_derive 0.16.1
     # (latest), which still depends on it. Remove once askama drops it.
     # Tracked in #202.
