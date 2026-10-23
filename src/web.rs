@@ -1385,6 +1385,15 @@ pub struct RequestLine<'a> {
     pub path: &'a str,
 }
 
+impl<'a> RequestLine<'a> {
+    pub fn of(method: &'a axum::http::Method, uri: &'a axum::http::Uri) -> Self {
+        Self {
+            method: method.as_str(),
+            path: uri.path(),
+        }
+    }
+}
+
 /// No owner filter; the choke point for cross-user project reads and writes.
 async fn admin_project(
     state: &AppState,
@@ -2632,6 +2641,19 @@ struct PartialScope<'a> {
     base: &'a str,
 }
 
+impl PartialScope<'static> {
+    fn owner(check_id: i64) -> Self {
+        Self { check_id, base: "" }
+    }
+
+    fn admin(check_id: i64) -> Self {
+        Self {
+            check_id,
+            base: "/admin",
+        }
+    }
+}
+
 async fn build_pings_partial(
     state: &AppState,
     scope: PartialScope<'_>,
@@ -2931,19 +2953,10 @@ async fn check_pings(
             &uri,
         ));
     }
-    Ok(render(
-        &build_pings_partial(
-            &state,
-            PartialScope {
-                check_id: check.id,
-                base: "",
-            },
-            &page,
-            None,
-        )
-        .await?,
-    )?
-    .into_response())
+    Ok(
+        render(&build_pings_partial(&state, PartialScope::owner(check.id), &page, None).await?)?
+            .into_response(),
+    )
 }
 
 /// SSE: a ping arrived, or the scan loop transitioned this check.
@@ -2973,19 +2986,10 @@ async fn check_notifications(
         ));
     }
     let names = channel_name_map(&state, check.project_id).await?;
-    Ok(render(
-        &build_notifs_partial(
-            &state,
-            PartialScope {
-                check_id: check.id,
-                base: "",
-            },
-            &page,
-            &names,
-        )
-        .await?,
-    )?
-    .into_response())
+    Ok(
+        render(&build_notifs_partial(&state, PartialScope::owner(check.id), &page, &names).await?)?
+            .into_response(),
+    )
 }
 
 async fn admin_check_pings(
@@ -2997,16 +3001,7 @@ async fn admin_check_pings(
     Path(id): Path<i64>,
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !wants_fragment(&headers) {
         return Ok(fragment_page_redirect(
             &format!("/admin/checks/{}", check.id),
@@ -3014,19 +3009,10 @@ async fn admin_check_pings(
             &uri,
         ));
     }
-    Ok(render(
-        &build_pings_partial(
-            &state,
-            PartialScope {
-                check_id: check.id,
-                base: "/admin",
-            },
-            &page,
-            None,
-        )
-        .await?,
-    )?
-    .into_response())
+    Ok(
+        render(&build_pings_partial(&state, PartialScope::admin(check.id), &page, None).await?)?
+            .into_response(),
+    )
 }
 
 async fn admin_check_events(
@@ -3036,16 +3022,7 @@ async fn admin_check_events(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
-    let check = admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     Ok(sse_for_check(&state.events, check.id))
 }
 
@@ -3058,16 +3035,7 @@ async fn admin_check_notifications(
     Path(id): Path<i64>,
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !wants_fragment(&headers) {
         return Ok(fragment_page_redirect(
             &format!("/admin/checks/{}", check.id),
@@ -3076,19 +3044,10 @@ async fn admin_check_notifications(
         ));
     }
     let names = channel_name_map(&state, check.project_id).await?;
-    Ok(render(
-        &build_notifs_partial(
-            &state,
-            PartialScope {
-                check_id: check.id,
-                base: "/admin",
-            },
-            &page,
-            &names,
-        )
-        .await?,
-    )?
-    .into_response())
+    Ok(
+        render(&build_notifs_partial(&state, PartialScope::admin(check.id), &page, &names).await?)?
+            .into_response(),
+    )
 }
 
 fn check_edit_form(check: Check, admin: bool, is_admin: bool, csrf: String) -> CheckFormTemplate {
@@ -5592,16 +5551,7 @@ async fn admin_project_show(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let project = admin_project(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let project = admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     render_project_page(&state.store, project, None, PageContext::admin(csrf)).await
 }
@@ -5614,16 +5564,7 @@ async fn admin_project_edit(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let project = admin_project(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let project = admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     Ok(render(&project_edit_form(project, true, true, csrf))?.into_response())
 }
@@ -5637,16 +5578,7 @@ async fn admin_project_update(
     Path(id): Path<i64>,
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
-    admin_project(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let (name, description, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
@@ -5690,16 +5622,7 @@ async fn admin_project_delete(
     Path(id): Path<i64>,
     Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
-    admin_project(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
         return confirmation_page(
             &state,
@@ -5725,16 +5648,7 @@ async fn admin_check_new(
     uri: axum::http::Uri,
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
-    admin_project(
-        &state,
-        pid,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     Ok(render(&empty_check_form(
         "New check",
@@ -5754,16 +5668,7 @@ async fn admin_check_create(
     Path(pid): Path<i64>,
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
-    admin_project(
-        &state,
-        pid,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     check_create_core(&state, pid, form, PageContext::admin(csrf)).await
 }
@@ -5836,16 +5741,7 @@ async fn admin_check_show(
     Path(id): Path<i64>,
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     let (jar, flash) = take_flash(&state.config, jar, "channels");
     let resp = render_check_page(
@@ -5876,16 +5772,7 @@ async fn admin_check_edit(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     Ok(render(&check_edit_form(check, true, true, csrf))?.into_response())
 }
@@ -5899,16 +5786,7 @@ async fn admin_check_update(
     Path(id): Path<i64>,
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
-    admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     check_update_core(&state, id, form, PageContext::admin(csrf)).await
 }
@@ -5920,16 +5798,7 @@ async fn admin_check_pause(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     state.store.set_status(id, CheckStatus::Paused).await?;
     Ok(Redirect::to(&format!("/admin/checks/{id}")).into_response())
 }
@@ -5941,16 +5810,7 @@ async fn admin_check_resume(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     state.store.set_status(id, CheckStatus::New).await?;
     Ok(Redirect::to(&format!("/admin/checks/{id}")).into_response())
 }
@@ -5962,16 +5822,7 @@ async fn admin_check_ack(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     state.store.acknowledge(id).await?;
     Ok(Redirect::to(&format!("/admin/checks/{id}")).into_response())
 }
@@ -5985,16 +5836,7 @@ async fn admin_check_regenerate(
     Path(id): Path<i64>,
     Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
-    admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
         return confirmation_page(
             &state,
@@ -6023,16 +5865,7 @@ async fn admin_check_delete(
     Path(id): Path<i64>,
     Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
         return confirmation_page(
             &state,
@@ -6058,16 +5891,7 @@ async fn admin_check_set_channels(
     jar: CookieJar,
     HtmlForm(form): HtmlForm<BindForm>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     bind_channels(&state, &check, form).await?;
     Ok(channels_saved_response(&state, true, id, jar))
 }
@@ -6081,16 +5905,7 @@ async fn admin_channel_new(
     uri: axum::http::Uri,
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
-    admin_project(
-        &state,
-        pid,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     Ok(render(&channel_form_template(
         &state,
@@ -6109,16 +5924,7 @@ async fn admin_channel_edit(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let channel = admin_channel(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     Ok(render(&channel_form_template(
         &state,
@@ -6141,16 +5947,7 @@ async fn admin_channel_update(
     Path(id): Path<i64>,
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
-    let channel = admin_channel(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     channel_update_core(&state, &channel, form, PageContext::admin(csrf)).await
 }
@@ -6164,16 +5961,7 @@ async fn admin_channel_create(
     Path(pid): Path<i64>,
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
-    admin_project(
-        &state,
-        pid,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     channel_create_core(&state, pid, form, PageContext::admin(csrf)).await
 }
@@ -6185,16 +5973,7 @@ async fn admin_channel_delete(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let channel = admin_channel(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     state.store.delete_channel(id).await?;
     Ok(Redirect::to(&format!("/admin/projects/{}", channel.project_id)).into_response())
 }
@@ -6207,16 +5986,7 @@ async fn admin_channel_test(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let channel = admin_channel(
-        &state,
-        id,
-        &admin,
-        RequestLine {
-            method: method.as_str(),
-            path: uri.path(),
-        },
-    )
-    .await?;
+    let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let project = state
         .store
         .find_project(channel.project_id)
