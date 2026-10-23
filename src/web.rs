@@ -799,80 +799,41 @@ async fn dashboard(
     let status_filter = StatusFilter::parse(&status_raw);
     // Echo only a recognised value, so garbage neither pre-selects nor shows "clear".
     let status = status_filter.map_or("", StatusFilter::as_str).to_string();
-    let (mut total, mut up, mut late, mut down) = (0usize, 0, 0, 0);
-    let mut groups = Vec::new();
-    // Filter before the batched ping fetch, so a narrow filter narrows the query.
-    let mut project_checks = Vec::new();
-    let mut check_ids = Vec::new();
     // Ordered here: the `Store` queries are shared with callers wanting id order.
     let mut projects = state.store.list_projects_for_user(user.id).await?;
     sort_projects_by_name(&mut projects);
     let project_ids: Vec<i64> = projects.iter().map(|p| p.id).collect();
-    let mut checks_by_project = state.store.list_checks_for_projects(&project_ids).await?;
-    for project in projects {
-        let mut checks = checks_by_project.remove(&project.id).unwrap_or_default();
-        sort_checks_by_activity(&mut checks);
-        let checks = if needle.is_empty()
-            || matches_term(&project.name, &needle)
-            || matches_term(&project.description, &needle)
-        {
-            // A project-level hit shows the whole project.
-            checks
-        } else {
-            let kept: Vec<Check> = checks
-                .into_iter()
-                .filter(|c| matches_term(&c.name, &needle) || matches_term(&c.description, &needle))
-                .collect();
-            if kept.is_empty() {
-                continue;
-            }
-            kept
-        };
-        check_ids.extend(checks.iter().map(|c| c.id));
-        project_checks.push((project, checks));
-    }
+    let checks_by_project = state.store.list_checks_for_projects(&project_ids).await?;
+    // Filter before the batched ping fetch, so a narrow filter narrows the query.
+    let project_checks = filter_project_checks(projects, checks_by_project, &needle);
+    let check_ids: Vec<i64> = project_checks
+        .iter()
+        .flat_map(|(_, checks)| checks.iter().map(|c| c.id))
+        .collect();
     let pings_by_check = state
         .store
         .list_recent_ping_summaries_for_checks(&check_ids, 40)
         .await?;
     let with_channels = state.store.checks_with_channels(&check_ids).await?;
+    let mut tally = StatusTally::default();
+    let mut groups = Vec::new();
     for (project, checks) in project_checks {
         let mut rows = Vec::with_capacity(checks.len());
         for c in &checks {
             let ds = crate::view::display_status(c, now);
             // Tiles count the `q`-filtered set regardless of the status filter.
-            total += 1;
-            match ds {
-                crate::view::DisplayStatus::Up | crate::view::DisplayStatus::Running => up += 1,
-                crate::view::DisplayStatus::Late => late += 1,
-                crate::view::DisplayStatus::Down => down += 1,
-                _ => {}
-            }
-            if let Some(sf) = status_filter
-                && !sf.matches(ds)
-            {
+            tally.count(ds);
+            if status_filter.is_some_and(|sf| !sf.matches(ds)) {
                 continue;
             }
             let empty = Vec::new();
             let pings = pings_by_check.get(&c.id).unwrap_or(&empty);
-            let bars = crate::view::heartbeat(
+            rows.push(dashboard_check_row(
+                c,
                 pings,
-                c.max_runtime_secs,
-                c.status == CheckStatus::Paused,
-                6,
-            );
-            rows.push(CheckRow {
-                id: c.id,
-                name: c.name.clone(),
-                status: ds.as_str(),
-                schedule: schedule_label(c),
-                last: c
-                    .last_ping_at
-                    .map_or_else(|| "—".into(), |t| crate::view::fmt_relative(t, now)),
-                bars,
-                description: crate::markdown::truncate_plain(&c.description, 120),
-                no_channel: !with_channels.contains(&c.id),
-            });
+                !with_channels.contains(&c.id),
+                now,
+            ));
         }
         // Drop a project whose checks were all filtered out (still counted above).
         if status_filter.is_some() && rows.is_empty() {
@@ -890,16 +851,88 @@ async fn dashboard(
         show_nav: true,
         csrf: current_csrf(&state, &jar),
         is_admin: user.is_admin,
-        total,
-        up,
-        late,
-        down,
+        total: tally.total,
+        up: tally.up,
+        late: tally.late,
+        down: tally.down,
         groups,
         q,
         status,
         forward_auth_logout,
     })?;
     Ok((jar, resp).into_response())
+}
+
+#[derive(Default)]
+struct StatusTally {
+    total: usize,
+    up: usize,
+    late: usize,
+    down: usize,
+}
+
+impl StatusTally {
+    fn count(&mut self, status: crate::view::DisplayStatus) {
+        use crate::view::DisplayStatus::{Down, Late, Running, Up};
+        self.total += 1;
+        match status {
+            Up | Running => self.up += 1,
+            Late => self.late += 1,
+            Down => self.down += 1,
+            _ => {}
+        }
+    }
+}
+
+/// Projects with no matching check are dropped; a project-level hit keeps all its checks.
+fn filter_project_checks(
+    projects: Vec<Project>,
+    mut checks_by_project: std::collections::HashMap<i64, Vec<Check>>,
+    needle: &str,
+) -> Vec<(Project, Vec<Check>)> {
+    let mut project_checks = Vec::new();
+    for project in projects {
+        let mut checks = checks_by_project.remove(&project.id).unwrap_or_default();
+        sort_checks_by_activity(&mut checks);
+        let project_hit = needle.is_empty()
+            || matches_term(&project.name, needle)
+            || matches_term(&project.description, needle);
+        if !project_hit {
+            checks
+                .retain(|c| matches_term(&c.name, needle) || matches_term(&c.description, needle));
+            if checks.is_empty() {
+                continue;
+            }
+        }
+        project_checks.push((project, checks));
+    }
+    project_checks
+}
+
+fn dashboard_check_row(
+    c: &Check,
+    pings: &[crate::models::PingSummary],
+    no_channel: bool,
+    now: DateTime<Utc>,
+) -> CheckRow {
+    let bars = crate::view::heartbeat(
+        pings,
+        c.max_runtime_secs,
+        c.status == CheckStatus::Paused,
+        6,
+    );
+    CheckRow {
+        id: c.id,
+        name: c.name.clone(),
+        status: crate::view::display_status(c, now).as_str(),
+        schedule: schedule_label(c),
+        last: c
+            .last_ping_at
+            .map_or_else(|| "—".into(), |t| crate::view::fmt_relative(t, now)),
+        bars,
+        description: crate::markdown::truncate_plain(&c.description, 120),
+        no_channel,
+    }
 }
 
 /// More bars than fit: `assets/app.css` clips from the *left*, newest pinned right.
@@ -2633,7 +2666,6 @@ async fn render_check_page(
     .into_response())
 }
 
-/// `recent` is the page's already-fetched heartbeat window; `None` re-fetches if needed.
 /// Which check a history fragment is for, and the route prefix its links use.
 #[derive(Debug, Clone, Copy)]
 struct PartialScope<'a> {
@@ -2654,6 +2686,7 @@ impl PartialScope<'static> {
     }
 }
 
+/// `recent` is the page's already-fetched heartbeat window; `None` re-fetches if needed.
 async fn build_pings_partial(
     state: &AppState,
     scope: PartialScope<'_>,
@@ -2661,16 +2694,8 @@ async fn build_pings_partial(
     recent: Option<&[crate::models::PingSummary]>,
 ) -> Result<CheckPingsTemplate, AppError> {
     let PartialScope { check_id, base } = scope;
-    let filter = PingFilter {
-        kinds: parse_filter_enum(page.pk.as_deref()),
-        from: parse_date_bound(page.pfrom.as_deref()),
-        to: parse_date_bound(page.pto.as_deref()),
-    };
-    let cursor = match (page.pb, page.pa) {
-        (Some(b), _) => PageCursor::Before(b),
-        (None, Some(a)) => PageCursor::After(a),
-        (None, None) => PageCursor::Latest,
-    };
+    let filter = ping_filter_from(page);
+    let cursor = page_cursor(page.pb, page.pa);
     let ping_page = state
         .store
         .list_pings_page(check_id, cursor, 20, &filter)
@@ -2679,46 +2704,16 @@ async fn build_pings_partial(
     // Default view pairs over `HEARTBEAT_WINDOW`, so an off-page start still yields a
     // duration; elsewhere pairing is best-effort (a start may be filtered out).
     let durations = if matches!(cursor, PageCursor::Latest) && filter.is_empty() {
-        if let Some(r) = recent {
-            crate::view::run_durations(r)
-        } else {
-            let r = state
-                .store
-                .list_recent_ping_summaries(check_id, HEARTBEAT_WINDOW)
-                .await?;
-            crate::view::run_durations(&r)
-        }
+        window_durations(state, check_id, recent).await?
     } else {
         // Project to summaries so no captured body is cloned.
         let summaries: Vec<crate::models::PingSummary> =
             ping_page.items.iter().map(Into::into).collect();
         crate::view::run_durations(&summaries)
     };
+    let rows = ping_rows(&ping_page.items, &durations);
 
-    let rows: Vec<PingRow> = ping_page
-        .items
-        .iter()
-        .map(|p| PingRow {
-            time: p.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-            iso: p.created_at.to_rfc3339(),
-            pill_class: ping_pill_class(p.kind),
-            kind_label: p.kind.as_str(),
-            exit: p
-                .exit_code
-                .map_or_else(|| "—".into(), |c| format!("exit {c}")),
-            duration: durations
-                .get(&p.id)
-                .map_or_else(|| "—".into(), |d| crate::view::fmt_secs(*d)),
-            source: p.source_ip.clone().unwrap_or_else(|| "—".into()),
-            body: p.body.clone(),
-        })
-        .collect();
-
-    let f_kind = filter
-        .kinds
-        .first()
-        .map(|k| k.as_str().to_string())
-        .unwrap_or_default();
+    let f_kind = first_token(&filter.kinds, crate::models::PingKind::as_str);
     let f_from = date_bound_token(filter.from);
     let f_to = date_bound_token(filter.to);
     let carry = [
@@ -2727,38 +2722,18 @@ async fn build_pings_partial(
         ("pto", f_to.as_str()),
     ];
     let endpoint = format!("{base}/checks/{check_id}/pings");
-    let older = ping_page
-        .has_older
-        .then(|| ping_page.items.last())
-        .flatten()
-        .map(|p| history_href(&endpoint, ("pb", p.id), &carry));
-    let newer = ping_page
-        .has_newer
-        .then(|| ping_page.items.first())
-        .flatten()
-        .map(|p| history_href(&endpoint, ("pa", p.id), &carry));
+    let (older_id, newer_id) = neighbour_ids(&ping_page, |p| p.id);
+    let older = older_id.map(|id| history_href(&endpoint, ("pb", id), &carry));
+    let newer = newer_id.map(|id| history_href(&endpoint, ("pa", id), &carry));
 
     // The notifications half of the query, which this form must preserve.
-    let notif_filter = NotifFilter {
-        events: parse_filter_enum(page.ne.as_deref()),
-        statuses: parse_filter_enum(page.ns.as_deref()),
-        from: parse_date_bound(page.nfrom.as_deref()),
-        to: parse_date_bound(page.nto.as_deref()),
-    };
+    let notif_filter = notif_filter_from(page);
     let tokens = check_page_filter_tokens(FilterTokens {
         f_kind: &f_kind,
         p_from: &f_from,
         p_to: &f_to,
-        f_event: &notif_filter
-            .events
-            .first()
-            .map(|e| e.as_str().to_string())
-            .unwrap_or_default(),
-        f_status: &notif_filter
-            .statuses
-            .first()
-            .map(|s| s.as_str().to_string())
-            .unwrap_or_default(),
+        f_event: &first_token(&notif_filter.events, EventKind::as_str),
+        f_status: &first_token(&notif_filter.statuses, crate::models::NotifyStatus::as_str),
         n_from: &date_bound_token(notif_filter.from),
         n_to: &date_bound_token(notif_filter.to),
     });
@@ -2791,49 +2766,16 @@ async fn build_notifs_partial(
     channel_names: &std::collections::HashMap<i64, String>,
 ) -> Result<CheckNotifsTemplate, AppError> {
     let PartialScope { check_id, base } = scope;
-    let filter = NotifFilter {
-        events: parse_filter_enum(page.ne.as_deref()),
-        statuses: parse_filter_enum(page.ns.as_deref()),
-        from: parse_date_bound(page.nfrom.as_deref()),
-        to: parse_date_bound(page.nto.as_deref()),
-    };
-    let cursor = match (page.nb, page.na) {
-        (Some(b), _) => PageCursor::Before(b),
-        (None, Some(a)) => PageCursor::After(a),
-        (None, None) => PageCursor::Latest,
-    };
+    let filter = notif_filter_from(page);
+    let cursor = page_cursor(page.nb, page.na);
     let notif_page = state
         .store
         .list_notifications_page(check_id, cursor, 20, &filter)
         .await?;
+    let rows = notification_rows(&notif_page.items, channel_names);
 
-    let rows: Vec<NotificationRow> = notif_page
-        .items
-        .iter()
-        .map(|n| NotificationRow {
-            created_at: n.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-            iso: n.created_at.to_rfc3339(),
-            event: n.event.as_str(),
-            event_pill_class: notif_event_pill_class(n.event),
-            status: n.status.as_str(),
-            channel: channel_names
-                .get(&n.channel_id)
-                .cloned()
-                .unwrap_or_else(|| "(deleted)".into()),
-            error: n.error.clone().unwrap_or_default(),
-        })
-        .collect();
-
-    let f_event = filter
-        .events
-        .first()
-        .map(|e| e.as_str().to_string())
-        .unwrap_or_default();
-    let f_status = filter
-        .statuses
-        .first()
-        .map(|s| s.as_str().to_string())
-        .unwrap_or_default();
+    let f_event = first_token(&filter.events, EventKind::as_str);
+    let f_status = first_token(&filter.statuses, crate::models::NotifyStatus::as_str);
     let f_from = date_bound_token(filter.from);
     let f_to = date_bound_token(filter.to);
     let carry = [
@@ -2843,29 +2785,14 @@ async fn build_notifs_partial(
         ("nto", f_to.as_str()),
     ];
     let endpoint = format!("{base}/checks/{check_id}/notifications");
-    let older = notif_page
-        .has_older
-        .then(|| notif_page.items.last())
-        .flatten()
-        .map(|n| history_href(&endpoint, ("nb", n.id), &carry));
-    let newer = notif_page
-        .has_newer
-        .then(|| notif_page.items.first())
-        .flatten()
-        .map(|n| history_href(&endpoint, ("na", n.id), &carry));
+    let (older_id, newer_id) = neighbour_ids(&notif_page, |n| n.id);
+    let older = older_id.map(|id| history_href(&endpoint, ("nb", id), &carry));
+    let newer = newer_id.map(|id| history_href(&endpoint, ("na", id), &carry));
 
     // The pings half of the query, which this form must preserve.
-    let ping_filter = PingFilter {
-        kinds: parse_filter_enum(page.pk.as_deref()),
-        from: parse_date_bound(page.pfrom.as_deref()),
-        to: parse_date_bound(page.pto.as_deref()),
-    };
+    let ping_filter = ping_filter_from(page);
     let tokens = check_page_filter_tokens(FilterTokens {
-        f_kind: &ping_filter
-            .kinds
-            .first()
-            .map(|k| k.as_str().to_string())
-            .unwrap_or_default(),
+        f_kind: &first_token(&ping_filter.kinds, crate::models::PingKind::as_str),
         p_from: &date_bound_token(ping_filter.from),
         p_to: &date_bound_token(ping_filter.to),
         f_event: &f_event,
@@ -2892,6 +2819,109 @@ async fn build_notifs_partial(
         newer,
         older,
     })
+}
+
+fn ping_filter_from(page: &CheckPageQuery) -> PingFilter {
+    PingFilter {
+        kinds: parse_filter_enum(page.pk.as_deref()),
+        from: parse_date_bound(page.pfrom.as_deref()),
+        to: parse_date_bound(page.pto.as_deref()),
+    }
+}
+
+fn notif_filter_from(page: &CheckPageQuery) -> NotifFilter {
+    NotifFilter {
+        events: parse_filter_enum(page.ne.as_deref()),
+        statuses: parse_filter_enum(page.ns.as_deref()),
+        from: parse_date_bound(page.nfrom.as_deref()),
+        to: parse_date_bound(page.nto.as_deref()),
+    }
+}
+
+/// `before` wins when both are set.
+fn page_cursor(before: Option<i64>, after: Option<i64>) -> PageCursor {
+    match (before, after) {
+        (Some(b), _) => PageCursor::Before(b),
+        (None, Some(a)) => PageCursor::After(a),
+        (None, None) => PageCursor::Latest,
+    }
+}
+
+/// The filter forms offer one value, so only the first is echoed back.
+fn first_token<T>(values: &[T], as_token: impl Fn(&T) -> &'static str) -> String {
+    values
+        .first()
+        .map(|v| as_token(v).to_string())
+        .unwrap_or_default()
+}
+
+/// Ids of the rows just past the page's last and first items, when there are any.
+fn neighbour_ids<T>(
+    page: &crate::store::Page<T>,
+    id_of: impl Fn(&T) -> i64,
+) -> (Option<i64>, Option<i64>) {
+    let older = page.has_older.then(|| page.items.last()).flatten();
+    let newer = page.has_newer.then(|| page.items.first()).flatten();
+    (older.map(&id_of), newer.map(&id_of))
+}
+
+async fn window_durations(
+    state: &AppState,
+    check_id: i64,
+    recent: Option<&[crate::models::PingSummary]>,
+) -> Result<std::collections::HashMap<i64, i64>, AppError> {
+    if let Some(recent) = recent {
+        return Ok(crate::view::run_durations(recent));
+    }
+    let fetched = state
+        .store
+        .list_recent_ping_summaries(check_id, HEARTBEAT_WINDOW)
+        .await?;
+    Ok(crate::view::run_durations(&fetched))
+}
+
+fn ping_rows(
+    pings: &[crate::models::Ping],
+    durations: &std::collections::HashMap<i64, i64>,
+) -> Vec<PingRow> {
+    pings
+        .iter()
+        .map(|p| PingRow {
+            time: p.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            iso: p.created_at.to_rfc3339(),
+            pill_class: ping_pill_class(p.kind),
+            kind_label: p.kind.as_str(),
+            exit: p
+                .exit_code
+                .map_or_else(|| "—".into(), |c| format!("exit {c}")),
+            duration: durations
+                .get(&p.id)
+                .map_or_else(|| "—".into(), |d| crate::view::fmt_secs(*d)),
+            source: p.source_ip.clone().unwrap_or_else(|| "—".into()),
+            body: p.body.clone(),
+        })
+        .collect()
+}
+
+fn notification_rows(
+    notifications: &[Notification],
+    channel_names: &std::collections::HashMap<i64, String>,
+) -> Vec<NotificationRow> {
+    notifications
+        .iter()
+        .map(|n| NotificationRow {
+            created_at: n.created_at.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+            iso: n.created_at.to_rfc3339(),
+            event: n.event.as_str(),
+            event_pill_class: notif_event_pill_class(n.event),
+            status: n.status.as_str(),
+            channel: channel_names
+                .get(&n.channel_id)
+                .cloned()
+                .unwrap_or_else(|| "(deleted)".into()),
+            error: n.error.clone().unwrap_or_default(),
+        })
+        .collect()
 }
 
 /// For the standalone notifications partial; the full page reuses its own map.
@@ -3356,41 +3386,57 @@ pub(crate) fn validate_channel_update(
     form: &ChannelForm,
     existing: Option<&Channel>,
 ) -> Result<(ChannelKind, String, String), String> {
-    // An unparseable stored config counts as empty (create rules), not an error.
-    let stored: Option<serde_json::Value> =
-        existing.and_then(|c| serde_json::from_str(&c.config_json).ok());
-    let stored_str = |key: &str| -> String {
-        stored
-            .as_ref()
-            .and_then(|v| v.get(key))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
-    // `submitted` blank ⇒ whatever is stored under `key` (empty when creating).
-    let merged = |submitted: &str, key: &str| -> String {
-        let s = submitted.trim();
-        if s.is_empty() {
-            stored_str(key)
-        } else {
-            s.to_string()
-        }
-    };
-
     let name = match (form.name.trim(), existing) {
         ("", None) => return Err("a channel name is required".into()),
         ("", Some(c)) => c.name.clone(),
         (n, _) => n.to_string(),
     };
-    let kind = if let Some(c) = existing {
-        c.kind
-    } else {
-        let k = form.kind.trim();
-        if k.is_empty() {
-            return Err("a channel kind is required".into());
-        }
-        ChannelKind::from_str(k).map_err(|_e| "unknown channel kind".to_string())?
+    let kind = match existing {
+        Some(c) => c.kind,
+        None => parse_new_channel_kind(&form.kind)?,
     };
+    let config = channel_config(kind, form, &StoredConfig::of(existing))?;
+    Ok((kind, name, config))
+}
+
+fn parse_new_channel_kind(raw: &str) -> Result<ChannelKind, String> {
+    let kind = raw.trim();
+    if kind.is_empty() {
+        return Err("a channel kind is required".into());
+    }
+    ChannelKind::from_str(kind).map_err(|_e| "unknown channel kind".to_string())
+}
+
+/// The config of the channel being edited; empty when creating.
+struct StoredConfig(Option<serde_json::Value>);
+
+impl StoredConfig {
+    /// An unparseable stored config counts as empty (create rules), not an error.
+    fn of(existing: Option<&Channel>) -> Self {
+        Self(existing.and_then(|c| serde_json::from_str(&c.config_json).ok()))
+    }
+
+    /// `submitted` blank ⇒ whatever is stored under `key` (empty when creating).
+    fn merged(&self, submitted: &str, key: &str) -> String {
+        let submitted = submitted.trim();
+        if !submitted.is_empty() {
+            return submitted.to_string();
+        }
+        self.0
+            .as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    }
+}
+
+fn channel_config(
+    kind: ChannelKind,
+    form: &ChannelForm,
+    stored: &StoredConfig,
+) -> Result<String, String> {
+    let merged = |submitted: &str, key: &str| stored.merged(submitted, key);
     let config = match kind {
         ChannelKind::Webhook => {
             let url = merged(&form.webhook_url, "url");
@@ -3455,7 +3501,7 @@ pub(crate) fn validate_channel_update(
             serde_json::json!({ "to": to }).to_string()
         }
     };
-    Ok((kind, name, config))
+    Ok(config)
 }
 
 #[derive(Deserialize)]
@@ -3464,7 +3510,6 @@ struct BindForm {
     channel_ids: Vec<i64>,
 }
 
-/// Shared by create and edit; `edit` is the only difference.
 /// What the channel form shows beyond its page context; empty for a blank form.
 #[derive(Default)]
 struct ChannelFormInput {
@@ -3472,6 +3517,7 @@ struct ChannelFormInput {
     edit: Option<ChannelEditView>,
 }
 
+/// Shared by create and edit; `edit` is the only difference.
 fn channel_form_template(
     state: &AppState,
     project_id: i64,
@@ -4076,6 +4122,64 @@ async fn settings_save(
     AdminUser(admin): AdminUser,
     Form(form): Form<SettingsForm>,
 ) -> Result<Response, AppError> {
+    let parsed = match validate_settings(&form) {
+        Ok(parsed) => parsed,
+        Err(msg) => {
+            return render_admin(
+                &state,
+                &jar,
+                &admin,
+                AdminRender {
+                    settings: SettingsFields {
+                        scan_interval: form.scan_interval,
+                        nag_interval: form.nag_interval,
+                        pings_retention_days: form.pings_retention_days,
+                        notifications_retention_days: form.notifications_retention_days,
+                        audit_retention_days: form.audit_retention_days,
+                        display_timezone: form.display_timezone,
+                    },
+                    settings_error: Some(msg),
+                    elevation_flash: None,
+                    settings_flash: None,
+                    user_flash: None,
+                    password_reset_flash: None,
+                    user_error: None,
+                },
+                // The audit card just comes back on its default latest page.
+                &AdminAuditQuery::default(),
+            )
+            .await;
+        }
+    };
+    // Diffed before writing, so `detail` names the fields actually touched.
+    let changed = changed_settings(&state, &parsed).await?;
+    for (key, value) in parsed {
+        state.store.set_setting(key, &value).await?;
+    }
+    // Shortening `audit_retention_days` could erase an admin's trail; record it.
+    if !changed.is_empty() {
+        state
+            .store
+            .record_audit(
+                &crate::store::NewAudit {
+                    actor_user_id: admin.id,
+                    actor_username: &admin.username,
+                    action: "settings.update",
+                    method: Some("POST"),
+                    path: Some("/admin/settings"),
+                    detail: Some(&changed.join(" ")),
+                    ..Default::default()
+                },
+                Utc::now(),
+            )
+            .await?;
+    }
+    let jar = jar.add(flash_cookie(&state.config, "settings"));
+    Ok((jar, Redirect::to("/admin")).into_response())
+}
+
+/// Atomic: validates and normalises every field before the caller writes any.
+fn validate_settings(form: &SettingsForm) -> Result<Vec<(&'static str, String)>, String> {
     let fields = [
         (
             "scan_interval",
@@ -4114,77 +4218,32 @@ async fn settings_save(
             SettingKind::Timezone,
         ),
     ];
-    // Atomic: validate and normalise every field before writing any.
-    let mut parsed: Vec<(&str, String)> = Vec::with_capacity(fields.len());
+    let mut parsed = Vec::with_capacity(fields.len());
     for (key, raw, label, kind) in fields {
-        let result = match kind {
+        let value = match kind {
             SettingKind::Duration => parse_opt_positive_duration(raw, label).map(fmt_opt_setting),
             SettingKind::Days => parse_opt_positive(raw, label).map(fmt_opt_setting),
             SettingKind::Timezone => validate_opt_timezone(raw),
-        };
-        match result {
-            Ok(v) => parsed.push((key, v)),
-            Err(msg) => {
-                let resp = render_admin(
-                    &state,
-                    &jar,
-                    &admin,
-                    AdminRender {
-                        settings: SettingsFields {
-                            scan_interval: form.scan_interval.clone(),
-                            nag_interval: form.nag_interval.clone(),
-                            pings_retention_days: form.pings_retention_days.clone(),
-                            notifications_retention_days: form.notifications_retention_days.clone(),
-                            audit_retention_days: form.audit_retention_days.clone(),
-                            display_timezone: form.display_timezone.clone(),
-                        },
-                        settings_error: Some(msg),
-                        elevation_flash: None,
-                        settings_flash: None,
-                        user_flash: None,
-                        password_reset_flash: None,
-                        user_error: None,
-                    },
-                    // The audit card just comes back on its default latest page.
-                    &AdminAuditQuery::default(),
-                )
-                .await?;
-                return Ok(resp);
-            }
-        }
+        }?;
+        parsed.push((key, value));
     }
-    // Diffed before writing, so `detail` names the fields actually touched.
-    let mut changed: Vec<String> = Vec::new();
-    for (key, value) in &parsed {
+    Ok(parsed)
+}
+
+/// `key=value` for each setting whose stored value differs.
+async fn changed_settings(
+    state: &AppState,
+    parsed: &[(&'static str, String)],
+) -> Result<Vec<String>, AppError> {
+    let mut changed = Vec::new();
+    for (key, value) in parsed {
         let previous = state.store.get_setting(key).await?.unwrap_or_default();
         if &previous != value {
             let shown = if value.is_empty() { "unset" } else { value };
             changed.push(format!("{key}={shown}"));
         }
     }
-    for (key, value) in parsed {
-        state.store.set_setting(key, &value).await?;
-    }
-    // Shortening `audit_retention_days` could erase an admin's trail; record it.
-    if !changed.is_empty() {
-        state
-            .store
-            .record_audit(
-                &crate::store::NewAudit {
-                    actor_user_id: admin.id,
-                    actor_username: &admin.username,
-                    action: "settings.update",
-                    method: Some("POST"),
-                    path: Some("/admin/settings"),
-                    detail: Some(&changed.join(" ")),
-                    ..Default::default()
-                },
-                Utc::now(),
-            )
-            .await?;
-    }
-    let jar = jar.add(flash_cookie(&state.config, "settings"));
-    Ok((jar, Redirect::to("/admin")).into_response())
+    Ok(changed)
 }
 
 /// Worded once, so the pre-check and the constraint race cannot drift apart.
@@ -5024,13 +5083,22 @@ enum EnvValue {
 
 /// The `/admin` "Environment" card, from the effective config (what is running).
 fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSetting>)> {
+    vec![
+        ("Server", server_env_settings(config)),
+        ("Scheduling", scheduling_env_settings(config)),
+        ("Auth", auth_env_settings(config)),
+        ("Email (SMTP)", email_env_settings(config)),
+    ]
+}
+
+fn server_env_settings(config: &crate::config::Config) -> Vec<EnvSetting> {
     let log_format = match config.log_format {
         crate::config::LogFormat::Full => "full",
         crate::config::LogFormat::Compact => "compact",
         crate::config::LogFormat::Pretty => "pretty",
         crate::config::LogFormat::Json => "json",
     };
-    let server = vec![
+    vec![
         EnvSetting {
             var: "DATABASE_URL",
             value: EnvValue::Set(redact_db_url(&config.database_url)),
@@ -5061,8 +5129,11 @@ fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSet
             default: "0 (off)",
             description: "Strict-Transport-Security max-age in seconds; 0 sends no header. Prefer setting this on the reverse proxy — see README.",
         },
-    ];
-    let scheduling = vec![
+    ]
+}
+
+fn scheduling_env_settings(config: &crate::config::Config) -> Vec<EnvSetting> {
+    vec![
         EnvSetting {
             var: "PINGWARD_SCAN_INTERVAL",
             value: EnvValue::Set(config.scan_interval_secs.to_string()),
@@ -5075,8 +5146,11 @@ fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSet
             default: "3600",
             description: "How often old pings/notifications are deleted.",
         },
-    ];
-    let auth = vec![
+    ]
+}
+
+fn auth_env_settings(config: &crate::config::Config) -> Vec<EnvSetting> {
+    vec![
         EnvSetting {
             var: "PINGWARD_FORWARD_AUTH_HEADER",
             value: match &config.forward_auth_header {
@@ -5111,9 +5185,12 @@ fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSet
             default: "derived from PINGWARD_BASE_URL's scheme",
             description: "Whether the session cookie carries `Secure`. Leave unset unless TLS terminates upstream and PINGWARD_BASE_URL cannot say so.",
         },
-    ];
+    ]
+}
+
+fn email_env_settings(config: &crate::config::Config) -> Vec<EnvSetting> {
     let smtp = &config.smtp;
-    let email = vec![
+    vec![
         EnvSetting {
             var: "PINGWARD_SMTP_HOST",
             value: match smtp {
@@ -5172,12 +5249,6 @@ fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSet
             default: "(unset)",
             description: "SMTP AUTH password — never displayed, only whether it's configured.",
         },
-    ];
-    vec![
-        ("Server", server),
-        ("Scheduling", scheduling),
-        ("Auth", auth),
-        ("Email (SMTP)", email),
     ]
 }
 
