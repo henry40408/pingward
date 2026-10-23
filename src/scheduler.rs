@@ -178,6 +178,25 @@ fn loop_interval_secs(
         .unwrap_or(env_default.max(1))
 }
 
+/// Fire-and-forget, like every other delivery: a slow channel must not hold up
+/// the next scan pass.
+fn spawn_deliveries(store: &Store, smtp: Option<&SmtpConfig>, events: Vec<NotificationEvent>) {
+    for ev in events {
+        let store = store.clone();
+        let smtp = smtp.cloned();
+        tokio::spawn(async move {
+            deliver_event(
+                &store,
+                &ev,
+                RetryPolicy::default(),
+                Utc::now(),
+                smtp.as_ref(),
+            )
+            .await;
+        });
+    }
+}
+
 /// Each pass runs `scan_once` then `nag_once`, delivers their events, and
 /// publishes each `Down` on `live_tx` (`AppState::events`). `Utc::now()` is read
 /// only here so both stay deterministic. `shutdown` is checked only at the
@@ -199,20 +218,7 @@ pub async fn run_scan_loop(
                         let _ = live_tx.send(ev.check_id);
                     }
                 }
-                for ev in events {
-                    let store = store.clone();
-                    let smtp = smtp.clone();
-                    tokio::spawn(async move {
-                        deliver_event(
-                            &store,
-                            &ev,
-                            RetryPolicy::default(),
-                            Utc::now(),
-                            smtp.as_ref(),
-                        )
-                        .await;
-                    });
-                }
+                spawn_deliveries(&store, smtp.as_ref(), events);
             }
             Err(e) => tracing::error!("scan_once failed: {e}"),
         }
@@ -223,20 +229,7 @@ pub async fn run_scan_loop(
 
         match nag_once(&store, Utc::now(), &base_url).await {
             Ok(events) => {
-                for ev in events {
-                    let store = store.clone();
-                    let smtp = smtp.clone();
-                    tokio::spawn(async move {
-                        deliver_event(
-                            &store,
-                            &ev,
-                            RetryPolicy::default(),
-                            Utc::now(),
-                            smtp.as_ref(),
-                        )
-                        .await;
-                    });
-                }
+                spawn_deliveries(&store, smtp.as_ref(), events);
             }
             Err(e) => tracing::error!("nag_once failed: {e}"),
         }
