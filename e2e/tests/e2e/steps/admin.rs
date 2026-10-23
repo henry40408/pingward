@@ -29,17 +29,25 @@ async fn member_owns_project_and_check(
     // access. `sign_in` signs the admin out first.
     sign_in(world, &username, &password).await?;
     world.expect_path("/").await?;
+    create_project(world, &project).await?;
+    create_check(world, &check, period).await
+}
 
+async fn create_project(world: &mut PingwardWorld, name: &str) -> Result<()> {
     world.goto("/projects/new").await?;
     let driver = world.driver()?;
-    driver.fill("project-name-input", &project).await?;
+    driver.fill("project-name-input", name).await?;
     driver.submit("project-submit").await?;
     world.expect_path_matching(r"/projects/\d+$").await?;
     world.project_id = Some(id_from(&world.path().await?, r"/projects/(\d+)$")?);
+    Ok(())
+}
 
+/// From the project page `create_project` leaves the browser on.
+async fn create_check(world: &mut PingwardWorld, name: &str, period: i64) -> Result<()> {
     let driver = world.driver()?;
     driver.submit("new-check-link").await?;
-    driver.fill("check-name-input", &check).await?;
+    driver.fill("check-name-input", name).await?;
     driver
         .fill("check-period-input", &period.to_string())
         .await?;
