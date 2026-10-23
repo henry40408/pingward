@@ -195,18 +195,30 @@ fn spawn_deliveries(store: &Store, smtp: Option<&SmtpConfig>, events: Vec<Notifi
     }
 }
 
+/// What [`run_scan_loop`] needs to run.
+pub struct ScanLoop {
+    pub store: Store,
+    /// Last resort of the interval cascade, after check, project and global settings.
+    pub env_default_secs: u64,
+    pub smtp: Option<SmtpConfig>,
+    pub base_url: String,
+    pub live_tx: broadcast::Sender<i64>,
+    pub shutdown: Shutdown,
+}
+
 /// Each pass runs `scan_once` then `nag_once`, delivers their events, and
 /// publishes each `Down` on `live_tx` (`AppState::events`). `Utc::now()` is read
 /// only here so both stay deterministic. `shutdown` is checked only at the
 /// sleep, so an in-flight pass finishes before `main` closes the pool.
-pub async fn run_scan_loop(
-    store: Store,
-    env_default_secs: u64,
-    smtp: Option<SmtpConfig>,
-    base_url: String,
-    live_tx: broadcast::Sender<i64>,
-    shutdown: Shutdown,
-) {
+pub async fn run_scan_loop(scan: ScanLoop) {
+    let ScanLoop {
+        store,
+        env_default_secs,
+        smtp,
+        base_url,
+        live_tx,
+        shutdown,
+    } = scan;
     loop {
         let now = Utc::now();
         match scan_once(&store, now, &base_url).await {
