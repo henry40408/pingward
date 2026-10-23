@@ -118,14 +118,14 @@ async fn main() {
         shutdown_tx.trigger();
     });
 
-    let scan = tokio::spawn(scheduler::run_scan_loop(
-        store.clone(),
-        scan_interval_secs,
+    let scan = tokio::spawn(scheduler::run_scan_loop(scheduler::ScanLoop {
+        store: store.clone(),
+        env_default_secs: scan_interval_secs,
         smtp,
         base_url,
-        state.events.clone(),
-        shutdown.clone(),
-    ));
+        live_tx: state.events.clone(),
+        shutdown: shutdown.clone(),
+    }));
     let prune = tokio::spawn(pingward::prune::run_prune_loop(
         store.clone(),
         prune_interval_secs,

@@ -4,7 +4,7 @@ use pingward::{
     db,
     models::{ChannelKind, CheckStatus, NotifyStatus, ScheduleKind},
     notify::{DeliveryOptions, RetryPolicy, deliver_event},
-    scheduler::{run_scan_loop, scan_once},
+    scheduler::{ScanLoop, run_scan_loop, scan_once},
     shutdown,
     store::{NewCheck, Store},
 };
@@ -248,14 +248,14 @@ async fn run_scan_loop_publishes_down_transition_to_live_tail() {
     let (tx, mut rx) = tokio::sync::broadcast::channel(16);
     // Keep `shutdown_tx` alive: dropping it requests shutdown.
     let (_shutdown_tx, shutdown) = shutdown::channel();
-    let handle = tokio::spawn(run_scan_loop(
-        store.clone(),
-        1,
-        None,
-        TEST_BASE_URL.to_string(),
-        tx,
+    let handle = tokio::spawn(run_scan_loop(ScanLoop {
+        store: store.clone(),
+        env_default_secs: 1,
+        smtp: None,
+        base_url: TEST_BASE_URL.to_string(),
+        live_tx: tx,
         shutdown,
-    ));
+    }));
 
     let received = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
         .await
@@ -273,14 +273,14 @@ async fn run_scan_loop_returns_on_shutdown() {
     let (store, _id) = store_with_up_check(60, 30, 200).await;
     let (tx, _rx) = tokio::sync::broadcast::channel(16);
     let (shutdown_tx, shutdown) = shutdown::channel();
-    let handle = tokio::spawn(run_scan_loop(
-        store.clone(),
-        3600,
-        None,
-        TEST_BASE_URL.to_string(),
-        tx,
+    let handle = tokio::spawn(run_scan_loop(ScanLoop {
+        store: store.clone(),
+        env_default_secs: 3600,
+        smtp: None,
+        base_url: TEST_BASE_URL.to_string(),
+        live_tx: tx,
         shutdown,
-    ));
+    }));
 
     shutdown_tx.trigger();
 
