@@ -352,7 +352,17 @@ async fn setup_submit(
         Err(crate::store::CreateUserError::Db(e)) => return Err(e.into()),
     };
     let ua = request_user_agent(&headers);
-    let jar = start_session(&state, jar, uid, ua.as_deref(), conn.0.as_deref(), false).await?;
+    let jar = start_session(
+        &state,
+        jar,
+        uid,
+        SessionOrigin {
+            user_agent: ua.as_deref(),
+            ip: conn.0.as_deref(),
+            sso: false,
+        },
+    )
+    .await?;
     Ok((jar, Redirect::to("/")).into_response())
 }
 
@@ -557,16 +567,25 @@ struct ConfirmTemplate {
     cancel: String,
 }
 
+struct ConfirmRequest<'a> {
+    confirm: &'a Confirm,
+    action: &'a str,
+    cancel: String,
+}
+
 /// Re-posts `action` plus the flag. Call after authorization and every refusal guard:
 /// a request that can never succeed should say so, not ask for confirmation.
 fn confirmation_page(
     state: &AppState,
     jar: &CookieJar,
     is_admin: bool,
-    confirm: &Confirm,
-    action: &str,
-    cancel: String,
+    request: ConfirmRequest<'_>,
 ) -> Result<Response, AppError> {
+    let ConfirmRequest {
+        confirm,
+        action,
+        cancel,
+    } = request;
     let sep = if action.contains('?') { '&' } else { '?' };
     Ok(render(&ConfirmTemplate {
         show_nav: true,
@@ -679,9 +698,11 @@ async fn login_submit(
         &state,
         jar,
         user.id,
-        ua.as_deref(),
-        conn.0.as_deref(),
-        false,
+        SessionOrigin {
+            user_agent: ua.as_deref(),
+            ip: conn.0.as_deref(),
+            sso: false,
+        },
     )
     .await?;
     // Success refunds the IP reservation and *clears* the account bucket.
@@ -928,13 +949,24 @@ fn session_removal_cookie(config: &crate::config::Config) -> Cookie<'static> {
     session_cookie(config, String::new())
 }
 
+/// Where a session was opened from, recorded on its row.
+#[derive(Debug, Clone, Copy)]
+struct SessionOrigin<'a> {
+    user_agent: Option<&'a str>,
+    ip: Option<&'a str>,
+    sso: bool,
+}
+
 async fn open_session(
     state: &AppState,
     user_id: i64,
-    user_agent: Option<&str>,
-    ip: Option<&str>,
-    sso: bool,
+    origin: SessionOrigin<'_>,
 ) -> Result<Cookie<'static>, AppError> {
+    let SessionOrigin {
+        user_agent,
+        ip,
+        sso,
+    } = origin;
     let session_id = new_session_token();
     let expires = Utc::now() + Duration::hours(SESSION_IDLE_TTL_HOURS);
     state
@@ -972,11 +1004,9 @@ async fn start_session(
     state: &AppState,
     jar: CookieJar,
     user_id: i64,
-    user_agent: Option<&str>,
-    ip: Option<&str>,
-    sso: bool,
+    origin: SessionOrigin<'_>,
 ) -> Result<CookieJar, AppError> {
-    Ok(jar.add(open_session(state, user_id, user_agent, ip, sso).await?))
+    Ok(jar.add(open_session(state, user_id, origin).await?))
 }
 
 /// Gives every visitor a signed session cookie with no row (the CSRF token derives from
@@ -1032,7 +1062,17 @@ pub async fn forward_auth_session(
     };
     let ua = request_user_agent(req.headers());
     let ip = crate::auth::client_ip(req.headers(), peer, &state.config);
-    let cookie = match open_session(&state, user.id, ua.as_deref(), ip.as_deref(), true).await {
+    let cookie = match open_session(
+        &state,
+        user.id,
+        SessionOrigin {
+            user_agent: ua.as_deref(),
+            ip: ip.as_deref(),
+            sso: true,
+        },
+    )
+    .await
+    {
         Ok(cookie) => cookie,
         Err(e) => {
             tracing::error!("failed to open a session for forward-auth user: {e}");
@@ -1338,14 +1378,30 @@ fn audits_as_mutation(method: &str) -> bool {
     !method.eq_ignore_ascii_case("GET")
 }
 
+/// The request an audit row records.
+#[derive(Debug, Clone, Copy)]
+pub struct RequestLine<'a> {
+    pub method: &'a str,
+    pub path: &'a str,
+}
+
+impl<'a> RequestLine<'a> {
+    pub fn of(method: &'a axum::http::Method, uri: &'a axum::http::Uri) -> Self {
+        Self {
+            method: method.as_str(),
+            path: uri.path(),
+        }
+    }
+}
+
 /// No owner filter; the choke point for cross-user project reads and writes.
 async fn admin_project(
     state: &AppState,
     id: i64,
     admin: &User,
-    method: &str,
-    path: &str,
+    request: RequestLine<'_>,
 ) -> Result<Project, AppError> {
+    let RequestLine { method, path } = request;
     let p = state
         .store
         .find_project(id)
@@ -1377,9 +1433,9 @@ async fn admin_check(
     state: &AppState,
     id: i64,
     admin: &User,
-    method: &str,
-    path: &str,
+    request: RequestLine<'_>,
 ) -> Result<Check, AppError> {
+    let RequestLine { method, path } = request;
     let c = state
         .store
         .find_check(id)
@@ -1416,9 +1472,9 @@ async fn admin_channel(
     state: &AppState,
     id: i64,
     admin: &User,
-    method: &str,
-    path: &str,
+    request: RequestLine<'_>,
 ) -> Result<Channel, AppError> {
+    let RequestLine { method, path } = request;
     let ch = state
         .store
         .find_channel(id)
@@ -1465,15 +1521,51 @@ pub(crate) fn validate_project(
     Ok((name.to_string(), description, scan, nag))
 }
 
-/// Preserves the submitted values so the user can fix the invalid field.
-fn project_form_with_error(
-    heading: &str,
-    action: String,
+/// What every full page needs to render its nav and forms.
+struct PageSession {
     is_admin: bool,
     csrf: String,
+}
+
+/// A [`PageSession`] plus whether the page is served under `/admin`.
+struct PageContext {
+    admin: bool,
+    session: PageSession,
+}
+
+impl PageContext {
+    fn owner(is_admin: bool, csrf: String) -> Self {
+        Self {
+            admin: false,
+            session: PageSession { is_admin, csrf },
+        }
+    }
+
+    fn admin(csrf: String) -> Self {
+        Self {
+            admin: true,
+            session: PageSession {
+                is_admin: true,
+                csrf,
+            },
+        }
+    }
+}
+
+struct FormTarget<'a> {
+    heading: &'a str,
+    action: String,
+}
+
+/// Preserves the submitted values so the user can fix the invalid field.
+fn project_form_with_error(
+    target: FormTarget<'_>,
+    session: PageSession,
     form: &ProjectForm,
     error: String,
 ) -> ProjectFormTemplate {
+    let FormTarget { heading, action } = target;
+    let PageSession { is_admin, csrf } = session;
     ProjectFormTemplate {
         show_nav: true,
         csrf,
@@ -1519,10 +1611,14 @@ async fn project_create(
         Err(msg) => {
             let csrf = current_csrf(&state, &jar);
             let t = project_form_with_error(
-                "New project",
-                "/projects".into(),
-                user.is_admin,
-                csrf,
+                FormTarget {
+                    heading: "New project",
+                    action: "/projects".into(),
+                },
+                PageSession {
+                    is_admin: user.is_admin,
+                    csrf,
+                },
                 &form,
                 msg,
             );
@@ -1555,10 +1651,12 @@ async fn render_project_page(
     store: &Store,
     project: Project,
     test_result: Option<TestResult>,
-    admin: bool,
-    is_admin: bool,
-    csrf: String,
+    ctx: PageContext,
 ) -> Result<Response, AppError> {
+    let PageContext {
+        admin,
+        session: PageSession { is_admin, csrf },
+    } = ctx;
     let now = Utc::now();
     let checks = store.list_checks_for_project(project.id).await?;
     let check_ids: Vec<i64> = checks.iter().map(|c| c.id).collect();
@@ -1634,7 +1732,13 @@ async fn project_show(
 ) -> Result<Response, AppError> {
     let project = owned_project(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    render_project_page(&state.store, project, None, false, user.is_admin, csrf).await
+    render_project_page(
+        &state.store,
+        project,
+        None,
+        PageContext::owner(user.is_admin, csrf),
+    )
+    .await
 }
 
 async fn project_edit(
@@ -1661,10 +1765,14 @@ async fn project_update(
         Err(msg) => {
             let csrf = current_csrf(&state, &jar);
             let t = project_form_with_error(
-                "Edit project",
-                format!("/projects/{id}"),
-                user.is_admin,
-                csrf,
+                FormTarget {
+                    heading: "Edit project",
+                    action: format!("/projects/{id}"),
+                },
+                PageSession {
+                    is_admin: user.is_admin,
+                    csrf,
+                },
                 &form,
                 msg,
             );
@@ -1699,9 +1807,11 @@ async fn project_delete(
             &state,
             &jar,
             user.is_admin,
-            &CONFIRM_DELETE_PROJECT,
-            &format!("/projects/{id}/delete"),
-            format!("/projects/{id}"),
+            ConfirmRequest {
+                confirm: &CONFIRM_DELETE_PROJECT,
+                action: &format!("/projects/{id}/delete"),
+                cancel: format!("/projects/{id}"),
+            },
         );
     }
     state.store.delete_project(id).await?;
@@ -2144,10 +2254,12 @@ async fn check_create_core(
     state: &AppState,
     pid: i64,
     form: CheckForm,
-    admin: bool,
-    is_admin: bool,
-    csrf: String,
+    ctx: PageContext,
 ) -> Result<Response, AppError> {
+    let PageContext {
+        admin,
+        session: PageSession { is_admin, csrf },
+    } = ctx;
     let base = admin_prefix(admin);
     let v = match validate_check(&form) {
         Ok(v) => v,
@@ -2203,7 +2315,7 @@ async fn check_create(
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    check_create_core(&state, pid, form, false, user.is_admin, csrf).await
+    check_create_core(&state, pid, form, PageContext::owner(user.is_admin, csrf)).await
 }
 
 const FLASH_COOKIE_BASE: &str = "pingward_flash";
@@ -2358,11 +2470,15 @@ async fn check_show(
     let resp = render_check_page(
         &state,
         check,
-        user.is_admin,
-        csrf,
-        flash,
-        page,
-        CheckPageViewer::Owner,
+        PageSession {
+            is_admin: user.is_admin,
+            csrf,
+        },
+        CheckPageRequest {
+            flash,
+            page,
+            viewer: CheckPageViewer::Owner,
+        },
     )
     .await?;
     Ok((jar, resp).into_response())
@@ -2398,15 +2514,25 @@ impl CheckPageViewer {
 }
 
 /// The route prefix comes from `viewer` (see [`admin_prefix`] for `is_admin`).
-async fn render_check_page(
-    state: &AppState,
-    check: Check,
-    is_admin: bool,
-    csrf: String,
+/// What a check page shows beyond the session: a flash, the query, and who looks.
+struct CheckPageRequest {
     flash: Option<String>,
     page: CheckPageQuery,
     viewer: CheckPageViewer,
+}
+
+async fn render_check_page(
+    state: &AppState,
+    check: Check,
+    session: PageSession,
+    request: CheckPageRequest,
 ) -> Result<Response, AppError> {
+    let PageSession { is_admin, csrf } = session;
+    let CheckPageRequest {
+        flash,
+        page,
+        viewer,
+    } = request;
     let id = check.id;
     let admin = viewer.is_admin_route();
     let base = admin_prefix(admin);
@@ -2463,10 +2589,26 @@ async fn render_check_page(
     let description_html = crate::markdown::render(&check.description);
 
     // The same fragments the partial endpoints serve: one source of markup.
-    let pings_partial =
-        render(&build_pings_partial(state, id, base, &page, Some(&recent)).await?)?.0;
-    let notifs_partial =
-        render(&build_notifs_partial(state, id, base, &page, &channel_names).await?)?.0;
+    let pings_partial = render(
+        &build_pings_partial(
+            state,
+            PartialScope { check_id: id, base },
+            &page,
+            Some(&recent),
+        )
+        .await?,
+    )?
+    .0;
+    let notifs_partial = render(
+        &build_notifs_partial(
+            state,
+            PartialScope { check_id: id, base },
+            &page,
+            &channel_names,
+        )
+        .await?,
+    )?
+    .0;
 
     Ok(render(&CheckTemplate {
         show_nav: true,
@@ -2492,13 +2634,33 @@ async fn render_check_page(
 }
 
 /// `recent` is the page's already-fetched heartbeat window; `None` re-fetches if needed.
+/// Which check a history fragment is for, and the route prefix its links use.
+#[derive(Debug, Clone, Copy)]
+struct PartialScope<'a> {
+    check_id: i64,
+    base: &'a str,
+}
+
+impl PartialScope<'static> {
+    fn owner(check_id: i64) -> Self {
+        Self { check_id, base: "" }
+    }
+
+    fn admin(check_id: i64) -> Self {
+        Self {
+            check_id,
+            base: "/admin",
+        }
+    }
+}
+
 async fn build_pings_partial(
     state: &AppState,
-    check_id: i64,
-    base: &str,
+    scope: PartialScope<'_>,
     page: &CheckPageQuery,
     recent: Option<&[crate::models::PingSummary]>,
 ) -> Result<CheckPingsTemplate, AppError> {
+    let PartialScope { check_id, base } = scope;
     let filter = PingFilter {
         kinds: parse_filter_enum(page.pk.as_deref()),
         from: parse_date_bound(page.pfrom.as_deref()),
@@ -2583,23 +2745,23 @@ async fn build_pings_partial(
         from: parse_date_bound(page.nfrom.as_deref()),
         to: parse_date_bound(page.nto.as_deref()),
     };
-    let tokens = check_page_filter_tokens(
-        &f_kind,
-        &f_from,
-        &f_to,
-        &notif_filter
+    let tokens = check_page_filter_tokens(FilterTokens {
+        f_kind: &f_kind,
+        p_from: &f_from,
+        p_to: &f_to,
+        f_event: &notif_filter
             .events
             .first()
             .map(|e| e.as_str().to_string())
             .unwrap_or_default(),
-        &notif_filter
+        f_status: &notif_filter
             .statuses
             .first()
             .map(|s| s.as_str().to_string())
             .unwrap_or_default(),
-        &date_bound_token(notif_filter.from),
-        &date_bound_token(notif_filter.to),
-    );
+        n_from: &date_bound_token(notif_filter.from),
+        n_to: &date_bound_token(notif_filter.to),
+    });
     let hidden = carry_fields(&tokens, &PINGS_FILTER_KEYS);
     // Clear targets the fragment endpoint: `wireSection` expects a partial, and
     // without JS it redirects to the page (`fragment_page_redirect`).
@@ -2624,11 +2786,11 @@ async fn build_pings_partial(
 /// [`build_pings_partial`]'s twin over the `n*` params.
 async fn build_notifs_partial(
     state: &AppState,
-    check_id: i64,
-    base: &str,
+    scope: PartialScope<'_>,
     page: &CheckPageQuery,
     channel_names: &std::collections::HashMap<i64, String>,
 ) -> Result<CheckNotifsTemplate, AppError> {
+    let PartialScope { check_id, base } = scope;
     let filter = NotifFilter {
         events: parse_filter_enum(page.ne.as_deref()),
         statuses: parse_filter_enum(page.ns.as_deref()),
@@ -2698,19 +2860,19 @@ async fn build_notifs_partial(
         from: parse_date_bound(page.pfrom.as_deref()),
         to: parse_date_bound(page.pto.as_deref()),
     };
-    let tokens = check_page_filter_tokens(
-        &ping_filter
+    let tokens = check_page_filter_tokens(FilterTokens {
+        f_kind: &ping_filter
             .kinds
             .first()
             .map(|k| k.as_str().to_string())
             .unwrap_or_default(),
-        &date_bound_token(ping_filter.from),
-        &date_bound_token(ping_filter.to),
-        &f_event,
-        &f_status,
-        &f_from,
-        &f_to,
-    );
+        p_from: &date_bound_token(ping_filter.from),
+        p_to: &date_bound_token(ping_filter.to),
+        f_event: &f_event,
+        f_status: &f_status,
+        n_from: &f_from,
+        n_to: &f_to,
+    });
     let hidden = carry_fields(&tokens, &NOTIFS_FILTER_KEYS);
     // Fragment endpoint, for the reason spelled out in `build_pings_partial`.
     let clear = clear_href(&endpoint, &hidden);
@@ -2791,7 +2953,10 @@ async fn check_pings(
             &uri,
         ));
     }
-    Ok(render(&build_pings_partial(&state, check.id, "", &page, None).await?)?.into_response())
+    Ok(
+        render(&build_pings_partial(&state, PartialScope::owner(check.id), &page, None).await?)?
+            .into_response(),
+    )
 }
 
 /// SSE: a ping arrived, or the scan loop transitioned this check.
@@ -2821,7 +2986,10 @@ async fn check_notifications(
         ));
     }
     let names = channel_name_map(&state, check.project_id).await?;
-    Ok(render(&build_notifs_partial(&state, check.id, "", &page, &names).await?)?.into_response())
+    Ok(
+        render(&build_notifs_partial(&state, PartialScope::owner(check.id), &page, &names).await?)?
+            .into_response(),
+    )
 }
 
 async fn admin_check_pings(
@@ -2833,7 +3001,7 @@ async fn admin_check_pings(
     Path(id): Path<i64>,
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !wants_fragment(&headers) {
         return Ok(fragment_page_redirect(
             &format!("/admin/checks/{}", check.id),
@@ -2842,7 +3010,7 @@ async fn admin_check_pings(
         ));
     }
     Ok(
-        render(&build_pings_partial(&state, check.id, "/admin", &page, None).await?)?
+        render(&build_pings_partial(&state, PartialScope::admin(check.id), &page, None).await?)?
             .into_response(),
     )
 }
@@ -2854,7 +3022,7 @@ async fn admin_check_events(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
-    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     Ok(sse_for_check(&state.events, check.id))
 }
 
@@ -2867,7 +3035,7 @@ async fn admin_check_notifications(
     Path(id): Path<i64>,
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !wants_fragment(&headers) {
         return Ok(fragment_page_redirect(
             &format!("/admin/checks/{}", check.id),
@@ -2877,7 +3045,7 @@ async fn admin_check_notifications(
     }
     let names = channel_name_map(&state, check.project_id).await?;
     Ok(
-        render(&build_notifs_partial(&state, check.id, "/admin", &page, &names).await?)?
+        render(&build_notifs_partial(&state, PartialScope::admin(check.id), &page, &names).await?)?
             .into_response(),
     )
 }
@@ -2931,10 +3099,12 @@ async fn check_update_core(
     state: &AppState,
     id: i64,
     form: CheckForm,
-    admin: bool,
-    is_admin: bool,
-    csrf: String,
+    ctx: PageContext,
 ) -> Result<Response, AppError> {
+    let PageContext {
+        admin,
+        session: PageSession { is_admin, csrf },
+    } = ctx;
     let base = admin_prefix(admin);
     let v = match validate_check(&form) {
         Ok(v) => v,
@@ -2990,7 +3160,7 @@ async fn check_update(
 ) -> Result<Response, AppError> {
     owned_check(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    check_update_core(&state, id, form, false, user.is_admin, csrf).await
+    check_update_core(&state, id, form, PageContext::owner(user.is_admin, csrf)).await
 }
 
 async fn check_pause(
@@ -3036,9 +3206,11 @@ async fn check_regenerate(
             &state,
             &jar,
             user.is_admin,
-            &CONFIRM_REGENERATE_URL,
-            &format!("/checks/{id}/regenerate"),
-            format!("/checks/{id}"),
+            ConfirmRequest {
+                confirm: &CONFIRM_REGENERATE_URL,
+                action: &format!("/checks/{id}/regenerate"),
+                cancel: format!("/checks/{id}"),
+            },
         );
     }
     state
@@ -3061,9 +3233,11 @@ async fn check_delete(
             &state,
             &jar,
             user.is_admin,
-            &CONFIRM_DELETE_CHECK,
-            &format!("/checks/{id}/delete"),
-            format!("/checks/{id}"),
+            ConfirmRequest {
+                confirm: &CONFIRM_DELETE_CHECK,
+                action: &format!("/checks/{id}/delete"),
+                cancel: format!("/checks/{id}"),
+            },
         );
     }
     state.store.delete_check(id).await?;
@@ -3291,15 +3465,24 @@ struct BindForm {
 }
 
 /// Shared by create and edit; `edit` is the only difference.
+/// What the channel form shows beyond its page context; empty for a blank form.
+#[derive(Default)]
+struct ChannelFormInput {
+    error: Option<String>,
+    edit: Option<ChannelEditView>,
+}
+
 fn channel_form_template(
     state: &AppState,
     project_id: i64,
-    admin: bool,
-    is_admin: bool,
-    csrf: String,
-    error: Option<String>,
-    edit: Option<ChannelEditView>,
+    ctx: PageContext,
+    input: ChannelFormInput,
 ) -> ChannelFormTemplate {
+    let PageContext {
+        admin,
+        session: PageSession { is_admin, csrf },
+    } = ctx;
+    let ChannelFormInput { error, edit } = input;
     ChannelFormTemplate {
         show_nav: true,
         csrf,
@@ -3323,11 +3506,8 @@ async fn channel_new(
     Ok(render(&channel_form_template(
         &state,
         pid,
-        false,
-        user.is_admin,
-        csrf,
-        None,
-        None,
+        PageContext::owner(user.is_admin, csrf),
+        ChannelFormInput::default(),
     ))?
     .into_response())
 }
@@ -3336,10 +3516,12 @@ async fn channel_create_core(
     state: &AppState,
     pid: i64,
     form: ChannelForm,
-    admin: bool,
-    is_admin: bool,
-    csrf: String,
+    ctx: PageContext,
 ) -> Result<Response, AppError> {
+    let PageContext {
+        admin,
+        session: PageSession { is_admin, csrf },
+    } = ctx;
     let base = admin_prefix(admin);
 
     let (kind, name, config) = match validate_channel(&form) {
@@ -3348,11 +3530,14 @@ async fn channel_create_core(
             return Ok(render(&channel_form_template(
                 state,
                 pid,
-                admin,
-                is_admin,
-                csrf,
-                Some(msg),
-                None,
+                PageContext {
+                    admin,
+                    session: PageSession { is_admin, csrf },
+                },
+                ChannelFormInput {
+                    error: Some(msg),
+                    edit: None,
+                },
             ))?
             .into_response());
         }
@@ -3378,10 +3563,12 @@ async fn channel_update_core(
     state: &AppState,
     channel: &Channel,
     form: ChannelForm,
-    admin: bool,
-    is_admin: bool,
-    csrf: String,
+    ctx: PageContext,
 ) -> Result<Response, AppError> {
+    let PageContext {
+        admin,
+        session: PageSession { is_admin, csrf },
+    } = ctx;
     let base = admin_prefix(admin);
     let pid = channel.project_id;
 
@@ -3392,11 +3579,14 @@ async fn channel_update_core(
             return Ok(render(&channel_form_template(
                 state,
                 pid,
-                admin,
-                is_admin,
-                csrf,
-                Some(msg),
-                Some(ChannelEditView::new(channel)),
+                PageContext {
+                    admin,
+                    session: PageSession { is_admin, csrf },
+                },
+                ChannelFormInput {
+                    error: Some(msg),
+                    edit: Some(ChannelEditView::new(channel)),
+                },
             ))?
             .into_response());
         }
@@ -3418,7 +3608,7 @@ async fn channel_create(
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    channel_create_core(&state, pid, form, false, user.is_admin, csrf).await
+    channel_create_core(&state, pid, form, PageContext::owner(user.is_admin, csrf)).await
 }
 
 /// Owned via its project; another user's is `NotFound`, as in [`owned_project`].
@@ -3443,11 +3633,11 @@ async fn channel_edit(
     Ok(render(&channel_form_template(
         &state,
         channel.project_id,
-        false,
-        user.is_admin,
-        csrf,
-        None,
-        Some(ChannelEditView::new(&channel)),
+        PageContext::owner(user.is_admin, csrf),
+        ChannelFormInput {
+            error: None,
+            edit: Some(ChannelEditView::new(&channel)),
+        },
     ))?
     .into_response())
 }
@@ -3461,7 +3651,13 @@ async fn channel_update(
 ) -> Result<Response, AppError> {
     let channel = owned_channel(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    channel_update_core(&state, &channel, form, false, user.is_admin, csrf).await
+    channel_update_core(
+        &state,
+        &channel,
+        form,
+        PageContext::owner(user.is_admin, csrf),
+    )
+    .await
 }
 
 async fn channel_delete(
@@ -3532,22 +3728,13 @@ async fn channel_test(
         &state.store,
         project,
         Some(result),
-        false,
-        user.is_admin,
-        csrf,
+        PageContext::owner(user.is_admin, csrf),
     )
     .await
 }
 
 /// Only ids belonging to the check's own project are honoured.
-async fn set_channels_core(
-    state: &AppState,
-    check: &Check,
-    form: BindForm,
-    admin: bool,
-    jar: CookieJar,
-) -> Result<Response, AppError> {
-    let base = admin_prefix(admin);
+async fn bind_channels(state: &AppState, check: &Check, form: BindForm) -> Result<(), AppError> {
     let id = check.id;
     let valid: std::collections::HashSet<i64> = state
         .store
@@ -3574,8 +3761,18 @@ async fn set_channels_core(
     for remove in current.difference(&desired) {
         state.store.unbind_channel(id, *remove).await?;
     }
+    Ok(())
+}
+
+fn channels_saved_response(
+    state: &AppState,
+    admin: bool,
+    check_id: i64,
+    jar: CookieJar,
+) -> Response {
+    let base = admin_prefix(admin);
     let jar = jar.add(flash_cookie(&state.config, "channels"));
-    Ok((jar, Redirect::to(&format!("{base}/checks/{id}"))).into_response())
+    (jar, Redirect::to(&format!("{base}/checks/{check_id}"))).into_response()
 }
 
 async fn check_set_channels(
@@ -3586,7 +3783,8 @@ async fn check_set_channels(
     HtmlForm(form): HtmlForm<BindForm>,
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
-    set_channels_core(&state, &check, form, false, jar).await
+    bind_channels(&state, &check, form).await?;
+    Ok(channels_saved_response(&state, false, id, jar))
 }
 
 // --- settings / user administration (admin only) ---
@@ -3761,13 +3959,23 @@ struct AdminUnlockTemplate {
 
 /// A page, not an `/admin` field: it must explain why a signed-in admin is asked
 /// again and that it is the same password, not a second factor.
+/// At most one of these is shown on the unlock page.
+#[derive(Default)]
+struct UnlockNotice {
+    bounced_flash: Option<String>,
+    error: Option<String>,
+}
+
 fn render_admin_unlock(
     state: &AppState,
     jar: &CookieJar,
     admin: &User,
-    bounced_flash: Option<String>,
-    error: Option<String>,
+    notice: UnlockNotice,
 ) -> Result<Response, AppError> {
+    let UnlockNotice {
+        bounced_flash,
+        error,
+    } = notice;
     let elevation = elevation(state, jar, admin);
     Ok(render(&AdminUnlockTemplate {
         show_nav: true,
@@ -3793,7 +4001,15 @@ async fn admin_unlock_page(
     AdminUser(admin): AdminUser,
 ) -> Result<Response, AppError> {
     let (jar, bounced) = take_flash(&state.config, jar, "admin_locked");
-    let resp = render_admin_unlock(&state, &jar, &admin, bounced, None)?;
+    let resp = render_admin_unlock(
+        &state,
+        &jar,
+        &admin,
+        UnlockNotice {
+            bounced_flash: bounced,
+            error: None,
+        },
+    )?;
     Ok((jar, resp).into_response())
 }
 
@@ -3839,7 +4055,15 @@ async fn admin_unlock(
         Reauth::Throttled => Some("Too many attempts — try again later."),
     };
     if let Some(msg) = refusal {
-        return render_admin_unlock(&state, &jar, &admin, None, Some(msg.to_string()));
+        return render_admin_unlock(
+            &state,
+            &jar,
+            &admin,
+            UnlockNotice {
+                bounced_flash: None,
+                error: Some(msg.to_string()),
+            },
+        );
     }
     grant_elevation(&state, &jar, admin.id);
     let jar = jar.add(flash_cookie(&state.config, "admin_unlocked"));
@@ -4079,9 +4303,11 @@ async fn users_delete(
             &state,
             &jar,
             true,
-            &CONFIRM_DELETE_USER,
-            &format!("/admin/users/{id}/delete"),
-            "/admin".to_string(),
+            ConfirmRequest {
+                confirm: &CONFIRM_DELETE_USER,
+                action: &format!("/admin/users/{id}/delete"),
+                cancel: "/admin".to_string(),
+            },
         );
     }
     state.store.delete_user(id).await?;
@@ -4230,9 +4456,11 @@ async fn users_toggle_admin(
             &state,
             &jar,
             true,
-            &CONFIRM_DEMOTE_ADMIN,
-            &format!("/admin/users/{id}/admin"),
-            "/admin".to_string(),
+            ConfirmRequest {
+                confirm: &CONFIRM_DEMOTE_ADMIN,
+                action: &format!("/admin/users/{id}/admin"),
+                cancel: "/admin".to_string(),
+            },
         );
     }
     state.store.set_user_admin(id, new_admin).await?;
@@ -4282,9 +4510,11 @@ async fn users_set_disabled(
             &state,
             &jar,
             true,
-            &CONFIRM_DISABLE_USER,
-            &format!("/admin/users/{id}/disabled"),
-            "/admin".to_string(),
+            ConfirmRequest {
+                confirm: &CONFIRM_DISABLE_USER,
+                action: &format!("/admin/users/{id}/disabled"),
+                cancel: "/admin".to_string(),
+            },
         );
     }
     state.store.set_user_disabled(id, new_disabled).await?;
@@ -4672,9 +4902,11 @@ async fn api_keys_delete(
             &state,
             &jar,
             user.is_admin,
-            &CONFIRM_REVOKE_API_KEY,
-            &format!("/account/api-keys/{id}/delete"),
-            "/account".to_string(),
+            ConfirmRequest {
+                confirm: &CONFIRM_REVOKE_API_KEY,
+                action: &format!("/account/api-keys/{id}/delete"),
+                cancel: "/account".to_string(),
+            },
         );
     }
     // Owner-scoped; a key the caller does not own is silently a no-op.
@@ -4706,9 +4938,11 @@ async fn sessions_revoke(
             &state,
             &jar,
             user.is_admin,
-            &CONFIRM_REVOKE_SESSION,
-            &format!("/account/sessions/{handle}/revoke"),
-            "/account".to_string(),
+            ConfirmRequest {
+                confirm: &CONFIRM_REVOKE_SESSION,
+                action: &format!("/account/sessions/{handle}/revoke"),
+                cancel: "/account".to_string(),
+            },
         );
     }
     let is_current =
@@ -4746,9 +4980,11 @@ async fn sessions_revoke_others(
             &state,
             &jar,
             user.is_admin,
-            &CONFIRM_REVOKE_OTHER_SESSIONS,
-            "/account/sessions/revoke-others",
-            "/account".to_string(),
+            ConfirmRequest {
+                confirm: &CONFIRM_REVOKE_OTHER_SESSIONS,
+                action: "/account/sessions/revoke-others",
+                cancel: "/account".to_string(),
+            },
         );
     }
     if let Some(id) =
@@ -5010,15 +5246,28 @@ struct AdminAuditTemplate {
 }
 
 /// Every check-page filter token, so each section can carry the other's half.
-fn check_page_filter_tokens(
-    f_kind: &str,
-    p_from: &str,
-    p_to: &str,
-    f_event: &str,
-    f_status: &str,
-    n_from: &str,
-    n_to: &str,
-) -> [(&'static str, String); 7] {
+/// The current values of both history filters, as the tokens each filter form
+/// carries for its sibling.
+struct FilterTokens<'a> {
+    f_kind: &'a str,
+    p_from: &'a str,
+    p_to: &'a str,
+    f_event: &'a str,
+    f_status: &'a str,
+    n_from: &'a str,
+    n_to: &'a str,
+}
+
+fn check_page_filter_tokens(tokens: FilterTokens<'_>) -> [(&'static str, String); 7] {
+    let FilterTokens {
+        f_kind,
+        p_from,
+        p_to,
+        f_event,
+        f_status,
+        n_from,
+        n_to,
+    } = tokens;
     [
         ("pk", f_kind.to_string()),
         ("pfrom", p_from.to_string()),
@@ -5302,9 +5551,9 @@ async fn admin_project_show(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let project = admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let project = admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    render_project_page(&state.store, project, None, true, true, csrf).await
+    render_project_page(&state.store, project, None, PageContext::admin(csrf)).await
 }
 
 async fn admin_project_edit(
@@ -5315,7 +5564,7 @@ async fn admin_project_edit(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let project = admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let project = admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     Ok(render(&project_edit_form(project, true, true, csrf))?.into_response())
 }
@@ -5329,16 +5578,20 @@ async fn admin_project_update(
     Path(id): Path<i64>,
     Form(form): Form<ProjectForm>,
 ) -> Result<Response, AppError> {
-    admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
+    admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let (name, description, scan, nag) = match validate_project(&form) {
         Ok(v) => v,
         Err(msg) => {
             let csrf = current_csrf(&state, &jar);
             let t = project_form_with_error(
-                "Edit project",
-                format!("/admin/projects/{id}"),
-                true,
-                csrf,
+                FormTarget {
+                    heading: "Edit project",
+                    action: format!("/admin/projects/{id}"),
+                },
+                PageSession {
+                    is_admin: true,
+                    csrf,
+                },
                 &form,
                 msg,
             );
@@ -5369,15 +5622,17 @@ async fn admin_project_delete(
     Path(id): Path<i64>,
     Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
-    admin_project(&state, id, &admin, method.as_str(), uri.path()).await?;
+    admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
         return confirmation_page(
             &state,
             &jar,
             true,
-            &CONFIRM_DELETE_PROJECT,
-            &format!("/admin/projects/{id}/delete"),
-            format!("/admin/projects/{id}"),
+            ConfirmRequest {
+                confirm: &CONFIRM_DELETE_PROJECT,
+                action: &format!("/admin/projects/{id}/delete"),
+                cancel: format!("/admin/projects/{id}"),
+            },
         );
     }
     state.store.delete_project(id).await?;
@@ -5393,7 +5648,7 @@ async fn admin_check_new(
     uri: axum::http::Uri,
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
-    admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
+    admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     Ok(render(&empty_check_form(
         "New check",
@@ -5413,9 +5668,9 @@ async fn admin_check_create(
     Path(pid): Path<i64>,
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
-    admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
+    admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    check_create_core(&state, pid, form, true, true, csrf).await
+    check_create_core(&state, pid, form, PageContext::admin(csrf)).await
 }
 
 /// The one audited admin *read*: it discloses a credential. A POST, not `?reveal=1`,
@@ -5461,13 +5716,17 @@ async fn admin_check_reveal_ping_url(
     render_check_page(
         &state,
         check,
-        true,
-        csrf,
-        None,
-        page,
-        CheckPageViewer::Admin {
-            viewer_id: admin.id,
-            ping_url_revealed: true,
+        PageSession {
+            is_admin: true,
+            csrf,
+        },
+        CheckPageRequest {
+            flash: None,
+            page,
+            viewer: CheckPageViewer::Admin {
+                viewer_id: admin.id,
+                ping_url_revealed: true,
+            },
         },
     )
     .await
@@ -5482,19 +5741,23 @@ async fn admin_check_show(
     Path(id): Path<i64>,
     Query(page): Query<CheckPageQuery>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     let (jar, flash) = take_flash(&state.config, jar, "channels");
     let resp = render_check_page(
         &state,
         check,
-        true,
-        csrf,
-        flash,
-        page,
-        CheckPageViewer::Admin {
-            viewer_id: admin.id,
-            ping_url_revealed: false,
+        PageSession {
+            is_admin: true,
+            csrf,
+        },
+        CheckPageRequest {
+            flash,
+            page,
+            viewer: CheckPageViewer::Admin {
+                viewer_id: admin.id,
+                ping_url_revealed: false,
+            },
         },
     )
     .await?;
@@ -5509,7 +5772,7 @@ async fn admin_check_edit(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     Ok(render(&check_edit_form(check, true, true, csrf))?.into_response())
 }
@@ -5523,9 +5786,9 @@ async fn admin_check_update(
     Path(id): Path<i64>,
     Form(form): Form<CheckForm>,
 ) -> Result<Response, AppError> {
-    admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    check_update_core(&state, id, form, true, true, csrf).await
+    check_update_core(&state, id, form, PageContext::admin(csrf)).await
 }
 
 async fn admin_check_pause(
@@ -5535,7 +5798,7 @@ async fn admin_check_pause(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     state.store.set_status(id, CheckStatus::Paused).await?;
     Ok(Redirect::to(&format!("/admin/checks/{id}")).into_response())
 }
@@ -5547,7 +5810,7 @@ async fn admin_check_resume(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     state.store.set_status(id, CheckStatus::New).await?;
     Ok(Redirect::to(&format!("/admin/checks/{id}")).into_response())
 }
@@ -5559,7 +5822,7 @@ async fn admin_check_ack(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     state.store.acknowledge(id).await?;
     Ok(Redirect::to(&format!("/admin/checks/{id}")).into_response())
 }
@@ -5573,15 +5836,17 @@ async fn admin_check_regenerate(
     Path(id): Path<i64>,
     Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
-    admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
         return confirmation_page(
             &state,
             &jar,
             true,
-            &CONFIRM_REGENERATE_URL,
-            &format!("/admin/checks/{id}/regenerate"),
-            format!("/admin/checks/{id}"),
+            ConfirmRequest {
+                confirm: &CONFIRM_REGENERATE_URL,
+                action: &format!("/admin/checks/{id}/regenerate"),
+                cancel: format!("/admin/checks/{id}"),
+            },
         );
     }
     state
@@ -5600,15 +5865,17 @@ async fn admin_check_delete(
     Path(id): Path<i64>,
     Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
         return confirmation_page(
             &state,
             &jar,
             true,
-            &CONFIRM_DELETE_CHECK,
-            &format!("/admin/checks/{id}/delete"),
-            format!("/admin/checks/{id}"),
+            ConfirmRequest {
+                confirm: &CONFIRM_DELETE_CHECK,
+                action: &format!("/admin/checks/{id}/delete"),
+                cancel: format!("/admin/checks/{id}"),
+            },
         );
     }
     state.store.delete_check(id).await?;
@@ -5624,8 +5891,9 @@ async fn admin_check_set_channels(
     jar: CookieJar,
     HtmlForm(form): HtmlForm<BindForm>,
 ) -> Result<Response, AppError> {
-    let check = admin_check(&state, id, &admin, method.as_str(), uri.path()).await?;
-    set_channels_core(&state, &check, form, true, jar).await
+    let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
+    bind_channels(&state, &check, form).await?;
+    Ok(channels_saved_response(&state, true, id, jar))
 }
 
 // -- channels --
@@ -5637,10 +5905,13 @@ async fn admin_channel_new(
     uri: axum::http::Uri,
     Path(pid): Path<i64>,
 ) -> Result<Response, AppError> {
-    admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
+    admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     Ok(render(&channel_form_template(
-        &state, pid, true, true, csrf, None, None,
+        &state,
+        pid,
+        PageContext::admin(csrf),
+        ChannelFormInput::default(),
     ))?
     .into_response())
 }
@@ -5653,16 +5924,16 @@ async fn admin_channel_edit(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let channel = admin_channel(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
     Ok(render(&channel_form_template(
         &state,
         channel.project_id,
-        true,
-        true,
-        csrf,
-        None,
-        Some(ChannelEditView::new(&channel)),
+        PageContext::admin(csrf),
+        ChannelFormInput {
+            error: None,
+            edit: Some(ChannelEditView::new(&channel)),
+        },
     ))?
     .into_response())
 }
@@ -5676,9 +5947,9 @@ async fn admin_channel_update(
     Path(id): Path<i64>,
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
-    let channel = admin_channel(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    channel_update_core(&state, &channel, form, true, true, csrf).await
+    channel_update_core(&state, &channel, form, PageContext::admin(csrf)).await
 }
 
 async fn admin_channel_create(
@@ -5690,9 +5961,9 @@ async fn admin_channel_create(
     Path(pid): Path<i64>,
     Form(form): Form<ChannelForm>,
 ) -> Result<Response, AppError> {
-    admin_project(&state, pid, &admin, method.as_str(), uri.path()).await?;
+    admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    channel_create_core(&state, pid, form, true, true, csrf).await
+    channel_create_core(&state, pid, form, PageContext::admin(csrf)).await
 }
 
 async fn admin_channel_delete(
@@ -5702,7 +5973,7 @@ async fn admin_channel_delete(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let channel = admin_channel(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     state.store.delete_channel(id).await?;
     Ok(Redirect::to(&format!("/admin/projects/{}", channel.project_id)).into_response())
 }
@@ -5715,7 +5986,7 @@ async fn admin_channel_test(
     uri: axum::http::Uri,
     Path(id): Path<i64>,
 ) -> Result<Response, AppError> {
-    let channel = admin_channel(&state, id, &admin, method.as_str(), uri.path()).await?;
+    let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let project = state
         .store
         .find_project(channel.project_id)
@@ -5723,7 +5994,13 @@ async fn admin_channel_test(
         .ok_or(AppError::NotFound)?;
     let result = run_channel_test(&state, &channel).await;
     let csrf = current_csrf(&state, &jar);
-    render_project_page(&state.store, project, Some(result), true, true, csrf).await
+    render_project_page(
+        &state.store,
+        project,
+        Some(result),
+        PageContext::admin(csrf),
+    )
+    .await
 }
 
 #[cfg(test)]
