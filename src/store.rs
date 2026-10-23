@@ -516,32 +516,33 @@ struct KeysetQuery<'a, T> {
 /// Keyset pagination by `id` for `pings`/`notifications`/`audit_log`. Fetches
 /// `limit + 1` rows to detect another page without a `COUNT(*)`. `scope` is
 /// e.g. `("check_id", id)`; `audit_log` passes `None`, so `WHERE` may be empty.
-#[allow(
-    clippy::cast_sign_loss,
-    reason = "`limit` is a small positive page size supplied by callers, never negative"
-)]
 async fn keyset_page<T>(
     pool: &crate::db::Pool,
     query: KeysetQuery<'_, T>,
 ) -> Result<Page<T>, sqlx::Error> {
-    let KeysetQuery {
-        table,
-        scope,
-        cursor,
-        limit,
-        filters,
-        row_to,
-    } = query;
-    let fetch_limit = limit + 1;
+    let (sql, binds) = keyset_sql(&query);
+    // Safe: only literals are interpolated; all values are bound.
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+    for b in &binds {
+        q = match b {
+            QueryBind::Int(i) => q.bind(*i),
+            QueryBind::Text(s) => q.bind(s.clone()),
+        };
+    }
+    let rows = q.fetch_all(pool).await?;
+    keyset_rows_to_page(rows, &query)
+}
+
+fn keyset_sql<T>(query: &KeysetQuery<'_, T>) -> (String, Vec<QueryBind>) {
     let mut conds: Vec<String> = Vec::new();
     let mut binds: Vec<QueryBind> = Vec::new();
 
-    if let Some((col, id)) = scope {
+    if let Some((col, id)) = query.scope {
         binds.push(QueryBind::Int(id));
         conds.push(format!("{col} = ${}", binds.len()));
     }
 
-    for f in filters {
+    for f in query.filters {
         match f {
             Predicate::TextCmp(col, op, v) => {
                 binds.push(QueryBind::Text(v.clone()));
@@ -560,7 +561,7 @@ async fn keyset_page<T>(
         }
     }
 
-    let order = match cursor {
+    let order = match query.cursor {
         PageCursor::Latest => "DESC",
         PageCursor::Before(id) => {
             binds.push(QueryBind::Int(id));
@@ -574,69 +575,57 @@ async fn keyset_page<T>(
         }
     };
 
-    binds.push(QueryBind::Int(fetch_limit));
+    binds.push(QueryBind::Int(query.limit + 1));
     let where_clause = if conds.is_empty() {
         String::new()
     } else {
         format!(" WHERE {}", conds.join(" AND "))
     };
+    let table = query.table;
     let sql = format!(
         "SELECT * FROM {table}{where_clause} ORDER BY id {order} LIMIT ${}",
         binds.len()
     );
-    // Safe: only literals are interpolated; all values are bound.
-    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
-    for b in &binds {
-        q = match b {
-            QueryBind::Int(i) => q.bind(*i),
-            QueryBind::Text(s) => q.bind(s.clone()),
-        };
-    }
-    let mut rows = q.fetch_all(pool).await?;
+    (sql, binds)
+}
 
+#[allow(
+    clippy::cast_sign_loss,
+    reason = "`limit` is a small positive page size supplied by callers, never negative"
+)]
+fn keyset_rows_to_page<T>(
+    mut rows: Vec<sqlx::any::AnyRow>,
+    query: &KeysetQuery<'_, T>,
+) -> Result<Page<T>, sqlx::Error> {
+    let limit = query.limit;
+    let overflowed = rows.len() as i64 > limit;
     // A Before/After cursor came from an adjacent page, so the opposite flag is true.
-    match cursor {
-        PageCursor::Latest => {
-            let has_older = rows.len() as i64 > limit;
-            let items = rows
-                .iter()
-                .take(limit as usize)
-                .map(row_to)
-                .collect::<Result<Vec<T>, _>>()?;
-            Ok(Page {
-                items,
-                has_newer: false,
-                has_older,
-            })
+    if let PageCursor::After(_) = query.cursor {
+        if overflowed {
+            // ASC, so the overflow row is last (farthest from the cursor).
+            rows.pop();
         }
-        PageCursor::Before(_) => {
-            let has_older = rows.len() as i64 > limit;
-            let items = rows
-                .iter()
-                .take(limit as usize)
-                .map(row_to)
-                .collect::<Result<Vec<T>, _>>()?;
-            Ok(Page {
-                items,
-                has_newer: true,
-                has_older,
-            })
-        }
-        PageCursor::After(_) => {
-            let has_newer = rows.len() as i64 > limit;
-            if has_newer {
-                // ASC, so the overflow row is last (farthest from the cursor).
-                rows.pop();
-            }
-            let mut items = rows.iter().map(row_to).collect::<Result<Vec<T>, _>>()?;
-            items.reverse(); // ASC -> newest-first (id DESC) for display
-            Ok(Page {
-                items,
-                has_newer,
-                has_older: true,
-            })
-        }
+        let mut items = rows
+            .iter()
+            .map(query.row_to)
+            .collect::<Result<Vec<T>, _>>()?;
+        items.reverse(); // ASC -> newest-first (id DESC) for display
+        return Ok(Page {
+            items,
+            has_newer: overflowed,
+            has_older: true,
+        });
     }
+    let items = rows
+        .iter()
+        .take(limit as usize)
+        .map(query.row_to)
+        .collect::<Result<Vec<T>, _>>()?;
+    Ok(Page {
+        items,
+        has_newer: matches!(query.cursor, PageCursor::Before(_)),
+        has_older: overflowed,
+    })
 }
 
 impl Store {
