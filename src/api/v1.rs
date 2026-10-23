@@ -15,8 +15,8 @@ use crate::store::{
     UpdateCheck,
 };
 use crate::web::{
-    ChannelForm, CheckForm, ProjectForm, validate_channel, validate_channel_update, validate_check,
-    validate_project,
+    ChannelForm, CheckForm, ProjectForm, RequestLine, validate_channel, validate_channel_update,
+    validate_check, validate_project,
 };
 use axum::Json;
 use axum::extract::{OriginalUri, Path, Query, State};
@@ -56,16 +56,20 @@ impl PageParams {
     }
 }
 
+/// The resource an admin key reached, and who owns it.
+struct CrossUserTarget<'a> {
+    target_type: &'a str,
+    target_id: i64,
+    owner: Option<i64>,
+}
+
 /// Record an admin key reaching a resource it does not own; `method`
 /// distinguishes a read from a write.
 async fn audit_cross_user(
     state: &AppState,
     admin: &User,
-    target_type: &str,
-    target_id: i64,
-    owner: Option<i64>,
-    method: &str,
-    path: &str,
+    target: CrossUserTarget<'_>,
+    request: RequestLine<'_>,
 ) -> Result<(), ApiError> {
     state
         .store
@@ -74,11 +78,11 @@ async fn audit_cross_user(
                 actor_user_id: admin.id,
                 actor_username: &admin.username,
                 action: "admin.api.access",
-                target_type: Some(target_type),
-                target_id: Some(target_id),
-                target_owner_id: owner,
-                method: Some(method),
-                path: Some(path),
+                target_type: Some(target.target_type),
+                target_id: Some(target.target_id),
+                target_owner_id: target.owner,
+                method: Some(request.method),
+                path: Some(request.path),
                 detail: None,
             },
             Utc::now(),
@@ -92,8 +96,7 @@ async fn resolve_project(
     state: &AppState,
     id: i64,
     user: &User,
-    method: &str,
-    path: &str,
+    request: RequestLine<'_>,
 ) -> Result<Project, ApiError> {
     let p = state
         .store
@@ -104,7 +107,17 @@ async fn resolve_project(
         return Ok(p);
     }
     if user.is_admin {
-        audit_cross_user(state, user, "project", p.id, Some(p.user_id), method, path).await?;
+        audit_cross_user(
+            state,
+            user,
+            CrossUserTarget {
+                target_type: "project",
+                target_id: p.id,
+                owner: Some(p.user_id),
+            },
+            request,
+        )
+        .await?;
         return Ok(p);
     }
     Err(ApiError::not_found())
@@ -115,8 +128,7 @@ async fn resolve_check(
     state: &AppState,
     id: i64,
     user: &User,
-    method: &str,
-    path: &str,
+    request: RequestLine<'_>,
 ) -> Result<Check, ApiError> {
     let c = state
         .store
@@ -132,7 +144,17 @@ async fn resolve_check(
         return Ok(c);
     }
     if user.is_admin {
-        audit_cross_user(state, user, "check", c.id, owner, method, path).await?;
+        audit_cross_user(
+            state,
+            user,
+            CrossUserTarget {
+                target_type: "check",
+                target_id: c.id,
+                owner,
+            },
+            request,
+        )
+        .await?;
         return Ok(c);
     }
     Err(ApiError::not_found())
@@ -143,8 +165,7 @@ async fn resolve_channel(
     state: &AppState,
     id: i64,
     user: &User,
-    method: &str,
-    path: &str,
+    request: RequestLine<'_>,
 ) -> Result<Channel, ApiError> {
     let ch = state
         .store
@@ -160,7 +181,17 @@ async fn resolve_channel(
         return Ok(ch);
     }
     if user.is_admin {
-        audit_cross_user(state, user, "channel", ch.id, owner, method, path).await?;
+        audit_cross_user(
+            state,
+            user,
+            CrossUserTarget {
+                target_type: "channel",
+                target_id: ch.id,
+                owner,
+            },
+            request,
+        )
+        .await?;
         return Ok(ch);
     }
     Err(ApiError::not_found())
@@ -196,7 +227,16 @@ pub async fn get_project(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<Json<ProjectDto>, ApiError> {
-    let p = resolve_project(&state, id, &user, "GET", uri.path()).await?;
+    let p = resolve_project(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "GET",
+            path: uri.path(),
+        },
+    )
+    .await?;
     Ok(Json(p.into()))
 }
 
@@ -216,7 +256,16 @@ pub async fn list_project_checks(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<CheckDto>>, ApiError> {
-    let p = resolve_project(&state, id, &user, "GET", uri.path()).await?;
+    let p = resolve_project(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "GET",
+            path: uri.path(),
+        },
+    )
+    .await?;
     let checks = state.store.list_checks_for_project(p.id).await?;
     Ok(Json(checks.into_iter().map(CheckDto::from).collect()))
 }
@@ -237,7 +286,16 @@ pub async fn list_project_channels(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<Json<Vec<ChannelDto>>, ApiError> {
-    let p = resolve_project(&state, id, &user, "GET", uri.path()).await?;
+    let p = resolve_project(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "GET",
+            path: uri.path(),
+        },
+    )
+    .await?;
     let channels = state.store.list_channels_for_project(p.id).await?;
     Ok(Json(channels.into_iter().map(ChannelDto::from).collect()))
 }
@@ -258,7 +316,16 @@ pub async fn get_check(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<Json<CheckDto>, ApiError> {
-    let c = resolve_check(&state, id, &user, "GET", uri.path()).await?;
+    let c = resolve_check(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "GET",
+            path: uri.path(),
+        },
+    )
+    .await?;
     Ok(Json(c.into()))
 }
 
@@ -279,7 +346,16 @@ pub async fn list_check_pings(
     Path(id): Path<i64>,
     Query(params): Query<PageParams>,
 ) -> Result<Json<PingPage>, ApiError> {
-    let c = resolve_check(&state, id, &user, "GET", uri.path()).await?;
+    let c = resolve_check(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "GET",
+            path: uri.path(),
+        },
+    )
+    .await?;
     let page = state
         .store
         .list_pings_page(
@@ -309,7 +385,16 @@ pub async fn list_check_notifications(
     Path(id): Path<i64>,
     Query(params): Query<PageParams>,
 ) -> Result<Json<NotificationPage>, ApiError> {
-    let c = resolve_check(&state, id, &user, "GET", uri.path()).await?;
+    let c = resolve_check(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "GET",
+            path: uri.path(),
+        },
+    )
+    .await?;
     let page = state
         .store
         .list_notifications_page(
@@ -352,7 +437,16 @@ pub async fn get_channel(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<Json<ChannelDto>, ApiError> {
-    let ch = resolve_channel(&state, id, &user, "GET", uri.path()).await?;
+    let ch = resolve_channel(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "GET",
+            path: uri.path(),
+        },
+    )
+    .await?;
     Ok(Json(ch.into()))
 }
 
@@ -422,7 +516,16 @@ pub async fn update_project(
     Path(id): Path<i64>,
     ApiJson(input): ApiJson<ProjectInput>,
 ) -> Result<Json<ProjectDto>, ApiError> {
-    resolve_project(&state, id, &user, "PATCH", uri.path()).await?;
+    resolve_project(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "PATCH",
+            path: uri.path(),
+        },
+    )
+    .await?;
     let form: ProjectForm = input.into();
     let (name, description, scan, nag) = validate_project(&form).map_err(ApiError::bad_request)?;
     state
@@ -461,7 +564,16 @@ pub async fn delete_project(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
-    resolve_project(&state, id, &user, "DELETE", uri.path()).await?;
+    resolve_project(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "DELETE",
+            path: uri.path(),
+        },
+    )
+    .await?;
     state.store.delete_project(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -487,7 +599,16 @@ pub async fn create_check(
     Path(pid): Path<i64>,
     ApiJson(input): ApiJson<CheckInput>,
 ) -> Result<(StatusCode, Json<CheckDto>), ApiError> {
-    resolve_project(&state, pid, &user, "POST", uri.path()).await?;
+    resolve_project(
+        &state,
+        pid,
+        &user,
+        RequestLine {
+            method: "POST",
+            path: uri.path(),
+        },
+    )
+    .await?;
     let form: CheckForm = input.into();
     let v = validate_check(&form).map_err(ApiError::bad_request)?;
     let uuid = uuid::Uuid::new_v4().to_string();
@@ -536,7 +657,16 @@ pub async fn update_check(
     Path(id): Path<i64>,
     ApiJson(input): ApiJson<CheckInput>,
 ) -> Result<Json<CheckDto>, ApiError> {
-    resolve_check(&state, id, &user, "PATCH", uri.path()).await?;
+    resolve_check(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "PATCH",
+            path: uri.path(),
+        },
+    )
+    .await?;
     let form: CheckForm = input.into();
     let v = validate_check(&form).map_err(ApiError::bad_request)?;
     state
@@ -576,7 +706,16 @@ pub async fn delete_check(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
-    resolve_check(&state, id, &user, "DELETE", uri.path()).await?;
+    resolve_check(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "DELETE",
+            path: uri.path(),
+        },
+    )
+    .await?;
     state.store.delete_check(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -597,7 +736,16 @@ pub async fn pause_check(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<Json<CheckDto>, ApiError> {
-    resolve_check(&state, id, &user, "POST", uri.path()).await?;
+    resolve_check(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "POST",
+            path: uri.path(),
+        },
+    )
+    .await?;
     state.store.set_status(id, CheckStatus::Paused).await?;
     reload_check(&state, id).await
 }
@@ -618,7 +766,16 @@ pub async fn resume_check(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<Json<CheckDto>, ApiError> {
-    resolve_check(&state, id, &user, "POST", uri.path()).await?;
+    resolve_check(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "POST",
+            path: uri.path(),
+        },
+    )
+    .await?;
     state.store.set_status(id, CheckStatus::New).await?;
     reload_check(&state, id).await
 }
@@ -640,7 +797,16 @@ pub async fn ack_check(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<Json<CheckDto>, ApiError> {
-    resolve_check(&state, id, &user, "POST", uri.path()).await?;
+    resolve_check(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "POST",
+            path: uri.path(),
+        },
+    )
+    .await?;
     state.store.acknowledge(id).await?;
     reload_check(&state, id).await
 }
@@ -661,7 +827,16 @@ pub async fn regenerate_check(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<Json<CheckDto>, ApiError> {
-    resolve_check(&state, id, &user, "POST", uri.path()).await?;
+    resolve_check(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "POST",
+            path: uri.path(),
+        },
+    )
+    .await?;
     state
         .store
         .regenerate_uuid(id, &uuid::Uuid::new_v4().to_string())
@@ -688,7 +863,16 @@ pub async fn set_check_channels(
     Path(id): Path<i64>,
     ApiJson(input): ApiJson<ChannelBindInput>,
 ) -> Result<Json<BoundChannels>, ApiError> {
-    let check = resolve_check(&state, id, &user, "PUT", uri.path()).await?;
+    let check = resolve_check(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "PUT",
+            path: uri.path(),
+        },
+    )
+    .await?;
     let valid: HashSet<i64> = state
         .store
         .list_channels_for_project(check.project_id)
@@ -736,7 +920,16 @@ pub async fn create_channel(
     Path(pid): Path<i64>,
     ApiJson(input): ApiJson<ChannelInput>,
 ) -> Result<(StatusCode, Json<ChannelDto>), ApiError> {
-    resolve_project(&state, pid, &user, "POST", uri.path()).await?;
+    resolve_project(
+        &state,
+        pid,
+        &user,
+        RequestLine {
+            method: "POST",
+            path: uri.path(),
+        },
+    )
+    .await?;
     let form: ChannelForm = input.into();
     let (kind, name, config) = validate_channel(&form).map_err(ApiError::bad_request)?;
     let id = state
@@ -779,7 +972,16 @@ pub async fn update_channel(
     Path(id): Path<i64>,
     ApiJson(input): ApiJson<ChannelInput>,
 ) -> Result<Json<ChannelDto>, ApiError> {
-    let existing = resolve_channel(&state, id, &user, "PATCH", uri.path()).await?;
+    let existing = resolve_channel(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "PATCH",
+            path: uri.path(),
+        },
+    )
+    .await?;
     let form: ChannelForm = input.into();
     let (_kind, name, config) =
         validate_channel_update(&form, Some(&existing)).map_err(ApiError::bad_request)?;
@@ -808,7 +1010,16 @@ pub async fn delete_channel(
     OriginalUri(uri): OriginalUri,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
-    resolve_channel(&state, id, &user, "DELETE", uri.path()).await?;
+    resolve_channel(
+        &state,
+        id,
+        &user,
+        RequestLine {
+            method: "DELETE",
+            path: uri.path(),
+        },
+    )
+    .await?;
     state.store.delete_channel(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
