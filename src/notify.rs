@@ -728,15 +728,22 @@ pub async fn send_with_retry(
     Err(last)
 }
 
+/// How a delivery is carried out: retry behaviour and the instance SMTP config.
+#[derive(Debug, Clone, Copy)]
+pub struct DeliveryOptions<'a> {
+    pub retry: RetryPolicy,
+    pub smtp: Option<&'a SmtpConfig>,
+}
+
 /// Deliver to each bound channel with retry and record every outcome. Failures
 /// are recorded, never propagated: a failing channel must not affect state.
 pub async fn deliver_event(
     store: &Store,
     ev: &NotificationEvent,
-    policy: RetryPolicy,
+    options: DeliveryOptions<'_>,
     now: DateTime<Utc>,
-    smtp: Option<&SmtpConfig>,
 ) {
+    let DeliveryOptions { retry, smtp } = options;
     let channels = match store.channels_for_check(ev.check_id).await {
         Ok(c) => c,
         Err(e) => {
@@ -756,7 +763,7 @@ pub async fn deliver_event(
         let Some(notifier) = notifier_for(channel, smtp) else {
             continue;
         };
-        let (status, error) = match send_with_retry(notifier.as_ref(), ev, policy).await {
+        let (status, error) = match send_with_retry(notifier.as_ref(), ev, retry).await {
             Ok(()) => (NotifyStatus::Ok, None),
             Err(e) => (NotifyStatus::Error, Some(e.to_string())),
         };
@@ -1232,7 +1239,11 @@ mod tests {
             project_id: 1,
             detail: EventDetail::default(),
         };
-        deliver_event(&store, &ev, RetryPolicy::default(), Utc::now(), None).await;
+        let options = DeliveryOptions {
+            retry: RetryPolicy::default(),
+            smtp: None,
+        };
+        deliver_event(&store, &ev, options, Utc::now()).await;
 
         let recs = store.list_recent_notifications(chk, 10).await.unwrap();
         assert_eq!(recs.len(), 1);
@@ -1259,7 +1270,11 @@ mod tests {
             max_attempts: 2,
             base_backoff: std::time::Duration::from_millis(1),
         };
-        deliver_event(&store, &ev, policy, Utc::now(), None).await;
+        let options = DeliveryOptions {
+            retry: policy,
+            smtp: None,
+        };
+        deliver_event(&store, &ev, options, Utc::now()).await;
 
         let recs = store.list_recent_notifications(chk, 10).await.unwrap();
         assert_eq!(recs.len(), 1);

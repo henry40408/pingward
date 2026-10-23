@@ -1,7 +1,8 @@
 use crate::config::{SmtpConfig, effective_nag_interval, effective_scan_interval};
 use crate::models::{Check, CheckStatus, ScheduleKind};
 use crate::notify::{
-    DownCause, EventDetail, EventKind, NotificationEvent, RetryPolicy, deliver_event,
+    DeliveryOptions, DownCause, EventDetail, EventKind, NotificationEvent, RetryPolicy,
+    deliver_event,
 };
 use crate::shutdown::Shutdown;
 use crate::store::Store;
@@ -185,14 +186,11 @@ fn spawn_deliveries(store: &Store, smtp: Option<&SmtpConfig>, events: Vec<Notifi
         let store = store.clone();
         let smtp = smtp.cloned();
         tokio::spawn(async move {
-            deliver_event(
-                &store,
-                &ev,
-                RetryPolicy::default(),
-                Utc::now(),
-                smtp.as_ref(),
-            )
-            .await;
+            let options = DeliveryOptions {
+                retry: RetryPolicy::default(),
+                smtp: smtp.as_ref(),
+            };
+            deliver_event(&store, &ev, options, Utc::now()).await;
         });
     }
 }

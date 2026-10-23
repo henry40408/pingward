@@ -2,7 +2,8 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::models::{Check, CheckStatus, PingKind};
 use crate::notify::{
-    DownCause, EventDetail, EventKind, NotificationEvent, RetryPolicy, deliver_event,
+    DeliveryOptions, DownCause, EventDetail, EventKind, NotificationEvent, RetryPolicy,
+    deliver_event,
 };
 use crate::scheduler::due_time;
 use crate::state::AppState;
@@ -83,17 +84,14 @@ async fn success(
     conn: ClientIp,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    apply(
-        &store,
-        &uuid,
-        PingKind::Success,
-        None,
-        &body,
+    let ping = PingRequest {
+        uuid: &uuid,
+        kind: PingKind::Success,
+        exit_code: None,
+        body: &body,
         conn,
-        &config,
-        &events,
-    )
-    .await
+    };
+    apply(&store, &config, &events, ping).await
 }
 async fn fail(
     State(store): State<Store>,
@@ -103,17 +101,14 @@ async fn fail(
     conn: ClientIp,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    apply(
-        &store,
-        &uuid,
-        PingKind::Fail,
-        None,
-        &body,
+    let ping = PingRequest {
+        uuid: &uuid,
+        kind: PingKind::Fail,
+        exit_code: None,
+        body: &body,
         conn,
-        &config,
-        &events,
-    )
-    .await
+    };
+    apply(&store, &config, &events, ping).await
 }
 async fn start(
     State(store): State<Store>,
@@ -123,17 +118,14 @@ async fn start(
     conn: ClientIp,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    apply(
-        &store,
-        &uuid,
-        PingKind::Start,
-        None,
-        &body,
+    let ping = PingRequest {
+        uuid: &uuid,
+        kind: PingKind::Start,
+        exit_code: None,
+        body: &body,
         conn,
-        &config,
-        &events,
-    )
-    .await
+    };
+    apply(&store, &config, &events, ping).await
 }
 async fn log(
     State(store): State<Store>,
@@ -143,17 +135,14 @@ async fn log(
     conn: ClientIp,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    apply(
-        &store,
-        &uuid,
-        PingKind::Log,
-        None,
-        &body,
+    let ping = PingRequest {
+        uuid: &uuid,
+        kind: PingKind::Log,
+        exit_code: None,
+        body: &body,
         conn,
-        &config,
-        &events,
-    )
-    .await
+    };
+    apply(&store, &config, &events, ping).await
 }
 async fn exitcode(
     State(store): State<Store>,
@@ -168,33 +157,37 @@ async fn exitcode(
     } else {
         PingKind::Fail
     };
-    apply(
-        &store,
-        &uuid,
+    let ping = PingRequest {
+        uuid: &uuid,
         kind,
-        Some(code),
-        &body,
+        exit_code: Some(code),
+        body: &body,
         conn,
-        &config,
-        &events,
-    )
-    .await
+    };
+    apply(&store, &config, &events, ping).await
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each param is a distinct piece of per-request context; a struct would just move the noise"
-)]
-async fn apply(
-    store: &Store,
-    uuid: &str,
+struct PingRequest<'a> {
+    uuid: &'a str,
     kind: PingKind,
     exit_code: Option<i64>,
-    body: &Bytes,
+    body: &'a Bytes,
     conn: ClientIp,
+}
+
+async fn apply(
+    store: &Store,
     config: &Config,
     events: &broadcast::Sender<i64>,
+    ping: PingRequest<'_>,
 ) -> Result<StatusCode, AppError> {
+    let PingRequest {
+        uuid,
+        kind,
+        exit_code,
+        body,
+        conn,
+    } = ping;
     let check = resolve(store, uuid).await?;
     let now = Utc::now();
     let ip = conn.0;
@@ -240,7 +233,16 @@ async fn apply(
                 .await?;
             if prev_status == CheckStatus::Down {
                 store.clear_nag(check.id).await?;
-                spawn_delivery(store.clone(), &check, EventKind::Up, now, None, config);
+                spawn_delivery(
+                    store.clone(),
+                    config,
+                    Delivery {
+                        check: &check,
+                        event: EventKind::Up,
+                        now,
+                        cause: None,
+                    },
+                );
             }
         }
         PingKind::Fail => {
@@ -259,11 +261,13 @@ async fn apply(
                 store.begin_down_alert(check.id, now).await?;
                 spawn_delivery(
                     store.clone(),
-                    &check,
-                    EventKind::Down,
-                    now,
-                    Some(DownCause::Failed { exit_code }),
                     config,
+                    Delivery {
+                        check: &check,
+                        event: EventKind::Down,
+                        now,
+                        cause: Some(DownCause::Failed { exit_code }),
+                    },
                 );
             }
         }
@@ -289,14 +293,20 @@ async fn apply(
 /// Fire-and-forget, so notification I/O (and the project lookup) stays off the
 /// ping response path. `check` must be the pre-ping snapshot: an `Up` message
 /// reports the ping *before* the recovery.
-fn spawn_delivery(
-    store: Store,
-    check: &Check,
+struct Delivery<'a> {
+    check: &'a Check,
     event: EventKind,
     now: chrono::DateTime<chrono::Utc>,
     cause: Option<DownCause>,
-    config: &Config,
-) {
+}
+
+fn spawn_delivery(store: Store, config: &Config, delivery: Delivery<'_>) {
+    let Delivery {
+        check,
+        event,
+        now,
+        cause,
+    } = delivery;
     let snapshot = check.clone();
     let base_url = config.base_url.clone();
     let smtp = config.smtp.clone();
@@ -319,6 +329,10 @@ fn spawn_delivery(
             project_id: snapshot.project_id,
             detail,
         };
-        deliver_event(&store, &ev, RetryPolicy::default(), now, smtp.as_ref()).await;
+        let options = DeliveryOptions {
+            retry: RetryPolicy::default(),
+            smtp: smtp.as_ref(),
+        };
+        deliver_event(&store, &ev, options, now).await;
     });
 }
