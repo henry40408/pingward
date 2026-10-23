@@ -6,7 +6,7 @@ use crate::notify::{
 };
 use crate::scheduler::due_time;
 use crate::state::AppState;
-use crate::store::Store;
+use crate::store::{NewPing, PingMark, Store};
 use axum::{
     Router,
     body::Bytes,
@@ -200,11 +200,13 @@ async fn apply(
     let ip = conn.0;
     store
         .insert_ping(
-            check.id,
-            kind,
-            exit_code,
-            &truncate(body),
-            ip.as_deref(),
+            &NewPing {
+                check_id: check.id,
+                kind,
+                exit_code,
+                body: &truncate(body),
+                source_ip: ip.as_deref(),
+            },
             now,
         )
         .await?;
@@ -226,7 +228,15 @@ async fn apply(
             updated.last_ping_at = Some(now);
             let next = due_time(&updated);
             store
-                .mark_ping(check.id, CheckStatus::Up, Some(now), None, next)
+                .mark_ping(
+                    check.id,
+                    &PingMark {
+                        status: CheckStatus::Up,
+                        last_ping_at: Some(now),
+                        last_start_at: None,
+                        next_due_at: next,
+                    },
+                )
                 .await?;
             if prev_status == CheckStatus::Down {
                 store.clear_nag(check.id).await?;
@@ -235,7 +245,15 @@ async fn apply(
         }
         PingKind::Fail => {
             store
-                .mark_ping(check.id, CheckStatus::Down, Some(now), None, None)
+                .mark_ping(
+                    check.id,
+                    &PingMark {
+                        status: CheckStatus::Down,
+                        last_ping_at: Some(now),
+                        last_start_at: None,
+                        next_due_at: None,
+                    },
+                )
                 .await?;
             if matches!(prev_status, CheckStatus::Up | CheckStatus::New) {
                 store.begin_down_alert(check.id, now).await?;
@@ -251,7 +269,15 @@ async fn apply(
         }
         PingKind::Start => {
             store
-                .mark_ping(check.id, check.status, None, Some(now), check.next_due_at)
+                .mark_ping(
+                    check.id,
+                    &PingMark {
+                        status: check.status,
+                        last_ping_at: None,
+                        last_start_at: Some(now),
+                        next_due_at: check.next_due_at,
+                    },
+                )
                 .await?;
         }
         PingKind::Log => { /* recorded only */ }

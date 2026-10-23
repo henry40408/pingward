@@ -1,4 +1,5 @@
 use axum_test::TestServer;
+use pingward::store::ProjectSettings;
 use pingward::{
     app, db,
     models::ScheduleKind,
@@ -78,7 +79,16 @@ async fn project_create_stores_a_trimmed_name() {
 async fn check_create_stores_a_trimmed_name() {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let res = server
@@ -114,7 +124,16 @@ async fn check_create_stores_a_trimmed_name() {
 async fn check_update_stores_a_trimmed_name() {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let id = store
@@ -154,7 +173,16 @@ async fn check_update_stores_a_trimmed_name() {
 async fn project_update_stores_a_trimmed_name() {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let res = server
@@ -176,7 +204,16 @@ async fn project_update_stores_a_trimmed_name() {
 async fn admin_project_update_stores_a_trimmed_name() {
     let (server, store, admin_id) = admin_server().await;
     let pid = store
-        .create_project(admin_id, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            admin_id,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let res = server

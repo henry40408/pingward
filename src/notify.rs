@@ -566,7 +566,7 @@ impl Notifier for PushoverNotifier {
 use crate::config::SmtpConfig;
 use crate::config::SmtpTls;
 use crate::models::{Channel, ChannelKind, Check, NotifyStatus, ScheduleKind};
-use crate::store::Store;
+use crate::store::{NewNotification, Store};
 use lettre::message::Message;
 use lettre::transport::smtp::AsyncSmtpTransport;
 use lettre::transport::smtp::authentication::Credentials;
@@ -762,11 +762,13 @@ pub async fn deliver_event(
         };
         if let Err(e) = store
             .record_notification(
-                ev.check_id,
-                channel.id,
-                ev.event,
-                status,
-                error.as_deref(),
+                &NewNotification {
+                    check_id: ev.check_id,
+                    channel_id: channel.id,
+                    event: ev.event,
+                    status,
+                    error: error.as_deref(),
+                },
                 now,
             )
             .await
@@ -1165,7 +1167,7 @@ mod tests {
 
     use crate::db;
     use crate::models::ChannelKind;
-    use crate::store::Store;
+    use crate::store::{NewChannel, Store};
 
     async fn store_with_check_and_channel(url: &str) -> (Store, i64) {
         let pool = db::connect("sqlite::memory:").await.unwrap();
@@ -1186,10 +1188,12 @@ mod tests {
         let now = Utc::now();
         let cid = store
             .create_channel(
-                1,
-                ChannelKind::Webhook,
-                "hook",
-                &format!("{{\"url\":\"{url}\"}}"),
+                &NewChannel {
+                    project_id: 1,
+                    kind: ChannelKind::Webhook,
+                    name: "hook",
+                    config_json: &format!("{{\"url\":\"{url}\"}}"),
+                },
                 now,
             )
             .await

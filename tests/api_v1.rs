@@ -5,7 +5,7 @@ use axum_test::TestServer;
 use chrono::Utc;
 use pingward::models::{ChannelKind, ScheduleKind};
 use pingward::notify::EventKind;
-use pingward::store::NewCheck;
+use pingward::store::{NewApiKey, NewChannel, NewCheck, NewNotification, NewPing, ProjectSettings};
 use pingward::{apikey, app, db, state::AppState, store::Store};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -29,7 +29,16 @@ async fn user_with_key(store: &Store, username: &str, is_admin: bool) -> (i64, S
         .unwrap();
     let (full, prefix, hash) = apikey::generate_api_key();
     store
-        .insert_api_key(uid, "k", &hash, &prefix, None, now)
+        .insert_api_key(
+            &NewApiKey {
+                user_id: uid,
+                name: "k",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     (uid, full)
@@ -76,12 +85,30 @@ async fn lists_only_callers_own_projects() {
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let now = Utc::now();
     store
-        .create_project(uid, "mine", "", None, None, now)
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "mine",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     let (other, _) = user_with_key(&store, "bob", false).await;
     store
-        .create_project(other, "theirs", "", None, None, now)
+        .create_project(
+            other,
+            &ProjectSettings {
+                name: "theirs",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
 
@@ -102,7 +129,16 @@ async fn member_cannot_read_another_users_project() {
     let (_uid, token) = user_with_key(&store, "alice", false).await;
     let (other, _) = user_with_key(&store, "bob", false).await;
     let pid = store
-        .create_project(other, "theirs", "", None, None, Utc::now())
+        .create_project(
+            other,
+            &ProjectSettings {
+                name: "theirs",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -120,7 +156,16 @@ async fn admin_key_reads_cross_user_and_writes_audit() {
     let (_admin, token) = user_with_key(&store, "root", true).await;
     let (other, _) = user_with_key(&store, "bob", false).await;
     let pid = store
-        .create_project(other, "theirs", "", None, None, Utc::now())
+        .create_project(
+            other,
+            &ProjectSettings {
+                name: "theirs",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -144,7 +189,16 @@ async fn admin_reading_own_project_does_not_audit() {
     let (server, store) = test_app().await;
     let (admin, token) = user_with_key(&store, "root", true).await;
     let pid = store
-        .create_project(admin, "mine", "", None, None, Utc::now())
+        .create_project(
+            admin,
+            &ProjectSettings {
+                name: "mine",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -161,18 +215,29 @@ async fn check_pings_are_paginated_newest_first() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let cid = make_check(&store, pid, "job", "uuid-pg").await;
     for _ in 0..25 {
         store
             .insert_ping(
-                cid,
-                pingward::models::PingKind::Success,
-                None,
-                "",
-                None,
+                &NewPing {
+                    check_id: cid,
+                    kind: pingward::models::PingKind::Success,
+                    exit_code: None,
+                    body: "",
+                    source_ip: None,
+                },
                 Utc::now(),
             )
             .await
@@ -218,18 +283,29 @@ async fn limit_is_clamped() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let cid = make_check(&store, pid, "job", "uuid-lim").await;
     for _ in 0..3 {
         store
             .insert_ping(
-                cid,
-                pingward::models::PingKind::Success,
-                None,
-                "",
-                None,
+                &NewPing {
+                    check_id: cid,
+                    kind: pingward::models::PingKind::Success,
+                    exit_code: None,
+                    body: "",
+                    source_ip: None,
+                },
                 Utc::now(),
             )
             .await
@@ -247,16 +323,27 @@ async fn channel_dto_never_leaks_config_secrets() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let secret = "https://hooks.example.com/SECRET-TOKEN";
     let cid = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook",
-            &format!("{{\"url\":\"{secret}\"}}"),
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook",
+                config_json: &format!("{{\"url\":\"{secret}\"}}"),
+            },
             Utc::now(),
         )
         .await
@@ -281,27 +368,40 @@ async fn notifications_endpoint_returns_events() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let cid = make_check(&store, pid, "job", "uuid-nt").await;
     let chid = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook",
-            "{}",
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook",
+                config_json: "{}",
+            },
             Utc::now(),
         )
         .await
         .unwrap();
     store
         .record_notification(
-            cid,
-            chid,
-            EventKind::Down,
-            pingward::models::NotifyStatus::Ok,
-            None,
+            &NewNotification {
+                check_id: cid,
+                channel_id: chid,
+                event: EventKind::Down,
+                status: pingward::models::NotifyStatus::Ok,
+                error: None,
+            },
             Utc::now(),
         )
         .await
@@ -341,11 +441,13 @@ async fn expired_key_is_rejected() {
     let (full, prefix, hash) = apikey::generate_api_key();
     store
         .insert_api_key(
-            uid,
-            "old",
-            &hash,
-            &prefix,
-            Some(now - chrono::Duration::hours(1)),
+            &NewApiKey {
+                user_id: uid,
+                name: "old",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: Some(now - chrono::Duration::hours(1)),
+            },
             now,
         )
         .await
@@ -534,10 +636,12 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
         let pid = store
             .create_project(
                 owner,
-                &format!("alice-project-{i}"),
-                "",
-                None,
-                None,
+                &ProjectSettings {
+                    name: &format!("alice-project-{i}"),
+                    description: "",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
                 Utc::now(),
             )
             .await
@@ -551,10 +655,12 @@ async fn member_cannot_reach_another_users_resource_on_any_api_route() {
         .await;
         let chid = store
             .create_channel(
-                pid,
-                ChannelKind::Webhook,
-                &format!("alice-channel-{i}"),
-                "{}",
+                &NewChannel {
+                    project_id: pid,
+                    kind: ChannelKind::Webhook,
+                    name: &format!("alice-channel-{i}"),
+                    config_json: "{}",
+                },
                 Utc::now(),
             )
             .await

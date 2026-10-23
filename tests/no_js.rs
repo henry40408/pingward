@@ -7,6 +7,7 @@
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
+use pingward::store::{NewApiKey, ProjectSettings};
 use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
@@ -40,7 +41,16 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
 
 async fn check_for(store: &Store, owner: i64, uuid: &str) -> (i64, i64) {
     let pid = store
-        .create_project(owner, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            owner,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store
@@ -573,7 +583,16 @@ async fn the_user_toggles_ask_only_in_the_direction_that_takes_access_away() {
 async fn revoking_an_api_key_asks_first() {
     let (server, store, uid) = logged_in_server().await;
     let kid = store
-        .insert_api_key(uid, "ci", "hash", "pw_abcd", None, chrono::Utc::now())
+        .insert_api_key(
+            &NewApiKey {
+                user_id: uid,
+                name: "ci",
+                token_hash: "hash",
+                prefix: "pw_abcd",
+                expires_at: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
 

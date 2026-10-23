@@ -1,4 +1,5 @@
 use axum_test::TestServer;
+use pingward::store::{NewChannel, NewNotification, PingMark, ProjectSettings};
 use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
@@ -35,7 +36,16 @@ async fn admin_dashboard_renders_with_figures() {
         .await
         .unwrap();
     let pid = store
-        .create_project(uid, "proj", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "proj",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     store
@@ -66,7 +76,16 @@ async fn admin_dashboard_shows_running_badge_with_count() {
         .await
         .unwrap();
     let pid = store
-        .create_project(uid, "proj", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "proj",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store
@@ -86,10 +105,12 @@ async fn admin_dashboard_shows_running_badge_with_count() {
     store
         .mark_ping(
             cid,
-            pingward::models::CheckStatus::New,
-            None,
-            Some(chrono::Utc::now()),
-            None,
+            &PingMark {
+                status: pingward::models::CheckStatus::New,
+                last_ping_at: None,
+                last_start_at: Some(chrono::Utc::now()),
+                next_due_at: None,
+            },
         )
         .await
         .unwrap();
@@ -121,7 +142,16 @@ async fn admin_dashboard_absolute_times_wrapped_for_local_tz() {
         .await
         .unwrap();
     let pid = store
-        .create_project(uid, "p2", "", None, None, now)
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p2",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     let cid = store
@@ -139,21 +169,25 @@ async fn admin_dashboard_absolute_times_wrapped_for_local_tz() {
         .unwrap();
     let chid = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook",
-            "{\"url\":\"http://x\"}",
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook",
+                config_json: "{\"url\":\"http://x\"}",
+            },
             now,
         )
         .await
         .unwrap();
     store
         .record_notification(
-            cid,
-            chid,
-            pingward::notify::EventKind::Down,
-            pingward::models::NotifyStatus::Error,
-            Some("boom"),
+            &NewNotification {
+                check_id: cid,
+                channel_id: chid,
+                event: pingward::notify::EventKind::Down,
+                status: pingward::models::NotifyStatus::Error,
+                error: Some("boom"),
+            },
             now,
         )
         .await

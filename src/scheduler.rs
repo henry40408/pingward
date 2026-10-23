@@ -260,7 +260,7 @@ mod tests {
 
     const TEST_BASE_URL: &str = "https://pingward.test";
     use crate::models::{Check, CheckStatus, ScheduleKind};
-    use crate::store::{NewCheck, UpdateCheck};
+    use crate::store::{NewCheck, PingMark, ProjectSettings, UpdateCheck};
     use chrono::{TimeZone, Utc};
 
     fn base_check() -> Check {
@@ -460,7 +460,16 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_project(1, "p", "", None, None, Utc::now())
+            .create_project(
+                1,
+                &ProjectSettings {
+                    name: "p",
+                    description: "",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
+                Utc::now(),
+            )
             .await
             .unwrap();
         let start = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
@@ -497,7 +506,15 @@ mod tests {
             .await
             .unwrap();
         store
-            .mark_ping(cid, CheckStatus::Up, None, Some(start), None)
+            .mark_ping(
+                cid,
+                &PingMark {
+                    status: CheckStatus::Up,
+                    last_ping_at: None,
+                    last_start_at: Some(start),
+                    next_due_at: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -522,7 +539,16 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_project(1, "p", "", None, None, Utc::now())
+            .create_project(
+                1,
+                &ProjectSettings {
+                    name: "p",
+                    description: "",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
+                Utc::now(),
+            )
             .await
             .unwrap();
         let id = store

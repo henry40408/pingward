@@ -1,4 +1,5 @@
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use pingward::store::{NewChannel, PingMark};
 use pingward::{
     db,
     models::{ChannelKind, CheckStatus, NotifyStatus, ScheduleKind},
@@ -43,7 +44,15 @@ async fn store_with_up_check(period: i64, grace: i64, last_ping_ago: i64) -> (St
         .unwrap();
     let last = Utc::now() - Duration::seconds(last_ping_ago);
     store
-        .mark_ping(id, CheckStatus::Up, Some(last), None, None)
+        .mark_ping(
+            id,
+            &PingMark {
+                status: CheckStatus::Up,
+                last_ping_at: Some(last),
+                last_start_at: None,
+                next_due_at: None,
+            },
+        )
         .await
         .unwrap();
     (store, id)
@@ -69,7 +78,15 @@ async fn store_with_up_check_at(
         .await
         .unwrap();
     store
-        .mark_ping(id, CheckStatus::Up, Some(last_ping_at), None, None)
+        .mark_ping(
+            id,
+            &PingMark {
+                status: CheckStatus::Up,
+                last_ping_at: Some(last_ping_at),
+                last_start_at: None,
+                next_due_at: None,
+            },
+        )
         .await
         .unwrap();
     (store, id)
@@ -194,10 +211,12 @@ async fn overdue_downs_and_delivers_to_bound_channel() {
     let now = Utc::now();
     let cid = store
         .create_channel(
-            1,
-            ChannelKind::Webhook,
-            "hook",
-            &format!("{{\"url\":\"{}\"}}", mock.uri()),
+            &NewChannel {
+                project_id: 1,
+                kind: ChannelKind::Webhook,
+                name: "hook",
+                config_json: &format!("{{\"url\":\"{}\"}}", mock.uri()),
+            },
             now,
         )
         .await

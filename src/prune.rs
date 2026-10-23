@@ -129,7 +129,9 @@ mod tests {
     use crate::db;
     use crate::models::{ChannelKind, NotifyStatus, PingKind, ScheduleKind};
     use crate::notify::EventKind;
-    use crate::store::NewCheck;
+    use crate::store::{
+        NewChannel, NewCheck, NewNotification, NewPing, NewSession, ProjectSettings,
+    };
     use chrono::TimeZone;
 
     async fn store_with_check_and_channel() -> (Store, i64, i64) {
@@ -141,7 +143,16 @@ mod tests {
             .await
             .unwrap();
         store
-            .create_project(1, "p", "", None, None, Utc::now())
+            .create_project(
+                1,
+                &ProjectSettings {
+                    name: "p",
+                    description: "",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
+                Utc::now(),
+            )
             .await
             .unwrap();
         let cid = store
@@ -159,10 +170,12 @@ mod tests {
             .unwrap();
         let chan = store
             .create_channel(
-                1,
-                ChannelKind::Webhook,
-                "h",
-                "{\"url\":\"http://x\"}",
+                &NewChannel {
+                    project_id: 1,
+                    kind: ChannelKind::Webhook,
+                    name: "h",
+                    config_json: "{\"url\":\"http://x\"}",
+                },
                 Utc::now(),
             )
             .await
@@ -205,15 +218,42 @@ mod tests {
         let old = now - Duration::days(10);
         let recent = now - Duration::days(1);
         store
-            .insert_ping(cid, PingKind::Success, None, "", None, old)
+            .insert_ping(
+                &NewPing {
+                    check_id: cid,
+                    kind: PingKind::Success,
+                    exit_code: None,
+                    body: "",
+                    source_ip: None,
+                },
+                old,
+            )
             .await
             .unwrap();
         store
-            .insert_ping(cid, PingKind::Success, None, "", None, recent)
+            .insert_ping(
+                &NewPing {
+                    check_id: cid,
+                    kind: PingKind::Success,
+                    exit_code: None,
+                    body: "",
+                    source_ip: None,
+                },
+                recent,
+            )
             .await
             .unwrap();
         store
-            .record_notification(cid, chan, EventKind::Down, NotifyStatus::Ok, None, old)
+            .record_notification(
+                &NewNotification {
+                    check_id: cid,
+                    channel_id: chan,
+                    event: EventKind::Down,
+                    status: NotifyStatus::Ok,
+                    error: None,
+                },
+                old,
+            )
             .await
             .unwrap();
 
@@ -300,11 +340,13 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 7, 13, 12, 0, 0).unwrap();
         store
             .insert_ping(
-                cid,
-                PingKind::Success,
-                None,
-                "",
-                None,
+                &NewPing {
+                    check_id: cid,
+                    kind: PingKind::Success,
+                    exit_code: None,
+                    body: "",
+                    source_ip: None,
+                },
                 now - Duration::days(100),
             )
             .await
@@ -359,24 +401,28 @@ mod tests {
 
         store
             .create_session(
-                "sess-expired",
-                user_id,
-                now - Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-expired",
+                    user_id,
+                    expires_at: now - Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now - Duration::hours(2),
             )
             .await
             .unwrap();
         store
             .create_session(
-                "sess-valid",
-                user_id,
-                now + Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-valid",
+                    user_id,
+                    expires_at: now + Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now,
             )
             .await

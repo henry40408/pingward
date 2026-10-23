@@ -1,5 +1,6 @@
 use axum::http::StatusCode;
 use axum_test::TestServer;
+use pingward::store::{NewApiKey, NewSession};
 use pingward::{apikey, app, db, state::AppState, store::Store};
 
 mod common;
@@ -169,12 +170,14 @@ async fn unknown_or_foreign_handle_revokes_nothing() {
         .unwrap();
     store
         .create_session(
-            "other-session",
-            other_uid,
-            chrono::Utc::now() + chrono::Duration::hours(1),
-            None,
-            None,
-            false,
+            &NewSession {
+                id: "other-session",
+                user_id: other_uid,
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
             chrono::Utc::now(),
         )
         .await
@@ -343,12 +346,14 @@ async fn a_passwordless_account_has_no_form_and_cannot_set_one() {
     let session_id = pingward::auth::new_session_token();
     store
         .create_session(
-            &session_id,
-            uid,
-            chrono::Utc::now() + chrono::Duration::hours(1),
-            None,
-            None,
-            true,
+            &NewSession {
+                id: &session_id,
+                user_id: uid,
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                user_agent: None,
+                ip: None,
+                sso: true,
+            },
             chrono::Utc::now(),
         )
         .await
@@ -444,11 +449,13 @@ async fn expired_key_is_flagged_but_a_live_one_is_not() {
     let (_f1, p1, h1) = apikey::generate_api_key();
     let dead = store
         .insert_api_key(
-            uid,
-            "dead",
-            &h1,
-            &p1,
-            Some(now - chrono::Duration::hours(1)),
+            &NewApiKey {
+                user_id: uid,
+                name: "dead",
+                token_hash: &h1,
+                prefix: &p1,
+                expires_at: Some(now - chrono::Duration::hours(1)),
+            },
             now,
         )
         .await
@@ -456,11 +463,13 @@ async fn expired_key_is_flagged_but_a_live_one_is_not() {
     let (_f2, p2, h2) = apikey::generate_api_key();
     let live = store
         .insert_api_key(
-            uid,
-            "live",
-            &h2,
-            &p2,
-            Some(now + chrono::Duration::days(30)),
+            &NewApiKey {
+                user_id: uid,
+                name: "live",
+                token_hash: &h2,
+                prefix: &p2,
+                expires_at: Some(now + chrono::Duration::days(30)),
+            },
             now,
         )
         .await
@@ -488,7 +497,16 @@ async fn keys_are_caller_scoped() {
         .unwrap();
     let (_full, prefix, hash) = apikey::generate_api_key();
     let other_kid = store
-        .insert_api_key(other, "theirs", &hash, &prefix, None, now)
+        .insert_api_key(
+            &NewApiKey {
+                user_id: other,
+                name: "theirs",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: None,
+            },
+            now,
+        )
         .await
         .unwrap();
 
@@ -511,7 +529,16 @@ async fn revoke_own_key() {
     let now = chrono::Utc::now();
     let (_full, prefix, hash) = apikey::generate_api_key();
     let kid = store
-        .insert_api_key(uid, "k", &hash, &prefix, None, now)
+        .insert_api_key(
+            &NewApiKey {
+                user_id: uid,
+                name: "k",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: None,
+            },
+            now,
+        )
         .await
         .unwrap();
 
@@ -612,11 +639,13 @@ async fn validate_rejects_expired_and_unknown_keys() {
     let (_full, prefix, hash) = apikey::generate_api_key();
     store
         .insert_api_key(
-            uid,
-            "old",
-            &hash,
-            &prefix,
-            Some(now - chrono::Duration::hours(1)),
+            &NewApiKey {
+                user_id: uid,
+                name: "old",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: Some(now - chrono::Duration::hours(1)),
+            },
             now,
         )
         .await
@@ -635,12 +664,14 @@ async fn opening_the_account_page_reaps_a_session_past_the_absolute_cap() {
     // predicate nor prune removes it.
     store
         .create_session(
-            "capped-session",
-            uid,
-            now + chrono::Duration::hours(1),
-            Some("curl/8"),
-            Some("203.0.113.5"),
-            false,
+            &NewSession {
+                id: "capped-session",
+                user_id: uid,
+                expires_at: now + chrono::Duration::hours(1),
+                user_agent: Some("curl/8"),
+                ip: Some("203.0.113.5"),
+                sso: false,
+            },
             now - chrono::Duration::days(31),
         )
         .await
@@ -679,12 +710,14 @@ async fn the_reap_does_not_touch_another_users_sessions() {
     for (id, owner) in [("mine", uid), ("theirs", other)] {
         store
             .create_session(
-                id,
-                owner,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id,
+                    user_id: owner,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now - chrono::Duration::days(31),
             )
             .await
@@ -874,12 +907,14 @@ async fn a_passwordless_account_mints_a_key_without_re_authenticating() {
     let session_id = pingward::auth::new_session_token();
     store
         .create_session(
-            &session_id,
-            uid,
-            chrono::Utc::now() + chrono::Duration::hours(1),
-            None,
-            None,
-            true,
+            &NewSession {
+                id: &session_id,
+                user_id: uid,
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                user_agent: None,
+                ip: None,
+                sso: true,
+            },
             chrono::Utc::now(),
         )
         .await

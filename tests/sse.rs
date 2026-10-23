@@ -6,6 +6,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::Utc;
+use pingward::store::{NewSession, ProjectSettings};
 use pingward::{app, db, state::AppState, store::Store};
 use std::time::Duration;
 use tower::ServiceExt;
@@ -29,12 +30,15 @@ async fn login_cookie(store: &Store, username: &str) -> String {
     let session_id = pingward::auth::new_session_token();
     store
         .create_session(
-            &session_id,
-            user_id,
-            Utc::now() + chrono::Duration::hours(pingward::auth::SESSION_IDLE_TTL_HOURS),
-            None,
-            None,
-            false,
+            &NewSession {
+                id: &session_id,
+                user_id,
+                expires_at: Utc::now()
+                    + chrono::Duration::hours(pingward::auth::SESSION_IDLE_TTL_HOURS),
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
             Utc::now(),
         )
         .await
@@ -84,7 +88,16 @@ async fn owner_receives_changed_event_when_check_is_pinged() {
         .unwrap()
         .id;
     let pid = store
-        .create_project(owner_id, "proj", "", None, None, Utc::now())
+        .create_project(
+            owner_id,
+            &ProjectSettings {
+                name: "proj",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let check_id = store
@@ -144,7 +157,16 @@ async fn non_owner_gets_404_from_check_events() {
             .unwrap()
     };
     let pid = store
-        .create_project(owner_id, "proj", "", None, None, Utc::now())
+        .create_project(
+            owner_id,
+            &ProjectSettings {
+                name: "proj",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let check_id = store

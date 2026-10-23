@@ -9,7 +9,10 @@ use crate::models::{
 use crate::notify::{EventDetail, EventKind, NotificationEvent, notifier_for};
 use crate::secret;
 use crate::state::AppState;
-use crate::store::{AuditFilter, NotifFilter, PageCursor, PingFilter, Store};
+use crate::store::{
+    AuditFilter, NewApiKey, NewChannel, NewSession, NotifFilter, PageCursor, PingFilter,
+    ProjectSettings, Store,
+};
 use askama::Template;
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
@@ -937,12 +940,14 @@ async fn open_session(
     state
         .store
         .create_session(
-            &session_id,
-            user_id,
-            expires,
-            user_agent,
-            ip,
-            sso,
+            &NewSession {
+                id: &session_id,
+                user_id,
+                expires_at: expires,
+                user_agent,
+                ip,
+                sso,
+            },
             Utc::now(),
         )
         .await?;
@@ -1526,7 +1531,16 @@ async fn project_create(
     };
     let id = state
         .store
-        .create_project(user.id, &name, &description, scan, nag, Utc::now())
+        .create_project(
+            user.id,
+            &ProjectSettings {
+                name: &name,
+                description: &description,
+                scan_interval_secs: scan,
+                nag_interval_secs: nag,
+            },
+            Utc::now(),
+        )
         .await?;
     Ok(Redirect::to(&format!("/projects/{id}")).into_response())
 }
@@ -1659,7 +1673,15 @@ async fn project_update(
     };
     state
         .store
-        .update_project(id, &name, &description, scan, nag)
+        .update_project(
+            id,
+            &ProjectSettings {
+                name: &name,
+                description: &description,
+                scan_interval_secs: scan,
+                nag_interval_secs: nag,
+            },
+        )
         .await?;
     Ok(Redirect::to(&format!("/projects/{id}")).into_response())
 }
@@ -3338,7 +3360,15 @@ async fn channel_create_core(
 
     state
         .store
-        .create_channel(pid, kind, &name, &config, Utc::now())
+        .create_channel(
+            &NewChannel {
+                project_id: pid,
+                kind,
+                name: &name,
+                config_json: &config,
+            },
+            Utc::now(),
+        )
         .await?;
     Ok(Redirect::to(&format!("{base}/projects/{pid}")).into_response())
 }
@@ -4612,7 +4642,16 @@ async fn api_keys_create(
     let (full, prefix, hash) = crate::apikey::generate_api_key();
     state
         .store
-        .insert_api_key(user.id, name, &hash, &prefix, expires_at, Utc::now())
+        .insert_api_key(
+            &NewApiKey {
+                user_id: user.id,
+                name,
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at,
+            },
+            Utc::now(),
+        )
         .await?;
     let parts = AccountRender {
         new_token: Some(full),
@@ -5308,7 +5347,15 @@ async fn admin_project_update(
     };
     state
         .store
-        .update_project(id, &name, &description, scan, nag)
+        .update_project(
+            id,
+            &ProjectSettings {
+                name: &name,
+                description: &description,
+                scan_interval_secs: scan,
+                nag_interval_secs: nag,
+            },
+        )
         .await?;
     Ok(Redirect::to(&format!("/admin/projects/{id}")).into_response())
 }

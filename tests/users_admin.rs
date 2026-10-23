@@ -1,4 +1,5 @@
 use axum_test::TestServer;
+use pingward::store::NewApiKey;
 use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
@@ -299,7 +300,16 @@ async fn password_reset_flashes_a_warning_when_target_has_api_keys() {
         .unwrap();
     let (_full, prefix, hash) = pingward::apikey::generate_api_key();
     store
-        .insert_api_key(dave_id, "ci", &hash, &prefix, None, chrono::Utc::now())
+        .insert_api_key(
+            &NewApiKey {
+                user_id: dave_id,
+                name: "ci",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -371,18 +381,29 @@ async fn password_reset_flash_excludes_expired_api_keys_from_the_count() {
     let (_full, prefix, hash) = pingward::apikey::generate_api_key();
     store
         .insert_api_key(
-            dave_id,
-            "expired",
-            &hash,
-            &prefix,
-            Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+            &NewApiKey {
+                user_id: dave_id,
+                name: "expired",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+            },
             chrono::Utc::now(),
         )
         .await
         .unwrap();
     let (_full2, prefix2, hash2) = pingward::apikey::generate_api_key();
     store
-        .insert_api_key(dave_id, "live", &hash2, &prefix2, None, chrono::Utc::now())
+        .insert_api_key(
+            &NewApiKey {
+                user_id: dave_id,
+                name: "live",
+                token_hash: &hash2,
+                prefix: &prefix2,
+                expires_at: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -411,11 +432,13 @@ async fn password_reset_has_no_warning_when_only_key_is_expired() {
     let (_full, prefix, hash) = pingward::apikey::generate_api_key();
     store
         .insert_api_key(
-            dave_id,
-            "expired",
-            &hash,
-            &prefix,
-            Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+            &NewApiKey {
+                user_id: dave_id,
+                name: "expired",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+            },
             chrono::Utc::now(),
         )
         .await
@@ -447,7 +470,16 @@ async fn password_reset_has_no_warning_when_target_is_disabled() {
         .unwrap();
     let (_full, prefix, hash) = pingward::apikey::generate_api_key();
     store
-        .insert_api_key(dave_id, "ci", &hash, &prefix, None, chrono::Utc::now())
+        .insert_api_key(
+            &NewApiKey {
+                user_id: dave_id,
+                name: "ci",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     store.set_user_disabled(dave_id, true).await.unwrap();

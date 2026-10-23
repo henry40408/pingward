@@ -243,6 +243,70 @@ pub struct UpdateCheck<'a> {
     pub nag_interval_secs: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct NewSession<'a> {
+    pub id: &'a str,
+    pub user_id: i64,
+    pub expires_at: DateTime<Utc>,
+    pub user_agent: Option<&'a str>,
+    pub ip: Option<&'a str>,
+    pub sso: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NewPing<'a> {
+    pub check_id: i64,
+    pub kind: PingKind,
+    pub exit_code: Option<i64>,
+    pub body: &'a str,
+    pub source_ip: Option<&'a str>,
+}
+
+/// Which columns of `checks` a ping rewrites; the `Option` timestamps keep the
+/// stored value when `None` (see `mark_ping`).
+#[derive(Debug, Clone, Copy)]
+pub struct PingMark {
+    pub status: CheckStatus,
+    pub last_ping_at: Option<DateTime<Utc>>,
+    pub last_start_at: Option<DateTime<Utc>>,
+    pub next_due_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NewApiKey<'a> {
+    pub user_id: i64,
+    pub name: &'a str,
+    pub token_hash: &'a str,
+    pub prefix: &'a str,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// The editable fields of a project, shared by create and update.
+#[derive(Debug, Clone, Copy)]
+pub struct ProjectSettings<'a> {
+    pub name: &'a str,
+    pub description: &'a str,
+    pub scan_interval_secs: Option<i64>,
+    pub nag_interval_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NewChannel<'a> {
+    pub project_id: i64,
+    pub kind: ChannelKind,
+    pub name: &'a str,
+    pub config_json: &'a str,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NewNotification<'a> {
+    pub check_id: i64,
+    pub channel_id: i64,
+    pub event: EventKind,
+    pub status: NotifyStatus,
+    pub error: Option<&'a str>,
+}
+
 fn parse_ts(s: Option<String>) -> Option<DateTime<Utc>> {
     s.and_then(|v| {
         DateTime::parse_from_rfc3339(&v)
@@ -440,6 +504,15 @@ enum Predicate {
     TextIn(&'static str, Vec<String>),
 }
 
+struct KeysetQuery<'a, T> {
+    table: &'static str,
+    scope: Option<(&'static str, i64)>,
+    cursor: PageCursor,
+    limit: i64,
+    filters: &'a [Predicate],
+    row_to: fn(&sqlx::any::AnyRow) -> Result<T, sqlx::Error>,
+}
+
 /// Keyset pagination by `id` for `pings`/`notifications`/`audit_log`. Fetches
 /// `limit + 1` rows to detect another page without a `COUNT(*)`. `scope` is
 /// e.g. `("check_id", id)`; `audit_log` passes `None`, so `WHERE` may be empty.
@@ -449,13 +522,16 @@ enum Predicate {
 )]
 async fn keyset_page<T>(
     pool: &crate::db::Pool,
-    table: &'static str,
-    scope: Option<(&'static str, i64)>,
-    cursor: PageCursor,
-    limit: i64,
-    filters: &[Predicate],
-    row_to: fn(&sqlx::any::AnyRow) -> Result<T, sqlx::Error>,
+    query: KeysetQuery<'_, T>,
 ) -> Result<Page<T>, sqlx::Error> {
+    let KeysetQuery {
+        table,
+        scope,
+        cursor,
+        limit,
+        filters,
+        row_to,
+    } = query;
     let fetch_limit = limit + 1;
     let mut conds: Vec<String> = Vec::new();
     let mut binds: Vec<QueryBind> = Vec::new();
@@ -614,13 +690,16 @@ impl Store {
 
     pub async fn insert_ping(
         &self,
-        check_id: i64,
-        kind: PingKind,
-        exit_code: Option<i64>,
-        body: &str,
-        source_ip: Option<&str>,
+        ping: &NewPing<'_>,
         now: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
+        let NewPing {
+            check_id,
+            kind,
+            exit_code,
+            body,
+            source_ip,
+        } = *ping;
         sqlx::query(
             "INSERT INTO pings (check_id, kind, exit_code, body, source_ip, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
         )
@@ -630,14 +709,13 @@ impl Store {
         Ok(())
     }
 
-    pub async fn mark_ping(
-        &self,
-        check_id: i64,
-        status: CheckStatus,
-        last_ping_at: Option<DateTime<Utc>>,
-        last_start_at: Option<DateTime<Utc>>,
-        next_due_at: Option<DateTime<Utc>>,
-    ) -> Result<(), sqlx::Error> {
+    pub async fn mark_ping(&self, check_id: i64, mark: &PingMark) -> Result<(), sqlx::Error> {
+        let PingMark {
+            status,
+            last_ping_at,
+            last_start_at,
+            next_due_at,
+        } = *mark;
         sqlx::query(
             "UPDATE checks SET status=$1, last_ping_at=COALESCE($2, last_ping_at), \
              last_start_at=COALESCE($3, last_start_at), next_due_at=$4 WHERE id=$5",
@@ -826,13 +904,16 @@ impl Store {
     /// Only the hash and the non-secret `prefix` are stored.
     pub async fn insert_api_key(
         &self,
-        user_id: i64,
-        name: &str,
-        token_hash: &str,
-        prefix: &str,
-        expires_at: Option<DateTime<Utc>>,
+        key: &NewApiKey<'_>,
         now: DateTime<Utc>,
     ) -> Result<i64, sqlx::Error> {
+        let NewApiKey {
+            user_id,
+            name,
+            token_hash,
+            prefix,
+            expires_at,
+        } = *key;
         let row = sqlx::query(
             "INSERT INTO api_keys (user_id, name, token_hash, prefix, created_at, expires_at) \
              VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
@@ -903,20 +984,19 @@ impl Store {
         Ok(Some(user_id))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each param is a distinct piece of per-session metadata; a struct would just move the noise"
-    )]
     pub async fn create_session(
         &self,
-        id: &str,
-        user_id: i64,
-        expires_at: DateTime<Utc>,
-        user_agent: Option<&str>,
-        ip: Option<&str>,
-        sso: bool,
+        session: &NewSession<'_>,
         now: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
+        let NewSession {
+            id,
+            user_id,
+            expires_at,
+            user_agent,
+            ip,
+            sso,
+        } = *session;
         sqlx::query(
             "INSERT INTO sessions (id, user_id, expires_at, created_at, user_agent, ip, sso) \
              VALUES ($1,$2,$3,$4,$5,$6,$7)",
@@ -1089,12 +1169,15 @@ impl Store {
     pub async fn create_project(
         &self,
         user_id: i64,
-        name: &str,
-        description: &str,
-        scan_interval_secs: Option<i64>,
-        nag_interval_secs: Option<i64>,
+        project: &ProjectSettings<'_>,
         now: DateTime<Utc>,
     ) -> Result<i64, sqlx::Error> {
+        let ProjectSettings {
+            name,
+            description,
+            scan_interval_secs,
+            nag_interval_secs,
+        } = *project;
         let row = sqlx::query(
             "INSERT INTO projects (user_id, name, description, scan_interval_secs, nag_interval_secs, created_at) \
              VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
@@ -1144,11 +1227,14 @@ impl Store {
     pub async fn update_project(
         &self,
         id: i64,
-        name: &str,
-        description: &str,
-        scan_interval_secs: Option<i64>,
-        nag_interval_secs: Option<i64>,
+        project: &ProjectSettings<'_>,
     ) -> Result<(), sqlx::Error> {
+        let ProjectSettings {
+            name,
+            description,
+            scan_interval_secs,
+            nag_interval_secs,
+        } = *project;
         sqlx::query(
             "UPDATE projects SET name = $1, description = $2, scan_interval_secs = $3, nag_interval_secs = $4 WHERE id = $5",
         )
@@ -1229,12 +1315,15 @@ impl Store {
     // --- channels ---
     pub async fn create_channel(
         &self,
-        project_id: i64,
-        kind: ChannelKind,
-        name: &str,
-        config_json: &str,
+        channel: &NewChannel<'_>,
         now: DateTime<Utc>,
     ) -> Result<i64, sqlx::Error> {
+        let NewChannel {
+            project_id,
+            kind,
+            name,
+            config_json,
+        } = *channel;
         let row = sqlx::query(
             "INSERT INTO channels (project_id, kind, name, config_json, created_at) VALUES ($1,$2,$3,$4,$5) \
              RETURNING id",
@@ -1549,12 +1638,14 @@ impl Store {
     ) -> Result<Page<Ping>, sqlx::Error> {
         keyset_page(
             &self.pool,
-            "pings",
-            Some(("check_id", check_id)),
-            cursor,
-            limit,
-            &filter.predicates(),
-            row_to_ping,
+            KeysetQuery {
+                table: "pings",
+                scope: Some(("check_id", check_id)),
+                cursor,
+                limit,
+                filters: &filter.predicates(),
+                row_to: row_to_ping,
+            },
         )
         .await
     }
@@ -1568,25 +1659,30 @@ impl Store {
     ) -> Result<Page<Notification>, sqlx::Error> {
         keyset_page(
             &self.pool,
-            "notifications",
-            Some(("check_id", check_id)),
-            cursor,
-            limit,
-            &filter.predicates(),
-            row_to_notification,
+            KeysetQuery {
+                table: "notifications",
+                scope: Some(("check_id", check_id)),
+                cursor,
+                limit,
+                filters: &filter.predicates(),
+                row_to: row_to_notification,
+            },
         )
         .await
     }
 
     pub async fn record_notification(
         &self,
-        check_id: i64,
-        channel_id: i64,
-        event: EventKind,
-        status: NotifyStatus,
-        error: Option<&str>,
+        notification: &NewNotification<'_>,
         now: DateTime<Utc>,
     ) -> Result<(), sqlx::Error> {
+        let NewNotification {
+            check_id,
+            channel_id,
+            event,
+            status,
+            error,
+        } = *notification;
         sqlx::query(
             "INSERT INTO notifications (check_id, channel_id, event, status, error, created_at) \
              VALUES ($1,$2,$3,$4,$5,$6)",
@@ -1725,12 +1821,14 @@ impl Store {
     ) -> Result<Page<AuditLog>, sqlx::Error> {
         keyset_page(
             &self.pool,
-            "audit_log",
-            None,
-            cursor,
-            limit,
-            &filter.predicates(),
-            row_to_audit,
+            KeysetQuery {
+                table: "audit_log",
+                scope: None,
+                cursor,
+                limit,
+                filters: &filter.predicates(),
+                row_to: row_to_audit,
+            },
         )
         .await
     }
@@ -1973,14 +2071,31 @@ mod tests {
         let store = seeded().await;
 
         let pid = store
-            .create_project(1, "described", "hello **world**", None, None, Utc::now())
+            .create_project(
+                1,
+                &ProjectSettings {
+                    name: "described",
+                    description: "hello **world**",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
+                Utc::now(),
+            )
             .await
             .unwrap();
         let p = store.find_project(pid).await.unwrap().unwrap();
         assert_eq!(p.description, "hello **world**");
 
         store
-            .update_project(pid, "described", "updated *desc*", None, None)
+            .update_project(
+                pid,
+                &ProjectSettings {
+                    name: "described",
+                    description: "updated *desc*",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
+            )
             .await
             .unwrap();
         let p = store.find_project(pid).await.unwrap().unwrap();
@@ -2044,11 +2159,13 @@ mod tests {
         let ping_time = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
         store
             .insert_ping(
-                id,
-                PingKind::Success,
-                Some(0),
-                "hello",
-                Some("1.2.3.4"),
+                &NewPing {
+                    check_id: id,
+                    kind: PingKind::Success,
+                    exit_code: Some(0),
+                    body: "hello",
+                    source_ip: Some("1.2.3.4"),
+                },
                 ping_time,
             )
             .await
@@ -2116,7 +2233,15 @@ mod tests {
         let due1 = Utc.with_ymd_and_hms(2026, 1, 1, 11, 0, 0).unwrap();
 
         store
-            .mark_ping(id, CheckStatus::Up, Some(t1), Some(s1), Some(due1))
+            .mark_ping(
+                id,
+                &PingMark {
+                    status: CheckStatus::Up,
+                    last_ping_at: Some(t1),
+                    last_start_at: Some(s1),
+                    next_due_at: Some(due1),
+                },
+            )
             .await
             .unwrap();
 
@@ -2132,7 +2257,15 @@ mod tests {
 
         // COALESCE keeps the timestamps, but next_due_at is overwritten to NULL.
         store
-            .mark_ping(id, CheckStatus::Up, None, None, None)
+            .mark_ping(
+                id,
+                &PingMark {
+                    status: CheckStatus::Up,
+                    last_ping_at: None,
+                    last_start_at: None,
+                    next_due_at: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -2189,12 +2322,14 @@ mod tests {
 
         store
             .create_session(
-                "sess-1",
-                uid,
-                now + chrono::Duration::hours(1),
-                Some("curl/8.0"),
-                Some("127.0.0.1"),
-                false,
+                &NewSession {
+                    id: "sess-1",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: Some("curl/8.0"),
+                    ip: Some("127.0.0.1"),
+                    sso: false,
+                },
                 now,
             )
             .await
@@ -2230,12 +2365,14 @@ mod tests {
         let created2 = now + chrono::Duration::seconds(5);
         store
             .create_session(
-                "sess-2",
-                uid,
-                now + chrono::Duration::hours(2),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-2",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(2),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 created2,
             )
             .await
@@ -2275,12 +2412,14 @@ mod tests {
         // Plain `delete_session` (used by logout) still works unscoped.
         store
             .create_session(
-                "sess-3",
-                uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-3",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now,
             )
             .await
@@ -2302,36 +2441,42 @@ mod tests {
             .unwrap();
         store
             .create_session(
-                "sess-4",
-                uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-4",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now,
             )
             .await
             .unwrap();
         store
             .create_session(
-                "sess-5",
-                uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-5",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now,
             )
             .await
             .unwrap();
         store
             .create_session(
-                "sess-carol",
-                other_uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-carol",
+                    user_id: other_uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now,
             )
             .await
@@ -2358,12 +2503,14 @@ mod tests {
         // even though its idle window has not lapsed.
         store
             .create_session(
-                "sess-abs-cap",
-                uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-abs-cap",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now - chrono::Duration::days(40),
             )
             .await
@@ -2385,12 +2532,14 @@ mod tests {
 
         store
             .create_session(
-                "sess-idle-expiry",
-                uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-idle-expiry",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now,
             )
             .await
@@ -2414,7 +2563,17 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
         let original_expiry = now + chrono::Duration::hours(70); // > half of 72h
         store
-            .create_session("sess-fresh", uid, original_expiry, None, None, false, now)
+            .create_session(
+                &NewSession {
+                    id: "sess-fresh",
+                    user_id: uid,
+                    expires_at: original_expiry,
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
+                now,
+            )
             .await
             .unwrap();
 
@@ -2438,12 +2597,14 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
         store
             .create_session(
-                "sess-stale",
-                uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-stale",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now,
             )
             .await
@@ -2472,12 +2633,14 @@ mod tests {
         // expires_at == now must be deleted (`<=`, not `<`).
         store
             .create_session(
-                "sess-at-now",
-                uid,
-                now,
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-at-now",
+                    user_id: uid,
+                    expires_at: now,
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now - chrono::Duration::hours(1),
             )
             .await
@@ -2485,12 +2648,14 @@ mod tests {
         // expires_at in the future must survive.
         store
             .create_session(
-                "sess-future",
-                uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-future",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now - chrono::Duration::hours(1),
             )
             .await
@@ -2505,12 +2670,14 @@ mod tests {
         // Inside its idle window but past the absolute cap.
         store
             .create_session(
-                "sess-abscap",
-                uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-abscap",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now - chrono::Duration::days(40),
             )
             .await
@@ -2552,24 +2719,28 @@ mod tests {
 
         store
             .create_session(
-                "sess-sso",
-                uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                true,
+                &NewSession {
+                    id: "sess-sso",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: true,
+                },
                 now,
             )
             .await
             .unwrap();
         store
             .create_session(
-                "sess-password",
-                uid,
-                now + chrono::Duration::hours(1),
-                None,
-                None,
-                false,
+                &NewSession {
+                    id: "sess-password",
+                    user_id: uid,
+                    expires_at: now + chrono::Duration::hours(1),
+                    user_agent: None,
+                    ip: None,
+                    sso: false,
+                },
                 now,
             )
             .await
@@ -2642,7 +2813,16 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 
         let pid = store
-            .create_project(1, "web", "", Some(15), None, now)
+            .create_project(
+                1,
+                &ProjectSettings {
+                    name: "web",
+                    description: "",
+                    scan_interval_secs: Some(15),
+                    nag_interval_secs: None,
+                },
+                now,
+            )
             .await
             .unwrap();
         assert_eq!(store.list_projects_for_user(1).await.unwrap().len(), 2); // 'p' from seed + 'web'
@@ -2658,10 +2838,12 @@ mod tests {
 
         let cid = store
             .create_channel(
-                pid,
-                ChannelKind::Webhook,
-                "hook",
-                r#"{"url":"http://x"}"#,
+                &NewChannel {
+                    project_id: pid,
+                    kind: ChannelKind::Webhook,
+                    name: "hook",
+                    config_json: r#"{"url":"http://x"}"#,
+                },
                 now,
             )
             .await
@@ -2691,7 +2873,16 @@ mod tests {
         );
 
         store
-            .record_notification(chk, cid, EventKind::Down, NotifyStatus::Ok, None, now)
+            .record_notification(
+                &NewNotification {
+                    check_id: chk,
+                    channel_id: cid,
+                    event: EventKind::Down,
+                    status: NotifyStatus::Ok,
+                    error: None,
+                },
+                now,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -2725,24 +2916,66 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 
         let pid = store
-            .create_project(1, "web", "", None, None, now)
+            .create_project(
+                1,
+                &ProjectSettings {
+                    name: "web",
+                    description: "",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
+                now,
+            )
             .await
             .unwrap();
         let other_pid = store
-            .create_project(1, "other", "", None, None, now)
+            .create_project(
+                1,
+                &ProjectSettings {
+                    name: "other",
+                    description: "",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
+                now,
+            )
             .await
             .unwrap();
 
         let c1 = store
-            .create_channel(pid, ChannelKind::Webhook, "hook1", "{}", now)
+            .create_channel(
+                &NewChannel {
+                    project_id: pid,
+                    kind: ChannelKind::Webhook,
+                    name: "hook1",
+                    config_json: "{}",
+                },
+                now,
+            )
             .await
             .unwrap();
         let c2 = store
-            .create_channel(pid, ChannelKind::Webhook, "hook2", "{}", now)
+            .create_channel(
+                &NewChannel {
+                    project_id: pid,
+                    kind: ChannelKind::Webhook,
+                    name: "hook2",
+                    config_json: "{}",
+                },
+                now,
+            )
             .await
             .unwrap();
         let other_c = store
-            .create_channel(other_pid, ChannelKind::Webhook, "hook-other", "{}", now)
+            .create_channel(
+                &NewChannel {
+                    project_id: other_pid,
+                    kind: ChannelKind::Webhook,
+                    name: "hook-other",
+                    config_json: "{}",
+                },
+                now,
+            )
             .await
             .unwrap();
 
@@ -2784,11 +3017,28 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
 
         let pid = store
-            .create_project(1, "web", "", None, None, now)
+            .create_project(
+                1,
+                &ProjectSettings {
+                    name: "web",
+                    description: "",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
+                now,
+            )
             .await
             .unwrap();
         let cid = store
-            .create_channel(pid, ChannelKind::Webhook, "hook", "{}", now)
+            .create_channel(
+                &NewChannel {
+                    project_id: pid,
+                    kind: ChannelKind::Webhook,
+                    name: "hook",
+                    config_json: "{}",
+                },
+                now,
+            )
             .await
             .unwrap();
 
@@ -2934,10 +3184,12 @@ mod tests {
             .unwrap();
         let chan = store
             .create_channel(
-                1,
-                ChannelKind::Webhook,
-                "h",
-                "{\"url\":\"http://x\"}",
+                &NewChannel {
+                    project_id: 1,
+                    kind: ChannelKind::Webhook,
+                    name: "h",
+                    config_json: "{\"url\":\"http://x\"}",
+                },
                 Utc::now(),
             )
             .await
@@ -2948,19 +3200,55 @@ mod tests {
         let recent = now - Duration::days(1);
 
         store
-            .insert_ping(cid, PingKind::Success, None, "", None, old)
+            .insert_ping(
+                &NewPing {
+                    check_id: cid,
+                    kind: PingKind::Success,
+                    exit_code: None,
+                    body: "",
+                    source_ip: None,
+                },
+                old,
+            )
             .await
             .unwrap();
         store
-            .insert_ping(cid, PingKind::Success, None, "", None, recent)
+            .insert_ping(
+                &NewPing {
+                    check_id: cid,
+                    kind: PingKind::Success,
+                    exit_code: None,
+                    body: "",
+                    source_ip: None,
+                },
+                recent,
+            )
             .await
             .unwrap();
         store
-            .record_notification(cid, chan, EventKind::Down, NotifyStatus::Ok, None, old)
+            .record_notification(
+                &NewNotification {
+                    check_id: cid,
+                    channel_id: chan,
+                    event: EventKind::Down,
+                    status: NotifyStatus::Ok,
+                    error: None,
+                },
+                old,
+            )
             .await
             .unwrap();
         store
-            .record_notification(cid, chan, EventKind::Up, NotifyStatus::Ok, None, recent)
+            .record_notification(
+                &NewNotification {
+                    check_id: cid,
+                    channel_id: chan,
+                    event: EventKind::Up,
+                    status: NotifyStatus::Ok,
+                    error: None,
+                },
+                recent,
+            )
             .await
             .unwrap();
 
@@ -3179,7 +3467,16 @@ mod tests {
             .await
             .unwrap();
         let pid = store
-            .create_project(uid, "p2", "", None, None, Utc::now())
+            .create_project(
+                uid,
+                &ProjectSettings {
+                    name: "p2",
+                    description: "",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
+                Utc::now(),
+            )
             .await
             .unwrap();
         store
@@ -3225,7 +3522,15 @@ mod tests {
         let t1 = Utc::now();
         let t2 = t1 + Duration::seconds(1);
         store
-            .mark_ping(bid, CheckStatus::New, None, Some(t1), None)
+            .mark_ping(
+                bid,
+                &PingMark {
+                    status: CheckStatus::New,
+                    last_ping_at: None,
+                    last_start_at: Some(t1),
+                    next_due_at: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -3244,11 +3549,27 @@ mod tests {
             .await
             .unwrap();
         store
-            .mark_ping(cid, CheckStatus::Up, Some(t1), None, None)
+            .mark_ping(
+                cid,
+                &PingMark {
+                    status: CheckStatus::Up,
+                    last_ping_at: Some(t1),
+                    last_start_at: None,
+                    next_due_at: None,
+                },
+            )
             .await
             .unwrap();
         store
-            .mark_ping(cid, CheckStatus::Up, None, Some(t2), None)
+            .mark_ping(
+                cid,
+                &PingMark {
+                    status: CheckStatus::Up,
+                    last_ping_at: None,
+                    last_start_at: Some(t2),
+                    next_due_at: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -3267,11 +3588,27 @@ mod tests {
             .await
             .unwrap();
         store
-            .mark_ping(did, CheckStatus::Down, Some(t1), None, None)
+            .mark_ping(
+                did,
+                &PingMark {
+                    status: CheckStatus::Down,
+                    last_ping_at: Some(t1),
+                    last_start_at: None,
+                    next_due_at: None,
+                },
+            )
             .await
             .unwrap();
         store
-            .mark_ping(did, CheckStatus::Down, None, Some(t2), None)
+            .mark_ping(
+                did,
+                &PingMark {
+                    status: CheckStatus::Down,
+                    last_ping_at: None,
+                    last_start_at: Some(t2),
+                    next_due_at: None,
+                },
+            )
             .await
             .unwrap();
 
@@ -3305,10 +3642,12 @@ mod tests {
             .unwrap();
         let chan = store
             .create_channel(
-                1,
-                ChannelKind::Webhook,
-                "h",
-                "{\"url\":\"http://x\"}",
+                &NewChannel {
+                    project_id: 1,
+                    kind: ChannelKind::Webhook,
+                    name: "h",
+                    config_json: "{\"url\":\"http://x\"}",
+                },
                 Utc::now(),
             )
             .await
@@ -3316,16 +3655,27 @@ mod tests {
 
         let now = Utc::now();
         store
-            .record_notification(cid, chan, EventKind::Up, NotifyStatus::Ok, None, now)
+            .record_notification(
+                &NewNotification {
+                    check_id: cid,
+                    channel_id: chan,
+                    event: EventKind::Up,
+                    status: NotifyStatus::Ok,
+                    error: None,
+                },
+                now,
+            )
             .await
             .unwrap();
         store
             .record_notification(
-                cid,
-                chan,
-                EventKind::Down,
-                NotifyStatus::Error,
-                Some("boom"),
+                &NewNotification {
+                    check_id: cid,
+                    channel_id: chan,
+                    event: EventKind::Down,
+                    status: NotifyStatus::Error,
+                    error: Some("boom"),
+                },
                 now,
             )
             .await
@@ -3358,20 +3708,24 @@ mod tests {
             .unwrap();
         let chan_a = store
             .create_channel(
-                1,
-                ChannelKind::Webhook,
-                "dup",
-                "{\"url\":\"http://a\"}",
+                &NewChannel {
+                    project_id: 1,
+                    kind: ChannelKind::Webhook,
+                    name: "dup",
+                    config_json: "{\"url\":\"http://a\"}",
+                },
                 Utc::now(),
             )
             .await
             .unwrap();
         let chan_b = store
             .create_channel(
-                1,
-                ChannelKind::Webhook,
-                "dup",
-                "{\"url\":\"http://b\"}",
+                &NewChannel {
+                    project_id: 1,
+                    kind: ChannelKind::Webhook,
+                    name: "dup",
+                    config_json: "{\"url\":\"http://b\"}",
+                },
                 Utc::now(),
             )
             .await
@@ -3381,22 +3735,26 @@ mod tests {
         let now = Utc::now();
         store
             .record_notification(
-                cid,
-                chan_a,
-                EventKind::Down,
-                NotifyStatus::Error,
-                Some("boom-a"),
+                &NewNotification {
+                    check_id: cid,
+                    channel_id: chan_a,
+                    event: EventKind::Down,
+                    status: NotifyStatus::Error,
+                    error: Some("boom-a"),
+                },
                 now,
             )
             .await
             .unwrap();
         store
             .record_notification(
-                cid,
-                chan_b,
-                EventKind::Down,
-                NotifyStatus::Error,
-                Some("boom-b"),
+                &NewNotification {
+                    check_id: cid,
+                    channel_id: chan_b,
+                    event: EventKind::Down,
+                    status: NotifyStatus::Error,
+                    error: Some("boom-b"),
+                },
                 now,
             )
             .await
@@ -3451,7 +3809,15 @@ mod tests {
 
         let t0 = Utc.with_ymd_and_hms(2026, 7, 12, 12, 0, 0).unwrap();
         store
-            .mark_ping(a, CheckStatus::Down, Some(t0), Some(t0), None)
+            .mark_ping(
+                a,
+                &PingMark {
+                    status: CheckStatus::Down,
+                    last_ping_at: Some(t0),
+                    last_start_at: Some(t0),
+                    next_due_at: None,
+                },
+            )
             .await
             .unwrap();
         store.set_status(b, CheckStatus::Down).await.unwrap();
@@ -3472,7 +3838,16 @@ mod tests {
         let store = seeded().await;
         for name in ["p2", "p3"] {
             store
-                .create_project(1, name, "", None, None, Utc::now())
+                .create_project(
+                    1,
+                    &ProjectSettings {
+                        name,
+                        description: "",
+                        scan_interval_secs: None,
+                        nag_interval_secs: None,
+                    },
+                    Utc::now(),
+                )
                 .await
                 .unwrap();
         }
@@ -3552,15 +3927,17 @@ mod tests {
             for i in 0..5 {
                 store
                     .insert_ping(
-                        cid,
-                        if i % 2 == 0 {
-                            PingKind::Success
-                        } else {
-                            PingKind::Start
+                        &NewPing {
+                            check_id: cid,
+                            kind: if i % 2 == 0 {
+                                PingKind::Success
+                            } else {
+                                PingKind::Start
+                            },
+                            exit_code: Some(0),
+                            body: &"x".repeat(4096),
+                            source_ip: Some("10.0.0.1"),
                         },
-                        Some(0),
-                        &"x".repeat(4096),
-                        Some("10.0.0.1"),
                         base + chrono::Duration::seconds(i),
                     )
                     .await
@@ -3635,11 +4012,13 @@ mod tests {
         for i in 0..5 {
             store
                 .insert_ping(
-                    cid,
-                    PingKind::Success,
-                    Some(0),
-                    "",
-                    None,
+                    &NewPing {
+                        check_id: cid,
+                        kind: PingKind::Success,
+                        exit_code: Some(0),
+                        body: "",
+                        source_ip: None,
+                    },
                     base + chrono::Duration::seconds(i),
                 )
                 .await
@@ -3724,10 +4103,12 @@ mod tests {
             .unwrap();
         let chan = store
             .create_channel(
-                1,
-                ChannelKind::Webhook,
-                "h",
-                "{\"url\":\"http://x\"}",
+                &NewChannel {
+                    project_id: 1,
+                    kind: ChannelKind::Webhook,
+                    name: "h",
+                    config_json: "{\"url\":\"http://x\"}",
+                },
                 Utc::now(),
             )
             .await
@@ -3736,11 +4117,13 @@ mod tests {
         for i in 0..5 {
             store
                 .record_notification(
-                    cid,
-                    chan,
-                    EventKind::Down,
-                    NotifyStatus::Ok,
-                    None,
+                    &NewNotification {
+                        check_id: cid,
+                        channel_id: chan,
+                        event: EventKind::Down,
+                        status: NotifyStatus::Ok,
+                        error: None,
+                    },
                     base + chrono::Duration::seconds(i),
                 )
                 .await
@@ -3829,11 +4212,13 @@ mod tests {
         for (i, k) in kinds.iter().enumerate() {
             store
                 .insert_ping(
-                    cid,
-                    *k,
-                    None,
-                    "",
-                    None,
+                    &NewPing {
+                        check_id: cid,
+                        kind: *k,
+                        exit_code: None,
+                        body: "",
+                        source_ip: None,
+                    },
                     base + chrono::Duration::seconds(i as i64),
                 )
                 .await
@@ -3905,10 +4290,12 @@ mod tests {
             .unwrap();
         let chan = store
             .create_channel(
-                1,
-                ChannelKind::Webhook,
-                "h",
-                "{\"url\":\"http://x\"}",
+                &NewChannel {
+                    project_id: 1,
+                    kind: ChannelKind::Webhook,
+                    name: "h",
+                    config_json: "{\"url\":\"http://x\"}",
+                },
                 Utc::now(),
             )
             .await
@@ -3925,11 +4312,13 @@ mod tests {
             let err = (*status == NotifyStatus::Error).then_some("boom");
             store
                 .record_notification(
-                    cid,
-                    chan,
-                    *event,
-                    *status,
-                    err,
+                    &NewNotification {
+                        check_id: cid,
+                        channel_id: chan,
+                        event: *event,
+                        status: *status,
+                        error: err,
+                    },
                     base + chrono::Duration::seconds(i as i64),
                 )
                 .await
