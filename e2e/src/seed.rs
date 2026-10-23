@@ -498,96 +498,153 @@ fn uuid_for(rand: &mut Mulberry32) -> String {
     format!("{}-{}-4{}-a{}-{}", hex(8), hex(4), hex(3), hex(3), hex(12))
 }
 
-fn ping_sql(check: &str, kind: &str, at_ms: f64, body: &str, ip: &str) -> String {
+struct PingRow<'a> {
+    /// A `SELECT` sub-query naming the check: ids are DB-assigned.
+    check: &'a str,
+    kind: &'a str,
+    at_ms: f64,
+    body: &'a str,
+    ip: &'a str,
+}
+
+fn ping_sql(ping: &PingRow<'_>) -> String {
+    let PingRow {
+        check,
+        kind,
+        at_ms,
+        body,
+        ip,
+    } = ping;
     format!(
         "INSERT INTO pings (check_id, kind, exit_code, body, source_ip, created_at)\n  \
          VALUES ({check}, {}, NULL, {}, {}, {});",
         qs(kind),
         qs(body),
         qs(ip),
-        qs(&iso(at_ms))
+        qs(&iso(*at_ms))
     )
 }
 
 /// Builds the demo dataset as one SQL transaction, anchored at `now_ms`.
+///
+/// The order of the steps is part of the output: every step that draws from `rand`
+/// shifts the numbers the later ones see.
 pub fn seed_sql(now_ms: i64) -> Result<String> {
     let now = now_ms as f64;
     let mut rand = Mulberry32::new(20_260_722);
     let mut stmts = vec!["BEGIN;".to_owned()];
+    stmts.extend(user_stmts(now));
+    stmts.extend(project_stmts(now));
+    stmts.extend(channel_stmts(now)?);
+    let (check_stmts, notifications) = check_stmts(now_ms, &mut rand)?;
+    stmts.extend(check_stmts);
+    stmts.extend(notifications.iter().map(notification_sql));
+    stmts.extend(audit_stmts(now));
+    stmts.extend(settings_stmts());
+    stmts.push("COMMIT;".to_owned());
+    Ok(stmts.join("\n"))
+}
 
-    // ---- users -------------------------------------------------------------
-    for (index, (username, is_admin)) in EXTRA_USERS.iter().enumerate() {
-        let created = now - (40.0 - index as f64 * 6.0) * DAY as f64 * 1000.0;
-        stmts.push(format!(
-            "INSERT INTO users (username, password_hash, is_admin, created_at)\n  \
-             SELECT {}, password_hash, {}, {}\n  FROM users WHERE username = {};",
-            qs(username),
-            i32::from(*is_admin),
-            qs(&iso(created)),
-            qs(ADMIN_USERNAME),
-        ));
-    }
-    let owner_sql = |index: usize| {
-        let username = if index == 0 {
-            ADMIN_USERNAME
-        } else {
-            EXTRA_USERS[index - 1].0
-        };
-        format!("(SELECT id FROM users WHERE username = {})", qs(username))
+fn user_stmts(now: f64) -> Vec<String> {
+    EXTRA_USERS
+        .iter()
+        .enumerate()
+        .map(|(index, (username, is_admin))| {
+            let created = now - (40.0 - index as f64 * 6.0) * DAY as f64 * 1000.0;
+            format!(
+                "INSERT INTO users (username, password_hash, is_admin, created_at)\n  \
+                 SELECT {}, password_hash, {}, {}\n  FROM users WHERE username = {};",
+                qs(username),
+                i32::from(*is_admin),
+                qs(&iso(created)),
+                qs(ADMIN_USERNAME),
+            )
+        })
+        .collect()
+}
+
+fn owner_sql(index: usize) -> String {
+    let username = if index == 0 {
+        ADMIN_USERNAME
+    } else {
+        EXTRA_USERS[index - 1].0
     };
+    format!("(SELECT id FROM users WHERE username = {})", qs(username))
+}
 
-    // ---- projects ----------------------------------------------------------
-    for (index, project) in PROJECTS.iter().enumerate() {
-        let created = now - (60.0 - index as f64 * 5.0) * DAY as f64 * 1000.0;
-        stmts.push(format!(
-            "INSERT INTO projects (user_id, name, description, scan_interval_secs, \
-             nag_interval_secs, created_at)\n  VALUES ({}, {}, {}, {}, {}, {});",
-            owner_sql(project.owner),
-            qs(project.name),
-            qs(project.description),
-            num(project.scan_interval_secs),
-            num(project.nag_interval_secs),
-            qs(&iso(created)),
-        ));
-    }
-    let project_sql = |key: &str| -> Result<String> {
-        let project = PROJECTS
-            .iter()
-            .find(|project| project.key == key)
-            .with_context(|| format!("no seeded project keyed `{key}`"))?;
-        Ok(format!(
-            "(SELECT id FROM projects WHERE name = {})",
-            qs(project.name)
-        ))
-    };
+fn project_stmts(now: f64) -> Vec<String> {
+    PROJECTS
+        .iter()
+        .enumerate()
+        .map(|(index, project)| {
+            let created = now - (60.0 - index as f64 * 5.0) * DAY as f64 * 1000.0;
+            format!(
+                "INSERT INTO projects (user_id, name, description, scan_interval_secs, \
+                 nag_interval_secs, created_at)\n  VALUES ({}, {}, {}, {}, {}, {});",
+                owner_sql(project.owner),
+                qs(project.name),
+                qs(project.description),
+                num(project.scan_interval_secs),
+                num(project.nag_interval_secs),
+                qs(&iso(created)),
+            )
+        })
+        .collect()
+}
 
-    // ---- channels ----------------------------------------------------------
-    for channel in &CHANNELS {
-        stmts.push(format!(
-            "INSERT INTO channels (project_id, kind, name, config_json, created_at)\n  \
-             VALUES ({}, {}, {}, {}, {});",
-            project_sql(channel.project)?,
-            qs(channel.kind),
-            qs(channel.name),
-            qs(channel.config),
-            qs(&iso(now - 50.0 * DAY as f64 * 1000.0)),
-        ));
-    }
-    let channel_sql = |key: &str| -> Result<String> {
-        let channel = CHANNELS
-            .iter()
-            .find(|channel| channel.key == key)
-            .with_context(|| format!("no seeded channel keyed `{key}`"))?;
-        Ok(format!(
-            "(SELECT id FROM channels WHERE name = {})",
-            qs(channel.name)
-        ))
-    };
+fn project_sql(key: &str) -> Result<String> {
+    let project = PROJECTS
+        .iter()
+        .find(|project| project.key == key)
+        .with_context(|| format!("no seeded project keyed `{key}`"))?;
+    Ok(format!(
+        "(SELECT id FROM projects WHERE name = {})",
+        qs(project.name)
+    ))
+}
 
-    // ---- checks, their ping history, and channel bindings ------------------
-    let mut notifications: Vec<Notification> = Vec::new();
+fn channel_stmts(now: f64) -> Result<Vec<String>> {
+    CHANNELS
+        .iter()
+        .map(|channel| {
+            Ok(format!(
+                "INSERT INTO channels (project_id, kind, name, config_json, created_at)\n  \
+                 VALUES ({}, {}, {}, {}, {});",
+                project_sql(channel.project)?,
+                qs(channel.kind),
+                qs(channel.name),
+                qs(channel.config),
+                qs(&iso(now - 50.0 * DAY as f64 * 1000.0)),
+            ))
+        })
+        .collect()
+}
 
-    for check in &CHECKS {
+fn channel_sql(key: &str) -> Result<String> {
+    let channel = CHANNELS
+        .iter()
+        .find(|channel| channel.key == key)
+        .with_context(|| format!("no seeded channel keyed `{key}`"))?;
+    Ok(format!(
+        "(SELECT id FROM channels WHERE name = {})",
+        qs(channel.name)
+    ))
+}
+
+/// Where a check's last run, next deadline and in-flight run fall, in epoch ms.
+struct CheckPlan {
+    finish_at: f64,
+    next_due: f64,
+    /// `None` for cron checks.
+    period: Option<i64>,
+    /// A `start` newer than the last finish, kept inside `max_runtime` so the scan
+    /// does not down it.
+    running_start: Option<f64>,
+}
+
+impl CheckPlan {
+    fn of(check: &Check, now_ms: i64, rand: &mut Mulberry32) -> Result<Self> {
+        let now = now_ms as f64;
         let tz: Tz = check
             .timezone
             .parse()
@@ -595,57 +652,32 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
         // Cron checks anchor on a real fire; period checks per their state.
         let finish_at = match check.cron {
             Some(expr) => last_fire_at_or_before(expr, tz, now_ms)? as f64,
-            None => now - last_finish_offset(check, &mut rand) * 1000.0,
+            None => now - last_finish_offset(check, rand) * 1000.0,
         };
-        let period = check.cron.is_none().then_some(check.cadence);
         let next_due = match check.cron {
             Some(expr) => {
                 (next_fire_after(expr, tz, finish_at as i64)? + check.grace * 1000) as f64
             }
             None => finish_at + (check.cadence + check.grace) as f64 * 1000.0,
         };
+        Ok(Self {
+            finish_at,
+            next_due,
+            period: check.cron.is_none().then_some(check.cadence),
+            running_start: (check.state == State::Running).then_some(now - 6.0 * 60.0 * 1000.0),
+        })
+    }
+}
 
-        let status = match check.state {
-            State::Down => "down",
-            State::Paused => "paused",
-            _ => "up",
-        };
-        // `running` = a `start` newer than the last finish, kept inside
-        // `max_runtime` so the scan does not down it.
-        let running_start = (check.state == State::Running).then_some(now - 6.0 * 60.0 * 1000.0);
-        let last_start = running_start.unwrap_or(finish_at - 60.0 * 1000.0);
-
-        stmts.push(format!(
-            "INSERT INTO checks (project_id, name, description, ping_uuid, schedule_kind, \
-             period_secs, grace_secs, cron_expr, timezone, status, last_ping_at, last_start_at, \
-             next_due_at, max_runtime_secs, last_alert_at, acknowledged, created_at)\n  \
-             VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0, {});",
-            project_sql(check.project)?,
-            qs(check.name),
-            qs(check.description),
-            qs(&uuid_for(&mut rand)),
-            qs(if check.cron.is_some() {
-                "cron"
-            } else {
-                "period"
-            }),
-            num(period),
-            check.grace,
-            q(check.cron),
-            qs(check.timezone),
-            qs(status),
-            qs(&iso(finish_at)),
-            qs(&iso(last_start)),
-            qs(&iso(next_due)),
-            num(check.max_runtime),
-            if check.state == State::Down {
-                qs(&iso(now - 10.0 * 60.0 * 1000.0))
-            } else {
-                "NULL".to_owned()
-            },
-            qs(&iso(now - 45.0 * DAY as f64 * 1000.0)),
-        ));
-
+/// The `checks` rows, their ping history and channel bindings, plus the
+/// notifications to insert once every check exists.
+fn check_stmts(now_ms: i64, rand: &mut Mulberry32) -> Result<(Vec<String>, Vec<Notification>)> {
+    let now = now_ms as f64;
+    let mut stmts = Vec::new();
+    let mut notifications = Vec::new();
+    for check in &CHECKS {
+        let plan = CheckPlan::of(check, now_ms, rand)?;
+        stmts.push(check_insert_sql(check, &plan, now, rand)?);
         let check_sql = format!("(SELECT id FROM checks WHERE name = {})", qs(check.name));
         for key in check.channels {
             stmts.push(format!(
@@ -653,104 +685,172 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
                 channel_sql(key)?
             ));
         }
+        stmts.extend(history_stmts(check, &plan, &check_sql, rand));
+        notifications.extend(check_notifications(check, &check_sql, now)?);
+    }
+    Ok((stmts, notifications))
+}
 
-        let (low, high) = check.runtime;
-        for index in (0..RUNS).rev() {
-            let jitter = (rand.next() - 0.5) * check.cadence as f64 * 0.06;
-            let end = finish_at - (index * check.cadence) as f64 * 1000.0 + jitter * 1000.0;
-            // Every ninth run is slow (amber bar, if `max_runtime` is set);
-            // two runs of the down check fail with captured output.
-            let slow = index % 9 == 4;
-            let failed = check.state == State::Down && (index == 0 || index == 12);
-            let mut duration = rand.range(low, high);
-            if let Some(max_runtime) = check.max_runtime
-                && slow
-            {
-                duration = max_runtime as f64 * (0.82 + 0.1 * rand.next());
-            }
-            let start = end - duration * 1000.0;
-            let ip = SOURCE_IPS[rand.index(SOURCE_IPS.len())];
-            stmts.push(ping_sql(&check_sql, "start", start, "", ip));
-            stmts.push(ping_sql(
-                &check_sql,
-                if failed { "fail" } else { "success" },
-                end,
-                if failed {
-                    FAIL_BODIES[usize::try_from(index).unwrap_or_default() % FAIL_BODIES.len()]
-                } else {
-                    ""
-                },
-                ip,
-            ));
-        }
-        if let Some(running_start) = running_start {
-            stmts.push(ping_sql(
-                &check_sql,
-                "start",
-                running_start,
-                "",
-                SOURCE_IPS[0],
-            ));
-        }
-
-        // The down check's alert chain plus one recovered incident on the
-        // hourly sync, for a mixed log.
+fn check_insert_sql(
+    check: &Check,
+    plan: &CheckPlan,
+    now: f64,
+    rand: &mut Mulberry32,
+) -> Result<String> {
+    let status = match check.state {
+        State::Down => "down",
+        State::Paused => "paused",
+        _ => "up",
+    };
+    let last_start = plan.running_start.unwrap_or(plan.finish_at - 60.0 * 1000.0);
+    Ok(format!(
+        "INSERT INTO checks (project_id, name, description, ping_uuid, schedule_kind, \
+         period_secs, grace_secs, cron_expr, timezone, status, last_ping_at, last_start_at, \
+         next_due_at, max_runtime_secs, last_alert_at, acknowledged, created_at)\n  \
+         VALUES ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0, {});",
+        project_sql(check.project)?,
+        qs(check.name),
+        qs(check.description),
+        qs(&uuid_for(rand)),
+        qs(if check.cron.is_some() {
+            "cron"
+        } else {
+            "period"
+        }),
+        num(plan.period),
+        check.grace,
+        q(check.cron),
+        qs(check.timezone),
+        qs(status),
+        qs(&iso(plan.finish_at)),
+        qs(&iso(last_start)),
+        qs(&iso(plan.next_due)),
+        num(check.max_runtime),
         if check.state == State::Down {
-            let chain: [(&str, &str, &str, Option<&str>, f64); 5] = [
-                ("down", "ops-slack", "ok", None, 62.0 * 60.0),
-                ("down", "oncall-pushover", "ok", None, 62.0 * 60.0),
-                (
-                    "down",
-                    "alerts-email",
-                    "error",
-                    Some("smtp: connection refused"),
-                    62.0 * 60.0,
-                ),
-                ("reminder", "ops-slack", "ok", None, 32.0 * 60.0),
-                ("reminder", "oncall-pushover", "ok", None, 32.0 * 60.0),
-            ];
-            for (event, channel, status, error, ago) in chain {
-                notifications.push(Notification {
-                    check: check_sql.clone(),
-                    channel: channel_sql(channel)?,
-                    event,
-                    status,
-                    error,
-                    at: now - ago * 1000.0,
-                });
-            }
+            qs(&iso(now - 10.0 * 60.0 * 1000.0))
+        } else {
+            "NULL".to_owned()
+        },
+        qs(&iso(now - 45.0 * DAY as f64 * 1000.0)),
+    ))
+}
+
+/// `RUNS` start/finish pairs ending at the plan's last finish, plus the in-flight
+/// `start` of a running check.
+fn history_stmts(
+    check: &Check,
+    plan: &CheckPlan,
+    check_sql: &str,
+    rand: &mut Mulberry32,
+) -> Vec<String> {
+    let mut stmts = Vec::new();
+    let (low, high) = check.runtime;
+    for index in (0..RUNS).rev() {
+        let jitter = (rand.next() - 0.5) * check.cadence as f64 * 0.06;
+        let end = plan.finish_at - (index * check.cadence) as f64 * 1000.0 + jitter * 1000.0;
+        // Every ninth run is slow (amber bar, if `max_runtime` is set);
+        // two runs of the down check fail with captured output.
+        let slow = index % 9 == 4;
+        let failed = check.state == State::Down && (index == 0 || index == 12);
+        let mut duration = rand.range(low, high);
+        if let Some(max_runtime) = check.max_runtime
+            && slow
+        {
+            duration = max_runtime as f64 * (0.82 + 0.1 * rand.next());
         }
-        if check.key == "s3-sync" {
-            for (event, ago) in [("down", 26.0), ("up", 25.4)] {
-                notifications.push(Notification {
-                    check: check_sql.clone(),
-                    channel: channel_sql("ops-slack")?,
-                    event,
-                    status: "ok",
-                    error: None,
-                    at: now - ago * HOUR as f64 * 1000.0,
-                });
-            }
+        let start = end - duration * 1000.0;
+        let ip = SOURCE_IPS[rand.index(SOURCE_IPS.len())];
+        stmts.push(ping_sql(&PingRow {
+            check: check_sql,
+            kind: "start",
+            at_ms: start,
+            body: "",
+            ip,
+        }));
+        stmts.push(ping_sql(&PingRow {
+            check: check_sql,
+            kind: if failed { "fail" } else { "success" },
+            at_ms: end,
+            body: if failed {
+                FAIL_BODIES[usize::try_from(index).unwrap_or_default() % FAIL_BODIES.len()]
+            } else {
+                ""
+            },
+            ip,
+        }));
+    }
+    if let Some(running_start) = plan.running_start {
+        stmts.push(ping_sql(&PingRow {
+            check: check_sql,
+            kind: "start",
+            at_ms: running_start,
+            body: "",
+            ip: SOURCE_IPS[0],
+        }));
+    }
+    stmts
+}
+
+/// The down check's alert chain plus one recovered incident on the hourly sync,
+/// for a mixed log.
+fn check_notifications(check: &Check, check_sql: &str, now: f64) -> Result<Vec<Notification>> {
+    let mut notifications = Vec::new();
+    if check.state == State::Down {
+        let chain: [(&str, &str, &str, Option<&str>, f64); 5] = [
+            ("down", "ops-slack", "ok", None, 62.0 * 60.0),
+            ("down", "oncall-pushover", "ok", None, 62.0 * 60.0),
+            (
+                "down",
+                "alerts-email",
+                "error",
+                Some("smtp: connection refused"),
+                62.0 * 60.0,
+            ),
+            ("reminder", "ops-slack", "ok", None, 32.0 * 60.0),
+            ("reminder", "oncall-pushover", "ok", None, 32.0 * 60.0),
+        ];
+        for (event, channel, status, error, ago) in chain {
+            notifications.push(Notification {
+                check: check_sql.to_owned(),
+                channel: channel_sql(channel)?,
+                event,
+                status,
+                error,
+                at: now - ago * 1000.0,
+            });
         }
     }
-
-    for notification in notifications {
-        stmts.push(format!(
-            "INSERT INTO notifications (check_id, channel_id, event, status, error, created_at)\n  \
-             VALUES ({}, {}, {}, {}, {}, {});",
-            notification.check,
-            notification.channel,
-            qs(notification.event),
-            qs(notification.status),
-            q(notification.error),
-            qs(&iso(notification.at)),
-        ));
+    if check.key == "s3-sync" {
+        for (event, ago) in [("down", 26.0), ("up", 25.4)] {
+            notifications.push(Notification {
+                check: check_sql.to_owned(),
+                channel: channel_sql("ops-slack")?,
+                event,
+                status: "ok",
+                error: None,
+                at: now - ago * HOUR as f64 * 1000.0,
+            });
+        }
     }
+    Ok(notifications)
+}
 
-    // ---- audit trail -------------------------------------------------------
-    //
-    // Shaped like real `record_audit` rows. Oldest first: the card orders by
-    // `id`, which must agree with the timestamps.
+fn notification_sql(notification: &Notification) -> String {
+    format!(
+        "INSERT INTO notifications (check_id, channel_id, event, status, error, created_at)\n  \
+         VALUES ({}, {}, {}, {}, {}, {});",
+        notification.check,
+        notification.channel,
+        qs(notification.event),
+        qs(notification.status),
+        q(notification.error),
+        qs(&iso(notification.at)),
+    )
+}
+
+/// Shaped like real `record_audit` rows. Oldest first: the card orders by
+/// `id`, which must agree with the timestamps.
+fn audit_stmts(now: f64) -> Vec<String> {
     let audits: [Audit; 5] = [
         Audit {
             actor: "demo",
@@ -803,53 +903,57 @@ pub fn seed_sql(now_ms: i64) -> Result<String> {
             ago: 2.4 * HOUR as f64,
         },
     ];
-    for Audit {
-        actor,
-        action,
-        target_type,
-        target_id,
-        method,
-        path,
-        detail,
-        ago,
-    } in audits
-    {
-        stmts.push(format!(
-            "INSERT INTO audit_log (actor_user_id, actor_username, action, target_type, \
-             target_id, target_owner_id, method, path, detail, created_at)\n  \
-             VALUES ((SELECT id FROM users WHERE username = {0}), {0}, {1}, {2}, {3}, {3}, \
-             {4}, {5}, {6}, {7});",
-            qs(actor),
-            qs(action),
-            qs(target_type),
-            target_id,
-            qs(method),
-            qs(path),
-            q(detail),
-            qs(&iso(now - ago * 1000.0)),
-        ));
-    }
+    audits
+        .into_iter()
+        .map(
+            |Audit {
+                 actor,
+                 action,
+                 target_type,
+                 target_id,
+                 method,
+                 path,
+                 detail,
+                 ago,
+             }| {
+                format!(
+                    "INSERT INTO audit_log (actor_user_id, actor_username, action, target_type, \
+                     target_id, target_owner_id, method, path, detail, created_at)\n  \
+                     VALUES ((SELECT id FROM users WHERE username = {0}), {0}, {1}, {2}, {3}, {3}, \
+                     {4}, {5}, {6}, {7});",
+                    qs(actor),
+                    qs(action),
+                    qs(target_type),
+                    target_id,
+                    qs(method),
+                    qs(path),
+                    q(detail),
+                    qs(&iso(now - ago * 1000.0)),
+                )
+            },
+        )
+        .collect()
+}
 
-    // ---- global settings ---------------------------------------------------
-    //
-    // `prune_once` runs at boot. 90 days keeps all history except the weekly
-    // checks' oldest runs (34 weeks), which the screenshots never show.
-    for (key, value) in [
+/// `prune_once` runs at boot. 90 days keeps all history except the weekly
+/// checks' oldest runs (34 weeks), which the screenshots never show.
+fn settings_stmts() -> Vec<String> {
+    [
         ("scan_interval", "30"),
         ("nag_interval", "1800"),
         ("pings_retention_days", "90"),
         ("notifications_retention_days", "90"),
-    ] {
-        stmts.push(format!(
+    ]
+    .iter()
+    .map(|(key, value)| {
+        format!(
             "INSERT INTO settings (key, value) VALUES ({}, {})\n  \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value;",
             qs(key),
             qs(value),
-        ));
-    }
-
-    stmts.push("COMMIT;".to_owned());
-    Ok(stmts.join("\n"))
+        )
+    })
+    .collect()
 }
 
 #[cfg(test)]
