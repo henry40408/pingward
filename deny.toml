@@ -19,6 +19,11 @@ ignore = [
     # (latest), which still depends on it. Remove once askama drops it.
     # Tracked in #202.
     "RUSTSEC-2026-0374",
+    # ctutils 0.4.2 branches on secret values (timing side channel), reached via
+    # digest and phc. Fixed in 0.4.4, published 2026-10-23 01:04 UTC, which is
+    # inside the 168h dependency cooldown. Remove and upgrade after
+    # 2026-10-30 01:04 UTC. Tracked in #213.
+    "RUSTSEC-2026-0385",
 ]
 
 [licenses]
