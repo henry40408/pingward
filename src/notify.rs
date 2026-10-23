@@ -208,8 +208,8 @@ fn single_line(s: &str) -> String {
 }
 
 /// `Project: infra · every 5m (grace 1m)`; `None` when neither half is known.
-fn context_line(d: &EventDetail) -> Option<String> {
-    match (&d.project_name, &d.schedule) {
+fn context_line(detail: &EventDetail) -> Option<String> {
+    match (&detail.project_name, &detail.schedule) {
         (Some(p), Some(s)) => Some(format!("Project: {p} · {s}")),
         (Some(p), None) => Some(format!("Project: {p}")),
         (None, Some(s)) => Some(format!("Schedule: {s}")),
@@ -220,18 +220,18 @@ fn context_line(d: &EventDetail) -> Option<String> {
 /// `Reminder` says "Last ping", not "No ping since": it has no `cause`, and a
 /// check downed by a `fail` ping did ping.
 fn reason_line(ev: &NotificationEvent) -> String {
-    let d = &ev.detail;
-    let tz = d.timezone.as_deref();
+    let detail = &ev.detail;
+    let tz = detail.timezone.as_deref();
     match ev.event {
-        EventKind::Up => match d.last_ping_at {
+        EventKind::Up => match detail.last_ping_at {
             Some(prev) => format!("Recovered; previous ping {}", fmt_at_rel(prev, ev.at, tz)),
             None => "Recovered".to_string(),
         },
-        EventKind::Reminder => match d.last_ping_at {
+        EventKind::Reminder => match detail.last_ping_at {
             Some(prev) => format!("Last ping {}", fmt_at_rel(prev, ev.at, tz)),
             None => "Never pinged".to_string(),
         },
-        _ => match d.cause {
+        _ => match detail.cause {
             Some(DownCause::Overrun {
                 max_runtime_secs,
                 started_at,
@@ -244,7 +244,7 @@ fn reason_line(ev: &NotificationEvent) -> String {
                 Some(c) => format!("Fail ping received (exit code {c})"),
                 None => "Fail ping received".to_string(),
             },
-            _ => match d.last_ping_at {
+            _ => match detail.last_ping_at {
                 Some(prev) => format!("No ping since {}", fmt_at_rel(prev, ev.at, tz)),
                 None => "No ping received yet".to_string(),
             },
@@ -255,13 +255,13 @@ fn reason_line(ev: &NotificationEvent) -> String {
 /// Message body for every text channel. Capped at four lines — headline,
 /// context, reason, link; everything else is on the linked page.
 fn event_text(ev: &NotificationEvent) -> String {
-    let d = &ev.detail;
-    let tz = d.timezone.as_deref();
+    let detail = &ev.detail;
+    let tz = detail.timezone.as_deref();
     let mut lines: Vec<String> = Vec::new();
     match ev.event {
         EventKind::Test => {
             lines.push("\u{1F514} pingward test notification".to_string());
-            lines.push(match &d.project_name {
+            lines.push(match &detail.project_name {
                 Some(p) => format!("Channel \"{}\" · project {p}", ev.check_name),
                 None => format!("Channel \"{}\"", ev.check_name),
             });
@@ -272,11 +272,11 @@ fn event_text(ev: &NotificationEvent) -> String {
         EventKind::Reminder => lines.push(format!("\u{1F534} STILL DOWN — {}", ev.check_name)),
         EventKind::Up => lines.push(format!("\u{1F7E2} UP — {}", ev.check_name)),
     }
-    if let Some(ctx) = context_line(d) {
+    if let Some(ctx) = context_line(detail) {
         lines.push(ctx);
     }
     lines.push(reason_line(ev));
-    if let Some(url) = &d.url {
+    if let Some(url) = &detail.url {
         lines.push(url.clone());
     }
     lines.join("\n")
@@ -318,8 +318,8 @@ impl Notifier for WebhookNotifier {
     ) -> Pin<Box<dyn Future<Output = Result<(), NotifyError>> + Send + 'a>> {
         Box::pin(async move {
             // The original four keys stay verbatim; everything else is additive.
-            let d = &ev.detail;
-            let exit_code = match d.cause {
+            let detail = &ev.detail;
+            let exit_code = match detail.cause {
                 Some(DownCause::Failed { exit_code }) => exit_code,
                 _ => None,
             };
@@ -329,12 +329,12 @@ impl Notifier for WebhookNotifier {
                 "at": ev.at.to_rfc3339(),
                 "project_id": ev.project_id,
                 "check_id": ev.check_id,
-                "project": d.project_name,
-                "url": d.url,
-                "schedule": d.schedule,
-                "timezone": d.timezone,
-                "last_ping_at": d.last_ping_at.map(|t| t.to_rfc3339()),
-                "cause": d.cause.map(|c| c.as_str()),
+                "project": detail.project_name,
+                "url": detail.url,
+                "schedule": detail.schedule,
+                "timezone": detail.timezone,
+                "last_ping_at": detail.last_ping_at.map(|t| t.to_rfc3339()),
+                "cause": detail.cause.map(|c| c.as_str()),
                 "exit_code": exit_code,
                 "text": event_text(ev),
             });

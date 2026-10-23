@@ -75,17 +75,19 @@ pub fn run_durations(pings: &[PingSummary]) -> HashMap<i64, i64> {
     let mut out = HashMap::new();
     let mut pending_start: Option<DateTime<Utc>> = None;
     for p in ordered {
-        match p.kind {
-            PingKind::Start => pending_start = Some(p.created_at),
-            k if is_finish(k) => {
-                if let Some(s) = pending_start.take() {
-                    let secs = (p.created_at - s).num_seconds();
-                    if secs >= 0 {
-                        out.insert(p.id, secs);
-                    }
-                }
-            }
-            _ => {}
+        if p.kind == PingKind::Start {
+            pending_start = Some(p.created_at);
+            continue;
+        }
+        if !is_finish(p.kind) {
+            continue;
+        }
+        let Some(started_at) = pending_start.take() else {
+            continue;
+        };
+        let secs = (p.created_at - started_at).num_seconds();
+        if secs >= 0 {
+            out.insert(p.id, secs);
         }
     }
     out
