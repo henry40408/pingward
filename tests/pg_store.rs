@@ -1,3 +1,6 @@
+use pingward::store::{
+    NewApiKey, NewChannel, NewNotification, NewPing, NewSession, PingMark, ProjectSettings,
+};
 use pingward::{
     db,
     models::{ChannelKind, ScheduleKind},
@@ -59,7 +62,16 @@ async fn postgres_full_round_trip() {
     );
 
     let pid = store
-        .create_project(uid, "web", "", Some(45), None, now)
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: Some(45),
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     assert_eq!(store.list_projects_for_user(uid).await.unwrap().len(), 1);
@@ -83,10 +95,12 @@ async fn postgres_full_round_trip() {
 
     let chid = store
         .create_channel(
-            pid,
-            ChannelKind::Webhook,
-            "hook",
-            "{\"url\":\"http://x\"}",
+            &NewChannel {
+                project_id: pid,
+                kind: ChannelKind::Webhook,
+                name: "hook",
+                config_json: "{\"url\":\"http://x\"}",
+            },
             now,
         )
         .await
@@ -109,11 +123,13 @@ async fn postgres_full_round_trip() {
 
     store
         .insert_ping(
-            cid,
-            pingward::models::PingKind::Success,
-            None,
-            "ok",
-            Some("127.0.0.1"),
+            &NewPing {
+                check_id: cid,
+                kind: pingward::models::PingKind::Success,
+                exit_code: None,
+                body: "ok",
+                source_ip: Some("127.0.0.1"),
+            },
             now,
         )
         .await
@@ -121,10 +137,12 @@ async fn postgres_full_round_trip() {
     store
         .mark_ping(
             cid,
-            pingward::models::CheckStatus::Up,
-            Some(now),
-            None,
-            None,
+            &PingMark {
+                status: pingward::models::CheckStatus::Up,
+                last_ping_at: Some(now),
+                last_start_at: None,
+                next_due_at: None,
+            },
         )
         .await
         .unwrap();
@@ -146,11 +164,13 @@ async fn postgres_full_round_trip() {
     for i in 0..3 {
         store
             .insert_ping(
-                cid2,
-                pingward::models::PingKind::Success,
-                None,
-                "p",
-                None,
+                &NewPing {
+                    check_id: cid2,
+                    kind: pingward::models::PingKind::Success,
+                    exit_code: None,
+                    body: "p",
+                    source_ip: None,
+                },
                 now + chrono::Duration::seconds(i),
             )
             .await
@@ -178,7 +198,16 @@ async fn postgres_full_round_trip() {
 
     // Generated `IN ($1,…,$N)` list on Postgres; empty `pid2` must be absent.
     let pid2 = store
-        .create_project(uid, "proj2", "", None, None, now)
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "proj2",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     let by_project = store.list_checks_for_projects(&[pid, pid2]).await.unwrap();
@@ -198,11 +227,13 @@ async fn postgres_full_round_trip() {
 
     store
         .record_notification(
-            cid,
-            chid,
-            pingward::notify::EventKind::Down,
-            pingward::models::NotifyStatus::Ok,
-            None,
+            &NewNotification {
+                check_id: cid,
+                channel_id: chid,
+                event: pingward::notify::EventKind::Down,
+                status: pingward::models::NotifyStatus::Ok,
+                error: None,
+            },
             now,
         )
         .await
@@ -225,12 +256,14 @@ async fn postgres_full_round_trip() {
     let future_expiry = now + chrono::Duration::hours(1);
     store
         .create_session(
-            "sess-active",
-            uid,
-            future_expiry,
-            Some("curl/8.0"),
-            Some("127.0.0.1"),
-            false,
+            &NewSession {
+                id: "sess-active",
+                user_id: uid,
+                expires_at: future_expiry,
+                user_agent: Some("curl/8.0"),
+                ip: Some("127.0.0.1"),
+                sso: false,
+            },
             now,
         )
         .await
@@ -246,7 +279,17 @@ async fn postgres_full_round_trip() {
 
     let past_expiry = now - chrono::Duration::hours(1);
     store
-        .create_session("sess-expired", uid, past_expiry, None, None, false, now)
+        .create_session(
+            &NewSession {
+                id: "sess-expired",
+                user_id: uid,
+                expires_at: past_expiry,
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
+            now,
+        )
         .await
         .unwrap();
     assert!(
@@ -269,12 +312,14 @@ async fn postgres_full_round_trip() {
     // (a) Past the absolute cap but inside its idle window.
     store
         .create_session(
-            "sess-abscap",
-            uid,
-            future_expiry,
-            None,
-            None,
-            false,
+            &NewSession {
+                id: "sess-abscap",
+                user_id: uid,
+                expires_at: future_expiry,
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
             now - chrono::Duration::days(40),
         )
         .await
@@ -302,12 +347,14 @@ async fn postgres_full_round_trip() {
     // re-read from the table to prove it persisted.
     store
         .create_session(
-            "sess-slide",
-            uid,
-            now + chrono::Duration::hours(1),
-            None,
-            None,
-            false,
+            &NewSession {
+                id: "sess-slide",
+                user_id: uid,
+                expires_at: now + chrono::Duration::hours(1),
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
             now,
         )
         .await
@@ -331,12 +378,14 @@ async fn postgres_full_round_trip() {
 
     store
         .create_session(
-            "sess-second",
-            uid,
-            future_expiry,
-            None,
-            None,
-            false,
+            &NewSession {
+                id: "sess-second",
+                user_id: uid,
+                expires_at: future_expiry,
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
             now + chrono::Duration::seconds(1),
         )
         .await
@@ -376,7 +425,17 @@ async fn postgres_full_round_trip() {
     );
 
     store
-        .create_session("sess-active", uid, future_expiry, None, None, false, now)
+        .create_session(
+            &NewSession {
+                id: "sess-active",
+                user_id: uid,
+                expires_at: future_expiry,
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
+            now,
+        )
         .await
         .unwrap();
     store.delete_session("sess-active").await.unwrap();
@@ -390,11 +449,31 @@ async fn postgres_full_round_trip() {
     );
 
     store
-        .create_session("sess-a", uid, future_expiry, None, None, false, now)
+        .create_session(
+            &NewSession {
+                id: "sess-a",
+                user_id: uid,
+                expires_at: future_expiry,
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
+            now,
+        )
         .await
         .unwrap();
     store
-        .create_session("sess-b", uid, future_expiry, None, None, false, now)
+        .create_session(
+            &NewSession {
+                id: "sess-b",
+                user_id: uid,
+                expires_at: future_expiry,
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
+            now,
+        )
         .await
         .unwrap();
     let removed = store.delete_sessions_for_user(uid).await.unwrap();
@@ -410,24 +489,28 @@ async fn postgres_full_round_trip() {
     // (c) Both expiry reasons are reclaimed; no other session exists here.
     store
         .create_session(
-            "sess-idle-expired",
-            uid,
-            now - chrono::Duration::hours(1),
-            None,
-            None,
-            false,
+            &NewSession {
+                id: "sess-idle-expired",
+                user_id: uid,
+                expires_at: now - chrono::Duration::hours(1),
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
             now - chrono::Duration::hours(2),
         )
         .await
         .unwrap();
     store
         .create_session(
-            "sess-cap-expired",
-            uid,
-            now + chrono::Duration::hours(1),
-            None,
-            None,
-            false,
+            &NewSession {
+                id: "sess-cap-expired",
+                user_id: uid,
+                expires_at: now + chrono::Duration::hours(1),
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
             now - chrono::Duration::days(40),
         )
         .await
@@ -494,22 +577,26 @@ async fn postgres_full_round_trip() {
     let old = now - chrono::Duration::days(30);
     store
         .insert_ping(
-            cid,
-            pingward::models::PingKind::Success,
-            None,
-            "",
-            None,
+            &NewPing {
+                check_id: cid,
+                kind: pingward::models::PingKind::Success,
+                exit_code: None,
+                body: "",
+                source_ip: None,
+            },
             old,
         )
         .await
         .unwrap();
     store
         .record_notification(
-            cid,
-            chid,
-            pingward::notify::EventKind::Down,
-            pingward::models::NotifyStatus::Ok,
-            None,
+            &NewNotification {
+                check_id: cid,
+                channel_id: chid,
+                event: pingward::notify::EventKind::Down,
+                status: pingward::models::NotifyStatus::Ok,
+                error: None,
+            },
             old,
         )
         .await
@@ -525,24 +612,28 @@ async fn postgres_full_round_trip() {
     // Expired sessions are pruned regardless of retention settings.
     store
         .create_session(
-            "sess-prune-expired",
-            uid,
-            now - chrono::Duration::hours(1),
-            None,
-            None,
-            false,
+            &NewSession {
+                id: "sess-prune-expired",
+                user_id: uid,
+                expires_at: now - chrono::Duration::hours(1),
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
             now - chrono::Duration::hours(2),
         )
         .await
         .unwrap();
     store
         .create_session(
-            "sess-prune-valid",
-            uid,
-            now + chrono::Duration::hours(1),
-            None,
-            None,
-            false,
+            &NewSession {
+                id: "sess-prune-valid",
+                user_id: uid,
+                expires_at: now + chrono::Duration::hours(1),
+                user_agent: None,
+                ip: None,
+                sso: false,
+            },
             now,
         )
         .await
@@ -565,7 +656,16 @@ async fn postgres_full_round_trip() {
 
     let (_full, prefix, hash) = pingward::apikey::generate_api_key();
     let kid = store
-        .insert_api_key(uid, "ci", &hash, &prefix, None, now)
+        .insert_api_key(
+            &NewApiKey {
+                user_id: uid,
+                name: "ci",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     assert_eq!(store.list_api_keys_for_user(uid).await.unwrap().len(), 1);
@@ -580,11 +680,13 @@ async fn postgres_full_round_trip() {
     let (_f2, p2, h2) = pingward::apikey::generate_api_key();
     store
         .insert_api_key(
-            uid,
-            "old",
-            &h2,
-            &p2,
-            Some(now - chrono::Duration::hours(1)),
+            &NewApiKey {
+                user_id: uid,
+                name: "old",
+                token_hash: &h2,
+                prefix: &p2,
+                expires_at: Some(now - chrono::Duration::hours(1)),
+            },
             now,
         )
         .await
@@ -593,7 +695,16 @@ async fn postgres_full_round_trip() {
     // A live key for the user-delete cascade below to remove.
     let (_f3, p3, h3) = pingward::apikey::generate_api_key();
     store
-        .insert_api_key(uid, "live", &h3, &p3, None, now)
+        .insert_api_key(
+            &NewApiKey {
+                user_id: uid,
+                name: "live",
+                token_hash: &h3,
+                prefix: &p3,
+                expires_at: None,
+            },
+            now,
+        )
         .await
         .unwrap();
 

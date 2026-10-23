@@ -5,6 +5,7 @@
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
+use pingward::store::NewSession;
 use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
@@ -337,12 +338,14 @@ async fn the_page_tells_a_passwordless_admin_it_does_not_apply() {
     let session_id = pingward::auth::new_session_token();
     store
         .create_session(
-            &session_id,
-            uid,
-            chrono::Utc::now() + chrono::Duration::hours(1),
-            None,
-            None,
-            true,
+            &NewSession {
+                id: &session_id,
+                user_id: uid,
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                user_agent: None,
+                ip: None,
+                sso: true,
+            },
             chrono::Utc::now(),
         )
         .await

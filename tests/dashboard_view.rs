@@ -1,4 +1,5 @@
 use axum_test::TestServer;
+use pingward::store::{NewChannel, PingMark, ProjectSettings};
 use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
@@ -31,7 +32,16 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
 async fn server_with_project_and_check() -> (TestServer, Store, i64, i64) {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store
@@ -104,10 +114,12 @@ async fn dashboard_no_channel_chip_reflects_binding_state() {
         .unwrap();
     let chan_id = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook",
-            r#"{"url":"http://x"}"#,
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook",
+                config_json: r#"{"url":"http://x"}"#,
+            },
             chrono::Utc::now(),
         )
         .await
@@ -148,10 +160,12 @@ async fn dashboard_counts_running_check_under_up_and_keeps_the_row_badge() {
     store
         .mark_ping(
             cid,
-            pingward::models::CheckStatus::New,
-            None,
-            Some(chrono::Utc::now()),
-            None,
+            &PingMark {
+                status: pingward::models::CheckStatus::New,
+                last_ping_at: None,
+                last_start_at: Some(chrono::Utc::now()),
+                next_due_at: None,
+            },
         )
         .await
         .unwrap();
@@ -191,10 +205,12 @@ async fn dashboard_shows_truncated_descriptions_with_markdown_stripped() {
     let pid = store
         .create_project(
             uid,
-            "web",
-            "**Web** services project",
-            None,
-            None,
+            &ProjectSettings {
+                name: "web",
+                description: "**Web** services project",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
             chrono::Utc::now(),
         )
         .await
@@ -290,11 +306,29 @@ async fn server_with_two_projects() -> TestServer {
     let (server, store, uid) = logged_in_server().await;
     let now = chrono::Utc::now();
     let web = store
-        .create_project(uid, "web", "Public **frontend** services", None, None, now)
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "Public **frontend** services",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     let infra = store
-        .create_project(uid, "infra", "Datacenter plumbing", None, None, now)
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "infra",
+                description: "Datacenter plumbing",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     for (project_id, name, description, uuid) in [
@@ -496,7 +530,16 @@ async fn server_with_mixed_statuses() -> TestServer {
     let (server, store, uid) = logged_in_server().await;
     let now = chrono::Utc::now();
     let pid = store
-        .create_project(uid, "services", "", None, None, now)
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "services",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     async fn mk(store: &Store, pid: i64, name: &str, uuid: &str) -> i64 {
@@ -518,16 +561,26 @@ async fn server_with_mixed_statuses() -> TestServer {
     store
         .mark_ping(
             web,
-            CheckStatus::Up,
-            Some(now),
-            None,
-            Some(now + chrono::Duration::seconds(3600)),
+            &PingMark {
+                status: CheckStatus::Up,
+                last_ping_at: Some(now),
+                last_start_at: None,
+                next_due_at: Some(now + chrono::Duration::seconds(3600)),
+            },
         )
         .await
         .unwrap();
     let job = mk(&store, pid, "job", "cu-job").await;
     store
-        .mark_ping(job, CheckStatus::New, None, Some(now), None)
+        .mark_ping(
+            job,
+            &PingMark {
+                status: CheckStatus::New,
+                last_ping_at: None,
+                last_start_at: Some(now),
+                next_due_at: None,
+            },
+        )
         .await
         .unwrap();
     // Late: due in 100s with 300s grace, so `now` is inside (expected, due].
@@ -535,16 +588,26 @@ async fn server_with_mixed_statuses() -> TestServer {
     store
         .mark_ping(
             cron,
-            CheckStatus::Up,
-            Some(now - chrono::Duration::seconds(3500)),
-            None,
-            Some(now + chrono::Duration::seconds(100)),
+            &PingMark {
+                status: CheckStatus::Up,
+                last_ping_at: Some(now - chrono::Duration::seconds(3500)),
+                last_start_at: None,
+                next_due_at: Some(now + chrono::Duration::seconds(100)),
+            },
         )
         .await
         .unwrap();
     let db = mk(&store, pid, "db", "cu-db").await;
     store
-        .mark_ping(db, CheckStatus::Down, Some(now), None, None)
+        .mark_ping(
+            db,
+            &PingMark {
+                status: CheckStatus::Down,
+                last_ping_at: Some(now),
+                last_start_at: None,
+                next_due_at: None,
+            },
+        )
         .await
         .unwrap();
     server
@@ -665,7 +728,16 @@ async fn dashboard_unknown_status_value_is_ignored() {
 async fn dashboard_status_filter_with_no_matches_shows_no_results_not_empty() {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "svc", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "svc",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     store
@@ -751,7 +823,16 @@ async fn dashboard_project_order_by_name_is_case_insensitive() {
     // Byte order would put every uppercase name first.
     for name in ["Zulu", "alpha", "Mike"] {
         store
-            .create_project(uid, name, "", None, None, now)
+            .create_project(
+                uid,
+                &ProjectSettings {
+                    name,
+                    description: "",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
+                now,
+            )
             .await
             .unwrap();
     }
@@ -770,7 +851,16 @@ async fn server_with_staggered_activity() -> TestServer {
     let (server, store, uid) = logged_in_server().await;
     let now = chrono::Utc::now();
     let pid = store
-        .create_project(uid, "services", "", None, None, now)
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "services",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     async fn mk(store: &Store, pid: i64, name: &str, uuid: &str) -> i64 {
@@ -792,19 +882,43 @@ async fn server_with_staggered_activity() -> TestServer {
 
     let stale = mk(&store, pid, "stale", "cu-stale").await;
     store
-        .mark_ping(stale, CheckStatus::Up, Some(ago(900)), None, None)
+        .mark_ping(
+            stale,
+            &PingMark {
+                status: CheckStatus::Up,
+                last_ping_at: Some(ago(900)),
+                last_start_at: None,
+                next_due_at: None,
+            },
+        )
         .await
         .unwrap();
     mk(&store, pid, "untouched", "cu-untouched").await;
     let middle = mk(&store, pid, "middle", "cu-middle").await;
     store
-        .mark_ping(middle, CheckStatus::Up, Some(ago(600)), None, None)
+        .mark_ping(
+            middle,
+            &PingMark {
+                status: CheckStatus::Up,
+                last_ping_at: Some(ago(600)),
+                last_start_at: None,
+                next_due_at: None,
+            },
+        )
         .await
         .unwrap();
     // In flight: only a start, which alone dates it.
     let running = mk(&store, pid, "running", "cu-running").await;
     store
-        .mark_ping(running, CheckStatus::New, None, Some(ago(60)), None)
+        .mark_ping(
+            running,
+            &PingMark {
+                status: CheckStatus::New,
+                last_ping_at: None,
+                last_start_at: Some(ago(60)),
+                next_due_at: None,
+            },
+        )
         .await
         .unwrap();
     // Old start, recent finish: guards against sorting on `last_start_at` alone.
@@ -812,10 +926,12 @@ async fn server_with_staggered_activity() -> TestServer {
     store
         .mark_ping(
             finished,
-            CheckStatus::Up,
-            Some(ago(120)),
-            Some(ago(1200)),
-            None,
+            &PingMark {
+                status: CheckStatus::Up,
+                last_ping_at: Some(ago(120)),
+                last_start_at: Some(ago(1200)),
+                next_due_at: None,
+            },
         )
         .await
         .unwrap();
@@ -838,7 +954,16 @@ async fn dashboard_never_pinged_checks_keep_creation_order_at_the_bottom() {
     let (server, store, uid) = logged_in_server().await;
     let now = chrono::Utc::now();
     let pid = store
-        .create_project(uid, "services", "", None, None, now)
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "services",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     // All sort keys tie, so order must fall back to creation (id).

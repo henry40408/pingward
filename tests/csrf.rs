@@ -1,4 +1,5 @@
 use axum_test::TestServer;
+use pingward::store::{NewChannel, ProjectSettings};
 use pingward::{app, config::Config, db, state::AppState, store::Store};
 
 mod common;
@@ -127,7 +128,16 @@ async fn multi_value_channels_form_authorizes_via_csrf_field() {
     let (server, store) = logged_in_server().await;
     let admin = store.find_user_by_username("admin").await.unwrap().unwrap();
     let pid = store
-        .create_project(admin.id, "p", "", None, None, chrono::Utc::now())
+        .create_project(
+            admin.id,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store
@@ -145,20 +155,24 @@ async fn multi_value_channels_form_authorizes_via_csrf_field() {
         .unwrap();
     let ch1 = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "w1",
-            "{\"url\":\"http://x\"}",
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "w1",
+                config_json: "{\"url\":\"http://x\"}",
+            },
             chrono::Utc::now(),
         )
         .await
         .unwrap();
     let ch2 = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "w2",
-            "{\"url\":\"http://y\"}",
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "w2",
+                config_json: "{\"url\":\"http://y\"}",
+            },
             chrono::Utc::now(),
         )
         .await

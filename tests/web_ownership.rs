@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum_test::TestServer;
 use chrono::Utc;
 use pingward::models::ChannelKind;
+use pingward::store::{NewChannel, ProjectSettings};
 use pingward::{app, db, state::AppState, store::Store};
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -175,10 +176,12 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
         let pid = store
             .create_project(
                 owner,
-                &format!("alice-project-{i}"),
-                "",
-                None,
-                None,
+                &ProjectSettings {
+                    name: &format!("alice-project-{i}"),
+                    description: "",
+                    scan_interval_secs: None,
+                    nag_interval_secs: None,
+                },
                 Utc::now(),
             )
             .await
@@ -198,10 +201,12 @@ async fn member_cannot_reach_another_users_resource_on_any_web_route() {
             .unwrap();
         let chid = store
             .create_channel(
-                pid,
-                ChannelKind::Webhook,
-                &format!("alice-channel-{i}"),
-                "{}",
+                &NewChannel {
+                    project_id: pid,
+                    kind: ChannelKind::Webhook,
+                    name: &format!("alice-channel-{i}"),
+                    config_json: "{}",
+                },
                 Utc::now(),
             )
             .await

@@ -5,6 +5,7 @@
 
 use axum_test::TestServer;
 use chrono::Utc;
+use pingward::store::{NewChannel, ProjectSettings};
 use pingward::{app, models::ChannelKind, state::AppState, store::Store};
 use serde_json::{Value, json};
 
@@ -43,14 +44,31 @@ async fn csrf(store: &Store) -> String {
 
 async fn project_of(store: &Store, uid: i64) -> i64 {
     store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap()
 }
 
 async fn channel(store: &Store, pid: i64, kind: ChannelKind, config: &Value) -> i64 {
     store
-        .create_channel(pid, kind, "chan", &config.to_string(), Utc::now())
+        .create_channel(
+            &NewChannel {
+                project_id: pid,
+                kind,
+                name: "chan",
+                config_json: &config.to_string(),
+            },
+            Utc::now(),
+        )
         .await
         .unwrap()
 }

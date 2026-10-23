@@ -3,6 +3,7 @@
 use axum::http::StatusCode;
 use axum_test::TestServer;
 use chrono::Utc;
+use pingward::store::{NewApiKey, NewChannel, ProjectSettings};
 use pingward::{
     apikey, app, config::Config, db, models::ChannelKind, state::AppState, store::Store,
 };
@@ -25,7 +26,16 @@ async fn user_with_key(store: &Store, username: &str, is_admin: bool) -> (i64, S
         .unwrap();
     let (full, prefix, hash) = apikey::generate_api_key();
     store
-        .insert_api_key(uid, "k", &hash, &prefix, None, now)
+        .insert_api_key(
+            &NewApiKey {
+                user_id: uid,
+                name: "k",
+                token_hash: &hash,
+                prefix: &prefix,
+                expires_at: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     (uid, full)
@@ -142,7 +152,16 @@ async fn patch_project_replaces_fields() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "old", "", Some(60), None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "old",
+                description: "",
+                scan_interval_secs: Some(60),
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -164,7 +183,16 @@ async fn delete_project_then_gone() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -186,7 +214,16 @@ async fn member_cannot_create_check_in_another_users_project() {
     let (_alice, token) = user_with_key(&store, "alice", false).await;
     let (bob, _) = user_with_key(&store, "bob", false).await;
     let pid = store
-        .create_project(bob, "bobs", "", None, None, Utc::now())
+        .create_project(
+            bob,
+            &ProjectSettings {
+                name: "bobs",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -206,7 +243,16 @@ async fn admin_cross_user_write_is_audited_with_the_verb() {
     let (_admin, token) = user_with_key(&store, "root", true).await;
     let (bob, _) = user_with_key(&store, "bob", false).await;
     let pid = store
-        .create_project(bob, "bobs", "", None, None, Utc::now())
+        .create_project(
+            bob,
+            &ProjectSettings {
+                name: "bobs",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -230,7 +276,16 @@ async fn create_check_period_and_reject_bad_schedule() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -261,25 +316,38 @@ async fn create_check_is_bound_to_existing_project_channels() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let c1 = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook1",
-            r#"{"url":"http://x"}"#,
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook1",
+                config_json: r#"{"url":"http://x"}"#,
+            },
             Utc::now(),
         )
         .await
         .unwrap();
     let c2 = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook2",
-            r#"{"url":"http://y"}"#,
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook2",
+                config_json: r#"{"url":"http://y"}"#,
+            },
             Utc::now(),
         )
         .await
@@ -309,7 +377,16 @@ async fn check_description_is_raw_markdown_and_defaults_to_empty() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -356,7 +433,16 @@ async fn check_actions_change_state() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store
@@ -404,7 +490,16 @@ async fn patch_check_replaces_schedule() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store
@@ -441,7 +536,16 @@ async fn check_override_fields_round_trip() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -491,7 +595,16 @@ async fn set_check_channels_honors_only_same_project_channels() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store
@@ -509,10 +622,12 @@ async fn set_check_channels_honors_only_same_project_channels() {
         .unwrap();
     let ch = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook",
-            "{\"url\":\"https://e.example\"}",
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook",
+                config_json: "{\"url\":\"https://e.example\"}",
+            },
             Utc::now(),
         )
         .await
@@ -540,7 +655,16 @@ async fn create_channel_hides_secrets_then_delete() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
 
@@ -576,16 +700,27 @@ async fn patch_channel_renames_without_touching_the_stored_secret() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let secret = "https://hooks.example.com/SECRET";
     let chid = store
         .create_channel(
-            pid,
-            ChannelKind::Webhook,
-            "hook",
-            &json!({ "url": secret }).to_string(),
+            &NewChannel {
+                project_id: pid,
+                kind: ChannelKind::Webhook,
+                name: "hook",
+                config_json: &json!({ "url": secret }).to_string(),
+            },
             Utc::now(),
         )
         .await
@@ -620,15 +755,26 @@ async fn patch_channel_rotates_only_the_submitted_credential() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let chid = store
         .create_channel(
-            pid,
-            ChannelKind::Telegram,
-            "tg",
-            &json!({ "token": "OLD-TOKEN", "chat_id": "12345" }).to_string(),
+            &NewChannel {
+                project_id: pid,
+                kind: ChannelKind::Telegram,
+                name: "tg",
+                config_json: &json!({ "token": "OLD-TOKEN", "chat_id": "12345" }).to_string(),
+            },
             Utc::now(),
         )
         .await
@@ -655,15 +801,26 @@ async fn patch_channel_ignores_a_submitted_kind() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let chid = store
         .create_channel(
-            pid,
-            ChannelKind::Webhook,
-            "hook",
-            &json!({ "url": "https://hooks.example.com/SECRET" }).to_string(),
+            &NewChannel {
+                project_id: pid,
+                kind: ChannelKind::Webhook,
+                name: "hook",
+                config_json: &json!({ "url": "https://hooks.example.com/SECRET" }).to_string(),
+            },
             Utc::now(),
         )
         .await
@@ -690,15 +847,28 @@ async fn patch_channel_clears_the_ntfy_token_on_request() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let chid = store
         .create_channel(
-            pid,
-            ChannelKind::Ntfy,
-            "n",
-            &json!({ "base_url": "https://ntfy.sh", "topic": "t", "token": "TOK" }).to_string(),
+            &NewChannel {
+                project_id: pid,
+                kind: ChannelKind::Ntfy,
+                name: "n",
+                config_json:
+                    &json!({ "base_url": "https://ntfy.sh", "topic": "t", "token": "TOK" })
+                        .to_string(),
+            },
             Utc::now(),
         )
         .await
@@ -738,16 +908,27 @@ async fn patch_channel_rejects_blanking_a_required_credential() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     // No stored `url` for a blank submission to fall back to.
     let chid = store
         .create_channel(
-            pid,
-            ChannelKind::Webhook,
-            "hook",
-            &json!({}).to_string(),
+            &NewChannel {
+                project_id: pid,
+                kind: ChannelKind::Webhook,
+                name: "hook",
+                config_json: &json!({}).to_string(),
+            },
             Utc::now(),
         )
         .await
@@ -771,7 +952,16 @@ async fn create_channel_rejects_missing_required_field() {
     let (server, store) = test_app().await;
     let (uid, token) = user_with_key(&store, "alice", false).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            Utc::now(),
+        )
         .await
         .unwrap();
     let res = server

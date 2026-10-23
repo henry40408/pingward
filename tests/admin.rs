@@ -1,5 +1,6 @@
 use axum::http::StatusCode;
 use axum_test::TestServer;
+use pingward::store::ProjectSettings;
 use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
@@ -137,7 +138,16 @@ async fn admin_reading_another_users_project_is_not_audited() {
         .await
         .unwrap();
     let pid = store
-        .create_project(owner, "victim", "", None, None, chrono::Utc::now())
+        .create_project(
+            owner,
+            &ProjectSettings {
+                name: "victim",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     server.get("/projects").await; // the owner route is per-user; admin uses /admin
@@ -161,7 +171,16 @@ async fn admin_deletes_other_users_project_and_lands_on_admin() {
         .await
         .unwrap();
     let pid = store
-        .create_project(owner, "victim", "", None, None, chrono::Utc::now())
+        .create_project(
+            owner,
+            &ProjectSettings {
+                name: "victim",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let res = server
@@ -181,7 +200,16 @@ async fn admin_mutation_on_other_project_is_audited() {
         .await
         .unwrap();
     let pid = store
-        .create_project(owner, "p", "", None, None, chrono::Utc::now())
+        .create_project(
+            owner,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store
@@ -219,7 +247,16 @@ async fn admin_mutation_on_other_project_is_audited() {
 async fn admin_keeps_nav_link_on_owner_form_validation_error() {
     let (server, store, admin_id) = admin_server().await;
     let pid = store
-        .create_project(admin_id, "p", "", None, None, chrono::Utc::now())
+        .create_project(
+            admin_id,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     // Blank `period_secs` fails `validate_check`: the error re-render branch.
@@ -517,7 +554,16 @@ async fn other_users_check(store: &Store, name: &str) -> (i64, i64) {
         .await
         .unwrap();
     let pid = store
-        .create_project(owner, "theirs", "", None, None, chrono::Utc::now())
+        .create_project(
+            owner,
+            &ProjectSettings {
+                name: "theirs",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store
@@ -597,7 +643,16 @@ async fn admin_revealing_another_users_ping_url_is_audited() {
 async fn admin_sees_their_own_ping_url_without_revealing() {
     let (server, store, admin_id) = admin_server().await;
     let pid = store
-        .create_project(admin_id, "mine", "", None, None, chrono::Utc::now())
+        .create_project(
+            admin_id,
+            &ProjectSettings {
+                name: "mine",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store

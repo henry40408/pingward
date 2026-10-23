@@ -1,4 +1,5 @@
 use axum_test::TestServer;
+use pingward::store::{NewChannel, NewNotification, ProjectSettings};
 use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
@@ -180,7 +181,16 @@ async fn cannot_view_another_users_project() {
         .await
         .unwrap();
     let pid = store
-        .create_project(other, "secret", "", None, None, chrono::Utc::now())
+        .create_project(
+            other,
+            &ProjectSettings {
+                name: "secret",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     server
@@ -192,7 +202,16 @@ async fn cannot_view_another_users_project() {
 async fn server_with_project() -> (TestServer, Store, i64) {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     (server, store, pid)
@@ -231,7 +250,16 @@ async fn server_with_project_and_smtp() -> (TestServer, Store, i64) {
         .await;
     set_csrf(&mut server, &store).await;
     let pid = store
-        .create_project(uid, "p", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "p",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     (server, store, pid)
@@ -710,7 +738,16 @@ async fn browser_responses_are_not_cacheable() {
     assert_eq!(res.header("cache-control"), "no-store");
 
     let pid = store
-        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     let cid = store
@@ -1027,7 +1064,16 @@ async fn other_users_project(store: &Store) -> (i64, i64, i64) {
         .await
         .unwrap();
     let opid = store
-        .create_project(other, "secret", "", None, None, now)
+        .create_project(
+            other,
+            &ProjectSettings {
+                name: "secret",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            now,
+        )
         .await
         .unwrap();
     let ocid = store
@@ -1045,10 +1091,12 @@ async fn other_users_project(store: &Store) -> (i64, i64, i64) {
         .unwrap();
     let ochid = store
         .create_channel(
-            opid,
-            pingward::models::ChannelKind::Webhook,
-            "h",
-            "{\"url\":\"http://other.test/h\"}",
+            &NewChannel {
+                project_id: opid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "h",
+                config_json: "{\"url\":\"http://other.test/h\"}",
+            },
             now,
         )
         .await
@@ -1146,10 +1194,12 @@ async fn send_test_notification_reports_success() {
     let (server, store, pid) = server_with_project().await;
     let chid = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook",
-            &format!("{{\"url\":\"{}\"}}", mock.uri()),
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook",
+                config_json: &format!("{{\"url\":\"{}\"}}", mock.uri()),
+            },
             chrono::Utc::now(),
         )
         .await
@@ -1178,10 +1228,12 @@ async fn send_test_notification_reports_failure() {
     let (server, store, pid) = server_with_project().await;
     let chid = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook",
-            &format!("{{\"url\":\"{}\"}}", mock.uri()),
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook",
+                config_json: &format!("{{\"url\":\"{}\"}}", mock.uri()),
+            },
             chrono::Utc::now(),
         )
         .await
@@ -1224,21 +1276,25 @@ async fn check_page_shows_notification_channel_and_error() {
         .unwrap();
     let chid = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "my-hook",
-            "{\"url\":\"http://x\"}",
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "my-hook",
+                config_json: "{\"url\":\"http://x\"}",
+            },
             chrono::Utc::now(),
         )
         .await
         .unwrap();
     store
         .record_notification(
-            cid,
-            chid,
-            pingward::notify::EventKind::Down,
-            pingward::models::NotifyStatus::Error,
-            Some("status 500"),
+            &NewNotification {
+                check_id: cid,
+                channel_id: chid,
+                event: pingward::notify::EventKind::Down,
+                status: pingward::models::NotifyStatus::Error,
+                error: Some("status 500"),
+            },
             chrono::Utc::now(),
         )
         .await

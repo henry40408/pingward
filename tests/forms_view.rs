@@ -1,4 +1,5 @@
 use axum_test::TestServer;
+use pingward::store::{NewChannel, ProjectSettings};
 use pingward::{app, state::AppState, store::Store};
 
 mod common;
@@ -37,7 +38,16 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
 async fn server_with_project() -> (TestServer, Store, i64) {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     (server, store, pid)
@@ -265,20 +275,24 @@ async fn check_created_via_web_form_is_bound_to_existing_channels() {
 
     let c1 = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook1",
-            r#"{"url":"http://x"}"#,
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook1",
+                config_json: r#"{"url":"http://x"}"#,
+            },
             chrono::Utc::now(),
         )
         .await
         .unwrap();
     let c2 = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook2",
-            r#"{"url":"http://y"}"#,
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook2",
+                config_json: r#"{"url":"http://y"}"#,
+            },
             chrono::Utc::now(),
         )
         .await

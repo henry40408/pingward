@@ -1,5 +1,6 @@
 //! What `/projects/{id}` renders (`tests/auth_web.rs` covers its authorization).
 use axum_test::TestServer;
+use pingward::store::{NewChannel, PingMark, ProjectSettings};
 use pingward::{app, db, state::AppState, store::Store};
 
 mod common;
@@ -31,7 +32,16 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
 async fn server_with_project() -> (TestServer, Store, i64) {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     (server, store, pid)
@@ -56,10 +66,12 @@ async fn project_page_shows_running_badge_for_in_flight_check() {
     store
         .mark_ping(
             cid,
-            pingward::models::CheckStatus::New,
-            None,
-            Some(chrono::Utc::now()),
-            None,
+            &PingMark {
+                status: pingward::models::CheckStatus::New,
+                last_ping_at: None,
+                last_start_at: Some(chrono::Utc::now()),
+                next_due_at: None,
+            },
         )
         .await
         .unwrap();
@@ -109,10 +121,12 @@ async fn project_page_no_channel_chip_reflects_binding_state() {
         .unwrap();
     let chan_id = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "hook",
-            r#"{"url":"http://x"}"#,
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "hook",
+                config_json: r#"{"url":"http://x"}"#,
+            },
             chrono::Utc::now(),
         )
         .await
@@ -168,10 +182,12 @@ async fn project_page_shows_late_for_stored_up_check_in_grace_window() {
     store
         .mark_ping(
             cid,
-            pingward::models::CheckStatus::Up,
-            Some(now - chrono::Duration::seconds(4000)),
-            None,
-            Some(now + chrono::Duration::seconds(120)),
+            &PingMark {
+                status: pingward::models::CheckStatus::Up,
+                last_ping_at: Some(now - chrono::Duration::seconds(4000)),
+                last_start_at: None,
+                next_due_at: Some(now + chrono::Duration::seconds(120)),
+            },
         )
         .await
         .unwrap();
@@ -196,10 +212,12 @@ async fn project_description_neutralizes_xss_payloads() {
     store
         .update_project(
             pid,
-            "web",
-            "<img src=x onerror=alert(1)> and [x](javascript:alert(1))",
-            None,
-            None,
+            &ProjectSettings {
+                name: "web",
+                description: "<img src=x onerror=alert(1)> and [x](javascript:alert(1))",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
         )
         .await
         .unwrap();
@@ -233,10 +251,12 @@ async fn project_and_check_descriptions_render_on_project_page() {
     store
         .update_project(
             pid,
-            "web",
-            "A **bold** project description.\n\n- alpha item\n- beta item",
-            None,
-            None,
+            &ProjectSettings {
+                name: "web",
+                description: "A **bold** project description.\n\n- alpha item\n- beta item",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
         )
         .await
         .unwrap();
@@ -291,10 +311,12 @@ async fn project_page_lists_channels_without_their_secrets() {
     let secret = "https://hooks.example.com/SECRET-TOKEN";
     let cid = store
         .create_channel(
-            pid,
-            pingward::models::ChannelKind::Webhook,
-            "on-call hook",
-            &format!("{{\"url\":\"{secret}\"}}"),
+            &NewChannel {
+                project_id: pid,
+                kind: pingward::models::ChannelKind::Webhook,
+                name: "on-call hook",
+                config_json: &format!("{{\"url\":\"{secret}\"}}"),
+            },
             chrono::Utc::now(),
         )
         .await

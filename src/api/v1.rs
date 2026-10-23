@@ -10,7 +10,10 @@ use crate::api::extract::{ApiJson, ApiUser};
 use crate::api::input::{ChannelBindInput, ChannelInput, CheckInput, ProjectInput};
 use crate::models::{Channel, Check, CheckStatus, Project, User};
 use crate::state::AppState;
-use crate::store::{NewAudit, NewCheck, NotifFilter, PageCursor, PingFilter, UpdateCheck};
+use crate::store::{
+    NewAudit, NewChannel, NewCheck, NotifFilter, PageCursor, PingFilter, ProjectSettings,
+    UpdateCheck,
+};
 use crate::web::{
     ChannelForm, CheckForm, ProjectForm, validate_channel, validate_channel_update, validate_check,
     validate_project,
@@ -381,7 +384,16 @@ pub async fn create_project(
     let (name, description, scan, nag) = validate_project(&form).map_err(ApiError::bad_request)?;
     let id = state
         .store
-        .create_project(user.id, &name, &description, scan, nag, Utc::now())
+        .create_project(
+            user.id,
+            &ProjectSettings {
+                name: &name,
+                description: &description,
+                scan_interval_secs: scan,
+                nag_interval_secs: nag,
+            },
+            Utc::now(),
+        )
         .await?;
     let p = state
         .store
@@ -415,7 +427,15 @@ pub async fn update_project(
     let (name, description, scan, nag) = validate_project(&form).map_err(ApiError::bad_request)?;
     state
         .store
-        .update_project(id, &name, &description, scan, nag)
+        .update_project(
+            id,
+            &ProjectSettings {
+                name: &name,
+                description: &description,
+                scan_interval_secs: scan,
+                nag_interval_secs: nag,
+            },
+        )
         .await?;
     let p = state
         .store
@@ -721,7 +741,15 @@ pub async fn create_channel(
     let (kind, name, config) = validate_channel(&form).map_err(ApiError::bad_request)?;
     let id = state
         .store
-        .create_channel(pid, kind, &name, &config, Utc::now())
+        .create_channel(
+            &NewChannel {
+                project_id: pid,
+                kind,
+                name: &name,
+                config_json: &config,
+            },
+            Utc::now(),
+        )
         .await?;
     let ch = state
         .store

@@ -1,4 +1,5 @@
 use axum_test::TestServer;
+use pingward::store::ProjectSettings;
 use pingward::{app, state::AppState, store::Store};
 
 mod common;
@@ -37,7 +38,16 @@ async fn logged_in_server() -> (TestServer, Store, i64) {
 async fn server_with_project() -> (TestServer, Store, i64) {
     let (server, store, uid) = logged_in_server().await;
     let pid = store
-        .create_project(uid, "web", "", None, None, chrono::Utc::now())
+        .create_project(
+            uid,
+            &ProjectSettings {
+                name: "web",
+                description: "",
+                scan_interval_secs: None,
+                nag_interval_secs: None,
+            },
+            chrono::Utc::now(),
+        )
         .await
         .unwrap();
     (server, store, pid)
