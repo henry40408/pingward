@@ -46,6 +46,10 @@ GitHub Actions are pinned by commit SHA with the tag as a trailing comment.
 - `cd e2e && cargo test --test e2e` — whole suite (`harness = false`; scenarios run
   concurrently, one per core, max 4). One feature: `-- -i features/ping_kinds.feature`;
   one scenario: `--name "POST body"`; `--tags` works.
+  CI splits the suite into three jobs with `E2E_SHARD=<n>/3` (scenarios are assigned by
+  hash; unset runs everything), so a shard can be reproduced locally. Do not combine it with
+  `--name` or `--tags`: cucumber then ignores the shard filter and the run fails with
+  "selected no scenarios".
 - The suite does not rebuild an existing `target/debug/pingward`: run
   `cargo build` after changing code before E2E.
 - Each scenario gets a fresh binary + temp SQLite DB on a random port (almost all

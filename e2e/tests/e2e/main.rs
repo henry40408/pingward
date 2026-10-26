@@ -4,6 +4,7 @@
 //! go to [`pingward_e2e::server::Options`]. Each scenario gets its own server
 //! and database, since `POST /setup` succeeds only once.
 
+mod shard;
 mod steps;
 
 use cucumber::World as _;
@@ -28,6 +29,8 @@ fn max_concurrent_scenarios() -> usize {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // First, so a malformed `E2E_SHARD` fails before any driver download.
+    let shard = shard::Shard::from_env()?;
     // Download the driver once up front: concurrent sessions on a cold cache
     // contend on the same download and wedge.
     Browser::prepare().await?;
@@ -56,12 +59,14 @@ async fn main() -> anyhow::Result<()> {
                 }
             })
         })
-        .run(FEATURES)
+        .filter_run(FEATURES, move |feature, _rule, scenario| {
+            shard.is_none_or(|shard| shard.includes(feature, scenario))
+        })
         .await;
 
     let failures = writer.failed_steps() + writer.parsing_errors() + writer.hook_errors();
     anyhow::ensure!(failures == 0, "{failures} cucumber failure(s)");
-    Ok(())
+    shard::ensure_selected(shard)
 }
 
 /// Feature, rule and scenario tags combined: `Scenario::tags` omits inherited
