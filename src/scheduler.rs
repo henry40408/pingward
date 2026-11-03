@@ -363,6 +363,79 @@ mod tests {
         );
     }
 
+    fn cron_check_anchored_at(expr: &str, timezone: &str, anchor: DateTime<Utc>) -> Check {
+        let mut c = base_check();
+        c.schedule_kind = ScheduleKind::Cron;
+        c.period_secs = None;
+        c.grace_secs = 0;
+        c.cron_expr = Some(expr.into());
+        c.timezone = timezone.into();
+        c.last_ping_at = Some(anchor);
+        c
+    }
+
+    // The `cron` crate skips local times that do not exist or that repeat; it never
+    // fires early. These tests pin that, so a crate upgrade cannot change it silently.
+
+    #[test]
+    fn cron_daily_in_dst_gap_skips_to_next_day() {
+        // New York 2026-03-08: 02:00-03:00 does not exist. Anchor is 07:00 EST on the 7th.
+        let c = cron_check_anchored_at(
+            "0 30 2 * * *",
+            "America/New_York",
+            Utc.with_ymd_and_hms(2026, 3, 7, 12, 0, 0).unwrap(),
+        );
+        // 02:30 on the 8th is skipped → 02:30 EDT on the 9th = 06:30 UTC.
+        assert_eq!(
+            due_time(&c).unwrap(),
+            Utc.with_ymd_and_hms(2026, 3, 9, 6, 30, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn cron_hourly_across_dst_gap_resumes_after_the_gap() {
+        // 01:30 EST on 2026-03-08 (06:30 UTC); the next local hour is 03:00 EDT.
+        let c = cron_check_anchored_at(
+            "0 0 * * * *",
+            "America/New_York",
+            Utc.with_ymd_and_hms(2026, 3, 8, 6, 30, 0).unwrap(),
+        );
+        assert_eq!(
+            due_time(&c).unwrap(),
+            Utc.with_ymd_and_hms(2026, 3, 8, 7, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn cron_daily_in_dst_overlap_fires_once() {
+        // New York 2026-11-01: 01:00-02:00 happens twice. Anchor is 01:45 EDT, after the
+        // first 01:30; the repeated 01:30 EST is skipped, so the next fire is on the 2nd.
+        let c = cron_check_anchored_at(
+            "0 30 1 * * *",
+            "America/New_York",
+            Utc.with_ymd_and_hms(2026, 11, 1, 5, 45, 0).unwrap(),
+        );
+        // 01:30 EST on the 2nd = 06:30 UTC.
+        assert_eq!(
+            due_time(&c).unwrap(),
+            Utc.with_ymd_and_hms(2026, 11, 2, 6, 30, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn cron_in_zone_without_dst_is_unaffected_on_the_same_dates() {
+        // Taipei has no DST: 02:30 on the 8th exists, = 18:30 UTC on the 7th.
+        let c = cron_check_anchored_at(
+            "0 30 2 * * *",
+            "Asia/Taipei",
+            Utc.with_ymd_and_hms(2026, 3, 7, 12, 0, 0).unwrap(),
+        );
+        assert_eq!(
+            due_time(&c).unwrap(),
+            Utc.with_ymd_and_hms(2026, 3, 7, 18, 30, 0).unwrap()
+        );
+    }
+
     #[test]
     fn cron_without_cron_expr_is_none() {
         let mut c = base_check();
