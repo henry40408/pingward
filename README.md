@@ -86,6 +86,12 @@ The container listens on `0.0.0.0:8080` and keeps its SQLite database at
 rendered ping URLs are correct, and generate `PINGWARD_SECRET` once and keep
 it — a new value signs everyone out. Then open the UI and create the first
 admin.
+
+On a database with no users, pingward prints a one-time setup token
+(`XXXXX-XXXXX`) to stderr at startup; `/setup` asks for it so that only whoever
+can read the server log creates the first admin. Find it with
+`docker logs pingward 2>&1 | grep 'Setup token'`. It lives in memory only, so a
+restart before setup prints a new one, and none is printed once a user exists.
 For Postgres, pass `-e DATABASE_URL=postgres://user:pass@host/db`.
 
 pingward handles SIGTERM, so `docker stop` finishes in-flight work and closes

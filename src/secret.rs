@@ -17,6 +17,7 @@ type HmacSha256 = Hmac<Sha256>;
 const SESSION_DOMAIN: &[u8] = b"session:";
 const CSRF_DOMAIN: &[u8] = b"csrf:";
 const FLASH_DOMAIN: &[u8] = b"flash:";
+const SETUP_DOMAIN: &[u8] = b"setup:";
 
 /// Separates payload from signature; `verify` splits on the last one.
 const SIG_SEPARATOR: char = '.';
@@ -135,12 +136,84 @@ pub fn session_id_from_jar(jar: &CookieJar, secret: &[u8], cookie_name: &str) ->
     verify_session(secret, jar.get(cookie_name)?.value())
 }
 
+/// Crockford base32: no `I`, `L`, `O`, `U`, so a token read off a log is hard to mistype.
+const SETUP_TOKEN_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// A fresh first-run setup token, `XXXXX-XXXXX` (50 bits).
+///
+/// Short on purpose: it is typed by hand, guesses are online only and rate-limited
+/// per IP, and it dies with the first account.
+pub fn generate_setup_token() -> String {
+    let mut bytes = [0u8; 10];
+    OsRng.fill_bytes(&mut bytes);
+    // 256 is a multiple of 32, so masking keeps every character equally likely.
+    let chars: Vec<char> = bytes
+        .iter()
+        .map(|b| SETUP_TOKEN_ALPHABET[usize::from(b & 31)] as char)
+        .collect();
+    format!(
+        "{}-{}",
+        chars[..5].iter().collect::<String>(),
+        chars[5..].iter().collect::<String>()
+    )
+}
+
+/// The dash is only for readability, so dashes, whitespace and case never matter.
+fn normalize_setup_token(token: &str) -> String {
+    token
+        .chars()
+        .filter(|c| *c != '-' && !c.is_whitespace())
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// Constant-time check of a submitted setup token.
+///
+/// Both sides are run through the keyed MAC first, so the comparison runs over equal-length digests and
+/// neither the token length nor a matching prefix leaks through timing.
+pub fn verify_setup_token(secret: &[u8], expected: &str, submitted: &str) -> bool {
+    let expected_tag = mac(secret, SETUP_DOMAIN, &normalize_setup_token(expected))
+        .finalize()
+        .into_bytes();
+    mac(secret, SETUP_DOMAIN, &normalize_setup_token(submitted))
+        .verify_slice(&expected_tag)
+        .is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SECRET: &[u8] = b"test-secret-at-least-16-bytes";
     const ID: &str = "0b3c9a1e-4f2d-4a7b-9c8e-1d2f3a4b5c6d";
+
+    #[test]
+    fn setup_token_matches_only_the_same_token() {
+        assert!(verify_setup_token(SECRET, "ABCDE-12345", "ABCDE-12345"));
+        assert!(!verify_setup_token(SECRET, "ABCDE-12345", "ABCDE-12346"));
+        assert!(!verify_setup_token(SECRET, "ABCDE-12345", "ABCDE-123456"));
+        assert!(!verify_setup_token(SECRET, "ABCDE-12345", ""));
+    }
+
+    #[test]
+    fn setup_token_ignores_dash_case_and_whitespace() {
+        assert!(verify_setup_token(SECRET, "ABCDE-12345", " abcde12345\n"));
+        assert!(verify_setup_token(SECRET, "ABCDE-12345", "abcde - 12345"));
+    }
+
+    #[test]
+    fn generated_setup_token_is_two_groups_of_five_crockford_chars() {
+        let token = generate_setup_token();
+        let (a, b) = token.split_once('-').expect("one dash");
+        for group in [a, b] {
+            assert_eq!(group.len(), 5, "{token}");
+            assert!(
+                group.bytes().all(|c| SETUP_TOKEN_ALPHABET.contains(&c)),
+                "{token}"
+            );
+        }
+        assert_ne!(token, generate_setup_token());
+    }
 
     #[test]
     fn hex_encode_fixed_vectors() {

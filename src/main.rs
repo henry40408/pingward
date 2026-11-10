@@ -59,6 +59,22 @@ fn init_tracing(format: LogFormat) {
     tracing_subscriber::registry().with(layer).init();
 }
 
+/// With no user yet, `/setup` is open to whoever reaches the port first; a token printed
+/// where only the operator looks closes that. Printed with `eprintln!`, never through
+/// `tracing`, so it reaches stderr whatever `RUST_LOG` says and no log pipeline stores it.
+async fn announce_setup_token(state: &AppState) {
+    let token = state
+        .arm_setup_token_if_unclaimed()
+        .await
+        .expect("failed to count users");
+    let Some(token) = token else {
+        return;
+    };
+    eprintln!("pingward: no users yet. Setup token (enter it on /setup): {token}");
+    // The token itself stays out of the log: logs are shipped and retained, stderr is not.
+    tracing::warn!("no users yet; setup token issued, see stderr");
+}
+
 /// Otherwise the only symptom of an unset secret is an unexplained logout on restart.
 fn warn_on_ephemeral_secret(source: SecretSource) {
     let cause = match source {
@@ -109,6 +125,8 @@ async fn main() {
 
     // Before the loops, so the scan loop and HTTP server share `state.events`.
     let state = AppState::new(store.clone(), config);
+
+    announce_setup_token(&state).await;
 
     // One flag stops the server and both loops.
     let (shutdown_tx, shutdown) = shutdown::channel();

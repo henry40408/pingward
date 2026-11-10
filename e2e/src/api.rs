@@ -47,12 +47,14 @@ impl PingKind {
 pub struct Api {
     base_url: String,
     client: reqwest::Client,
+    setup_token: String,
 }
 
 impl Api {
-    pub fn new(base_url: &str) -> Result<Self> {
+    pub fn new(base_url: &str, setup_token: &str) -> Result<Self> {
         Ok(Self {
             base_url: base_url.to_owned(),
+            setup_token: setup_token.to_owned(),
             // Redirects are asserted, never followed.
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -95,6 +97,7 @@ impl Api {
                 ("_csrf", csrf.as_str()),
                 ("username", username),
                 ("password", password),
+                ("setup_token", self.setup_token.as_str()),
             ])
             .send()
             .await
