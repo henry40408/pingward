@@ -1574,3 +1574,40 @@ async fn a_setup_token_is_issued_only_while_no_user_exists() {
     );
     assert!(state.setup_token().is_none());
 }
+
+#[tokio::test]
+async fn setup_stores_the_trimmed_username_and_refuses_bad_ones() {
+    let (mut server, store, _state) = token_server().await;
+    let csrf = common::anonymous_csrf(&mut server).await;
+    let post = |server: &TestServer, username: String| {
+        let csrf = csrf.clone();
+        let req = server.post("/setup");
+        async move {
+            req.form(&[
+                ("_csrf", csrf.as_str()),
+                ("username", username.as_str()),
+                ("password", "a first admin passphrase"),
+                ("setup_token", "ABCDE-12345"),
+            ])
+            .await
+        }
+    };
+
+    for bad in ["a".repeat(65), "bad\u{7}name".to_string()] {
+        let res = post(&server, bad).await;
+        res.assert_status_ok();
+        assert!(res.text().contains("setup-error"));
+    }
+    assert_eq!(store.count_users().await.unwrap(), 0);
+
+    post(&server, "  admin  ".into())
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(
+        store
+            .find_user_by_username("admin")
+            .await
+            .unwrap()
+            .is_some()
+    );
+}

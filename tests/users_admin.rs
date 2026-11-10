@@ -707,3 +707,33 @@ async fn a_username_differing_only_in_case_is_accepted() {
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn creating_a_user_stores_the_trimmed_name_and_refuses_bad_names() {
+    let (server, store, _admin) = admin_server().await;
+
+    server
+        .post("/admin/users")
+        .form(&[("username", "  dave  "), ("password", "dave's passphrase")])
+        .await;
+    assert!(store.find_user_by_username("dave").await.unwrap().is_some());
+    assert!(
+        store
+            .find_user_by_username("  dave  ")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let before = store.count_users().await.unwrap();
+    let too_long = "a".repeat(65);
+    for bad in [too_long.as_str(), "bad\u{7}name"] {
+        let res = server
+            .post("/admin/users")
+            .form(&[("username", bad), ("password", "a long enough phrase")])
+            .await;
+        res.assert_status_ok();
+        assert!(res.text().contains("user-error"));
+    }
+    assert_eq!(store.count_users().await.unwrap(), before);
+}

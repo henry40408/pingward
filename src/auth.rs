@@ -174,7 +174,7 @@ fn prefix_eq(a: &[u8], b: &[u8], prefix: u8, max: u8) -> bool {
 }
 
 /// Returns the forward-auth username iff forward-auth is configured, the header
-/// is present and valid UTF-8, and `peer_ip` is a configured trusted proxy.
+/// is present, valid UTF-8 and not blank, and `peer_ip` is a configured trusted proxy.
 pub fn forward_auth_username(
     headers: &HeaderMap,
     peer_ip: Option<IpAddr>,
@@ -185,11 +185,10 @@ pub fn forward_auth_username(
     if !is_trusted_proxy(&config.trusted_proxies, peer) {
         return None;
     }
-    headers
-        .get(header_name.as_str())
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned)
-        .filter(|s| !s.is_empty())
+    let username = headers.get(header_name.as_str())?.to_str().ok()?.trim();
+    // Only blankness is judged here: the rest of [`validate_username`] gates new accounts
+    // in [`forward_auth_user`], so an existing user is never locked out by a stricter rule.
+    (!username.is_empty()).then(|| username.to_owned())
 }
 
 /// The client IP to record against a session or ping: the first `X-Forwarded-For` entry
@@ -213,6 +212,30 @@ pub fn client_ip(
         .filter(|s| !s.is_empty())
         .and_then(|s| s.parse::<IpAddr>().ok());
     Some(forwarded.map_or_else(|| peer.to_string(), |ip| ip.to_canonical().to_string()))
+}
+
+/// Longest username in characters (not bytes).
+pub const MAX_USERNAME_CHARS: usize = 64;
+
+/// The single username rule for every surface that creates an account: `/setup`, the
+/// admin "new user" form and forward-auth provisioning. Returns the trimmed name to
+/// store, or the user-facing refusal. Non-empty, at most [`MAX_USERNAME_CHARS`]
+/// characters, no control characters. Case and script are free: the `UNIQUE`
+/// constraint compares exact bytes.
+pub fn validate_username(raw: &str) -> Result<&str, String> {
+    let username = raw.trim();
+    if username.is_empty() {
+        return Err("username and password are required".to_string());
+    }
+    if username.chars().count() > MAX_USERNAME_CHARS {
+        return Err(format!(
+            "Username must be at most {MAX_USERNAME_CHARS} characters."
+        ));
+    }
+    if username.chars().any(char::is_control) {
+        return Err("Username must not contain control characters.".to_string());
+    }
+    Ok(username)
 }
 
 /// Minimum length in characters (not bytes). NIST SP800-63B wants 15 without MFA, 8
@@ -315,6 +338,8 @@ pub async fn forward_auth_user(
     match state.store.find_user_by_username(&username).await {
         Ok(Some(user)) => (!user.disabled).then_some(user),
         Ok(None) => {
+            // Fail closed: a name the other surfaces would refuse must not mint an account.
+            validate_username(&username).ok()?;
             let id = state
                 .store
                 .create_passwordless_user_first_is_admin(&username, now)
@@ -378,6 +403,39 @@ impl FromRequestParts<AppState> for AdminUser {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn validate_username_trims_and_accepts_ordinary_names() {
+        assert_eq!(validate_username("  alice \n"), Ok("alice"));
+        assert_eq!(
+            validate_username("a.b-c_d@example.com"),
+            Ok("a.b-c_d@example.com")
+        );
+        assert_eq!(validate_username("王小明"), Ok("王小明"));
+    }
+
+    #[test]
+    fn validate_username_refuses_blank_names() {
+        for blank in ["", "   ", "\t\n"] {
+            assert!(validate_username(blank).unwrap_err().contains("required"));
+        }
+    }
+
+    #[test]
+    fn validate_username_counts_characters_not_bytes() {
+        assert!(validate_username(&"a".repeat(MAX_USERNAME_CHARS)).is_ok());
+        assert!(validate_username(&"王".repeat(MAX_USERNAME_CHARS)).is_ok());
+        let err = validate_username(&"a".repeat(MAX_USERNAME_CHARS + 1)).unwrap_err();
+        assert!(err.contains("at most 64"), "{err}");
+    }
+
+    #[test]
+    fn validate_username_refuses_control_characters() {
+        for bad in ["ali\u{0}ce", "ali\nce", "ali\u{7f}ce", "ali\u{1b}[0mce"] {
+            let err = validate_username(bad).unwrap_err();
+            assert!(err.contains("control"), "{bad:?}: {err}");
+        }
+    }
+
     use super::*;
 
     #[test]

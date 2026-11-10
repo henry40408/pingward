@@ -529,3 +529,44 @@ async fn the_first_forward_auth_admin_retires_the_setup_token() {
 
     assert!(state.setup_token().is_none());
 }
+
+/// A gateway name the other surfaces would refuse fails closed: no account, no session.
+#[tokio::test]
+async fn an_invalid_forward_auth_username_mints_nothing() {
+    let store = empty_store().await;
+    let state = AppState::new(store.clone(), forward_auth_config());
+    let peer = Some(PROXY_PEER.parse::<SocketAddr>().unwrap().ip());
+
+    for bad in ["a".repeat(65), "   ".to_string()] {
+        let user = pingward::auth::forward_auth_user(
+            &state,
+            &gateway_headers(&bad),
+            peer,
+            chrono::Utc::now(),
+        )
+        .await;
+        assert!(user.is_none(), "{bad:?}");
+    }
+    assert_eq!(store.count_users().await.unwrap(), 0);
+}
+
+/// The rule gates *new* accounts only: someone already provisioned under an older, looser
+/// rule must not be locked out of the gateway.
+#[tokio::test]
+async fn an_existing_user_with_a_now_invalid_name_still_signs_in() {
+    let store = empty_store().await;
+    let state = AppState::new(store.clone(), forward_auth_config());
+    let long = "l".repeat(80);
+    let tabbed = "ta\tb";
+    for name in [long.as_str(), tabbed] {
+        store
+            .create_user(name, None, false, chrono::Utc::now())
+            .await
+            .unwrap();
+    }
+
+    for name in [long.as_str(), tabbed] {
+        assert_eq!(provision(&state, name).await.username, name);
+    }
+    assert_eq!(store.count_users().await.unwrap(), 2, "nothing new minted");
+}
