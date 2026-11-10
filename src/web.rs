@@ -333,23 +333,13 @@ async fn setup_submit(
     }
     // Box the hashing error's `Display` text into `AppError::Other`.
     let phc = hash_password(&creds.password).map_err(|e| AppError::Other(e.to_string().into()))?;
-    // Two racing first visitors both pass the check above; tell the loser, don't 500.
-    let uid = match state
+    // Two racing first visitors both pass the check above; the insert itself is the gate.
+    let Some(uid) = state
         .store
-        .create_user(&creds.username, Some(&phc), true, Utc::now())
-        .await
-    {
-        Ok(id) => id,
-        Err(crate::store::CreateUserError::UsernameTaken) => {
-            return Ok(render(&SetupTemplate {
-                show_nav: false,
-                csrf: current_csrf(&state, &jar),
-                is_admin: false,
-                error: Some(username_taken(&creds.username)),
-            })?
-            .into_response());
-        }
-        Err(crate::store::CreateUserError::Db(e)) => return Err(e.into()),
+        .create_first_admin(&creds.username, &phc, Utc::now())
+        .await?
+    else {
+        return Ok(Redirect::to("/login").into_response());
     };
     let ua = request_user_agent(&headers);
     let jar = start_session(

@@ -1364,3 +1364,94 @@ async fn an_unknown_username_costs_the_same_as_a_wrong_password() {
          makes response time a username oracle"
     );
 }
+
+/// Several first visitors submitting `/setup` at once: the check-then-insert gap must not
+/// admit more than one admin. File-backed so the pool really holds several connections.
+#[tokio::test]
+async fn concurrent_setup_creates_exactly_one_admin() {
+    let path = std::env::temp_dir().join(format!(
+        "pingward_setup_race_{}.sqlite3",
+        std::process::id()
+    ));
+    let url = format!("sqlite://{}", path.display());
+    let pool = db::connect(&url).await.unwrap();
+    db::migrate(&pool, &url).await.unwrap();
+    let store = Store::new(pool);
+    let state = AppState::new(store.clone(), common::test_config());
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    let csrf = common::anonymous_csrf(&mut server).await;
+
+    let attempt = |username: &'static str| {
+        server.post("/setup").form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", username),
+            ("password", "a first admin passphrase"),
+        ])
+    };
+    let responses = tokio::join!(
+        attempt("admin1"),
+        attempt("admin2"),
+        attempt("admin3"),
+        attempt("admin4"),
+        attempt("admin5"),
+        attempt("admin6"),
+    );
+    let responses = [
+        responses.0,
+        responses.1,
+        responses.2,
+        responses.3,
+        responses.4,
+        responses.5,
+    ];
+
+    let winners = responses
+        .iter()
+        .filter(|r| r.header("location") == "/")
+        .count();
+    let losers = responses
+        .iter()
+        .filter(|r| r.header("location") == "/login")
+        .count();
+    assert_eq!(store.count_users().await.unwrap(), 1, "exactly one admin");
+    assert_eq!(winners, 1, "exactly one setup wins");
+    assert_eq!(losers, responses.len() - 1, "the rest are sent to /login");
+
+    drop(store);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+}
+
+/// Once any user exists `/setup` is closed: a late POST must not add an account.
+#[tokio::test]
+async fn setup_after_a_user_exists_is_refused() {
+    let (mut server, store) = server().await;
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("existing", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
+
+    let res = server
+        .post("/setup")
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("username", "intruder"),
+            ("password", "a first admin passphrase"),
+        ])
+        .await;
+
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/login");
+    assert_eq!(store.count_users().await.unwrap(), 1);
+    assert!(
+        store
+            .find_user_by_username("intruder")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

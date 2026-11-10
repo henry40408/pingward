@@ -826,6 +826,49 @@ impl Store {
         Ok(row.get::<i64, _>("id"))
     }
 
+    /// Runs an "insert if `users` is empty" statement. Postgres runs READ COMMITTED, so
+    /// two concurrent `INSERT … WHERE NOT EXISTS` statements both see an empty table; a
+    /// transaction-scoped advisory lock makes the second wait and then see the first's
+    /// row. `SQLite` needs none — one statement is atomic and writers are serialized —
+    /// and a deferred transaction there would fail with `SQLITE_BUSY` on lock upgrade.
+    async fn fetch_optional_first_user_insert(
+        &self,
+        insert: sqlx::query::Query<'_, sqlx::Any, <sqlx::Any as sqlx::Database>::Arguments>,
+    ) -> Result<Option<sqlx::any::AnyRow>, sqlx::Error> {
+        const FIRST_USER_LOCK_KEY: i64 = 0x7069_6e67_7761_7264; // "pingward"
+        if !crate::db::is_postgres(&self.pool) {
+            return insert.fetch_optional(&self.pool).await;
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(FIRST_USER_LOCK_KEY)
+            .execute(&mut *tx)
+            .await?;
+        let row = insert.fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(row)
+    }
+
+    /// Inserts the first admin only while `users` is empty, in one statement so two racing
+    /// `/setup` submissions cannot both pass a separate count check. `None` means another
+    /// user already exists (someone else won, or setup was already done).
+    pub async fn create_first_admin(
+        &self,
+        username: &str,
+        password_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        let insert = sqlx::query(
+            "INSERT INTO users (username, password_hash, is_admin, created_at) \
+             SELECT $1, $2, 1, $3 WHERE NOT EXISTS (SELECT 1 FROM users) RETURNING id",
+        )
+        .bind(username)
+        .bind(password_hash)
+        .bind(now.to_rfc3339());
+        let row = self.fetch_optional_first_user_insert(insert).await?;
+        Ok(row.map(|r| r.get::<i64, _>("id")))
+    }
+
     pub async fn find_user_by_username(&self, username: &str) -> Result<Option<User>, sqlx::Error> {
         let row = sqlx::query("SELECT * FROM users WHERE username = $1")
             .bind(username)

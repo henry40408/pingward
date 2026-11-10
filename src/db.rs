@@ -17,6 +17,12 @@ fn is_sqlite_url(url: &str) -> bool {
     url.starts_with("sqlite:")
 }
 
+/// Whether `pool` talks to Postgres, for the few statements the two backends need
+/// to run differently.
+pub fn is_postgres(pool: &Pool) -> bool {
+    !is_sqlite_url(pool.connect_options().database_url.as_str())
+}
+
 pub async fn connect(url: &str) -> Result<Pool, sqlx::Error> {
     install_default_drivers();
 
