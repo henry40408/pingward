@@ -89,7 +89,19 @@ impl PingwardWorld {
     }
 
     pub fn api(&self) -> Result<Api> {
-        Api::new(self.base_url()?)
+        let server = self
+            .server
+            .as_ref()
+            .context("no server: the `before` hook did not start one")?;
+        Api::new(server.base_url(), server.setup_token())
+    }
+
+    pub fn setup_token(&self) -> Result<&str> {
+        Ok(self
+            .server
+            .as_ref()
+            .context("no server: the `before` hook did not start one")?
+            .setup_token())
     }
 
     /// The scenario's webhook receiver, started lazily since most scenarios

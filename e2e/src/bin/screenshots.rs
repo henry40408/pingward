@@ -194,10 +194,16 @@ async fn main() -> Result<()> {
     let base = format!("http://127.0.0.1:{port}");
 
     // Phase 1: migrate, and create the admin via `/setup` for a real argon2 hash.
-    let mut server = start_pingward(&db, port, &base).await?;
-    let bootstrap = Api::new(&base)?
-        .bootstrap_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
-        .await;
+    let mut server = start_pingward(&db, port, &base, Stdio::piped()).await?;
+    let setup_token = pingward_e2e::server::read_setup_token(&mut server).await;
+    let bootstrap = match setup_token {
+        Ok(token) => {
+            Api::new(&base, &token)?
+                .bootstrap_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
+                .await
+        }
+        Err(e) => Err(e),
+    };
     stop_pingward(&mut server).await;
     bootstrap?;
 
@@ -205,7 +211,7 @@ async fn main() -> Result<()> {
     apply_seed(&db).await?;
 
     // Phase 3: boot on it and capture.
-    let mut server = start_pingward(&db, port, &base).await?;
+    let mut server = start_pingward(&db, port, &base, Stdio::inherit()).await?;
     let result = capture_all(&base, &out).await;
     stop_pingward(&mut server).await;
     result?;
@@ -510,7 +516,7 @@ async fn apply_seed(db: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn start_pingward(db: &Path, port: u16, base: &str) -> Result<Child> {
+async fn start_pingward(db: &Path, port: u16, base: &str, stderr: Stdio) -> Result<Child> {
     let binary = repo_root().join("target/debug/pingward");
     if !binary.is_file() {
         bail!(
@@ -529,7 +535,7 @@ async fn start_pingward(db: &Path, port: u16, base: &str) -> Result<Child> {
         .env("RUST_LOG", "warn")
         .env("PINGWARD_SECRET", "pingward-screenshots-0123456789abcdef")
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
+        .stderr(stderr)
         .kill_on_drop(false)
         .spawn()
         .with_context(|| format!("spawning {}", binary.display()))?;

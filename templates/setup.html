@@ -16,6 +16,11 @@
           <label for="password">Password</label>
           <input id="password" name="password" type="password" autocomplete="new-password" data-testid="password-input" required>
         </div>
+        <div class="field">
+          <label for="setup_token">Setup token</label>
+          <input id="setup_token" name="setup_token" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXXX-XXXXX" data-testid="setup-token-input" required>
+          <div class="help">Printed in the server log (stderr) when pingward started with no users. Look for “Setup token”.</div>
+        </div>
         <button class="btn primary block" type="submit" data-testid="setup-submit">Create admin</button>
       </form>
     </div>

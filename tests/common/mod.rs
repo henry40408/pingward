@@ -6,6 +6,10 @@
 #[allow(dead_code)]
 pub const TEST_SECRET: &str = "pingward-test-secret-32-bytes-xx";
 
+/// The setup token tests arm via `AppState::arm_setup_token`; the real one is random.
+#[allow(dead_code)]
+pub const TEST_SETUP_TOKEN: &str = "TEST0-TOKEN";
+
 /// A default `Config` pinned to [`TEST_SECRET`].
 #[allow(dead_code)]
 pub fn test_config() -> pingward::config::Config {

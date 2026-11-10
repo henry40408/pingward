@@ -36,6 +36,11 @@ pub const WINDOW_SECS: u64 = 60;
 pub const ACCOUNT_MAX_ATTEMPTS: u32 = 10;
 pub const ACCOUNT_WINDOW_SECS: u64 = 900;
 
+/// `POST /setup` attempts per client within [`SETUP_WINDOW_SECS`]. Stricter than login:
+/// the only thing to guess is a 50-bit token, and a legitimate operator needs a handful.
+pub const SETUP_MAX_ATTEMPTS: u32 = 5;
+pub const SETUP_WINDOW_SECS: u64 = 900;
+
 /// Hard cap on tracked keys, so a spray of addresses or usernames cannot grow the map.
 const MAX_ENTRIES: usize = 10_000;
 

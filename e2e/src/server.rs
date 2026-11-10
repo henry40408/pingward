@@ -61,6 +61,7 @@ impl Options {
 pub struct Server {
     base_url: String,
     child: Child,
+    setup_token: String,
     // Dropping removes the test database's directory.
     _temp: tempfile::TempDir,
 }
@@ -92,7 +93,8 @@ impl Server {
             .env("PINGWARD_SECRET", "pingward-e2e-secret-0123456789abcdef")
             // Teardown kills it mid-request; the noise would bury real failures.
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            // Piped: a fresh database prints its one-time setup token there.
+            .stderr(Stdio::piped())
             // `Drop` below issues the kill itself.
             .kill_on_drop(false);
         if let Some(secs) = options.scan_interval_secs {
@@ -102,14 +104,23 @@ impl Server {
             command.env(key, value);
         }
 
-        let child = command
+        let mut child = command
             .spawn()
             .with_context(|| format!("spawning the pingward server at {}", binary.display()))?;
+        let setup_token = match read_setup_token(&mut child).await {
+            Ok(token) => token,
+            Err(e) => {
+                // `kill_on_drop` is off, so an early return would orphan the process.
+                let _ = child.start_kill();
+                return Err(e);
+            }
+        };
 
         // Built before the wait so a server that never answers is still killed.
         let server = Self {
             base_url,
             child,
+            setup_token,
             _temp: temp,
         };
         server.wait_until_healthy().await?;
@@ -118,6 +129,11 @@ impl Server {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// The token `/setup` demands on this server's fresh database.
+    pub fn setup_token(&self) -> &str {
+        &self.setup_token
     }
 
     async fn wait_until_healthy(&self) -> Result<()> {
@@ -141,6 +157,30 @@ impl Drop for Server {
         // Issued before the temp directory is removed; reaped later by tokio.
         let _ = self.child.start_kill();
     }
+}
+
+/// Reads the child's stderr until it announces the setup token, then keeps draining the
+/// pipe in the background so a full pipe never stalls the server.
+pub async fn read_setup_token(child: &mut Child) -> Result<String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let stderr = child
+        .stderr
+        .take()
+        .context("the server's stderr is not piped")?;
+    let mut lines = BufReader::new(stderr).lines();
+    let found = tokio::time::timeout(STARTUP_TIMEOUT, async {
+        while let Some(line) = lines.next_line().await? {
+            if let Some((_, token)) = line.split_once("Setup token (enter it on /setup): ") {
+                return Ok(token.trim().to_owned());
+            }
+        }
+        bail!("the server exited without printing a setup token")
+    })
+    .await
+    .context("the server did not print a setup token in time")?;
+    tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+    found
 }
 
 /// Path to the dev-profile server binary, building it if missing. Dev, not

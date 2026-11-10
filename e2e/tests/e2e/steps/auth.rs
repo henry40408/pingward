@@ -20,9 +20,11 @@ async fn on_setup_page(world: &mut PingwardWorld) -> Result<()> {
 
 #[when(expr = "I create the admin {string} with password {string}")]
 async fn create_admin(world: &mut PingwardWorld, username: String, password: String) -> Result<()> {
+    let token = world.setup_token()?.to_owned();
     let driver = world.driver()?;
     driver.fill("username-input", &username).await?;
     driver.fill("password-input", &password).await?;
+    driver.fill("setup-token-input", &token).await?;
     driver.submit("setup-submit").await
 }
 

@@ -712,4 +712,55 @@ async fn postgres_full_round_trip() {
     assert!(store.list_projects_for_user(uid).await.unwrap().is_empty());
     assert!(store.find_check(cid).await.unwrap().is_none());
     assert_eq!(store.validate_api_key(&h3, now).await.unwrap(), None);
+
+    // READ COMMITTED lets concurrent "insert if empty" statements all see an empty
+    // table; the advisory lock in the store must leave exactly one winner.
+    sqlx::query("DELETE FROM users")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let racers: Vec<_> = (0..8)
+        .map(|i| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                store
+                    .create_first_admin(&format!("racer{i}"), "phc", chrono::Utc::now())
+                    .await
+                    .unwrap()
+                    .is_some()
+            })
+        })
+        .collect();
+    let mut winners = 0;
+    for racer in racers {
+        winners += usize::from(racer.await.unwrap());
+    }
+    assert_eq!(winners, 1, "exactly one first admin on postgres");
+
+    sqlx::query("DELETE FROM users")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let racers: Vec<_> = (0..8)
+        .map(|i| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                store
+                    .create_passwordless_user_first_is_admin(&format!("sso{i}"), chrono::Utc::now())
+                    .await
+                    .unwrap()
+            })
+        })
+        .collect();
+    for racer in racers {
+        racer.await.unwrap();
+    }
+    let admins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE is_admin = 1")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        admins, 1,
+        "exactly one first forward-auth admin on postgres"
+    );
 }

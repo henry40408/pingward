@@ -19,6 +19,7 @@ async fn server() -> (TestServer, Store) {
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
     let state = AppState::new(store.clone(), common::test_config());
+    state.arm_setup_token(common::TEST_SETUP_TOKEN.into());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
     (server, store)
@@ -55,6 +56,7 @@ async fn setup_refuses_a_password_under_the_floor() {
         .post("/setup")
         .form(&[
             ("_csrf", csrf.as_str()),
+            ("setup_token", common::TEST_SETUP_TOKEN),
             ("username", "admin"),
             ("password", TOO_SHORT),
         ])
@@ -86,6 +88,7 @@ async fn setup_still_reports_a_missing_username_as_a_pair() {
         .post("/setup")
         .form(&[
             ("_csrf", csrf.as_str()),
+            ("setup_token", common::TEST_SETUP_TOKEN),
             ("username", ""),
             ("password", LONG_ENOUGH),
         ])
@@ -105,6 +108,7 @@ async fn setup_accepts_a_password_at_the_floor() {
         .post("/setup")
         .form(&[
             ("_csrf", csrf.as_str()),
+            ("setup_token", common::TEST_SETUP_TOKEN),
             ("username", "admin"),
             ("password", at_the_floor.as_str()),
         ])

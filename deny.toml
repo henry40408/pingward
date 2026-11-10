@@ -19,6 +19,10 @@ ignore = [
     # (latest), which still depends on it. Remove once askama drops it.
     # Tracked in #202.
     "RUSTSEC-2026-0374",
+    # libsqlite3-sys bundles a vulnerable SQLite (CVE-2026-119375); the fix is in
+    # 0.39, but sqlx-sqlite 0.9.0 requires <0.38. Remove once sqlx-sqlite allows
+    # 0.39 and sqlx is upgraded. Tracked in #228.
+    "RUSTSEC-2026-0459",
 ]
 
 [licenses]

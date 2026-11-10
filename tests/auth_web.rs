@@ -16,6 +16,7 @@ async fn server() -> (TestServer, Store) {
     db::migrate(&pool, "sqlite::memory:").await.unwrap();
     let store = Store::new(pool);
     let state = AppState::new(store.clone(), common::test_config());
+    state.arm_setup_token(common::TEST_SETUP_TOKEN.into());
     let mut server = TestServer::new(app(state));
     server.save_cookies();
     (server, store)
@@ -34,6 +35,7 @@ async fn setup_creates_admin_then_dashboard_loads() {
         .post("/setup")
         .form(&[
             ("_csrf", csrf.as_str()),
+            ("setup_token", common::TEST_SETUP_TOKEN),
             ("username", "admin"),
             ("password", "a first admin passphrase"),
         ])
@@ -1362,5 +1364,250 @@ async fn an_unknown_username_costs_the_same_as_a_wrong_password() {
         "an unknown username returned far faster than a wrong password \
          ({miss:?} vs {hit:?}) — the argon2 work is being skipped, which \
          makes response time a username oracle"
+    );
+}
+
+/// Five first visitors (the per-IP limit) submitting `/setup` at once: the check-then-insert gap must not
+/// admit more than one admin. File-backed so the pool really holds several connections.
+#[tokio::test]
+async fn concurrent_setup_creates_exactly_one_admin() {
+    let path = std::env::temp_dir().join(format!(
+        "pingward_setup_race_{}.sqlite3",
+        std::process::id()
+    ));
+    let url = format!("sqlite://{}", path.display());
+    let pool = db::connect(&url).await.unwrap();
+    db::migrate(&pool, &url).await.unwrap();
+    let store = Store::new(pool);
+    let state = AppState::new(store.clone(), common::test_config());
+    state.arm_setup_token(common::TEST_SETUP_TOKEN.into());
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    let csrf = common::anonymous_csrf(&mut server).await;
+
+    let attempt = |username: &'static str| {
+        server.post("/setup").form(&[
+            ("_csrf", csrf.as_str()),
+            ("setup_token", common::TEST_SETUP_TOKEN),
+            ("username", username),
+            ("password", "a first admin passphrase"),
+        ])
+    };
+    let responses = tokio::join!(
+        attempt("admin1"),
+        attempt("admin2"),
+        attempt("admin3"),
+        attempt("admin4"),
+        attempt("admin5"),
+    );
+    let responses = [
+        responses.0,
+        responses.1,
+        responses.2,
+        responses.3,
+        responses.4,
+    ];
+
+    let winners = responses
+        .iter()
+        .filter(|r| r.header("location") == "/")
+        .count();
+    let losers = responses
+        .iter()
+        .filter(|r| r.header("location") == "/login")
+        .count();
+    assert_eq!(store.count_users().await.unwrap(), 1, "exactly one admin");
+    assert_eq!(winners, 1, "exactly one setup wins");
+    assert_eq!(losers, responses.len() - 1, "the rest are sent to /login");
+
+    drop(store);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+}
+
+/// Once any user exists `/setup` is closed: a late POST must not add an account.
+#[tokio::test]
+async fn setup_after_a_user_exists_is_refused() {
+    let (mut server, store) = server().await;
+    let phc = pingward::auth::hash_password("pw").unwrap();
+    store
+        .create_user("existing", Some(&phc), false, chrono::Utc::now())
+        .await
+        .unwrap();
+    let csrf = common::anonymous_csrf(&mut server).await;
+
+    let res = server
+        .post("/setup")
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("setup_token", common::TEST_SETUP_TOKEN),
+            ("username", "intruder"),
+            ("password", "a first admin passphrase"),
+        ])
+        .await;
+
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/login");
+    assert_eq!(store.count_users().await.unwrap(), 1);
+    assert!(
+        store
+            .find_user_by_username("intruder")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// A server with `/setup` armed, plus the state handle for inspecting the token.
+async fn token_server() -> (TestServer, Store, AppState) {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let state = AppState::new(store.clone(), common::test_config());
+    state.arm_setup_token("ABCDE-12345".into());
+    let mut server = TestServer::new(app(state.clone()));
+    server.save_cookies();
+    (server, store, state)
+}
+
+async fn post_setup(server: &mut TestServer, token: Option<&str>) -> axum_test::TestResponse {
+    let csrf = common::anonymous_csrf(server).await;
+    let mut form = vec![
+        ("_csrf", csrf.as_str()),
+        ("username", "admin"),
+        ("password", "a first admin passphrase"),
+    ];
+    if let Some(token) = token {
+        form.push(("setup_token", token));
+    }
+    server.post("/setup").form(&form).await
+}
+
+#[tokio::test]
+async fn setup_refuses_a_missing_or_wrong_token_and_audits_it() {
+    let (mut server, store, state) = token_server().await;
+    for token in [None, Some(""), Some("ZZZZZ-ZZZZZ")] {
+        let res = post_setup(&mut server, token).await;
+        res.assert_status(axum::http::StatusCode::FORBIDDEN);
+        assert!(res.text().contains("setup-error"));
+    }
+    assert_eq!(store.count_users().await.unwrap(), 0);
+    assert!(
+        state.setup_token().is_some(),
+        "a wrong guess must not burn the token"
+    );
+    let rejected: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM audit_log WHERE action = 'setup.token_rejected'")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(rejected, 3);
+}
+
+#[tokio::test]
+async fn setup_accepts_the_token_in_any_dash_case_and_spacing() {
+    let (mut server, store, state) = token_server().await;
+    let res = post_setup(&mut server, Some(" abcde 12345 ")).await;
+    res.assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert_eq!(res.header("location"), "/");
+    assert_eq!(store.count_users().await.unwrap(), 1);
+    assert!(state.setup_token().is_none(), "the token dies with setup");
+}
+
+#[tokio::test]
+async fn setup_without_an_armed_token_is_refused() {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let mut server = TestServer::new(app(AppState::new(store.clone(), common::test_config())));
+    server.save_cookies();
+    let res = post_setup(&mut server, Some("")).await;
+    res.assert_status(axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(store.count_users().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn setup_attempts_are_rate_limited_before_the_token_is_checked() {
+    let (mut server, store, _state) = token_server().await;
+    for _ in 0..pingward::ratelimit::SETUP_MAX_ATTEMPTS {
+        post_setup(&mut server, Some("WRONG-WRONG"))
+            .await
+            .assert_status(axum::http::StatusCode::FORBIDDEN);
+    }
+    // Even the right token is throttled once the budget is spent.
+    let res = post_setup(&mut server, Some("ABCDE-12345")).await;
+    res.assert_status(axum::http::StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        res.header("retry-after"),
+        pingward::ratelimit::SETUP_WINDOW_SECS.to_string().as_str()
+    );
+    assert_eq!(store.count_users().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn a_setup_token_is_issued_only_while_no_user_exists() {
+    let pool = db::connect("sqlite::memory:").await.unwrap();
+    db::migrate(&pool, "sqlite::memory:").await.unwrap();
+    let store = Store::new(pool);
+    let state = AppState::new(store.clone(), common::test_config());
+
+    let issued = state.arm_setup_token_if_unclaimed().await.unwrap();
+    assert_eq!(
+        issued,
+        state.setup_token(),
+        "the shown token is the armed one"
+    );
+    assert!(issued.is_some());
+
+    state.clear_setup_token();
+    store
+        .create_user("existing", None, true, chrono::Utc::now())
+        .await
+        .unwrap();
+    assert!(
+        state
+            .arm_setup_token_if_unclaimed()
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(state.setup_token().is_none());
+}
+
+#[tokio::test]
+async fn setup_stores_the_trimmed_username_and_refuses_bad_ones() {
+    let (mut server, store, _state) = token_server().await;
+    let csrf = common::anonymous_csrf(&mut server).await;
+    let post = |server: &TestServer, username: String| {
+        let csrf = csrf.clone();
+        let req = server.post("/setup");
+        async move {
+            req.form(&[
+                ("_csrf", csrf.as_str()),
+                ("username", username.as_str()),
+                ("password", "a first admin passphrase"),
+                ("setup_token", "ABCDE-12345"),
+            ])
+            .await
+        }
+    };
+
+    for bad in ["a".repeat(65), "bad\u{7}name".to_string()] {
+        let res = post(&server, bad).await;
+        res.assert_status_ok();
+        assert!(res.text().contains("setup-error"));
+    }
+    assert_eq!(store.count_users().await.unwrap(), 0);
+
+    post(&server, "  admin  ".into())
+        .await
+        .assert_status(axum::http::StatusCode::SEE_OTHER);
+    assert!(
+        store
+            .find_user_by_username("admin")
+            .await
+            .unwrap()
+            .is_some()
     );
 }

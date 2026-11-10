@@ -291,6 +291,14 @@ struct Credentials {
     password: String,
 }
 
+#[derive(Deserialize)]
+struct SetupForm {
+    username: String,
+    password: String,
+    #[serde(default)]
+    setup_token: String,
+}
+
 // --- handlers ---
 async fn setup_page(State(state): State<AppState>, jar: CookieJar) -> Result<Response, AppError> {
     if state.store.count_users().await? > 0 {
@@ -305,52 +313,119 @@ async fn setup_page(State(state): State<AppState>, jar: CookieJar) -> Result<Res
     .into_response())
 }
 
-// Not rate-limited: `/setup` closes once a user exists; nothing to brute-force.
+fn setup_token_matches(state: &AppState, submitted: &str) -> bool {
+    let Some(expected) = state.setup_token() else {
+        return false;
+    };
+    crate::secret::verify_setup_token(&state.config.secret, &expected, submitted)
+}
+
+/// Re-renders `/setup` with `error` under `status`.
+fn setup_refusal(
+    state: &AppState,
+    jar: &CookieJar,
+    status: StatusCode,
+    error: &str,
+) -> Result<Response, AppError> {
+    let page = render(&SetupTemplate {
+        show_nav: false,
+        csrf: current_csrf(state, jar),
+        is_admin: false,
+        error: Some(error.to_string()),
+    })?;
+    let mut res = (status, page).into_response();
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        res.headers_mut().insert(
+            header::RETRY_AFTER,
+            crate::ratelimit::SETUP_WINDOW_SECS
+                .to_string()
+                .parse()
+                .expect("digits are a valid header value"),
+        );
+    }
+    Ok(res)
+}
+
+/// A wrong token is the only signal of someone probing a fresh instance, so it is audited.
+/// No user exists yet, hence actor id 0.
+async fn reject_setup_token(
+    state: &AppState,
+    jar: &CookieJar,
+    ip: Option<&str>,
+) -> Result<Response, AppError> {
+    tracing::warn!(target: "pingward::auth", ip, "setup.token_rejected");
+    state
+        .store
+        .record_audit(
+            &crate::store::NewAudit {
+                actor_user_id: 0,
+                actor_username: "(setup)",
+                action: "setup.token_rejected",
+                target_type: None,
+                target_id: None,
+                target_owner_id: None,
+                method: Some("POST"),
+                path: Some("/setup"),
+                detail: ip,
+            },
+            Utc::now(),
+        )
+        .await?;
+    setup_refusal(
+        state,
+        jar,
+        StatusCode::FORBIDDEN,
+        "the setup token is missing or wrong — find it in the server log",
+    )
+}
+
+// Rate-limited per client before the token check; the token gates everything after it.
 async fn setup_submit(
     State(state): State<AppState>,
     jar: CookieJar,
     headers: HeaderMap,
     conn: crate::ping::ClientIp,
-    Form(creds): Form<Credentials>,
+    PeerAddr(peer_ip): PeerAddr,
+    Form(creds): Form<SetupForm>,
 ) -> Result<Response, AppError> {
     if state.store.count_users().await? > 0 {
         return Ok(Redirect::to("/login").into_response());
     }
-    let policy = crate::auth::validate_password(&creds.password);
-    if creds.username.is_empty() || policy.is_err() {
-        let error = if creds.username.is_empty() {
-            "username and password are required".to_string()
-        } else {
-            policy.unwrap_err()
-        };
-        return Ok(render(&SetupTemplate {
-            show_nav: false,
-            csrf: current_csrf(&state, &jar),
-            is_admin: false,
-            error: Some(error),
-        })?
-        .into_response());
+    // Order matters: throttle, then token, then the password work. The token check
+    // is what keeps a stranger from reaching argon2 or the insert.
+    let client = crate::ratelimit::rate_limit_key(peer_ip, &headers, &state.config.trusted_proxies);
+    if !state.setup_limiter.try_acquire(client) {
+        return setup_refusal(
+            &state,
+            &jar,
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many setup attempts — try again later",
+        );
     }
+    if !setup_token_matches(&state, &creds.setup_token) {
+        // The winner of a race clears the token; its losers are late, not hostile.
+        if state.store.count_users().await? > 0 {
+            return Ok(Redirect::to("/login").into_response());
+        }
+        return reject_setup_token(&state, &jar, conn.0.as_deref()).await;
+    }
+    let checked = crate::auth::validate_username(&creds.username)
+        .and_then(|username| crate::auth::validate_password(&creds.password).map(|()| username));
+    let username = match checked {
+        Ok(username) => username,
+        Err(error) => return setup_refusal(&state, &jar, StatusCode::OK, &error),
+    };
     // Box the hashing error's `Display` text into `AppError::Other`.
     let phc = hash_password(&creds.password).map_err(|e| AppError::Other(e.to_string().into()))?;
-    // Two racing first visitors both pass the check above; tell the loser, don't 500.
-    let uid = match state
+    // Two racing first visitors both pass the check above; the insert itself is the gate.
+    let Some(uid) = state
         .store
-        .create_user(&creds.username, Some(&phc), true, Utc::now())
-        .await
-    {
-        Ok(id) => id,
-        Err(crate::store::CreateUserError::UsernameTaken) => {
-            return Ok(render(&SetupTemplate {
-                show_nav: false,
-                csrf: current_csrf(&state, &jar),
-                is_admin: false,
-                error: Some(username_taken(&creds.username)),
-            })?
-            .into_response());
-        }
-        Err(crate::store::CreateUserError::Db(e)) => return Err(e.into()),
+        .create_first_admin(username, &phc, Utc::now())
+        .await?
+    else {
+        return Ok(Redirect::to("/login").into_response());
     };
+    state.clear_setup_token();
     let ua = request_user_agent(&headers);
     let jar = start_session(
         &state,
@@ -4283,24 +4358,17 @@ async fn users_create(
     AdminUser(admin): AdminUser,
     Form(form): Form<NewUserForm>,
 ) -> Result<Response, AppError> {
-    let username = form.username.trim();
     // Read-only checks sit above the elevation gate: a doomed submission should
     // say why rather than demand confirmation first.
-    let policy = crate::auth::validate_password(&form.password);
-    let taken =
-        !username.is_empty() && state.store.find_user_by_username(username).await?.is_some();
-    let error = if username.is_empty() {
-        Some("username and password are required".to_string())
-    } else if let Err(msg) = policy {
-        Some(msg)
-    } else if taken {
-        // Exact match, like the `UNIQUE` constraint: `Admin` and `admin` differ.
-        Some(username_taken(username))
-    } else {
-        None
+    let checked = crate::auth::validate_username(&form.username)
+        .and_then(|username| crate::auth::validate_password(&form.password).map(|()| username));
+    let username = match checked {
+        Ok(username) => username,
+        Err(error) => return render_admin_user_error(&state, &jar, &admin, error).await,
     };
-    if let Some(error) = error {
-        return render_admin_user_error(&state, &jar, &admin, error).await;
+    // Exact match, like the `UNIQUE` constraint: `Admin` and `admin` differ.
+    if state.store.find_user_by_username(username).await?.is_some() {
+        return render_admin_user_error(&state, &jar, &admin, username_taken(username)).await;
     }
     // Gated: a new account outlives this session. Keep directly above the first write.
     if !elevation(&state, &jar, &admin).allows() {
