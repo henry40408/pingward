@@ -869,6 +869,28 @@ impl Store {
         Ok(row.map(|r| r.get::<i64, _>("id")))
     }
 
+    /// Provisions a passwordless account, admin only if `users` is empty — decided inside
+    /// the INSERT, so simultaneous first sign-ins cannot each conclude they were first.
+    pub async fn create_passwordless_user_first_is_admin(
+        &self,
+        username: &str,
+        now: DateTime<Utc>,
+    ) -> Result<i64, CreateUserError> {
+        let insert = sqlx::query(
+            "INSERT INTO users (username, password_hash, is_admin, created_at) \
+             SELECT $1, NULL, CASE WHEN EXISTS (SELECT 1 FROM users) THEN 0 ELSE 1 END, $2 \
+             RETURNING id",
+        )
+        .bind(username)
+        .bind(now.to_rfc3339());
+        let row = self
+            .fetch_optional_first_user_insert(insert)
+            .await
+            .map_err(CreateUserError::from)?
+            .ok_or(CreateUserError::Db(sqlx::Error::RowNotFound))?;
+        Ok(row.get::<i64, _>("id"))
+    }
+
     pub async fn find_user_by_username(&self, username: &str) -> Result<Option<User>, sqlx::Error> {
         let row = sqlx::query("SELECT * FROM users WHERE username = $1")
             .bind(username)

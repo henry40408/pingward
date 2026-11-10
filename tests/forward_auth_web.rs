@@ -456,3 +456,76 @@ async fn a_stale_session_cookie_is_replaced_rather_than_trusted() {
         pingward::secret::derive_csrf(common::TEST_SECRET.as_bytes(), &id)
     );
 }
+
+fn gateway_headers(user: &str) -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("remote-user", user.parse().unwrap());
+    headers
+}
+
+async fn provision(state: &AppState, user: &str) -> pingward::models::User {
+    let peer = Some(PROXY_PEER.parse::<SocketAddr>().unwrap().ip());
+    pingward::auth::forward_auth_user(state, &gateway_headers(user), peer, chrono::Utc::now())
+        .await
+        .expect("a trusted gateway header provisions the user")
+}
+
+/// Whoever the gateway lets in first on an empty instance administers it; later
+/// arrivals are ordinary users.
+#[tokio::test]
+async fn the_first_forward_auth_user_is_admin_and_the_second_is_not() {
+    let state = AppState::new(empty_store().await, forward_auth_config());
+
+    assert!(provision(&state, "alice").await.is_admin);
+    assert!(!provision(&state, "bob").await.is_admin);
+    assert!(
+        provision(&state, "alice").await.is_admin,
+        "signing in again must not change the role"
+    );
+}
+
+/// Simultaneous first logins must not each decide they are first.
+#[tokio::test]
+async fn concurrent_first_forward_auth_logins_yield_one_admin() {
+    let path = std::env::temp_dir().join(format!(
+        "pingward_fwd_admin_race_{}.sqlite3",
+        std::process::id()
+    ));
+    let url = format!("sqlite://{}", path.display());
+    let pool = db::connect(&url).await.unwrap();
+    db::migrate(&pool, &url).await.unwrap();
+    let store = Store::new(pool);
+    let state = AppState::new(store.clone(), forward_auth_config());
+
+    tokio::join!(
+        provision(&state, "u1"),
+        provision(&state, "u2"),
+        provision(&state, "u3"),
+        provision(&state, "u4"),
+        provision(&state, "u5"),
+    );
+
+    let admins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE is_admin = 1")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(store.count_users().await.unwrap(), 5);
+    assert_eq!(admins, 1, "exactly one first user");
+
+    drop(state);
+    drop(store);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+}
+
+/// The first admin ends the setup window, however that admin was created.
+#[tokio::test]
+async fn the_first_forward_auth_admin_retires_the_setup_token() {
+    let state = AppState::new(empty_store().await, forward_auth_config());
+    state.arm_setup_token("ABCDE-12345".into());
+
+    provision(&state, "alice").await;
+
+    assert!(state.setup_token().is_none());
+}

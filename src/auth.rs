@@ -302,8 +302,8 @@ pub fn peer_ip(extensions: &axum::http::Extensions) -> Option<IpAddr> {
         .map(|ci| ci.0.ip())
 }
 
-/// The user named by a trusted forward-auth header, auto-provisioning a non-admin,
-/// passwordless account on first sight; `None` if disabled or not applicable. Shared by
+/// The user named by a trusted forward-auth header, auto-provisioning a passwordless
+/// account on first sight (an admin only if it is the instance's first user); `None` if disabled or not applicable. Shared by
 /// `resolve_user` and `web::forward_auth_session` so both agree on who is signed in.
 pub async fn forward_auth_user(
     state: &AppState,
@@ -317,10 +317,15 @@ pub async fn forward_auth_user(
         Ok(None) => {
             let id = state
                 .store
-                .create_user(&username, None, false, now)
+                .create_passwordless_user_first_is_admin(&username, now)
                 .await
                 .ok()?;
-            state.store.find_user_by_id(id).await.ok().flatten()
+            let user = state.store.find_user_by_id(id).await.ok().flatten()?;
+            // The first admin exists now, so `/setup` has nothing left to guard.
+            if user.is_admin {
+                state.clear_setup_token();
+            }
+            Some(user)
         }
         Err(_) => None,
     }

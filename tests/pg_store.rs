@@ -736,4 +736,31 @@ async fn postgres_full_round_trip() {
         winners += usize::from(racer.await.unwrap());
     }
     assert_eq!(winners, 1, "exactly one first admin on postgres");
+
+    sqlx::query("DELETE FROM users")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    let racers: Vec<_> = (0..8)
+        .map(|i| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                store
+                    .create_passwordless_user_first_is_admin(&format!("sso{i}"), chrono::Utc::now())
+                    .await
+                    .unwrap()
+            })
+        })
+        .collect();
+    for racer in racers {
+        racer.await.unwrap();
+    }
+    let admins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE is_admin = 1")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        admins, 1,
+        "exactly one first forward-auth admin on postgres"
+    );
 }
