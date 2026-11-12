@@ -13,7 +13,23 @@ use crate::store::{
     AuditFilter, NewApiKey, NewChannel, NewSession, NotifFilter, PageCursor, PingFilter,
     ProjectSettings, Store,
 };
-use askama::Template;
+use crate::views;
+use crate::views::account::{self, AccountView, ApiKeyRow, SessionRow};
+use crate::views::admin::{self, AdminView, EnvSetting, EnvValue, UserRow};
+use crate::views::admin_audit::{self, AdminAuditView, AuditRow};
+use crate::views::admin_unlock::AdminUnlockView;
+use crate::views::auth::AuthView;
+use crate::views::channel_form::{self, ChannelEditView, ChannelFormView};
+use crate::views::check::{self, ChannelBox, CheckView};
+use crate::views::check_form::{self, CheckFormView};
+use crate::views::check_history::{
+    self, CheckNotifsView, CheckPingsView, HiddenField, NotificationRow, PingRow,
+};
+use crate::views::confirm::ConfirmView;
+use crate::views::dashboard::{CheckRow, DashboardView, ProjectGroup};
+use crate::views::project::{
+    ProjectChannelRow, ProjectCheckRow, ProjectFormView, ProjectView, TestResult,
+};
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
@@ -25,6 +41,7 @@ use axum_extra::extract::Form as HtmlForm;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Duration, Utc};
 use cron::Schedule;
+use maud::Markup;
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::net::IpAddr;
@@ -34,9 +51,8 @@ use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
-pub fn render<T: Template>(t: &T) -> Result<Html<String>, AppError> {
-    let body = t.render().map_err(|e| AppError::Other(Box::new(e)))?;
-    Ok(Html(body))
+fn html_page(page: Markup) -> Html<String> {
+    Html(page.into_string())
 }
 
 pub fn routes() -> Router<AppState> {
@@ -132,41 +148,6 @@ pub fn routes() -> Router<AppState> {
 }
 
 // --- templates ---
-#[derive(Template)]
-#[template(path = "setup.html")]
-struct SetupTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    error: Option<String>,
-}
-
-#[derive(Template)]
-#[template(path = "login.html")]
-struct LoginTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    error: Option<String>,
-}
-
-#[derive(Template)]
-#[template(path = "dashboard.html")]
-struct DashboardTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    total: usize,
-    /// Includes `Running`: an in-flight run is still up, so the two share a tile.
-    up: usize,
-    late: usize,
-    down: usize,
-    groups: Vec<ProjectGroup>,
-    q: String,
-    status: String,
-    /// Forward-auth logout with no gateway URL: tell the visitor to sign out at the proxy.
-    forward_auth_logout: Option<String>,
-}
 
 /// Absent, blank, or whitespace-only means "no filter".
 #[derive(Deserialize, Default)]
@@ -245,26 +226,6 @@ fn sort_projects_by_name(projects: &mut [Project]) {
     });
 }
 
-struct CheckRow {
-    id: i64,
-    name: String,
-    status: &'static str,
-    schedule: String, // e.g. "every 1h · 10m grace" or the cron expr
-    last: String,
-    bars: Vec<crate::view::Bar>,
-    description: String, // markdown::truncate_plain, single-line summary
-    /// No bound channels: rendered as a chip, so a check nobody is alerted for shows.
-    no_channel: bool,
-}
-
-struct ProjectGroup {
-    id: i64,
-    name: String,
-    count: usize,
-    checks: Vec<CheckRow>,
-    description: String, // markdown::truncate_plain, single-line summary
-}
-
 /// Formatted with `duration::fmt_duration`, so it matches what the form accepts.
 pub(crate) fn schedule_label(c: &Check) -> String {
     let grace = crate::duration::fmt_duration(c.grace_secs);
@@ -304,12 +265,10 @@ async fn setup_page(State(state): State<AppState>, jar: CookieJar) -> Result<Res
     if state.store.count_users().await? > 0 {
         return Ok(Redirect::to("/login").into_response());
     }
-    Ok(render(&SetupTemplate {
-        show_nav: false,
+    Ok(html_page(views::auth::setup(&AuthView {
         csrf: current_csrf(&state, &jar),
-        is_admin: false,
         error: None,
-    })?
+    }))
     .into_response())
 }
 
@@ -321,18 +280,11 @@ fn setup_token_matches(state: &AppState, submitted: &str) -> bool {
 }
 
 /// Re-renders `/setup` with `error` under `status`.
-fn setup_refusal(
-    state: &AppState,
-    jar: &CookieJar,
-    status: StatusCode,
-    error: &str,
-) -> Result<Response, AppError> {
-    let page = render(&SetupTemplate {
-        show_nav: false,
+fn setup_refusal(state: &AppState, jar: &CookieJar, status: StatusCode, error: &str) -> Response {
+    let page = html_page(views::auth::setup(&AuthView {
         csrf: current_csrf(state, jar),
-        is_admin: false,
         error: Some(error.to_string()),
-    })?;
+    }));
     let mut res = (status, page).into_response();
     if status == StatusCode::TOO_MANY_REQUESTS {
         res.headers_mut().insert(
@@ -343,7 +295,7 @@ fn setup_refusal(
                 .expect("digits are a valid header value"),
         );
     }
-    Ok(res)
+    res
 }
 
 /// A wrong token is the only signal of someone probing a fresh instance, so it is audited.
@@ -371,12 +323,12 @@ async fn reject_setup_token(
             Utc::now(),
         )
         .await?;
-    setup_refusal(
+    Ok(setup_refusal(
         state,
         jar,
         StatusCode::FORBIDDEN,
         "the setup token is missing or wrong — find it in the server log",
-    )
+    ))
 }
 
 // Rate-limited per client before the token check; the token gates everything after it.
@@ -395,12 +347,12 @@ async fn setup_submit(
     // is what keeps a stranger from reaching argon2 or the insert.
     let client = crate::ratelimit::rate_limit_key(peer_ip, &headers, &state.config.trusted_proxies);
     if !state.setup_limiter.try_acquire(client) {
-        return setup_refusal(
+        return Ok(setup_refusal(
             &state,
             &jar,
             StatusCode::TOO_MANY_REQUESTS,
             "too many setup attempts — try again later",
-        );
+        ));
     }
     if !setup_token_matches(&state, &creds.setup_token) {
         // The winner of a race clears the token; its losers are late, not hostile.
@@ -413,7 +365,7 @@ async fn setup_submit(
         .and_then(|username| crate::auth::validate_password(&creds.password).map(|()| username));
     let username = match checked {
         Ok(username) => username,
-        Err(error) => return setup_refusal(&state, &jar, StatusCode::OK, &error),
+        Err(error) => return Ok(setup_refusal(&state, &jar, StatusCode::OK, &error)),
     };
     // Box the hashing error's `Display` text into `AppError::Other`.
     let phc = hash_password(&creds.password).map_err(|e| AppError::Other(e.to_string().into()))?;
@@ -454,12 +406,10 @@ async fn login_page(
     if user.is_some() {
         return Ok(Redirect::to("/").into_response());
     }
-    Ok(render(&LoginTemplate {
-        show_nav: false,
+    Ok(html_page(views::auth::login(&AuthView {
         csrf: current_csrf(&state, &jar),
-        is_admin: false,
         error: None,
-    })?
+    }))
     .into_response())
 }
 
@@ -552,7 +502,7 @@ fn admin_locked(config: &crate::config::Config, jar: CookieJar) -> Response {
 
 // --- confirming a destructive action (see ARCHITECTURE.md) ---
 // `data-confirm` is inert without script, so a handler runs only with `?confirmed=1` and
-// otherwise renders `ConfirmTemplate`. A *query* flag: a body extractor would 415 the
+// otherwise renders `views::confirm`. A *query* flag: a body extractor would 415 the
 // no-body forms before authorization, turning `owned_check`'s 404 into a type error.
 
 /// Page copy, deliberately longer than the template's terse `data-confirm` line.
@@ -566,6 +516,12 @@ const CONFIRM_DELETE_PROJECT: Confirm = Confirm {
     title: "Delete this project?",
     message: "Deleting a project deletes everything inside it: every check it holds, their ping history, and the notification channels configured on it. Any job still pinging one of those checks will start getting 404s. This cannot be undone.",
     button: "Delete project",
+};
+
+const CONFIRM_DELETE_CHANNEL: Confirm = Confirm {
+    title: "Delete this channel?",
+    message: "Checks bound to it stop notifying through it. This cannot be undone.",
+    button: "Delete channel",
 };
 
 const CONFIRM_DELETE_CHECK: Confirm = Confirm {
@@ -629,19 +585,6 @@ impl ConfirmQuery {
     }
 }
 
-#[derive(Template)]
-#[template(path = "confirm.html")]
-struct ConfirmTemplate {
-    show_nav: bool,
-    is_admin: bool,
-    csrf: String,
-    title: &'static str,
-    message: &'static str,
-    button: &'static str,
-    action: String,
-    cancel: String,
-}
-
 struct ConfirmRequest<'a> {
     confirm: &'a Confirm,
     action: &'a str,
@@ -655,15 +598,14 @@ fn confirmation_page(
     jar: &CookieJar,
     is_admin: bool,
     request: ConfirmRequest<'_>,
-) -> Result<Response, AppError> {
+) -> Response {
     let ConfirmRequest {
         confirm,
         action,
         cancel,
     } = request;
     let sep = if action.contains('?') { '&' } else { '?' };
-    Ok(render(&ConfirmTemplate {
-        show_nav: true,
+    html_page(views::confirm::confirm(&ConfirmView {
         is_admin,
         csrf: current_csrf(state, jar),
         title: confirm.title,
@@ -671,8 +613,8 @@ fn confirmation_page(
         button: confirm.button,
         action: format!("{action}{sep}confirmed=1"),
         cancel,
-    })?
-    .into_response())
+    }))
+    .into_response()
 }
 
 /// One `reauth.failed` event discriminated by `surface`. Separate from `login.failed`,
@@ -690,22 +632,16 @@ fn log_reauth_failure(user: &User, surface: &'static str, reason: &'static str) 
 
 /// Shared by both login limiters so the wording never hints the username is real;
 /// only `Retry-After` differs.
-fn throttled_login(
-    state: &AppState,
-    jar: &CookieJar,
-    retry_after_secs: u64,
-) -> Result<Response, AppError> {
-    Ok((
+fn throttled_login(state: &AppState, jar: &CookieJar, retry_after_secs: u64) -> Response {
+    (
         StatusCode::TOO_MANY_REQUESTS,
         [(header::RETRY_AFTER, retry_after_secs.to_string())],
-        render(&LoginTemplate {
-            show_nav: false,
+        html_page(views::auth::login(&AuthView {
             csrf: current_csrf(state, jar),
-            is_admin: false,
             error: Some("too many login attempts — try again later".into()),
-        })?,
+        })),
     )
-        .into_response())
+        .into_response()
 }
 
 async fn login_submit(
@@ -721,14 +657,18 @@ async fn login_submit(
     let client = crate::ratelimit::rate_limit_key(peer_ip, &headers, &state.config.trusted_proxies);
     if !state.login_limiter.try_acquire(client) {
         log_login_failure(&creds.username, conn.0.as_deref(), client, "rate_limited");
-        return throttled_login(&state, &jar, crate::ratelimit::WINDOW_SECS);
+        return Ok(throttled_login(&state, &jar, crate::ratelimit::WINDOW_SECS));
     }
     // Per account, or N addresses buy `MAX_ATTEMPTS × N` guesses. Keyed on the
     // *submitted* name before lookup, so an invented name throttles identically.
     let account = crate::ratelimit::account_key(&creds.username);
     if !state.account_limiter.try_acquire(account.clone()) {
         log_login_failure(&creds.username, conn.0.as_deref(), client, "account_locked");
-        return throttled_login(&state, &jar, crate::ratelimit::ACCOUNT_WINDOW_SECS);
+        return Ok(throttled_login(
+            &state,
+            &jar,
+            crate::ratelimit::ACCOUNT_WINDOW_SECS,
+        ));
     }
     let user = state.store.find_user_by_username(&creds.username).await?;
     // An unknown username must still cost one argon2 verification (timing oracle).
@@ -743,12 +683,10 @@ async fn login_submit(
             client,
             "bad_credentials",
         );
-        return Ok(render(&LoginTemplate {
-            show_nav: false,
+        return Ok(html_page(views::auth::login(&AuthView {
             csrf: current_csrf(&state, &jar),
-            is_admin: false,
             error: Some("invalid username or password".into()),
-        })?
+        }))
         .into_response());
     }
     let user = user.unwrap();
@@ -760,12 +698,10 @@ async fn login_submit(
             client,
             "account_disabled",
         );
-        return Ok(render(&LoginTemplate {
-            show_nav: false,
+        return Ok(html_page(views::auth::login(&AuthView {
             csrf: current_csrf(&state, &jar),
-            is_admin: false,
             error: Some("account is disabled".into()),
-        })?
+        }))
         .into_response());
     }
     let ua = request_user_agent(&headers);
@@ -922,8 +858,7 @@ async fn dashboard(
             checks: rows,
         });
     }
-    let resp = render(&DashboardTemplate {
-        show_nav: true,
+    let resp = html_page(views::dashboard::dashboard(&DashboardView {
         csrf: current_csrf(&state, &jar),
         is_admin: user.is_admin,
         total: tally.total,
@@ -934,7 +869,7 @@ async fn dashboard(
         q,
         status,
         forward_auth_logout,
-    })?;
+    }));
     Ok((jar, resp).into_response())
 }
 
@@ -1368,59 +1303,6 @@ pub async fn hsts(State(state): State<AppState>, req: Request, next: Next) -> Re
 }
 
 // --- project templates ---
-#[derive(Template)]
-#[template(path = "project_form.html")]
-struct ProjectFormTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    heading: String,
-    action: String,
-    name: String,
-    description: String,
-    scan_interval_secs: String,
-    nag_interval_secs: String,
-    error: Option<String>,
-}
-
-#[derive(Template)]
-#[template(path = "project.html")]
-struct ProjectTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    admin: bool,
-    project: Project,
-    description_html: String,
-    checks: Vec<ProjectCheckRow>,
-    channels: Vec<ProjectChannelRow>,
-    test_result: Option<TestResult>,
-}
-
-/// `status` is precomputed: it needs `now`.
-struct ProjectCheckRow {
-    id: i64,
-    name: String,
-    status: &'static str,
-    schedule: String,
-    description: String, // markdown::truncate_plain, single-line summary
-    /// No bound channels (rendered as a chip).
-    no_channel: bool,
-}
-
-/// Projected so a [`Channel`]'s `config_json` (delivery secrets) never reaches the
-/// template, as with [`ChannelEditView`].
-struct ProjectChannelRow {
-    id: i64,
-    name: String,
-    kind: &'static str,
-}
-
-struct TestResult {
-    ok: bool,
-    message: String,
-}
-
 #[derive(Deserialize)]
 pub(crate) struct ProjectForm {
     pub(crate) name: String,
@@ -1671,11 +1553,10 @@ fn project_form_with_error(
     session: PageSession,
     form: &ProjectForm,
     error: String,
-) -> ProjectFormTemplate {
+) -> ProjectFormView {
     let FormTarget { heading, action } = target;
     let PageSession { is_admin, csrf } = session;
-    ProjectFormTemplate {
-        show_nav: true,
+    ProjectFormView {
         csrf,
         is_admin,
         heading: heading.into(),
@@ -1693,8 +1574,7 @@ async fn project_new(
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
-    Ok(render(&ProjectFormTemplate {
-        show_nav: true,
+    Ok(html_page(views::project::project_form(&ProjectFormView {
         csrf: current_csrf(&state, &jar),
         is_admin: user.is_admin,
         heading: "New project".into(),
@@ -1704,7 +1584,7 @@ async fn project_new(
         scan_interval_secs: String::new(),
         nag_interval_secs: String::new(),
         error: None,
-    })?
+    }))
     .into_response())
 }
 
@@ -1730,7 +1610,7 @@ async fn project_create(
                 &form,
                 msg,
             );
-            return Ok(render(&t)?.into_response());
+            return Ok(html_page(views::project::project_form(&t)).into_response());
         }
     };
     let id = state
@@ -1791,8 +1671,7 @@ async fn render_project_page(
         })
         .collect();
     let description_html = crate::markdown::render(&project.description);
-    Ok(render(&ProjectTemplate {
-        show_nav: true,
+    Ok(html_page(views::project::project(&ProjectView {
         csrf,
         is_admin,
         admin,
@@ -1801,7 +1680,7 @@ async fn render_project_page(
         checks,
         channels,
         test_result,
-    })?
+    }))
     .into_response())
 }
 
@@ -1810,10 +1689,9 @@ fn project_edit_form(
     admin: bool,
     is_admin: bool,
     csrf: String,
-) -> ProjectFormTemplate {
+) -> ProjectFormView {
     let base = admin_prefix(admin);
-    ProjectFormTemplate {
-        show_nav: true,
+    ProjectFormView {
         csrf,
         is_admin,
         heading: "Edit project".into(),
@@ -1857,7 +1735,13 @@ async fn project_edit(
 ) -> Result<Response, AppError> {
     let project = owned_project(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&project_edit_form(project, false, user.is_admin, csrf))?.into_response())
+    Ok(html_page(views::project::project_form(&project_edit_form(
+        project,
+        false,
+        user.is_admin,
+        csrf,
+    )))
+    .into_response())
 }
 
 async fn project_update(
@@ -1884,7 +1768,7 @@ async fn project_update(
                 &form,
                 msg,
             );
-            return Ok(render(&t)?.into_response());
+            return Ok(html_page(views::project::project_form(&t)).into_response());
         }
     };
     state
@@ -1911,7 +1795,7 @@ async fn project_delete(
 ) -> Result<Response, AppError> {
     owned_project(&state.store, id, user.id).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -1920,7 +1804,7 @@ async fn project_delete(
                 action: &format!("/projects/{id}/delete"),
                 cancel: format!("/projects/{id}"),
             },
-        );
+        ));
     }
     state.store.delete_project(id).await?;
     Ok(Redirect::to("/").into_response())
@@ -1941,17 +1825,6 @@ pub(crate) struct CheckForm {
     pub(crate) nag_interval_secs: String,
 }
 
-struct PingRow {
-    time: String,             // UTC fallback shown when JS is off
-    iso: String,              // RFC3339 UTC; localized to the viewer's zone client-side
-    pill_class: &'static str, // "ok"|"fail"|"start"|"log"
-    kind_label: &'static str, // "success"|"fail"|"start"|"log"
-    exit: String,
-    duration: String,
-    source: String,
-    body: String,
-}
-
 /// `Exitcode` never reaches storage (the `/ping/{uuid}/{code}` handler maps it first).
 fn ping_pill_class(k: crate::models::PingKind) -> &'static str {
     use crate::models::PingKind;
@@ -1963,23 +1836,6 @@ fn ping_pill_class(k: crate::models::PingKind) -> &'static str {
     }
 }
 
-struct ChannelBox {
-    id: i64,
-    name: String,
-    kind: &'static str,
-    bound: bool,
-}
-
-struct NotificationRow {
-    created_at: String,             // UTC fallback shown when JS is off
-    iso: String,                    // RFC3339 UTC; localized client-side
-    event: &'static str,            // "down"|"up"|"reminder"
-    event_pill_class: &'static str, // mirrors the ping-kind pills
-    status: &'static str,
-    channel: String,
-    error: String,
-}
-
 /// Reuses the ping-kind palette; `Test` is never stored but kept for exhaustiveness.
 fn notif_event_pill_class(e: crate::notify::EventKind) -> &'static str {
     use crate::notify::EventKind;
@@ -1989,100 +1845,6 @@ fn notif_event_pill_class(e: crate::notify::EventKind) -> &'static str {
         EventKind::Reminder => "start",
         EventKind::Test => "log",
     }
-}
-
-#[derive(Template)]
-#[template(path = "check_form.html")]
-struct CheckFormTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    heading: String,
-    action: String,
-    error: Option<String>,
-    name: String,
-    description: String,
-    schedule_kind: String,
-    period_secs: String,
-    cron_expr: String,
-    grace_secs: String,
-    timezone: String,
-    scan_interval_secs: String,
-    max_runtime_secs: String,
-    nag_interval_secs: String,
-}
-
-#[derive(Template)]
-#[template(path = "check.html")]
-struct CheckTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    admin: bool,
-    check: Check,
-    description_html: String,
-    project_name: String,
-    status: &'static str,
-    since: String,
-    next_due: crate::view::NextDue,
-    schedule: String,
-    ping_url: String,
-    /// Withheld pending an audited reveal (see [`CheckPageViewer`]).
-    ping_url_hidden: bool,
-    bars: Vec<crate::view::Bar>,
-    channel_boxes: Vec<ChannelBox>,
-    /// From [`CheckPingsTemplate`], so page load and JS refresh share markup; `|safe`.
-    pings_partial: String,
-    /// Likewise, from [`CheckNotifsTemplate`].
-    notifs_partial: String,
-    flash: Option<String>,
-}
-
-/// Served standalone by `GET /checks/{id}/pings` (JS swaps it into
-/// `#pings-section`) and inlined into the check page. `base` is `""` or `/admin`.
-#[derive(Template)]
-#[template(path = "check_pings.html")]
-struct CheckPingsTemplate {
-    base: String,
-    check_id: i64,
-    rows: Vec<PingRow>,
-    empty: bool,
-    /// `""` = all, canonicalized from the query.
-    f_kind: String,
-    /// `Z`-form RFC3339 UTC (`""` = unset); localized client-side.
-    f_from: String,
-    f_to: String,
-    /// Controls the "Clear" affordance.
-    filtered: bool,
-    /// The notifications filter, re-sent so a scriptless submit here keeps it.
-    carry: Vec<HiddenField>,
-    /// Clear link; keeps the other section's filter.
-    clear: String,
-    newer: Option<String>,
-    older: Option<String>,
-}
-
-/// Served by `GET /checks/{id}/notifications`; otherwise as
-/// [`CheckPingsTemplate`].
-#[derive(Template)]
-#[template(path = "check_notifs.html")]
-struct CheckNotifsTemplate {
-    base: String,
-    check_id: i64,
-    rows: Vec<NotificationRow>,
-    empty: bool,
-    /// `""` = all: up|down|reminder.
-    f_event: String,
-    /// `""` = all: ok|error.
-    f_status: String,
-    f_from: String,
-    f_to: String,
-    filtered: bool,
-    /// The pings section's filter — see [`CheckPingsTemplate::carry`].
-    carry: Vec<HiddenField>,
-    clear: String,
-    newer: Option<String>,
-    older: Option<String>,
 }
 
 /// Shared by the check page and both fragments: `p*` = pings, `n*` = notifications;
@@ -2156,13 +1918,6 @@ fn absolute_setting(raw: Option<&str>) -> Option<String> {
     Some(crate::view::fmt_utc(&at))
 }
 
-/// A GET filter submit replaces the whole query string, so the *other* section's
-/// filter rides along as hidden fields.
-struct HiddenField {
-    name: &'static str,
-    value: String,
-}
-
 /// Skips empties and `mine`, the keys this form's visible controls already send.
 fn carry_fields(all: &[(&'static str, String)], mine: &[&str]) -> Vec<HiddenField> {
     all.iter()
@@ -2232,14 +1987,8 @@ async fn owned_check(store: &Store, id: i64, user_id: i64) -> Result<Check, AppE
     Ok(check)
 }
 
-fn empty_check_form(
-    heading: &str,
-    action: String,
-    is_admin: bool,
-    csrf: String,
-) -> CheckFormTemplate {
-    CheckFormTemplate {
-        show_nav: true,
+fn empty_check_form(heading: &str, action: String, is_admin: bool, csrf: String) -> CheckFormView {
+    CheckFormView {
         csrf,
         is_admin,
         heading: heading.into(),
@@ -2355,7 +2104,7 @@ async fn check_new(
         user.is_admin,
         csrf,
     );
-    Ok(render(&form)?.into_response())
+    Ok(html_page(check_form::check_form(&form)).into_response())
 }
 
 async fn check_create_core(
@@ -2389,7 +2138,7 @@ async fn check_create_core(
             t.scan_interval_secs = form.scan_interval_secs;
             t.max_runtime_secs = form.max_runtime_secs;
             t.nag_interval_secs = form.nag_interval_secs;
-            return Ok(render(&t)?.into_response());
+            return Ok(html_page(check_form::check_form(&t)).into_response());
         }
     };
     let uuid = uuid::Uuid::new_v4().to_string();
@@ -2697,7 +2446,7 @@ async fn render_check_page(
     let description_html = crate::markdown::render(&check.description);
 
     // The same fragments the partial endpoints serve: one source of markup.
-    let pings_partial = render(
+    let pings_partial = check_history::check_pings(
         &build_pings_partial(
             state,
             PartialScope { check_id: id, base },
@@ -2705,9 +2454,8 @@ async fn render_check_page(
             Some(&recent),
         )
         .await?,
-    )?
-    .0;
-    let notifs_partial = render(
+    );
+    let notifs_partial = check_history::check_notifs(
         &build_notifs_partial(
             state,
             PartialScope { check_id: id, base },
@@ -2715,11 +2463,9 @@ async fn render_check_page(
             &channel_names,
         )
         .await?,
-    )?
-    .0;
+    );
 
-    Ok(render(&CheckTemplate {
-        show_nav: true,
+    Ok(html_page(check::check(&CheckView {
         csrf,
         is_admin,
         admin,
@@ -2737,7 +2483,7 @@ async fn render_check_page(
         pings_partial,
         notifs_partial,
         flash,
-    })?
+    }))
     .into_response())
 }
 
@@ -2767,7 +2513,7 @@ async fn build_pings_partial(
     scope: PartialScope<'_>,
     page: &CheckPageQuery,
     recent: Option<&[crate::models::PingSummary]>,
-) -> Result<CheckPingsTemplate, AppError> {
+) -> Result<CheckPingsView, AppError> {
     let PartialScope { check_id, base } = scope;
     let filter = ping_filter_from(page);
     let cursor = page_cursor(page.pb, page.pa);
@@ -2817,10 +2563,9 @@ async fn build_pings_partial(
     // without JS it redirects to the page (`fragment_page_redirect`).
     let clear = clear_href(&endpoint, &hidden);
 
-    Ok(CheckPingsTemplate {
+    Ok(CheckPingsView {
         base: base.to_string(),
         check_id,
-        empty: rows.is_empty(),
         rows,
         f_kind,
         f_from,
@@ -2839,7 +2584,7 @@ async fn build_notifs_partial(
     scope: PartialScope<'_>,
     page: &CheckPageQuery,
     channel_names: &std::collections::HashMap<i64, String>,
-) -> Result<CheckNotifsTemplate, AppError> {
+) -> Result<CheckNotifsView, AppError> {
     let PartialScope { check_id, base } = scope;
     let filter = notif_filter_from(page);
     let cursor = page_cursor(page.nb, page.na);
@@ -2879,10 +2624,9 @@ async fn build_notifs_partial(
     // Fragment endpoint, for the reason spelled out in `build_pings_partial`.
     let clear = clear_href(&endpoint, &hidden);
 
-    Ok(CheckNotifsTemplate {
+    Ok(CheckNotifsView {
         base: base.to_string(),
         check_id,
-        empty: rows.is_empty(),
         rows,
         f_event,
         f_status,
@@ -3058,10 +2802,8 @@ async fn check_pings(
             &uri,
         ));
     }
-    Ok(
-        render(&build_pings_partial(&state, PartialScope::owner(check.id), &page, None).await?)?
-            .into_response(),
-    )
+    let view = build_pings_partial(&state, PartialScope::owner(check.id), &page, None).await?;
+    Ok(html_page(check_history::check_pings(&view)).into_response())
 }
 
 /// SSE: a ping arrived, or the scan loop transitioned this check.
@@ -3091,10 +2833,8 @@ async fn check_notifications(
         ));
     }
     let names = channel_name_map(&state, check.project_id).await?;
-    Ok(
-        render(&build_notifs_partial(&state, PartialScope::owner(check.id), &page, &names).await?)?
-            .into_response(),
-    )
+    let view = build_notifs_partial(&state, PartialScope::owner(check.id), &page, &names).await?;
+    Ok(html_page(check_history::check_notifs(&view)).into_response())
 }
 
 async fn admin_check_pings(
@@ -3114,10 +2854,8 @@ async fn admin_check_pings(
             &uri,
         ));
     }
-    Ok(
-        render(&build_pings_partial(&state, PartialScope::admin(check.id), &page, None).await?)?
-            .into_response(),
-    )
+    let view = build_pings_partial(&state, PartialScope::admin(check.id), &page, None).await?;
+    Ok(html_page(check_history::check_pings(&view)).into_response())
 }
 
 async fn admin_check_events(
@@ -3149,16 +2887,13 @@ async fn admin_check_notifications(
         ));
     }
     let names = channel_name_map(&state, check.project_id).await?;
-    Ok(
-        render(&build_notifs_partial(&state, PartialScope::admin(check.id), &page, &names).await?)?
-            .into_response(),
-    )
+    let view = build_notifs_partial(&state, PartialScope::admin(check.id), &page, &names).await?;
+    Ok(html_page(check_history::check_notifs(&view)).into_response())
 }
 
-fn check_edit_form(check: Check, admin: bool, is_admin: bool, csrf: String) -> CheckFormTemplate {
+fn check_edit_form(check: Check, admin: bool, is_admin: bool, csrf: String) -> CheckFormView {
     let base = admin_prefix(admin);
-    CheckFormTemplate {
-        show_nav: true,
+    CheckFormView {
         csrf,
         is_admin,
         heading: "Edit check".into(),
@@ -3197,7 +2932,13 @@ async fn check_edit(
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&check_edit_form(check, false, user.is_admin, csrf))?.into_response())
+    Ok(html_page(check_form::check_form(&check_edit_form(
+        check,
+        false,
+        user.is_admin,
+        csrf,
+    )))
+    .into_response())
 }
 
 async fn check_update_core(
@@ -3214,8 +2955,7 @@ async fn check_update_core(
     let v = match validate_check(&form) {
         Ok(v) => v,
         Err(msg) => {
-            let t = CheckFormTemplate {
-                show_nav: true,
+            let t = CheckFormView {
                 csrf,
                 is_admin,
                 heading: "Edit check".into(),
@@ -3232,7 +2972,7 @@ async fn check_update_core(
                 max_runtime_secs: form.max_runtime_secs,
                 nag_interval_secs: form.nag_interval_secs,
             };
-            return Ok(render(&t)?.into_response());
+            return Ok(html_page(check_form::check_form(&t)).into_response());
         }
     };
     state
@@ -3307,7 +3047,7 @@ async fn check_regenerate(
 ) -> Result<Response, AppError> {
     owned_check(&state.store, id, user.id).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -3316,7 +3056,7 @@ async fn check_regenerate(
                 action: &format!("/checks/{id}/regenerate"),
                 cancel: format!("/checks/{id}"),
             },
-        );
+        ));
     }
     state
         .store
@@ -3334,7 +3074,7 @@ async fn check_delete(
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -3343,49 +3083,13 @@ async fn check_delete(
                 action: &format!("/checks/{id}/delete"),
                 cancel: format!("/checks/{id}"),
             },
-        );
+        ));
     }
     state.store.delete_check(id).await?;
     Ok(Redirect::to(&format!("/projects/{}", check.project_id)).into_response())
 }
 
 // --- channel templates ---
-#[derive(Template)]
-#[template(path = "channel_form.html")]
-struct ChannelFormTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    admin: bool,
-    project_id: i64,
-    error: Option<String>,
-    smtp_available: bool,
-    /// `Some` when editing (heading, action, fixed kind, config block).
-    edit: Option<ChannelEditView>,
-}
-
-/// The edit template's only view of a stored config, making non-leakage a type property
-/// (`ChannelDto` does the same for the API). Webhook/Slack URLs are capability secrets;
-/// chat ids, ntfy server/topic and email recipients are safe to pre-fill.
-struct ChannelEditView {
-    id: i64,
-    kind: &'static str,
-    name: String,
-    // -- pre-filled, non-secret --
-    telegram_chat_id: String,
-    ntfy_base_url: String,
-    ntfy_topic: String,
-    email_to: String,
-    // -- configured/not-set pills only. Shared `url`/`token` keys can't collide:
-    //    only `kind`'s block renders.
-    has_webhook_url: bool,
-    has_slack_url: bool,
-    has_telegram_token: bool,
-    has_ntfy_token: bool,
-    has_pushover_token: bool,
-    has_pushover_user: bool,
-}
-
 impl ChannelEditView {
     fn new(ch: &Channel) -> Self {
         let cfg: serde_json::Value =
@@ -3598,14 +3302,13 @@ fn channel_form_template(
     project_id: i64,
     ctx: PageContext,
     input: ChannelFormInput,
-) -> ChannelFormTemplate {
+) -> ChannelFormView {
     let PageContext {
         admin,
         session: PageSession { is_admin, csrf },
     } = ctx;
     let ChannelFormInput { error, edit } = input;
-    ChannelFormTemplate {
-        show_nav: true,
+    ChannelFormView {
         csrf,
         is_admin,
         admin,
@@ -3624,12 +3327,12 @@ async fn channel_new(
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&channel_form_template(
+    Ok(html_page(channel_form::channel_form(&channel_form_template(
         &state,
         pid,
         PageContext::owner(user.is_admin, csrf),
         ChannelFormInput::default(),
-    ))?
+    )))
     .into_response())
 }
 
@@ -3648,7 +3351,7 @@ async fn channel_create_core(
     let (kind, name, config) = match validate_channel(&form) {
         Ok(v) => v,
         Err(msg) => {
-            return Ok(render(&channel_form_template(
+            return Ok(html_page(channel_form::channel_form(&channel_form_template(
                 state,
                 pid,
                 PageContext {
@@ -3659,7 +3362,7 @@ async fn channel_create_core(
                     error: Some(msg),
                     edit: None,
                 },
-            ))?
+            )))
             .into_response());
         }
     };
@@ -3697,7 +3400,7 @@ async fn channel_update_core(
         Ok(v) => v,
         Err(msg) => {
             // From the *stored* channel, so a typed secret is never echoed back.
-            return Ok(render(&channel_form_template(
+            return Ok(html_page(channel_form::channel_form(&channel_form_template(
                 state,
                 pid,
                 PageContext {
@@ -3708,7 +3411,7 @@ async fn channel_update_core(
                     error: Some(msg),
                     edit: Some(ChannelEditView::new(channel)),
                 },
-            ))?
+            )))
             .into_response());
         }
     };
@@ -3751,7 +3454,7 @@ async fn channel_edit(
 ) -> Result<Response, AppError> {
     let channel = owned_channel(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&channel_form_template(
+    Ok(html_page(channel_form::channel_form(&channel_form_template(
         &state,
         channel.project_id,
         PageContext::owner(user.is_admin, csrf),
@@ -3759,7 +3462,7 @@ async fn channel_edit(
             error: None,
             edit: Some(ChannelEditView::new(&channel)),
         },
-    ))?
+    )))
     .into_response())
 }
 
@@ -3783,10 +3486,24 @@ async fn channel_update(
 
 async fn channel_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     let channel = owned_channel(&state.store, id, user.id).await?;
+    if !confirm.is_confirmed() {
+        return Ok(confirmation_page(
+            &state,
+            &jar,
+            user.is_admin,
+            ConfirmRequest {
+                confirm: &CONFIRM_DELETE_CHANNEL,
+                action: &format!("/channels/{id}/delete"),
+                cancel: format!("/projects/{}", channel.project_id),
+            },
+        ));
+    }
     state.store.delete_channel(id).await?;
     Ok(Redirect::to(&format!("/projects/{}", channel.project_id)).into_response())
 }
@@ -4061,23 +3778,6 @@ async fn admin_page(
     Ok((jar, resp).into_response())
 }
 
-#[derive(Template)]
-#[template(path = "admin_unlock.html")]
-struct AdminUnlockTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    /// False for a passwordless forward-auth admin: the gate doesn't apply.
-    applies: bool,
-    /// `Some(readable duration)` when already confirmed.
-    remaining: Option<String>,
-    /// From `elevate::ELEVATION_TTL_SECS`, so the copy can't drift.
-    ttl: String,
-    /// Set when bounced here by a refused action.
-    bounced_flash: Option<String>,
-    error: Option<String>,
-}
-
 /// A page, not an `/admin` field: it must explain why a signed-in admin is asked
 /// again and that it is the same password, not a second factor.
 /// At most one of these is shown on the unlock page.
@@ -4092,14 +3792,13 @@ fn render_admin_unlock(
     jar: &CookieJar,
     admin: &User,
     notice: UnlockNotice,
-) -> Result<Response, AppError> {
+) -> Response {
     let UnlockNotice {
         bounced_flash,
         error,
     } = notice;
     let elevation = elevation(state, jar, admin);
-    Ok(render(&AdminUnlockTemplate {
-        show_nav: true,
+    html_page(views::admin_unlock::admin_unlock(&AdminUnlockView {
         csrf: current_csrf(state, jar),
         is_admin: true,
         applies: !elevation.not_applicable,
@@ -4107,8 +3806,8 @@ fn render_admin_unlock(
         ttl: fmt_elevation_secs(crate::elevate::ELEVATION_TTL_SECS),
         bounced_flash,
         error,
-    })?
-    .into_response())
+    }))
+    .into_response()
 }
 
 /// The same readable form the duration fields use.
@@ -4130,7 +3829,7 @@ async fn admin_unlock_page(
             bounced_flash: bounced,
             error: None,
         },
-    )?;
+    );
     Ok((jar, resp).into_response())
 }
 
@@ -4176,7 +3875,7 @@ async fn admin_unlock(
         Reauth::Throttled => Some("Too many attempts — try again later."),
     };
     if let Some(msg) = refusal {
-        return render_admin_unlock(
+        return Ok(render_admin_unlock(
             &state,
             &jar,
             &admin,
@@ -4184,7 +3883,7 @@ async fn admin_unlock(
                 bounced_flash: None,
                 error: Some(msg.to_string()),
             },
-        );
+        ));
     }
     grant_elevation(&state, &jar, admin.id);
     let jar = jar.add(flash_cookie(&state.config, "admin_unlocked"));
@@ -4426,7 +4125,7 @@ async fn users_delete(
     }
     // Below both refusals, so a blocked delete isn't asked to confirm first.
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -4435,7 +4134,7 @@ async fn users_delete(
                 action: &format!("/admin/users/{id}/delete"),
                 cancel: "/admin".to_string(),
             },
-        );
+        ));
     }
     state.store.delete_user(id).await?;
     state.elevations.revoke_user(id, None);
@@ -4579,7 +4278,7 @@ async fn users_toggle_admin(
     }
     // Confirm demotion only (as the template); promotion passed the elevation gate.
     if !new_admin && !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -4588,7 +4287,7 @@ async fn users_toggle_admin(
                 action: &format!("/admin/users/{id}/admin"),
                 cancel: "/admin".to_string(),
             },
-        );
+        ));
     }
     state.store.set_user_admin(id, new_admin).await?;
     state
@@ -4633,7 +4332,7 @@ async fn users_set_disabled(
     }
     // Disable only, matching the template: re-enabling needs no ceremony.
     if new_disabled && !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -4642,7 +4341,7 @@ async fn users_set_disabled(
                 action: &format!("/admin/users/{id}/disabled"),
                 cancel: "/admin".to_string(),
             },
-        );
+        ));
     }
     state.store.set_user_disabled(id, new_disabled).await?;
     // On disable, or disable→enable resurrects sessions (`resolve_user` blocks only
@@ -4690,29 +4389,6 @@ async fn users_set_disabled(
 // --- account: sessions, password, API keys ---
 // `sessions.id` is the cookie's bearer secret, never rendered or put in a URL; rows
 // are named by `handle` (SHA-256 of the id), resolved back by a linear scan.
-#[derive(Template)]
-#[template(path = "account.html")]
-struct AccountTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    // sessions section
-    sessions: Vec<SessionRow>,
-    /// Hides the "revoke others" control when there is nothing else to revoke.
-    other_count: usize,
-    /// False for a passwordless forward-auth account: hides the password card and the
-    /// API-key re-auth field ([`reauthenticate`] passes it unchallenged).
-    has_password: bool,
-    // password section
-    password_error: Option<String>,
-    password_flash: Option<String>,
-    // api-keys section
-    keys: Vec<ApiKeyRow>,
-    /// Rendered exactly once, right after creation; never recoverable after.
-    new_token: Option<String>,
-    key_error: Option<String>,
-}
-
 /// The per-request parts of [`render_account`].
 #[derive(Default)]
 struct AccountRender {
@@ -4720,29 +4396,6 @@ struct AccountRender {
     key_error: Option<String>,
     password_error: Option<String>,
     password_flash: Option<String>,
-}
-
-/// [`crate::models::Session`] minus the raw `id`, plus `handle` and `current`.
-struct SessionRow {
-    handle: String,
-    created_at: Option<DateTime<Utc>>,
-    last_seen_at: Option<DateTime<Utc>>,
-    expires_at: DateTime<Utc>,
-    user_agent: Option<String>,
-    ip: Option<String>,
-    current: bool,
-    sso: bool,
-}
-
-/// An expired key still lists so it can be revoked, hence the `expired` flag.
-struct ApiKeyRow {
-    id: i64,
-    name: String,
-    prefix: String,
-    created_at: DateTime<Utc>,
-    last_used_at: Option<DateTime<Utc>>,
-    expires_at: Option<DateTime<Utc>>,
-    expired: bool,
 }
 
 impl ApiKeyRow {
@@ -4835,8 +4488,7 @@ async fn render_account(
         .map(|k| ApiKeyRow::from_key(k, now))
         .collect();
 
-    Ok(render(&AccountTemplate {
-        show_nav: true,
+    Ok(html_page(account::account(&AccountView {
         csrf: current_csrf(state, jar),
         is_admin: user.is_admin,
         sessions,
@@ -4847,7 +4499,7 @@ async fn render_account(
         keys,
         new_token: parts.new_token,
         key_error: parts.key_error,
-    })?
+    }))
     .into_response())
 }
 
@@ -5025,7 +4677,7 @@ async fn api_keys_delete(
     Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -5034,7 +4686,7 @@ async fn api_keys_delete(
                 action: &format!("/account/api-keys/{id}/delete"),
                 cancel: "/account".to_string(),
             },
-        );
+        ));
     }
     // Owner-scoped; a key the caller does not own is silently a no-op.
     state.store.delete_api_key(id, user.id).await?;
@@ -5061,7 +4713,7 @@ async fn sessions_revoke(
     };
     // After the lookup, so an unknown handle gets no confirmation page.
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -5070,7 +4722,7 @@ async fn sessions_revoke(
                 action: &format!("/account/sessions/{handle}/revoke"),
                 cancel: "/account".to_string(),
             },
-        );
+        ));
     }
     let is_current =
         secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
@@ -5103,7 +4755,7 @@ async fn sessions_revoke_others(
     Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -5112,7 +4764,7 @@ async fn sessions_revoke_others(
                 action: "/account/sessions/revoke-others",
                 cancel: "/account".to_string(),
             },
-        );
+        ));
     }
     if let Some(id) =
         secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
@@ -5132,21 +4784,6 @@ async fn sessions_revoke_others(
         );
     }
     Ok(Redirect::to("/account").into_response())
-}
-
-/// Secrets are redacted in Rust before reaching here, so no template can print one.
-struct EnvSetting {
-    var: &'static str,
-    value: EnvValue,
-    default: &'static str,
-    description: &'static str,
-}
-
-/// `Secret` carries only whether something is configured, never the value.
-enum EnvValue {
-    Set(String),
-    Unset,
-    Secret(bool),
 }
 
 /// The `/admin` "Environment" card, from the effective config (what is running).
@@ -5364,26 +5001,6 @@ struct AdminAuditQuery {
     ato: Option<String>,
 }
 
-/// Served by `GET /admin/audit` and inlined into `/admin`, like [`CheckPingsTemplate`].
-#[derive(Template)]
-#[template(path = "admin_audit.html")]
-struct AdminAuditTemplate {
-    rows: Vec<AuditRow>,
-    empty: bool,
-    /// Every actor/action present in the trail, for the two filter selects.
-    actors: Vec<String>,
-    actions: Vec<String>,
-    /// `""` = all, echoed back into the controls.
-    f_actor: String,
-    f_action: String,
-    f_from: String,
-    f_to: String,
-    /// Switches the empty state's wording and shows the Clear link.
-    filtered: bool,
-    newer: Option<String>,
-    older: Option<String>,
-}
-
 /// Every check-page filter token, so each section can carry the other's half.
 /// The current values of both history filters, as the tokens each filter form
 /// carries for its sibling.
@@ -5422,85 +5039,6 @@ fn check_page_filter_tokens(tokens: FilterTokens<'_>) -> [(&'static str, String)
 const PINGS_FILTER_KEYS: [&str; 3] = ["pk", "pfrom", "pto"];
 const NOTIFS_FILTER_KEYS: [&str; 4] = ["ne", "ns", "nfrom", "nto"];
 
-/// Four visible columns (when/actor/action/target); the rest of `models::AuditLog`
-/// sits in an expandable row.
-struct AuditRow {
-    time: String,
-    iso: String,
-    actor: String,
-    action: String,
-    target: String,
-    method_path: String,
-    detail: String,
-    target_owner: String,
-    /// False when every expanded field is unset (no caret onto an empty box).
-    expandable: bool,
-}
-
-/// The whole `/admin` page. Colliding names take a section prefix (`settings_*`,
-/// `user_*`, `user_count`/`project_count`).
-#[derive(Template)]
-#[template(path = "admin.html")]
-struct AdminTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    /// From [`AdminAuditTemplate`], injected with `|safe`.
-    audit_partial: String,
-    // overview
-    user_count: i64,
-    project_count: i64,
-    checks: i64,
-    pings_24h: i64,
-    status: crate::store::CheckStatusCounts,
-    down: Vec<(Check, String, String)>,
-    notif_ok: i64,
-    notif_err: i64,
-    channel_fail: Vec<(String, i64, i64)>,
-    recent_fail: Vec<Notification>,
-    last_scan_at: Option<String>,
-    last_prune_at: Option<String>,
-    /// "3m ago", rendered server-side for no-JS; `app.js` re-ticks via `data-ago`.
-    last_scan_ago: Option<String>,
-    last_prune_ago: Option<String>,
-    /// The same stamps as readable UTC; `data-ts`/`data-ago` keep the RFC3339.
-    last_scan_utc: Option<String>,
-    last_prune_utc: Option<String>,
-    // settings
-    scan_interval: String,
-    nag_interval: String,
-    pings_retention_days: String,
-    notifications_retention_days: String,
-    audit_retention_days: String,
-    display_timezone: String,
-    settings_error: Option<String>,
-    settings_flash: Option<String>,
-    // users
-    users: Vec<UserRow>,
-    user_flash: Option<String>,
-    elevation_flash: Option<String>,
-    /// False for a passwordless forward-auth admin (nothing to re-assert).
-    elevation_applies: bool,
-    /// `Some(readable duration)` while the unlock is live, `None` when locked.
-    elevation_remaining: Option<String>,
-    /// Applies and unconfirmed; only then do gated controls carry `data-reauth`. The
-    /// server re-checks, so a lapse before the click just bounces to `/admin/unlock`.
-    elevation_locked: bool,
-    password_reset_flash: Option<String>,
-    user_error: Option<String>,
-    projects: Vec<(Project, String)>,
-    env_rows: Vec<(&'static str, Vec<EnvSetting>)>,
-}
-
-/// Plus `is_self`, so the admin's own row renders its self-mutation controls inert.
-struct UserRow {
-    id: i64,
-    username: String,
-    is_admin: bool,
-    disabled: bool,
-    is_self: bool,
-}
-
 impl UserRow {
     fn from_user(u: User, admin_id: i64) -> Self {
         Self {
@@ -5524,15 +5062,13 @@ async fn render_admin(
     let now = Utc::now();
     let day_ago = now - Duration::days(1);
     // Rendered here so `/admin` and `/admin/audit` emit identical markup.
-    let audit_partial = render(&build_audit_partial(state, audit).await?)?.0;
+    let audit_partial = admin_audit::admin_audit(&build_audit_partial(state, audit).await?);
     let last_scan_at = state.store.get_setting("last_scan_at").await?;
     let last_prune_at = state.store.get_setting("last_prune_at").await?;
     let (notif_ok, notif_err) = state.store.notification_counts_since(day_ago).await?;
     let elevation = elevation(state, jar, admin);
-    Ok(render(&AdminTemplate {
-        show_nav: true,
+    Ok(html_page(admin::admin(&AdminView {
         csrf: current_csrf(state, jar),
-        is_admin: true,
         audit_partial,
         user_count: state.store.count_users().await?,
         project_count: state.store.count_projects().await?,
@@ -5574,7 +5110,7 @@ async fn render_admin(
         user_error: r.user_error,
         projects: state.store.list_all_projects_with_owner().await?,
         env_rows: env_settings(&state.config),
-    })?
+    }))
     .into_response())
 }
 
@@ -5582,7 +5118,7 @@ async fn render_admin(
 async fn build_audit_partial(
     state: &AppState,
     q: &AdminAuditQuery,
-) -> Result<AdminAuditTemplate, AppError> {
+) -> Result<AdminAuditView, AppError> {
     let filter = AuditFilter {
         actor: parse_filter_text(q.aactor.as_deref()),
         action: parse_filter_text(q.aaction.as_deref()),
@@ -5652,8 +5188,7 @@ async fn build_audit_partial(
         .flatten()
         .map(|a| history_href("/admin/audit", ("aa", a.id), &carry));
 
-    Ok(AdminAuditTemplate {
-        empty: rows.is_empty(),
+    Ok(AdminAuditView {
         rows,
         actors,
         actions,
@@ -5677,7 +5212,10 @@ async fn admin_audit_fragment(
     if !wants_fragment(&headers) {
         return Ok(fragment_page_redirect("/admin", "audit-section", &uri));
     }
-    Ok(render(&build_audit_partial(&state, &q).await?)?.into_response())
+    Ok(html_page(admin_audit::admin_audit(
+        &build_audit_partial(&state, &q).await?,
+    ))
+    .into_response())
 }
 
 // --- admin cross-user handlers: resolve via `admin_*`, reuse the owner cores ---
@@ -5705,7 +5243,10 @@ async fn admin_project_edit(
 ) -> Result<Response, AppError> {
     let project = admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&project_edit_form(project, true, true, csrf))?.into_response())
+    Ok(html_page(views::project::project_form(&project_edit_form(
+        project, true, true, csrf,
+    )))
+    .into_response())
 }
 
 async fn admin_project_update(
@@ -5734,7 +5275,7 @@ async fn admin_project_update(
                 &form,
                 msg,
             );
-            return Ok(render(&t)?.into_response());
+            return Ok(html_page(views::project::project_form(&t)).into_response());
         }
     };
     state
@@ -5763,7 +5304,7 @@ async fn admin_project_delete(
 ) -> Result<Response, AppError> {
     admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -5772,7 +5313,7 @@ async fn admin_project_delete(
                 action: &format!("/admin/projects/{id}/delete"),
                 cancel: format!("/admin/projects/{id}"),
             },
-        );
+        ));
     }
     state.store.delete_project(id).await?;
     Ok(Redirect::to("/admin").into_response())
@@ -5789,13 +5330,13 @@ async fn admin_check_new(
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&empty_check_form(
+    let form = empty_check_form(
         "New check",
         format!("/admin/projects/{pid}/checks"),
         true,
         csrf,
-    ))?
-    .into_response())
+    );
+    Ok(html_page(check_form::check_form(&form)).into_response())
 }
 
 async fn admin_check_create(
@@ -5913,7 +5454,10 @@ async fn admin_check_edit(
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&check_edit_form(check, true, true, csrf))?.into_response())
+    Ok(html_page(check_form::check_form(&check_edit_form(
+        check, true, true, csrf,
+    )))
+    .into_response())
 }
 
 async fn admin_check_update(
@@ -5977,7 +5521,7 @@ async fn admin_check_regenerate(
 ) -> Result<Response, AppError> {
     admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -5986,7 +5530,7 @@ async fn admin_check_regenerate(
                 action: &format!("/admin/checks/{id}/regenerate"),
                 cancel: format!("/admin/checks/{id}"),
             },
-        );
+        ));
     }
     state
         .store
@@ -6006,7 +5550,7 @@ async fn admin_check_delete(
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -6015,7 +5559,7 @@ async fn admin_check_delete(
                 action: &format!("/admin/checks/{id}/delete"),
                 cancel: format!("/admin/checks/{id}"),
             },
-        );
+        ));
     }
     state.store.delete_check(id).await?;
     Ok(Redirect::to(&format!("/admin/projects/{}", check.project_id)).into_response())
@@ -6046,12 +5590,12 @@ async fn admin_channel_new(
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&channel_form_template(
+    Ok(html_page(channel_form::channel_form(&channel_form_template(
         &state,
         pid,
         PageContext::admin(csrf),
         ChannelFormInput::default(),
-    ))?
+    )))
     .into_response())
 }
 
@@ -6065,7 +5609,7 @@ async fn admin_channel_edit(
 ) -> Result<Response, AppError> {
     let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&channel_form_template(
+    Ok(html_page(channel_form::channel_form(&channel_form_template(
         &state,
         channel.project_id,
         PageContext::admin(csrf),
@@ -6073,7 +5617,7 @@ async fn admin_channel_edit(
             error: None,
             edit: Some(ChannelEditView::new(&channel)),
         },
-    ))?
+    )))
     .into_response())
 }
 
@@ -6107,12 +5651,26 @@ async fn admin_channel_create(
 
 async fn admin_channel_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
+    if !confirm.is_confirmed() {
+        return Ok(confirmation_page(
+            &state,
+            &jar,
+            true,
+            ConfirmRequest {
+                confirm: &CONFIRM_DELETE_CHANNEL,
+                action: &format!("/admin/channels/{id}/delete"),
+                cancel: format!("/admin/projects/{}", channel.project_id),
+            },
+        ));
+    }
     state.store.delete_channel(id).await?;
     Ok(Redirect::to(&format!("/admin/projects/{}", channel.project_id)).into_response())
 }

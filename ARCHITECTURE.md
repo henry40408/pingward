@@ -6,7 +6,7 @@ The code map for contributors. Install, config and API usage are in
 ## Overview
 
 pingward is a single `axum` process serving a server-rendered browser UI
-(Askama templates compiled into the binary), machine `/ping/*` endpoints, and
+(maud views compiled into the binary), machine `/ping/*` endpoints, and
 a bearer-authenticated REST API under `/api/v1` with an OpenAPI document and
 Scalar UI. All three share one `AppState` and one `sqlx::AnyPool` that talks to
 SQLite or Postgres.
@@ -17,7 +17,7 @@ SQLite or Postgres.
 | ---------------------- | ----------------------------------------------------------------------- |
 | `src/`                 | Router composition, handlers, domain logic                              |
 | `src/api/`             | The `/api/v1` REST surface (DTOs, input parsing, extractors, handlers)  |
-| `templates/`           | Askama HTML templates, compiled in at build time                        |
+| `src/views/`           | maud page views (one fn per page) and the shared `layout::page`          |
 | `assets/`              | CSS, scripts, embedded fonts and icons, served by `src/assets.rs`       |
 | `migrations/sqlite/`   | SQLite migrations                                                       |
 | `migrations/postgres/` | The same migrations, hand-duplicated for Postgres                       |
@@ -75,7 +75,7 @@ SQLite or Postgres.
   cascades.
 - `src/duration.rs` — `parse_duration`/`fmt_duration` (`5m`, `1h30m`, `2d`),
   lossless, used by form fields and duration env vars.
-- `src/view.rs` — template helpers: the lossy display formatter `fmt_secs`,
+- `src/view.rs` — view helpers: the lossy display formatter `fmt_secs`,
   `fmt_utc`, `next_due`, and `display_status` (below).
 - `src/markdown.rs` — rendering of project/check descriptions.
 - `src/assets.rs` — serves `app.css`, `app.js`, `theme-init.js`, the fonts and
@@ -130,7 +130,7 @@ bearer-authenticated and deliberately left alone.
 **`content_security_policy`** is `web`-scoped because it describes pages this
 app renders. `script-src 'self'` with no `'unsafe-inline'` and no nonce holds
 only because every script is a file under `/assets` (`app.js` and the
-render-blocking `theme-init.js`) and **no template carries an inline
+render-blocking `theme-init.js`) and **no view carries an inline
 `onclick=`/`onsubmit=`**. Row navigation (`data-href`), confirmation
 (`data-confirm`) and non-submitting filter forms (`data-nosubmit`) are
 delegated handlers in `app.js`, which also survive a fragment swap. Adding an
@@ -165,7 +165,7 @@ The UI must stay usable with scripts off; `tests/no_js.rs` and
   tr.exp:not(.open)` alone collapses the ping/audit panels, so without script a
   failed job's captured output stays readable; carets and pointer cursors are
   hidden in the same state.
-- **`base.html` carries no default `data-theme`.** `theme-init.js` always sets
+- **`views::layout::page` carries no default `data-theme`.** `theme-init.js` always sets
   it, so `app.css`'s `@media (prefers-color-scheme: light) {
   :root:not([data-theme]) }` only ever applies to a scriptless browser and
   cannot fight the toggle. That light palette is therefore written **twice** (a
@@ -554,7 +554,7 @@ make the page depend on a timer), so the honest response is to explain.
 Irreversible controls carry `data-confirm`, which `app.js` turns into a
 `confirm()`, but that is inert without script. So the gate is server-side: the
 handler acts only with `?confirmed=1`, otherwise rendering
-`templates/confirm.html` — the same question as a page, with a form re-posting
+`views::confirm` — the same question as a page, with a form re-posting
 the action plus the flag. `app.js` appends the flag after its dialog, so a
 scripted browser still posts once. Neither side trusts the other.
 
@@ -566,7 +566,7 @@ scripted browser still posts once. Neither side trusts the other.
   check is a 404, not a confirmation prompt; a delete the self-guard or
   last-admin guard will block says so instead of asking first.
 - **The `/admin` toggles confirm in one direction only**, matching the
-  template: demote and disable ask; promote (already elevation-gated) and
+  view: demote and disable ask; promote (already elevation-gated) and
   re-enable do not.
 
 The page copy is longer than the dialog's single line.
@@ -853,7 +853,7 @@ response path.
   blank field keeps the stored value. `validate_channel` is the `None` case, so
   create and edit share the per-kind required-field checks.
 - Secrets render empty with `placeholder="unchanged"` and a
-  `configured`/`not set` pill. The template sees only `web::ChannelEditView`
+  `configured`/`not set` pill. The view sees only `views::channel_form::ChannelEditView`
   (non-secret values + `has_*: bool`), so non-leakage is a type property.
 - Webhook/Slack **URLs are secrets** (capability to post); Telegram chat id,
   ntfy server/topic and email recipients are identifiers and are pre-filled.
@@ -871,7 +871,7 @@ At-rest encryption of `config_json` is deliberately deferred.
 ## Swappable history sections
 
 The check page's pings and notifications and `/admin`'s audit trail each use one
-template (`check_pings.html`, `check_notifs.html`, `admin_audit.html`) — filter
+view (`views::check_history`, `views::admin_audit`) — filter
 form, table, `Newer`/`Older` keyset pager — rendered both inline in the page and
 standalone by a fragment endpoint (`GET /checks/{id}/pings`,
 `…/notifications`, `GET /admin/audit`), so a partial refresh cannot drift from
@@ -904,10 +904,10 @@ limit+1 fetch for `has_newer`/`has_older`. `pings`/`notifications` scope by
 `("check_id", id)`; `audit_log` passes `None`. Filter values are always bound;
 only self-generated literals are interpolated.
 
-## Templates & assets
+## Views & assets
 
-Askama compiles `templates/*.html` into the binary — **run `cargo build` after
-any template or route change**. The E2E harness runs `target/debug/pingward`
+maud compiles `src/views/` into the binary — **run `cargo build` after
+any view or route change**. The E2E harness runs `target/debug/pingward`
 and only builds it when missing (`e2e/src/server.rs::ensure_binary`), so a
 stale binary is silently reused. Interactive elements carry `data-testid`,
 used by the integration tests and the E2E steps.

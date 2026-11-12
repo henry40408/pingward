@@ -218,7 +218,7 @@ pub fn fmt_secs(secs: i64) -> String {
 
 /// Fallback text of a `.localtime[data-ts]` span, shown when `app.js` does not
 /// localise it; names the zone so it is never mistaken for local time. Takes a
-/// reference so Askama can call it on a field or a `Some(t)` binding alike.
+/// reference so a view can call it on a field or a `Some(t)` binding alike.
 pub fn fmt_utc(at: &DateTime<Utc>) -> String {
     at.format("%Y-%m-%d %H:%M:%S UTC").to_string()
 }

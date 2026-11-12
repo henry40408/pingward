@@ -7,12 +7,12 @@ design rationale; this file lists what breaks things if you get it wrong.
 
 pingward: self-hosted, healthchecks-style uptime/cron monitor. Jobs ping a
 per-check URL; a background loop marks overdue checks **down** and notifies via
-per-check channels. One axum process serves a server-rendered UI (Askama) and
+per-check channels. One axum process serves a server-rendered UI (maud) and
 the machine `/ping/*` endpoints.
 
 ## Commands
 
-- `cargo build` — **required after any template or route change** (templates
+- `cargo build` — **required after any view or route change** (views
   compile into the binary; the E2E harness runs `target/debug/pingward`).
 - `cargo run` — SQLite `pingward.sqlite3`, bind `127.0.0.1:8080`.
 - CI lint: `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`,
@@ -71,7 +71,7 @@ GitHub Actions are pinned by commit SHA with the tag as a trailing comment.
   `e2e/src/seed.rs` must keep seeded timestamps inside each schedule's budget or
   the boot `scan_once` rewrites the status. Cron `dow` is **Sunday = 1** (the
   `cron` crate's numbering).
-- **Visual changes (CSS, template layout, front-end JS) regenerate the
+- **Visual changes (CSS, view layout, front-end JS) regenerate the
   screenshots in the same change**; copy-only or logic-only edits do not need it.
   Nothing fails when they drift, so compare the affected PNG when unsure.
   Build from a clean tree (or set `GIT_VERSION`): the footer stamp is in frame and
@@ -98,12 +98,12 @@ GitHub Actions are pinned by commit SHA with the tag as a trailing comment.
   navigation to the embedding page (`wants_fragment`/`fragment_page_redirect`).
 - `data-confirm` enforces nothing: destructive handlers run only with
   `?confirmed=1` (query, since some forms post no body), else render
-  `templates/confirm.html`. The gate sits below authz and every refusal guard.
+  `views::confirm`. The gate sits below authz and every refusal guard.
   See ARCHITECTURE.md "Confirming a destructive action".
 - CSS hiding click-revealed content must hang off `:root.js` (set by
   `theme-init.js` before paint), e.g. `:root.js tr.exp:not(.open)`. JS-only
   controls are hidden via `:root:not(.js)`.
-- `base.html` has **no default `data-theme`**. The light palette exists twice in
+- `views::layout::page` has **no default `data-theme`**. The light palette exists twice in
   `app.css` (`[data-theme]` + `prefers-color-scheme`) — keep in sync; the test
   compares them.
 - History filters are real GET forms; each carries the sibling section's filter
