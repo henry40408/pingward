@@ -314,7 +314,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the code map and how the pieces
 fit together.
 
 ```sh
-cargo build                       # required after any template or route change
+cargo build                       # required after any view or route change
 cargo run                         # start the server
 cargo fmt --all --check           # formatting (enforced in CI)
 cargo clippy --all-targets -- -D warnings

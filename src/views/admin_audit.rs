@@ -70,7 +70,7 @@ pub fn admin_audit(view: &AdminAuditView) -> Markup {
                     }
                 }
             }
-            (pager("audit", &view.newer, &view.older, "audit-pager"))
+            (pager("audit", view.newer.as_deref(), view.older.as_deref(), "audit-pager"))
         }
     }
 }

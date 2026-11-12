@@ -30,7 +30,6 @@ use crate::views::dashboard::{CheckRow, DashboardView, ProjectGroup};
 use crate::views::project::{
     ProjectChannelRow, ProjectCheckRow, ProjectFormView, ProjectView, TestResult,
 };
-use askama::Template;
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
@@ -51,11 +50,6 @@ use tokio::sync::broadcast;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
-
-pub fn render<T: Template>(t: &T) -> Result<Html<String>, AppError> {
-    let body = t.render().map_err(|e| AppError::Other(Box::new(e)))?;
-    Ok(Html(body))
-}
 
 fn html_page(page: Markup) -> Html<String> {
     Html(page.into_string())
@@ -286,12 +280,7 @@ fn setup_token_matches(state: &AppState, submitted: &str) -> bool {
 }
 
 /// Re-renders `/setup` with `error` under `status`.
-fn setup_refusal(
-    state: &AppState,
-    jar: &CookieJar,
-    status: StatusCode,
-    error: &str,
-) -> Result<Response, AppError> {
+fn setup_refusal(state: &AppState, jar: &CookieJar, status: StatusCode, error: &str) -> Response {
     let page = html_page(views::auth::setup(&AuthView {
         csrf: current_csrf(state, jar),
         error: Some(error.to_string()),
@@ -306,7 +295,7 @@ fn setup_refusal(
                 .expect("digits are a valid header value"),
         );
     }
-    Ok(res)
+    res
 }
 
 /// A wrong token is the only signal of someone probing a fresh instance, so it is audited.
@@ -334,12 +323,12 @@ async fn reject_setup_token(
             Utc::now(),
         )
         .await?;
-    setup_refusal(
+    Ok(setup_refusal(
         state,
         jar,
         StatusCode::FORBIDDEN,
         "the setup token is missing or wrong — find it in the server log",
-    )
+    ))
 }
 
 // Rate-limited per client before the token check; the token gates everything after it.
@@ -358,12 +347,12 @@ async fn setup_submit(
     // is what keeps a stranger from reaching argon2 or the insert.
     let client = crate::ratelimit::rate_limit_key(peer_ip, &headers, &state.config.trusted_proxies);
     if !state.setup_limiter.try_acquire(client) {
-        return setup_refusal(
+        return Ok(setup_refusal(
             &state,
             &jar,
             StatusCode::TOO_MANY_REQUESTS,
             "too many setup attempts — try again later",
-        );
+        ));
     }
     if !setup_token_matches(&state, &creds.setup_token) {
         // The winner of a race clears the token; its losers are late, not hostile.
@@ -376,7 +365,7 @@ async fn setup_submit(
         .and_then(|username| crate::auth::validate_password(&creds.password).map(|()| username));
     let username = match checked {
         Ok(username) => username,
-        Err(error) => return setup_refusal(&state, &jar, StatusCode::OK, &error),
+        Err(error) => return Ok(setup_refusal(&state, &jar, StatusCode::OK, &error)),
     };
     // Box the hashing error's `Display` text into `AppError::Other`.
     let phc = hash_password(&creds.password).map_err(|e| AppError::Other(e.to_string().into()))?;
@@ -603,14 +592,14 @@ fn confirmation_page(
     jar: &CookieJar,
     is_admin: bool,
     request: ConfirmRequest<'_>,
-) -> Result<Response, AppError> {
+) -> Response {
     let ConfirmRequest {
         confirm,
         action,
         cancel,
     } = request;
     let sep = if action.contains('?') { '&' } else { '?' };
-    Ok(html_page(views::confirm::confirm(&ConfirmView {
+    html_page(views::confirm::confirm(&ConfirmView {
         is_admin,
         csrf: current_csrf(state, jar),
         title: confirm.title,
@@ -619,7 +608,7 @@ fn confirmation_page(
         action: format!("{action}{sep}confirmed=1"),
         cancel,
     }))
-    .into_response())
+    .into_response()
 }
 
 /// One `reauth.failed` event discriminated by `surface`. Separate from `login.failed`,
@@ -637,12 +626,8 @@ fn log_reauth_failure(user: &User, surface: &'static str, reason: &'static str) 
 
 /// Shared by both login limiters so the wording never hints the username is real;
 /// only `Retry-After` differs.
-fn throttled_login(
-    state: &AppState,
-    jar: &CookieJar,
-    retry_after_secs: u64,
-) -> Result<Response, AppError> {
-    Ok((
+fn throttled_login(state: &AppState, jar: &CookieJar, retry_after_secs: u64) -> Response {
+    (
         StatusCode::TOO_MANY_REQUESTS,
         [(header::RETRY_AFTER, retry_after_secs.to_string())],
         html_page(views::auth::login(&AuthView {
@@ -650,7 +635,7 @@ fn throttled_login(
             error: Some("too many login attempts — try again later".into()),
         })),
     )
-        .into_response())
+        .into_response()
 }
 
 async fn login_submit(
@@ -666,14 +651,18 @@ async fn login_submit(
     let client = crate::ratelimit::rate_limit_key(peer_ip, &headers, &state.config.trusted_proxies);
     if !state.login_limiter.try_acquire(client) {
         log_login_failure(&creds.username, conn.0.as_deref(), client, "rate_limited");
-        return throttled_login(&state, &jar, crate::ratelimit::WINDOW_SECS);
+        return Ok(throttled_login(&state, &jar, crate::ratelimit::WINDOW_SECS));
     }
     // Per account, or N addresses buy `MAX_ATTEMPTS × N` guesses. Keyed on the
     // *submitted* name before lookup, so an invented name throttles identically.
     let account = crate::ratelimit::account_key(&creds.username);
     if !state.account_limiter.try_acquire(account.clone()) {
         log_login_failure(&creds.username, conn.0.as_deref(), client, "account_locked");
-        return throttled_login(&state, &jar, crate::ratelimit::ACCOUNT_WINDOW_SECS);
+        return Ok(throttled_login(
+            &state,
+            &jar,
+            crate::ratelimit::ACCOUNT_WINDOW_SECS,
+        ));
     }
     let user = state.store.find_user_by_username(&creds.username).await?;
     // An unknown username must still cost one argon2 verification (timing oracle).
@@ -1800,7 +1789,7 @@ async fn project_delete(
 ) -> Result<Response, AppError> {
     owned_project(&state.store, id, user.id).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -1809,7 +1798,7 @@ async fn project_delete(
                 action: &format!("/projects/{id}/delete"),
                 cancel: format!("/projects/{id}"),
             },
-        );
+        ));
     }
     state.store.delete_project(id).await?;
     Ok(Redirect::to("/").into_response())
@@ -3052,7 +3041,7 @@ async fn check_regenerate(
 ) -> Result<Response, AppError> {
     owned_check(&state.store, id, user.id).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -3061,7 +3050,7 @@ async fn check_regenerate(
                 action: &format!("/checks/{id}/regenerate"),
                 cancel: format!("/checks/{id}"),
             },
-        );
+        ));
     }
     state
         .store
@@ -3079,7 +3068,7 @@ async fn check_delete(
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -3088,7 +3077,7 @@ async fn check_delete(
                 action: &format!("/checks/{id}/delete"),
                 cancel: format!("/checks/{id}"),
             },
-        );
+        ));
     }
     state.store.delete_check(id).await?;
     Ok(Redirect::to(&format!("/projects/{}", check.project_id)).into_response())
@@ -3783,24 +3772,22 @@ fn render_admin_unlock(
     jar: &CookieJar,
     admin: &User,
     notice: UnlockNotice,
-) -> Result<Response, AppError> {
+) -> Response {
     let UnlockNotice {
         bounced_flash,
         error,
     } = notice;
     let elevation = elevation(state, jar, admin);
-    Ok(
-        html_page(views::admin_unlock::admin_unlock(&AdminUnlockView {
-            csrf: current_csrf(state, jar),
-            is_admin: true,
-            applies: !elevation.not_applicable,
-            remaining: elevation.remaining_secs.map(fmt_elevation_secs),
-            ttl: fmt_elevation_secs(crate::elevate::ELEVATION_TTL_SECS),
-            bounced_flash,
-            error,
-        }))
-        .into_response(),
-    )
+    html_page(views::admin_unlock::admin_unlock(&AdminUnlockView {
+        csrf: current_csrf(state, jar),
+        is_admin: true,
+        applies: !elevation.not_applicable,
+        remaining: elevation.remaining_secs.map(fmt_elevation_secs),
+        ttl: fmt_elevation_secs(crate::elevate::ELEVATION_TTL_SECS),
+        bounced_flash,
+        error,
+    }))
+    .into_response()
 }
 
 /// The same readable form the duration fields use.
@@ -3822,7 +3809,7 @@ async fn admin_unlock_page(
             bounced_flash: bounced,
             error: None,
         },
-    )?;
+    );
     Ok((jar, resp).into_response())
 }
 
@@ -3868,7 +3855,7 @@ async fn admin_unlock(
         Reauth::Throttled => Some("Too many attempts — try again later."),
     };
     if let Some(msg) = refusal {
-        return render_admin_unlock(
+        return Ok(render_admin_unlock(
             &state,
             &jar,
             &admin,
@@ -3876,7 +3863,7 @@ async fn admin_unlock(
                 bounced_flash: None,
                 error: Some(msg.to_string()),
             },
-        );
+        ));
     }
     grant_elevation(&state, &jar, admin.id);
     let jar = jar.add(flash_cookie(&state.config, "admin_unlocked"));
@@ -4118,7 +4105,7 @@ async fn users_delete(
     }
     // Below both refusals, so a blocked delete isn't asked to confirm first.
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -4127,7 +4114,7 @@ async fn users_delete(
                 action: &format!("/admin/users/{id}/delete"),
                 cancel: "/admin".to_string(),
             },
-        );
+        ));
     }
     state.store.delete_user(id).await?;
     state.elevations.revoke_user(id, None);
@@ -4271,7 +4258,7 @@ async fn users_toggle_admin(
     }
     // Confirm demotion only (as the template); promotion passed the elevation gate.
     if !new_admin && !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -4280,7 +4267,7 @@ async fn users_toggle_admin(
                 action: &format!("/admin/users/{id}/admin"),
                 cancel: "/admin".to_string(),
             },
-        );
+        ));
     }
     state.store.set_user_admin(id, new_admin).await?;
     state
@@ -4325,7 +4312,7 @@ async fn users_set_disabled(
     }
     // Disable only, matching the template: re-enabling needs no ceremony.
     if new_disabled && !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -4334,7 +4321,7 @@ async fn users_set_disabled(
                 action: &format!("/admin/users/{id}/disabled"),
                 cancel: "/admin".to_string(),
             },
-        );
+        ));
     }
     state.store.set_user_disabled(id, new_disabled).await?;
     // On disable, or disable→enable resurrects sessions (`resolve_user` blocks only
@@ -4670,7 +4657,7 @@ async fn api_keys_delete(
     Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -4679,7 +4666,7 @@ async fn api_keys_delete(
                 action: &format!("/account/api-keys/{id}/delete"),
                 cancel: "/account".to_string(),
             },
-        );
+        ));
     }
     // Owner-scoped; a key the caller does not own is silently a no-op.
     state.store.delete_api_key(id, user.id).await?;
@@ -4706,7 +4693,7 @@ async fn sessions_revoke(
     };
     // After the lookup, so an unknown handle gets no confirmation page.
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -4715,7 +4702,7 @@ async fn sessions_revoke(
                 action: &format!("/account/sessions/{handle}/revoke"),
                 cancel: "/account".to_string(),
             },
-        );
+        ));
     }
     let is_current =
         secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
@@ -4748,7 +4735,7 @@ async fn sessions_revoke_others(
     Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             user.is_admin,
@@ -4757,7 +4744,7 @@ async fn sessions_revoke_others(
                 action: "/account/sessions/revoke-others",
                 cancel: "/account".to_string(),
             },
-        );
+        ));
     }
     if let Some(id) =
         secret::session_id_from_jar(&jar, &state.config.secret, session_cookie_name(&state))
@@ -5297,7 +5284,7 @@ async fn admin_project_delete(
 ) -> Result<Response, AppError> {
     admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -5306,7 +5293,7 @@ async fn admin_project_delete(
                 action: &format!("/admin/projects/{id}/delete"),
                 cancel: format!("/admin/projects/{id}"),
             },
-        );
+        ));
     }
     state.store.delete_project(id).await?;
     Ok(Redirect::to("/admin").into_response())
@@ -5514,7 +5501,7 @@ async fn admin_check_regenerate(
 ) -> Result<Response, AppError> {
     admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -5523,7 +5510,7 @@ async fn admin_check_regenerate(
                 action: &format!("/admin/checks/{id}/regenerate"),
                 cancel: format!("/admin/checks/{id}"),
             },
-        );
+        ));
     }
     state
         .store
@@ -5543,7 +5530,7 @@ async fn admin_check_delete(
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     if !confirm.is_confirmed() {
-        return confirmation_page(
+        return Ok(confirmation_page(
             &state,
             &jar,
             true,
@@ -5552,7 +5539,7 @@ async fn admin_check_delete(
                 action: &format!("/admin/checks/{id}/delete"),
                 cancel: format!("/admin/checks/{id}"),
             },
-        );
+        ));
     }
     state.store.delete_check(id).await?;
     Ok(Redirect::to(&format!("/admin/projects/{}", check.project_id)).into_response())

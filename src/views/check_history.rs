@@ -83,11 +83,11 @@ fn carry_inputs(carry: &[HiddenField]) -> Markup {
 
 pub(super) fn pager(
     testid_prefix: &str,
-    newer: &Option<String>,
-    older: &Option<String>,
+    newer: Option<&str>,
+    older: Option<&str>,
     pager_id: &str,
 ) -> Markup {
-    let link = |href: &Option<String>, suffix: &str, label: &str| {
+    let link = |href: Option<&str>, suffix: &str, label: &str| {
         let testid = format!("{testid_prefix}-{suffix}");
         html! {
             @if let Some(href) = href {
@@ -137,7 +137,7 @@ pub fn check_pings(view: &CheckPingsView) -> Markup {
                     }
                 }
             }
-            (pager("pings", &view.newer, &view.older, "pings-pager"))
+            (pager("pings", view.newer.as_deref(), view.older.as_deref(), "pings-pager"))
         }
     }
 }
@@ -215,7 +215,7 @@ pub fn check_notifs(view: &CheckNotifsView) -> Markup {
                     }
                 }
             }
-            (pager("notif", &view.newer, &view.older, "notif-pager"))
+            (pager("notif", view.newer.as_deref(), view.older.as_deref(), "notif-pager"))
         }
     }
 }
