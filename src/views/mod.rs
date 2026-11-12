@@ -2,6 +2,8 @@
 //! `layout::page` supplies the shared document.
 
 pub mod account;
+pub mod admin;
+pub mod admin_audit;
 pub mod admin_unlock;
 pub mod auth;
 pub mod channel_form;

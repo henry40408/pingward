@@ -81,7 +81,7 @@ fn carry_inputs(carry: &[HiddenField]) -> Markup {
     }
 }
 
-fn pager(
+pub(super) fn pager(
     testid_prefix: &str,
     newer: &Option<String>,
     older: &Option<String>,

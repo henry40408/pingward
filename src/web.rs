@@ -15,6 +15,8 @@ use crate::store::{
 };
 use crate::views;
 use crate::views::account::{self, AccountView, ApiKeyRow, SessionRow};
+use crate::views::admin::{self, AdminView, EnvSetting, EnvValue, UserRow};
+use crate::views::admin_audit::{self, AdminAuditView, AuditRow};
 use crate::views::admin_unlock::AdminUnlockView;
 use crate::views::auth::AuthView;
 use crate::views::channel_form::{self, ChannelEditView, ChannelFormView};
@@ -4777,21 +4779,6 @@ async fn sessions_revoke_others(
     Ok(Redirect::to("/account").into_response())
 }
 
-/// Secrets are redacted in Rust before reaching here, so no template can print one.
-struct EnvSetting {
-    var: &'static str,
-    value: EnvValue,
-    default: &'static str,
-    description: &'static str,
-}
-
-/// `Secret` carries only whether something is configured, never the value.
-enum EnvValue {
-    Set(String),
-    Unset,
-    Secret(bool),
-}
-
 /// The `/admin` "Environment" card, from the effective config (what is running).
 fn env_settings(config: &crate::config::Config) -> Vec<(&'static str, Vec<EnvSetting>)> {
     vec![
@@ -5007,26 +4994,6 @@ struct AdminAuditQuery {
     ato: Option<String>,
 }
 
-/// Served by `GET /admin/audit` and inlined into `/admin`, like [`CheckPingsView`].
-#[derive(Template)]
-#[template(path = "admin_audit.html")]
-struct AdminAuditTemplate {
-    rows: Vec<AuditRow>,
-    empty: bool,
-    /// Every actor/action present in the trail, for the two filter selects.
-    actors: Vec<String>,
-    actions: Vec<String>,
-    /// `""` = all, echoed back into the controls.
-    f_actor: String,
-    f_action: String,
-    f_from: String,
-    f_to: String,
-    /// Switches the empty state's wording and shows the Clear link.
-    filtered: bool,
-    newer: Option<String>,
-    older: Option<String>,
-}
-
 /// Every check-page filter token, so each section can carry the other's half.
 /// The current values of both history filters, as the tokens each filter form
 /// carries for its sibling.
@@ -5065,85 +5032,6 @@ fn check_page_filter_tokens(tokens: FilterTokens<'_>) -> [(&'static str, String)
 const PINGS_FILTER_KEYS: [&str; 3] = ["pk", "pfrom", "pto"];
 const NOTIFS_FILTER_KEYS: [&str; 4] = ["ne", "ns", "nfrom", "nto"];
 
-/// Four visible columns (when/actor/action/target); the rest of `models::AuditLog`
-/// sits in an expandable row.
-struct AuditRow {
-    time: String,
-    iso: String,
-    actor: String,
-    action: String,
-    target: String,
-    method_path: String,
-    detail: String,
-    target_owner: String,
-    /// False when every expanded field is unset (no caret onto an empty box).
-    expandable: bool,
-}
-
-/// The whole `/admin` page. Colliding names take a section prefix (`settings_*`,
-/// `user_*`, `user_count`/`project_count`).
-#[derive(Template)]
-#[template(path = "admin.html")]
-struct AdminTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    /// From [`AdminAuditTemplate`], injected with `|safe`.
-    audit_partial: String,
-    // overview
-    user_count: i64,
-    project_count: i64,
-    checks: i64,
-    pings_24h: i64,
-    status: crate::store::CheckStatusCounts,
-    down: Vec<(Check, String, String)>,
-    notif_ok: i64,
-    notif_err: i64,
-    channel_fail: Vec<(String, i64, i64)>,
-    recent_fail: Vec<Notification>,
-    last_scan_at: Option<String>,
-    last_prune_at: Option<String>,
-    /// "3m ago", rendered server-side for no-JS; `app.js` re-ticks via `data-ago`.
-    last_scan_ago: Option<String>,
-    last_prune_ago: Option<String>,
-    /// The same stamps as readable UTC; `data-ts`/`data-ago` keep the RFC3339.
-    last_scan_utc: Option<String>,
-    last_prune_utc: Option<String>,
-    // settings
-    scan_interval: String,
-    nag_interval: String,
-    pings_retention_days: String,
-    notifications_retention_days: String,
-    audit_retention_days: String,
-    display_timezone: String,
-    settings_error: Option<String>,
-    settings_flash: Option<String>,
-    // users
-    users: Vec<UserRow>,
-    user_flash: Option<String>,
-    elevation_flash: Option<String>,
-    /// False for a passwordless forward-auth admin (nothing to re-assert).
-    elevation_applies: bool,
-    /// `Some(readable duration)` while the unlock is live, `None` when locked.
-    elevation_remaining: Option<String>,
-    /// Applies and unconfirmed; only then do gated controls carry `data-reauth`. The
-    /// server re-checks, so a lapse before the click just bounces to `/admin/unlock`.
-    elevation_locked: bool,
-    password_reset_flash: Option<String>,
-    user_error: Option<String>,
-    projects: Vec<(Project, String)>,
-    env_rows: Vec<(&'static str, Vec<EnvSetting>)>,
-}
-
-/// Plus `is_self`, so the admin's own row renders its self-mutation controls inert.
-struct UserRow {
-    id: i64,
-    username: String,
-    is_admin: bool,
-    disabled: bool,
-    is_self: bool,
-}
-
 impl UserRow {
     fn from_user(u: User, admin_id: i64) -> Self {
         Self {
@@ -5167,15 +5055,13 @@ async fn render_admin(
     let now = Utc::now();
     let day_ago = now - Duration::days(1);
     // Rendered here so `/admin` and `/admin/audit` emit identical markup.
-    let audit_partial = render(&build_audit_partial(state, audit).await?)?.0;
+    let audit_partial = admin_audit::admin_audit(&build_audit_partial(state, audit).await?);
     let last_scan_at = state.store.get_setting("last_scan_at").await?;
     let last_prune_at = state.store.get_setting("last_prune_at").await?;
     let (notif_ok, notif_err) = state.store.notification_counts_since(day_ago).await?;
     let elevation = elevation(state, jar, admin);
-    Ok(render(&AdminTemplate {
-        show_nav: true,
+    Ok(html_page(admin::admin(&AdminView {
         csrf: current_csrf(state, jar),
-        is_admin: true,
         audit_partial,
         user_count: state.store.count_users().await?,
         project_count: state.store.count_projects().await?,
@@ -5217,7 +5103,7 @@ async fn render_admin(
         user_error: r.user_error,
         projects: state.store.list_all_projects_with_owner().await?,
         env_rows: env_settings(&state.config),
-    })?
+    }))
     .into_response())
 }
 
@@ -5225,7 +5111,7 @@ async fn render_admin(
 async fn build_audit_partial(
     state: &AppState,
     q: &AdminAuditQuery,
-) -> Result<AdminAuditTemplate, AppError> {
+) -> Result<AdminAuditView, AppError> {
     let filter = AuditFilter {
         actor: parse_filter_text(q.aactor.as_deref()),
         action: parse_filter_text(q.aaction.as_deref()),
@@ -5295,8 +5181,7 @@ async fn build_audit_partial(
         .flatten()
         .map(|a| history_href("/admin/audit", ("aa", a.id), &carry));
 
-    Ok(AdminAuditTemplate {
-        empty: rows.is_empty(),
+    Ok(AdminAuditView {
         rows,
         actors,
         actions,
@@ -5320,7 +5205,10 @@ async fn admin_audit_fragment(
     if !wants_fragment(&headers) {
         return Ok(fragment_page_redirect("/admin", "audit-section", &uri));
     }
-    Ok(render(&build_audit_partial(&state, &q).await?)?.into_response())
+    Ok(html_page(admin_audit::admin_audit(
+        &build_audit_partial(&state, &q).await?,
+    ))
+    .into_response())
 }
 
 // --- admin cross-user handlers: resolve via `admin_*`, reuse the owner cores ---
