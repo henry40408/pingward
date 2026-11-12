@@ -4,4 +4,6 @@
 pub mod admin_unlock;
 pub mod auth;
 pub mod confirm;
+pub mod dashboard;
 pub mod layout;
+pub mod project;

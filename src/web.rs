@@ -17,6 +17,10 @@ use crate::views;
 use crate::views::admin_unlock::AdminUnlockView;
 use crate::views::auth::AuthView;
 use crate::views::confirm::ConfirmView;
+use crate::views::dashboard::{CheckRow, DashboardView, ProjectGroup};
+use crate::views::project::{
+    ProjectChannelRow, ProjectCheckRow, ProjectFormView, ProjectView, TestResult,
+};
 use askama::Template;
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
@@ -141,23 +145,6 @@ pub fn routes() -> Router<AppState> {
 }
 
 // --- templates ---
-#[derive(Template)]
-#[template(path = "dashboard.html")]
-struct DashboardTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    total: usize,
-    /// Includes `Running`: an in-flight run is still up, so the two share a tile.
-    up: usize,
-    late: usize,
-    down: usize,
-    groups: Vec<ProjectGroup>,
-    q: String,
-    status: String,
-    /// Forward-auth logout with no gateway URL: tell the visitor to sign out at the proxy.
-    forward_auth_logout: Option<String>,
-}
 
 /// Absent, blank, or whitespace-only means "no filter".
 #[derive(Deserialize, Default)]
@@ -234,26 +221,6 @@ fn sort_projects_by_name(projects: &mut [Project]) {
             .cmp(&b.name.to_lowercase())
             .then(a.id.cmp(&b.id))
     });
-}
-
-struct CheckRow {
-    id: i64,
-    name: String,
-    status: &'static str,
-    schedule: String, // e.g. "every 1h · 10m grace" or the cron expr
-    last: String,
-    bars: Vec<crate::view::Bar>,
-    description: String, // markdown::truncate_plain, single-line summary
-    /// No bound channels: rendered as a chip, so a check nobody is alerted for shows.
-    no_channel: bool,
-}
-
-struct ProjectGroup {
-    id: i64,
-    name: String,
-    count: usize,
-    checks: Vec<CheckRow>,
-    description: String, // markdown::truncate_plain, single-line summary
 }
 
 /// Formatted with `duration::fmt_duration`, so it matches what the form accepts.
@@ -887,8 +854,7 @@ async fn dashboard(
             checks: rows,
         });
     }
-    let resp = render(&DashboardTemplate {
-        show_nav: true,
+    let resp = html_page(views::dashboard::dashboard(&DashboardView {
         csrf: current_csrf(&state, &jar),
         is_admin: user.is_admin,
         total: tally.total,
@@ -899,7 +865,7 @@ async fn dashboard(
         q,
         status,
         forward_auth_logout,
-    })?;
+    }));
     Ok((jar, resp).into_response())
 }
 
@@ -1333,59 +1299,6 @@ pub async fn hsts(State(state): State<AppState>, req: Request, next: Next) -> Re
 }
 
 // --- project templates ---
-#[derive(Template)]
-#[template(path = "project_form.html")]
-struct ProjectFormTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    heading: String,
-    action: String,
-    name: String,
-    description: String,
-    scan_interval_secs: String,
-    nag_interval_secs: String,
-    error: Option<String>,
-}
-
-#[derive(Template)]
-#[template(path = "project.html")]
-struct ProjectTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    admin: bool,
-    project: Project,
-    description_html: String,
-    checks: Vec<ProjectCheckRow>,
-    channels: Vec<ProjectChannelRow>,
-    test_result: Option<TestResult>,
-}
-
-/// `status` is precomputed: it needs `now`.
-struct ProjectCheckRow {
-    id: i64,
-    name: String,
-    status: &'static str,
-    schedule: String,
-    description: String, // markdown::truncate_plain, single-line summary
-    /// No bound channels (rendered as a chip).
-    no_channel: bool,
-}
-
-/// Projected so a [`Channel`]'s `config_json` (delivery secrets) never reaches the
-/// template, as with [`ChannelEditView`].
-struct ProjectChannelRow {
-    id: i64,
-    name: String,
-    kind: &'static str,
-}
-
-struct TestResult {
-    ok: bool,
-    message: String,
-}
-
 #[derive(Deserialize)]
 pub(crate) struct ProjectForm {
     pub(crate) name: String,
@@ -1636,11 +1549,10 @@ fn project_form_with_error(
     session: PageSession,
     form: &ProjectForm,
     error: String,
-) -> ProjectFormTemplate {
+) -> ProjectFormView {
     let FormTarget { heading, action } = target;
     let PageSession { is_admin, csrf } = session;
-    ProjectFormTemplate {
-        show_nav: true,
+    ProjectFormView {
         csrf,
         is_admin,
         heading: heading.into(),
@@ -1658,8 +1570,7 @@ async fn project_new(
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
 ) -> Result<Response, AppError> {
-    Ok(render(&ProjectFormTemplate {
-        show_nav: true,
+    Ok(html_page(views::project::project_form(&ProjectFormView {
         csrf: current_csrf(&state, &jar),
         is_admin: user.is_admin,
         heading: "New project".into(),
@@ -1669,7 +1580,7 @@ async fn project_new(
         scan_interval_secs: String::new(),
         nag_interval_secs: String::new(),
         error: None,
-    })?
+    }))
     .into_response())
 }
 
@@ -1695,7 +1606,7 @@ async fn project_create(
                 &form,
                 msg,
             );
-            return Ok(render(&t)?.into_response());
+            return Ok(html_page(views::project::project_form(&t)).into_response());
         }
     };
     let id = state
@@ -1756,8 +1667,7 @@ async fn render_project_page(
         })
         .collect();
     let description_html = crate::markdown::render(&project.description);
-    Ok(render(&ProjectTemplate {
-        show_nav: true,
+    Ok(html_page(views::project::project(&ProjectView {
         csrf,
         is_admin,
         admin,
@@ -1766,7 +1676,7 @@ async fn render_project_page(
         checks,
         channels,
         test_result,
-    })?
+    }))
     .into_response())
 }
 
@@ -1775,10 +1685,9 @@ fn project_edit_form(
     admin: bool,
     is_admin: bool,
     csrf: String,
-) -> ProjectFormTemplate {
+) -> ProjectFormView {
     let base = admin_prefix(admin);
-    ProjectFormTemplate {
-        show_nav: true,
+    ProjectFormView {
         csrf,
         is_admin,
         heading: "Edit project".into(),
@@ -1822,7 +1731,13 @@ async fn project_edit(
 ) -> Result<Response, AppError> {
     let project = owned_project(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&project_edit_form(project, false, user.is_admin, csrf))?.into_response())
+    Ok(html_page(views::project::project_form(&project_edit_form(
+        project,
+        false,
+        user.is_admin,
+        csrf,
+    )))
+    .into_response())
 }
 
 async fn project_update(
@@ -1849,7 +1764,7 @@ async fn project_update(
                 &form,
                 msg,
             );
-            return Ok(render(&t)?.into_response());
+            return Ok(html_page(views::project::project_form(&t)).into_response());
         }
     };
     state
@@ -5654,7 +5569,10 @@ async fn admin_project_edit(
 ) -> Result<Response, AppError> {
     let project = admin_project(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&project_edit_form(project, true, true, csrf))?.into_response())
+    Ok(html_page(views::project::project_form(&project_edit_form(
+        project, true, true, csrf,
+    )))
+    .into_response())
 }
 
 async fn admin_project_update(
@@ -5683,7 +5601,7 @@ async fn admin_project_update(
                 &form,
                 msg,
             );
-            return Ok(render(&t)?.into_response());
+            return Ok(html_page(views::project::project_form(&t)).into_response());
         }
     };
     state
