@@ -14,8 +14,10 @@ use crate::store::{
     ProjectSettings, Store,
 };
 use crate::views;
+use crate::views::account::{self, AccountView, ApiKeyRow, SessionRow};
 use crate::views::admin_unlock::AdminUnlockView;
 use crate::views::auth::AuthView;
+use crate::views::channel_form::{self, ChannelEditView, ChannelFormView};
 use crate::views::check::{self, ChannelBox, CheckView};
 use crate::views::check_form::{self, CheckFormView};
 use crate::views::check_history::{
@@ -3091,42 +3093,6 @@ async fn check_delete(
 }
 
 // --- channel templates ---
-#[derive(Template)]
-#[template(path = "channel_form.html")]
-struct ChannelFormTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    admin: bool,
-    project_id: i64,
-    error: Option<String>,
-    smtp_available: bool,
-    /// `Some` when editing (heading, action, fixed kind, config block).
-    edit: Option<ChannelEditView>,
-}
-
-/// The edit template's only view of a stored config, making non-leakage a type property
-/// (`ChannelDto` does the same for the API). Webhook/Slack URLs are capability secrets;
-/// chat ids, ntfy server/topic and email recipients are safe to pre-fill.
-struct ChannelEditView {
-    id: i64,
-    kind: &'static str,
-    name: String,
-    // -- pre-filled, non-secret --
-    telegram_chat_id: String,
-    ntfy_base_url: String,
-    ntfy_topic: String,
-    email_to: String,
-    // -- configured/not-set pills only. Shared `url`/`token` keys can't collide:
-    //    only `kind`'s block renders.
-    has_webhook_url: bool,
-    has_slack_url: bool,
-    has_telegram_token: bool,
-    has_ntfy_token: bool,
-    has_pushover_token: bool,
-    has_pushover_user: bool,
-}
-
 impl ChannelEditView {
     fn new(ch: &Channel) -> Self {
         let cfg: serde_json::Value =
@@ -3339,14 +3305,13 @@ fn channel_form_template(
     project_id: i64,
     ctx: PageContext,
     input: ChannelFormInput,
-) -> ChannelFormTemplate {
+) -> ChannelFormView {
     let PageContext {
         admin,
         session: PageSession { is_admin, csrf },
     } = ctx;
     let ChannelFormInput { error, edit } = input;
-    ChannelFormTemplate {
-        show_nav: true,
+    ChannelFormView {
         csrf,
         is_admin,
         admin,
@@ -3365,12 +3330,12 @@ async fn channel_new(
 ) -> Result<Response, AppError> {
     owned_project(&state.store, pid, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&channel_form_template(
+    Ok(html_page(channel_form::channel_form(&channel_form_template(
         &state,
         pid,
         PageContext::owner(user.is_admin, csrf),
         ChannelFormInput::default(),
-    ))?
+    )))
     .into_response())
 }
 
@@ -3389,7 +3354,7 @@ async fn channel_create_core(
     let (kind, name, config) = match validate_channel(&form) {
         Ok(v) => v,
         Err(msg) => {
-            return Ok(render(&channel_form_template(
+            return Ok(html_page(channel_form::channel_form(&channel_form_template(
                 state,
                 pid,
                 PageContext {
@@ -3400,7 +3365,7 @@ async fn channel_create_core(
                     error: Some(msg),
                     edit: None,
                 },
-            ))?
+            )))
             .into_response());
         }
     };
@@ -3438,7 +3403,7 @@ async fn channel_update_core(
         Ok(v) => v,
         Err(msg) => {
             // From the *stored* channel, so a typed secret is never echoed back.
-            return Ok(render(&channel_form_template(
+            return Ok(html_page(channel_form::channel_form(&channel_form_template(
                 state,
                 pid,
                 PageContext {
@@ -3449,7 +3414,7 @@ async fn channel_update_core(
                     error: Some(msg),
                     edit: Some(ChannelEditView::new(channel)),
                 },
-            ))?
+            )))
             .into_response());
         }
     };
@@ -3492,7 +3457,7 @@ async fn channel_edit(
 ) -> Result<Response, AppError> {
     let channel = owned_channel(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&channel_form_template(
+    Ok(html_page(channel_form::channel_form(&channel_form_template(
         &state,
         channel.project_id,
         PageContext::owner(user.is_admin, csrf),
@@ -3500,7 +3465,7 @@ async fn channel_edit(
             error: None,
             edit: Some(ChannelEditView::new(&channel)),
         },
-    ))?
+    )))
     .into_response())
 }
 
@@ -4415,29 +4380,6 @@ async fn users_set_disabled(
 // --- account: sessions, password, API keys ---
 // `sessions.id` is the cookie's bearer secret, never rendered or put in a URL; rows
 // are named by `handle` (SHA-256 of the id), resolved back by a linear scan.
-#[derive(Template)]
-#[template(path = "account.html")]
-struct AccountTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    // sessions section
-    sessions: Vec<SessionRow>,
-    /// Hides the "revoke others" control when there is nothing else to revoke.
-    other_count: usize,
-    /// False for a passwordless forward-auth account: hides the password card and the
-    /// API-key re-auth field ([`reauthenticate`] passes it unchallenged).
-    has_password: bool,
-    // password section
-    password_error: Option<String>,
-    password_flash: Option<String>,
-    // api-keys section
-    keys: Vec<ApiKeyRow>,
-    /// Rendered exactly once, right after creation; never recoverable after.
-    new_token: Option<String>,
-    key_error: Option<String>,
-}
-
 /// The per-request parts of [`render_account`].
 #[derive(Default)]
 struct AccountRender {
@@ -4445,29 +4387,6 @@ struct AccountRender {
     key_error: Option<String>,
     password_error: Option<String>,
     password_flash: Option<String>,
-}
-
-/// [`crate::models::Session`] minus the raw `id`, plus `handle` and `current`.
-struct SessionRow {
-    handle: String,
-    created_at: Option<DateTime<Utc>>,
-    last_seen_at: Option<DateTime<Utc>>,
-    expires_at: DateTime<Utc>,
-    user_agent: Option<String>,
-    ip: Option<String>,
-    current: bool,
-    sso: bool,
-}
-
-/// An expired key still lists so it can be revoked, hence the `expired` flag.
-struct ApiKeyRow {
-    id: i64,
-    name: String,
-    prefix: String,
-    created_at: DateTime<Utc>,
-    last_used_at: Option<DateTime<Utc>>,
-    expires_at: Option<DateTime<Utc>>,
-    expired: bool,
 }
 
 impl ApiKeyRow {
@@ -4560,8 +4479,7 @@ async fn render_account(
         .map(|k| ApiKeyRow::from_key(k, now))
         .collect();
 
-    Ok(render(&AccountTemplate {
-        show_nav: true,
+    Ok(html_page(account::account(&AccountView {
         csrf: current_csrf(state, jar),
         is_admin: user.is_admin,
         sessions,
@@ -4572,7 +4490,7 @@ async fn render_account(
         keys,
         new_token: parts.new_token,
         key_error: parts.key_error,
-    })?
+    }))
     .into_response())
 }
 
@@ -5777,12 +5695,12 @@ async fn admin_channel_new(
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&channel_form_template(
+    Ok(html_page(channel_form::channel_form(&channel_form_template(
         &state,
         pid,
         PageContext::admin(csrf),
         ChannelFormInput::default(),
-    ))?
+    )))
     .into_response())
 }
 
@@ -5796,7 +5714,7 @@ async fn admin_channel_edit(
 ) -> Result<Response, AppError> {
     let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&channel_form_template(
+    Ok(html_page(channel_form::channel_form(&channel_form_template(
         &state,
         channel.project_id,
         PageContext::admin(csrf),
@@ -5804,7 +5722,7 @@ async fn admin_channel_edit(
             error: None,
             edit: Some(ChannelEditView::new(&channel)),
         },
-    ))?
+    )))
     .into_response())
 }
 
