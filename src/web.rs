@@ -13,6 +13,10 @@ use crate::store::{
     AuditFilter, NewApiKey, NewChannel, NewSession, NotifFilter, PageCursor, PingFilter,
     ProjectSettings, Store,
 };
+use crate::views;
+use crate::views::admin_unlock::AdminUnlockView;
+use crate::views::auth::AuthView;
+use crate::views::confirm::ConfirmView;
 use askama::Template;
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
@@ -25,6 +29,7 @@ use axum_extra::extract::Form as HtmlForm;
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use chrono::{DateTime, Duration, Utc};
 use cron::Schedule;
+use maud::Markup;
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::net::IpAddr;
@@ -37,6 +42,10 @@ use tokio_stream::wrappers::BroadcastStream;
 pub fn render<T: Template>(t: &T) -> Result<Html<String>, AppError> {
     let body = t.render().map_err(|e| AppError::Other(Box::new(e)))?;
     Ok(Html(body))
+}
+
+fn html_page(page: Markup) -> Html<String> {
+    Html(page.into_string())
 }
 
 pub fn routes() -> Router<AppState> {
@@ -132,24 +141,6 @@ pub fn routes() -> Router<AppState> {
 }
 
 // --- templates ---
-#[derive(Template)]
-#[template(path = "setup.html")]
-struct SetupTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    error: Option<String>,
-}
-
-#[derive(Template)]
-#[template(path = "login.html")]
-struct LoginTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    error: Option<String>,
-}
-
 #[derive(Template)]
 #[template(path = "dashboard.html")]
 struct DashboardTemplate {
@@ -304,12 +295,10 @@ async fn setup_page(State(state): State<AppState>, jar: CookieJar) -> Result<Res
     if state.store.count_users().await? > 0 {
         return Ok(Redirect::to("/login").into_response());
     }
-    Ok(render(&SetupTemplate {
-        show_nav: false,
+    Ok(html_page(views::auth::setup(&AuthView {
         csrf: current_csrf(&state, &jar),
-        is_admin: false,
         error: None,
-    })?
+    }))
     .into_response())
 }
 
@@ -327,12 +316,10 @@ fn setup_refusal(
     status: StatusCode,
     error: &str,
 ) -> Result<Response, AppError> {
-    let page = render(&SetupTemplate {
-        show_nav: false,
+    let page = html_page(views::auth::setup(&AuthView {
         csrf: current_csrf(state, jar),
-        is_admin: false,
         error: Some(error.to_string()),
-    })?;
+    }));
     let mut res = (status, page).into_response();
     if status == StatusCode::TOO_MANY_REQUESTS {
         res.headers_mut().insert(
@@ -454,12 +441,10 @@ async fn login_page(
     if user.is_some() {
         return Ok(Redirect::to("/").into_response());
     }
-    Ok(render(&LoginTemplate {
-        show_nav: false,
+    Ok(html_page(views::auth::login(&AuthView {
         csrf: current_csrf(&state, &jar),
-        is_admin: false,
         error: None,
-    })?
+    }))
     .into_response())
 }
 
@@ -629,19 +614,6 @@ impl ConfirmQuery {
     }
 }
 
-#[derive(Template)]
-#[template(path = "confirm.html")]
-struct ConfirmTemplate {
-    show_nav: bool,
-    is_admin: bool,
-    csrf: String,
-    title: &'static str,
-    message: &'static str,
-    button: &'static str,
-    action: String,
-    cancel: String,
-}
-
 struct ConfirmRequest<'a> {
     confirm: &'a Confirm,
     action: &'a str,
@@ -662,8 +634,7 @@ fn confirmation_page(
         cancel,
     } = request;
     let sep = if action.contains('?') { '&' } else { '?' };
-    Ok(render(&ConfirmTemplate {
-        show_nav: true,
+    Ok(html_page(views::confirm::confirm(&ConfirmView {
         is_admin,
         csrf: current_csrf(state, jar),
         title: confirm.title,
@@ -671,7 +642,7 @@ fn confirmation_page(
         button: confirm.button,
         action: format!("{action}{sep}confirmed=1"),
         cancel,
-    })?
+    }))
     .into_response())
 }
 
@@ -698,12 +669,10 @@ fn throttled_login(
     Ok((
         StatusCode::TOO_MANY_REQUESTS,
         [(header::RETRY_AFTER, retry_after_secs.to_string())],
-        render(&LoginTemplate {
-            show_nav: false,
+        html_page(views::auth::login(&AuthView {
             csrf: current_csrf(state, jar),
-            is_admin: false,
             error: Some("too many login attempts — try again later".into()),
-        })?,
+        })),
     )
         .into_response())
 }
@@ -743,12 +712,10 @@ async fn login_submit(
             client,
             "bad_credentials",
         );
-        return Ok(render(&LoginTemplate {
-            show_nav: false,
+        return Ok(html_page(views::auth::login(&AuthView {
             csrf: current_csrf(&state, &jar),
-            is_admin: false,
             error: Some("invalid username or password".into()),
-        })?
+        }))
         .into_response());
     }
     let user = user.unwrap();
@@ -760,12 +727,10 @@ async fn login_submit(
             client,
             "account_disabled",
         );
-        return Ok(render(&LoginTemplate {
-            show_nav: false,
+        return Ok(html_page(views::auth::login(&AuthView {
             csrf: current_csrf(&state, &jar),
-            is_admin: false,
             error: Some("account is disabled".into()),
-        })?
+        }))
         .into_response());
     }
     let ua = request_user_agent(&headers);
@@ -4061,23 +4026,6 @@ async fn admin_page(
     Ok((jar, resp).into_response())
 }
 
-#[derive(Template)]
-#[template(path = "admin_unlock.html")]
-struct AdminUnlockTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    /// False for a passwordless forward-auth admin: the gate doesn't apply.
-    applies: bool,
-    /// `Some(readable duration)` when already confirmed.
-    remaining: Option<String>,
-    /// From `elevate::ELEVATION_TTL_SECS`, so the copy can't drift.
-    ttl: String,
-    /// Set when bounced here by a refused action.
-    bounced_flash: Option<String>,
-    error: Option<String>,
-}
-
 /// A page, not an `/admin` field: it must explain why a signed-in admin is asked
 /// again and that it is the same password, not a second factor.
 /// At most one of these is shown on the unlock page.
@@ -4098,17 +4046,18 @@ fn render_admin_unlock(
         error,
     } = notice;
     let elevation = elevation(state, jar, admin);
-    Ok(render(&AdminUnlockTemplate {
-        show_nav: true,
-        csrf: current_csrf(state, jar),
-        is_admin: true,
-        applies: !elevation.not_applicable,
-        remaining: elevation.remaining_secs.map(fmt_elevation_secs),
-        ttl: fmt_elevation_secs(crate::elevate::ELEVATION_TTL_SECS),
-        bounced_flash,
-        error,
-    })?
-    .into_response())
+    Ok(
+        html_page(views::admin_unlock::admin_unlock(&AdminUnlockView {
+            csrf: current_csrf(state, jar),
+            is_admin: true,
+            applies: !elevation.not_applicable,
+            remaining: elevation.remaining_secs.map(fmt_elevation_secs),
+            ttl: fmt_elevation_secs(crate::elevate::ELEVATION_TTL_SECS),
+            bounced_flash,
+            error,
+        }))
+        .into_response(),
+    )
 }
 
 /// The same readable form the duration fields use.

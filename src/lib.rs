@@ -22,6 +22,7 @@ pub mod shutdown;
 pub mod state;
 pub mod store;
 pub mod view;
+pub mod views;
 pub mod web;
 
 pub fn app(state: AppState) -> Router {
