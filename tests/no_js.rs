@@ -707,6 +707,45 @@ async fn the_admin_twins_ask_first_too() {
     assert!(store.find_project(pid).await.unwrap().is_none());
 }
 
+#[tokio::test]
+async fn deleting_a_channel_asks_first_on_both_routes() {
+    let (server, store, uid) = logged_in_server().await;
+    let (pid, _cid) = check_for(&store, uid, "cu3").await;
+    let new_channel = || async {
+        store
+            .create_channel(
+                &pingward::store::NewChannel {
+                    project_id: pid,
+                    kind: pingward::models::ChannelKind::Webhook,
+                    name: "h",
+                    config_json: "{\"url\":\"http://x.test/h\"}",
+                },
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap()
+    };
+
+    for prefix in ["", "/admin"] {
+        let chid = new_channel().await;
+        let res = server
+            .post(&format!("{prefix}/channels/{chid}/delete"))
+            .await;
+        res.assert_status_ok();
+        assert!(is_confirmation_page(&res.text()));
+        assert!(
+            store.find_channel(chid).await.unwrap().is_some(),
+            "{prefix}: the channel was deleted before anyone confirmed"
+        );
+
+        server
+            .post(&format!("{prefix}/channels/{chid}/delete?confirmed=1"))
+            .await
+            .assert_status(StatusCode::SEE_OTHER);
+        assert!(store.find_channel(chid).await.unwrap().is_none());
+    }
+}
+
 /// Authorization precedes the gate: another user's resource is a 404.
 #[tokio::test]
 async fn the_confirmation_never_answers_for_another_users_resource() {

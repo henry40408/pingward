@@ -181,7 +181,7 @@ fn channels_card(view: &ProjectView, base: &str) -> Markup {
                             (csrf_field(&view.csrf))
                             button class="btn" type="submit" { "Send test" }
                         }
-                        form class="inline" method="post" action={(base) "/channels/" (ch.id) "/delete"} {
+                        form class="inline" method="post" action={(base) "/channels/" (ch.id) "/delete"} data-confirm="Delete channel?" {
                             (csrf_field(&view.csrf))
                             button class="btn danger" type="submit" { "delete" }
                         }

@@ -518,6 +518,12 @@ const CONFIRM_DELETE_PROJECT: Confirm = Confirm {
     button: "Delete project",
 };
 
+const CONFIRM_DELETE_CHANNEL: Confirm = Confirm {
+    title: "Delete this channel?",
+    message: "Checks bound to it stop notifying through it. This cannot be undone.",
+    button: "Delete channel",
+};
+
 const CONFIRM_DELETE_CHECK: Confirm = Confirm {
     title: "Delete this check?",
     message: "The check and its whole ping history go away, and its ping URL stops answering — a job still calling it will start getting 404s. This cannot be undone.",
@@ -3480,10 +3486,24 @@ async fn channel_update(
 
 async fn channel_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     CurrentUser(user): CurrentUser,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     let channel = owned_channel(&state.store, id, user.id).await?;
+    if !confirm.is_confirmed() {
+        return Ok(confirmation_page(
+            &state,
+            &jar,
+            user.is_admin,
+            ConfirmRequest {
+                confirm: &CONFIRM_DELETE_CHANNEL,
+                action: &format!("/channels/{id}/delete"),
+                cancel: format!("/projects/{}", channel.project_id),
+            },
+        ));
+    }
     state.store.delete_channel(id).await?;
     Ok(Redirect::to(&format!("/projects/{}", channel.project_id)).into_response())
 }
@@ -5631,12 +5651,26 @@ async fn admin_channel_create(
 
 async fn admin_channel_delete(
     State(state): State<AppState>,
+    jar: CookieJar,
     AdminUser(admin): AdminUser,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(id): Path<i64>,
+    Query(confirm): Query<ConfirmQuery>,
 ) -> Result<Response, AppError> {
     let channel = admin_channel(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
+    if !confirm.is_confirmed() {
+        return Ok(confirmation_page(
+            &state,
+            &jar,
+            true,
+            ConfirmRequest {
+                confirm: &CONFIRM_DELETE_CHANNEL,
+                action: &format!("/admin/channels/{id}/delete"),
+                cancel: format!("/admin/projects/{}", channel.project_id),
+            },
+        ));
+    }
     state.store.delete_channel(id).await?;
     Ok(Redirect::to(&format!("/admin/projects/{}", channel.project_id)).into_response())
 }

@@ -4,7 +4,9 @@
 
 use anyhow::{Result, ensure};
 use cucumber::{given, then, when};
-use pingward_e2e::dom::{Dom, TextContent, Within, click_when_ready, submit_element};
+use pingward_e2e::dom::{
+    Dom, TextContent, Within, click_when_ready, submit_element, submit_element_confirming,
+};
 use pingward_e2e::wait::eventually_within;
 use pingward_e2e::world::PingwardWorld;
 use std::time::Duration;
@@ -135,7 +137,7 @@ async fn kind_not_offered(world: &mut PingwardWorld, kind: String) -> Result<()>
 
 #[when(expr = "I delete the channel named {string}")]
 async fn delete_channel(world: &mut PingwardWorld, name: String) -> Result<()> {
-    // Redirects back to the same URL, so `submit_element` waits on the
+    // Redirects back to the same URL, so `submit_element_confirming` waits on the
     // document being replaced rather than on the URL.
     let driver = world.driver()?;
     let row = driver.css_row(".chk", &name).await?;
@@ -143,7 +145,7 @@ async fn delete_channel(world: &mut PingwardWorld, name: String) -> Result<()> {
         .button_named("delete")
         .await?
         .ok_or_else(|| anyhow::anyhow!("the row for {name:?} has no delete button"))?;
-    submit_element(driver, &button).await
+    submit_element_confirming(driver, &button).await
 }
 
 #[then("the project shows no channels")]
