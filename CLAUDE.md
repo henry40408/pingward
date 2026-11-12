@@ -103,7 +103,7 @@ GitHub Actions are pinned by commit SHA with the tag as a trailing comment.
 - CSS hiding click-revealed content must hang off `:root.js` (set by
   `theme-init.js` before paint), e.g. `:root.js tr.exp:not(.open)`. JS-only
   controls are hidden via `:root:not(.js)`.
-- `base.html` has **no default `data-theme`**. The light palette exists twice in
+- `views::layout::page` has **no default `data-theme`**. The light palette exists twice in
   `app.css` (`[data-theme]` + `prefers-color-scheme`) — keep in sync; the test
   compares them.
 - History filters are real GET forms; each carries the sibling section's filter

@@ -100,7 +100,7 @@ async fn pages_link_the_content_hashed_icons() {
     }
 }
 
-/// The footer sits outside `base.html`'s `show_nav` guard, so it must render on
+/// The footer sits outside `views::layout::page`'s `show_nav` guard, so it must render on
 /// a nav-less page; the second assertion pins that `/setup` is still one.
 #[tokio::test]
 async fn nav_less_pages_still_render_the_build_version() {

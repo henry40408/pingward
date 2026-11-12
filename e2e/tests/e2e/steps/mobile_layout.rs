@@ -264,8 +264,8 @@ async fn open_project_from_breadcrumb(world: &mut PingwardWorld) -> Result<()> {
 
 #[then("the check row's status dot sits next to the name")]
 async fn status_dot_next_to_name(world: &mut PingwardWorld) -> Result<()> {
-    // `.check`'s own gap is 16px; a layout that fits only `dashboard.html`'s
-    // children strands the dot far from the name on `project.html`.
+    // `.check`'s own gap is 16px; a layout that fits only the dashboard's
+    // children strands the dot far from the name on the project page.
     let gap = world
         .driver()?
         .eval(

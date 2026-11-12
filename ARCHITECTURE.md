@@ -165,7 +165,7 @@ The UI must stay usable with scripts off; `tests/no_js.rs` and
   tr.exp:not(.open)` alone collapses the ping/audit panels, so without script a
   failed job's captured output stays readable; carets and pointer cursors are
   hidden in the same state.
-- **`base.html` carries no default `data-theme`.** `theme-init.js` always sets
+- **`views::layout::page` carries no default `data-theme`.** `theme-init.js` always sets
   it, so `app.css`'s `@media (prefers-color-scheme: light) {
   :root:not([data-theme]) }` only ever applies to a scriptless browser and
   cannot fight the toggle. That light palette is therefore written **twice** (a

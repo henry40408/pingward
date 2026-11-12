@@ -502,7 +502,7 @@ fn admin_locked(config: &crate::config::Config, jar: CookieJar) -> Response {
 
 // --- confirming a destructive action (see ARCHITECTURE.md) ---
 // `data-confirm` is inert without script, so a handler runs only with `?confirmed=1` and
-// otherwise renders `ConfirmTemplate`. A *query* flag: a body extractor would 415 the
+// otherwise renders `views::confirm`. A *query* flag: a body extractor would 415 the
 // no-body forms before authorization, turning `owned_check`'s 404 into a type error.
 
 /// Page copy, deliberately longer than the template's terse `data-confirm` line.

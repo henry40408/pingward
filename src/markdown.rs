@@ -39,7 +39,7 @@ pub fn render(src: &str) -> String {
     out
 }
 
-/// Strip markdown markers and collapse whitespace. Not HTML-escaped: Askama
+/// Strip markdown markers and collapse whitespace. Not HTML-escaped: maud
 /// escapes on render.
 pub fn to_plain(src: &str) -> String {
     let normalized = normalize_newlines(src);
