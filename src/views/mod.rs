@@ -3,6 +3,9 @@
 
 pub mod admin_unlock;
 pub mod auth;
+pub mod check;
+pub mod check_form;
+pub mod check_history;
 pub mod confirm;
 pub mod dashboard;
 pub mod layout;

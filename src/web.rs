@@ -16,6 +16,11 @@ use crate::store::{
 use crate::views;
 use crate::views::admin_unlock::AdminUnlockView;
 use crate::views::auth::AuthView;
+use crate::views::check::{self, ChannelBox, CheckView};
+use crate::views::check_form::{self, CheckFormView};
+use crate::views::check_history::{
+    self, CheckNotifsView, CheckPingsView, HiddenField, NotificationRow, PingRow,
+};
 use crate::views::confirm::ConfirmView;
 use crate::views::dashboard::{CheckRow, DashboardView, ProjectGroup};
 use crate::views::project::{
@@ -1821,17 +1826,6 @@ pub(crate) struct CheckForm {
     pub(crate) nag_interval_secs: String,
 }
 
-struct PingRow {
-    time: String,             // UTC fallback shown when JS is off
-    iso: String,              // RFC3339 UTC; localized to the viewer's zone client-side
-    pill_class: &'static str, // "ok"|"fail"|"start"|"log"
-    kind_label: &'static str, // "success"|"fail"|"start"|"log"
-    exit: String,
-    duration: String,
-    source: String,
-    body: String,
-}
-
 /// `Exitcode` never reaches storage (the `/ping/{uuid}/{code}` handler maps it first).
 fn ping_pill_class(k: crate::models::PingKind) -> &'static str {
     use crate::models::PingKind;
@@ -1843,23 +1837,6 @@ fn ping_pill_class(k: crate::models::PingKind) -> &'static str {
     }
 }
 
-struct ChannelBox {
-    id: i64,
-    name: String,
-    kind: &'static str,
-    bound: bool,
-}
-
-struct NotificationRow {
-    created_at: String,             // UTC fallback shown when JS is off
-    iso: String,                    // RFC3339 UTC; localized client-side
-    event: &'static str,            // "down"|"up"|"reminder"
-    event_pill_class: &'static str, // mirrors the ping-kind pills
-    status: &'static str,
-    channel: String,
-    error: String,
-}
-
 /// Reuses the ping-kind palette; `Test` is never stored but kept for exhaustiveness.
 fn notif_event_pill_class(e: crate::notify::EventKind) -> &'static str {
     use crate::notify::EventKind;
@@ -1869,100 +1846,6 @@ fn notif_event_pill_class(e: crate::notify::EventKind) -> &'static str {
         EventKind::Reminder => "start",
         EventKind::Test => "log",
     }
-}
-
-#[derive(Template)]
-#[template(path = "check_form.html")]
-struct CheckFormTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    heading: String,
-    action: String,
-    error: Option<String>,
-    name: String,
-    description: String,
-    schedule_kind: String,
-    period_secs: String,
-    cron_expr: String,
-    grace_secs: String,
-    timezone: String,
-    scan_interval_secs: String,
-    max_runtime_secs: String,
-    nag_interval_secs: String,
-}
-
-#[derive(Template)]
-#[template(path = "check.html")]
-struct CheckTemplate {
-    show_nav: bool,
-    csrf: String,
-    is_admin: bool,
-    admin: bool,
-    check: Check,
-    description_html: String,
-    project_name: String,
-    status: &'static str,
-    since: String,
-    next_due: crate::view::NextDue,
-    schedule: String,
-    ping_url: String,
-    /// Withheld pending an audited reveal (see [`CheckPageViewer`]).
-    ping_url_hidden: bool,
-    bars: Vec<crate::view::Bar>,
-    channel_boxes: Vec<ChannelBox>,
-    /// From [`CheckPingsTemplate`], so page load and JS refresh share markup; `|safe`.
-    pings_partial: String,
-    /// Likewise, from [`CheckNotifsTemplate`].
-    notifs_partial: String,
-    flash: Option<String>,
-}
-
-/// Served standalone by `GET /checks/{id}/pings` (JS swaps it into
-/// `#pings-section`) and inlined into the check page. `base` is `""` or `/admin`.
-#[derive(Template)]
-#[template(path = "check_pings.html")]
-struct CheckPingsTemplate {
-    base: String,
-    check_id: i64,
-    rows: Vec<PingRow>,
-    empty: bool,
-    /// `""` = all, canonicalized from the query.
-    f_kind: String,
-    /// `Z`-form RFC3339 UTC (`""` = unset); localized client-side.
-    f_from: String,
-    f_to: String,
-    /// Controls the "Clear" affordance.
-    filtered: bool,
-    /// The notifications filter, re-sent so a scriptless submit here keeps it.
-    carry: Vec<HiddenField>,
-    /// Clear link; keeps the other section's filter.
-    clear: String,
-    newer: Option<String>,
-    older: Option<String>,
-}
-
-/// Served by `GET /checks/{id}/notifications`; otherwise as
-/// [`CheckPingsTemplate`].
-#[derive(Template)]
-#[template(path = "check_notifs.html")]
-struct CheckNotifsTemplate {
-    base: String,
-    check_id: i64,
-    rows: Vec<NotificationRow>,
-    empty: bool,
-    /// `""` = all: up|down|reminder.
-    f_event: String,
-    /// `""` = all: ok|error.
-    f_status: String,
-    f_from: String,
-    f_to: String,
-    filtered: bool,
-    /// The pings section's filter — see [`CheckPingsTemplate::carry`].
-    carry: Vec<HiddenField>,
-    clear: String,
-    newer: Option<String>,
-    older: Option<String>,
 }
 
 /// Shared by the check page and both fragments: `p*` = pings, `n*` = notifications;
@@ -2036,13 +1919,6 @@ fn absolute_setting(raw: Option<&str>) -> Option<String> {
     Some(crate::view::fmt_utc(&at))
 }
 
-/// A GET filter submit replaces the whole query string, so the *other* section's
-/// filter rides along as hidden fields.
-struct HiddenField {
-    name: &'static str,
-    value: String,
-}
-
 /// Skips empties and `mine`, the keys this form's visible controls already send.
 fn carry_fields(all: &[(&'static str, String)], mine: &[&str]) -> Vec<HiddenField> {
     all.iter()
@@ -2112,14 +1988,8 @@ async fn owned_check(store: &Store, id: i64, user_id: i64) -> Result<Check, AppE
     Ok(check)
 }
 
-fn empty_check_form(
-    heading: &str,
-    action: String,
-    is_admin: bool,
-    csrf: String,
-) -> CheckFormTemplate {
-    CheckFormTemplate {
-        show_nav: true,
+fn empty_check_form(heading: &str, action: String, is_admin: bool, csrf: String) -> CheckFormView {
+    CheckFormView {
         csrf,
         is_admin,
         heading: heading.into(),
@@ -2235,7 +2105,7 @@ async fn check_new(
         user.is_admin,
         csrf,
     );
-    Ok(render(&form)?.into_response())
+    Ok(html_page(check_form::check_form(&form)).into_response())
 }
 
 async fn check_create_core(
@@ -2269,7 +2139,7 @@ async fn check_create_core(
             t.scan_interval_secs = form.scan_interval_secs;
             t.max_runtime_secs = form.max_runtime_secs;
             t.nag_interval_secs = form.nag_interval_secs;
-            return Ok(render(&t)?.into_response());
+            return Ok(html_page(check_form::check_form(&t)).into_response());
         }
     };
     let uuid = uuid::Uuid::new_v4().to_string();
@@ -2577,7 +2447,7 @@ async fn render_check_page(
     let description_html = crate::markdown::render(&check.description);
 
     // The same fragments the partial endpoints serve: one source of markup.
-    let pings_partial = render(
+    let pings_partial = check_history::check_pings(
         &build_pings_partial(
             state,
             PartialScope { check_id: id, base },
@@ -2585,9 +2455,8 @@ async fn render_check_page(
             Some(&recent),
         )
         .await?,
-    )?
-    .0;
-    let notifs_partial = render(
+    );
+    let notifs_partial = check_history::check_notifs(
         &build_notifs_partial(
             state,
             PartialScope { check_id: id, base },
@@ -2595,11 +2464,9 @@ async fn render_check_page(
             &channel_names,
         )
         .await?,
-    )?
-    .0;
+    );
 
-    Ok(render(&CheckTemplate {
-        show_nav: true,
+    Ok(html_page(check::check(&CheckView {
         csrf,
         is_admin,
         admin,
@@ -2617,7 +2484,7 @@ async fn render_check_page(
         pings_partial,
         notifs_partial,
         flash,
-    })?
+    }))
     .into_response())
 }
 
@@ -2647,7 +2514,7 @@ async fn build_pings_partial(
     scope: PartialScope<'_>,
     page: &CheckPageQuery,
     recent: Option<&[crate::models::PingSummary]>,
-) -> Result<CheckPingsTemplate, AppError> {
+) -> Result<CheckPingsView, AppError> {
     let PartialScope { check_id, base } = scope;
     let filter = ping_filter_from(page);
     let cursor = page_cursor(page.pb, page.pa);
@@ -2697,10 +2564,9 @@ async fn build_pings_partial(
     // without JS it redirects to the page (`fragment_page_redirect`).
     let clear = clear_href(&endpoint, &hidden);
 
-    Ok(CheckPingsTemplate {
+    Ok(CheckPingsView {
         base: base.to_string(),
         check_id,
-        empty: rows.is_empty(),
         rows,
         f_kind,
         f_from,
@@ -2719,7 +2585,7 @@ async fn build_notifs_partial(
     scope: PartialScope<'_>,
     page: &CheckPageQuery,
     channel_names: &std::collections::HashMap<i64, String>,
-) -> Result<CheckNotifsTemplate, AppError> {
+) -> Result<CheckNotifsView, AppError> {
     let PartialScope { check_id, base } = scope;
     let filter = notif_filter_from(page);
     let cursor = page_cursor(page.nb, page.na);
@@ -2759,10 +2625,9 @@ async fn build_notifs_partial(
     // Fragment endpoint, for the reason spelled out in `build_pings_partial`.
     let clear = clear_href(&endpoint, &hidden);
 
-    Ok(CheckNotifsTemplate {
+    Ok(CheckNotifsView {
         base: base.to_string(),
         check_id,
-        empty: rows.is_empty(),
         rows,
         f_event,
         f_status,
@@ -2938,10 +2803,8 @@ async fn check_pings(
             &uri,
         ));
     }
-    Ok(
-        render(&build_pings_partial(&state, PartialScope::owner(check.id), &page, None).await?)?
-            .into_response(),
-    )
+    let view = build_pings_partial(&state, PartialScope::owner(check.id), &page, None).await?;
+    Ok(html_page(check_history::check_pings(&view)).into_response())
 }
 
 /// SSE: a ping arrived, or the scan loop transitioned this check.
@@ -2971,10 +2834,8 @@ async fn check_notifications(
         ));
     }
     let names = channel_name_map(&state, check.project_id).await?;
-    Ok(
-        render(&build_notifs_partial(&state, PartialScope::owner(check.id), &page, &names).await?)?
-            .into_response(),
-    )
+    let view = build_notifs_partial(&state, PartialScope::owner(check.id), &page, &names).await?;
+    Ok(html_page(check_history::check_notifs(&view)).into_response())
 }
 
 async fn admin_check_pings(
@@ -2994,10 +2855,8 @@ async fn admin_check_pings(
             &uri,
         ));
     }
-    Ok(
-        render(&build_pings_partial(&state, PartialScope::admin(check.id), &page, None).await?)?
-            .into_response(),
-    )
+    let view = build_pings_partial(&state, PartialScope::admin(check.id), &page, None).await?;
+    Ok(html_page(check_history::check_pings(&view)).into_response())
 }
 
 async fn admin_check_events(
@@ -3029,16 +2888,13 @@ async fn admin_check_notifications(
         ));
     }
     let names = channel_name_map(&state, check.project_id).await?;
-    Ok(
-        render(&build_notifs_partial(&state, PartialScope::admin(check.id), &page, &names).await?)?
-            .into_response(),
-    )
+    let view = build_notifs_partial(&state, PartialScope::admin(check.id), &page, &names).await?;
+    Ok(html_page(check_history::check_notifs(&view)).into_response())
 }
 
-fn check_edit_form(check: Check, admin: bool, is_admin: bool, csrf: String) -> CheckFormTemplate {
+fn check_edit_form(check: Check, admin: bool, is_admin: bool, csrf: String) -> CheckFormView {
     let base = admin_prefix(admin);
-    CheckFormTemplate {
-        show_nav: true,
+    CheckFormView {
         csrf,
         is_admin,
         heading: "Edit check".into(),
@@ -3077,7 +2933,13 @@ async fn check_edit(
 ) -> Result<Response, AppError> {
     let check = owned_check(&state.store, id, user.id).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&check_edit_form(check, false, user.is_admin, csrf))?.into_response())
+    Ok(html_page(check_form::check_form(&check_edit_form(
+        check,
+        false,
+        user.is_admin,
+        csrf,
+    )))
+    .into_response())
 }
 
 async fn check_update_core(
@@ -3094,8 +2956,7 @@ async fn check_update_core(
     let v = match validate_check(&form) {
         Ok(v) => v,
         Err(msg) => {
-            let t = CheckFormTemplate {
-                show_nav: true,
+            let t = CheckFormView {
                 csrf,
                 is_admin,
                 heading: "Edit check".into(),
@@ -3112,7 +2973,7 @@ async fn check_update_core(
                 max_runtime_secs: form.max_runtime_secs,
                 nag_interval_secs: form.nag_interval_secs,
             };
-            return Ok(render(&t)?.into_response());
+            return Ok(html_page(check_form::check_form(&t)).into_response());
         }
     };
     state
@@ -5228,7 +5089,7 @@ struct AdminAuditQuery {
     ato: Option<String>,
 }
 
-/// Served by `GET /admin/audit` and inlined into `/admin`, like [`CheckPingsTemplate`].
+/// Served by `GET /admin/audit` and inlined into `/admin`, like [`CheckPingsView`].
 #[derive(Template)]
 #[template(path = "admin_audit.html")]
 struct AdminAuditTemplate {
@@ -5656,13 +5517,13 @@ async fn admin_check_new(
 ) -> Result<Response, AppError> {
     admin_project(&state, pid, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&empty_check_form(
+    let form = empty_check_form(
         "New check",
         format!("/admin/projects/{pid}/checks"),
         true,
         csrf,
-    ))?
-    .into_response())
+    );
+    Ok(html_page(check_form::check_form(&form)).into_response())
 }
 
 async fn admin_check_create(
@@ -5780,7 +5641,10 @@ async fn admin_check_edit(
 ) -> Result<Response, AppError> {
     let check = admin_check(&state, id, &admin, RequestLine::of(&method, &uri)).await?;
     let csrf = current_csrf(&state, &jar);
-    Ok(render(&check_edit_form(check, true, true, csrf))?.into_response())
+    Ok(html_page(check_form::check_form(&check_edit_form(
+        check, true, true, csrf,
+    )))
+    .into_response())
 }
 
 async fn admin_check_update(
