@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/henry40408/pingward/internal/auth"
@@ -23,6 +24,18 @@ func (d *Deps) setupPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeHTML(w, http.StatusOK, views.Setup(views.AuthView{CSRF: d.csrfToken(r)}))
+}
+
+// ArmSetupTokenIfUnclaimed arms a fresh random token only while no user
+// exists, and returns it for the operator; "" means setup is already done.
+func (d *Deps) ArmSetupTokenIfUnclaimed(ctx context.Context) (string, error) {
+	users, err := d.Store.CountUsers(ctx)
+	if err != nil || users > 0 {
+		return "", err
+	}
+	token := secret.NewSetupToken()
+	d.SetupToken.Arm(token)
+	return token, nil
 }
 
 func (d *Deps) setupTokenMatches(submitted string) bool {
