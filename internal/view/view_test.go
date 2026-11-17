@@ -102,7 +102,7 @@ func TestHeartbeatVariants(t *testing.T) {
 		}
 	}
 	timed := []models.PingSummary{ping(1, models.PingStart, 0), ping(2, models.PingSuccess, 42*time.Second)}
-	if b := Heartbeat(timed, HeartbeatOptions{Count: 6}); b[0].Title != "no runtime limit set" {
+	if b := Heartbeat(timed, HeartbeatOptions{Count: 6}); b[len(b)-1].Title != "no runtime limit set" || b[len(b)-1].Class != "none" {
 		t.Fatal(b)
 	}
 	limit := int64(100)
@@ -111,8 +111,13 @@ func TestHeartbeatVariants(t *testing.T) {
 		t.Fatal(b)
 	}
 	paused := Heartbeat(nil, HeartbeatOptions{Count: 6, Paused: true})
-	if len(paused) != 6 || paused[0].Class != "pausedbar" {
+	if len(paused) != 6 {
 		t.Fatal(paused)
+	}
+	for _, b := range paused {
+		if b.Class != "pausedbar" {
+			t.Fatal(paused)
+		}
 	}
 }
 
