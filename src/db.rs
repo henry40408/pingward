@@ -3,8 +3,8 @@ use sqlx::migrate::Migrator;
 use std::str::FromStr;
 
 // Embedded: the release image ships only the binary, with no `migrations/` on disk.
-static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("migrations/sqlite");
-static POSTGRES_MIGRATOR: Migrator = sqlx::migrate!("migrations/postgres");
+static SQLITE_MIGRATOR: Migrator = sqlx::migrate!("internal/db/migrations/sqlite");
+static POSTGRES_MIGRATOR: Migrator = sqlx::migrate!("internal/db/migrations/postgres");
 
 pub type Pool = sqlx::AnyPool;
 
