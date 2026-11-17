@@ -70,3 +70,9 @@ func (s *Store) distinctColumn(ctx context.Context, query string) ([]string, err
 	}
 	return values, rows.Err()
 }
+
+// DeleteAuditBefore: retention defaults to off, and changing it is itself
+// audited (settings.update), so shortening the window leaves a trace.
+func (s *Store) DeleteAuditBefore(ctx context.Context, cutoff string) (int64, error) {
+	return s.deleteCount(ctx, "DELETE FROM audit_log WHERE created_at < $1", cutoff)
+}

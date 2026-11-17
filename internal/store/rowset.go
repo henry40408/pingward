@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -13,6 +14,10 @@ type row struct {
 	values map[string]any
 	err    error
 }
+
+// errSkipRow, returned by a decode function, drops that row without failing
+// the query.
+var errSkipRow = errors.New("skip row")
 
 // readRows decodes every row with decode.
 func readRows[T any](rows *sql.Rows, decode func(*row) (T, error)) ([]T, error) {
@@ -28,6 +33,9 @@ func readRows[T any](rows *sql.Rows, decode func(*row) (T, error)) ([]T, error) 
 			return nil, err
 		}
 		item, err := decode(current)
+		if errors.Is(err, errSkipRow) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
