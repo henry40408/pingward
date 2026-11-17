@@ -264,7 +264,7 @@ func (d *Deps) endSessionsAfterReset(r *http.Request, admin *models.User, target
 		d.Elevations.RevokeUser(targetID, keep)
 		return revoked, err
 	}
-	revoked, err := d.Store.DeleteSessionsForUser(r.Context(), targetID)
+	revoked, err := d.Store.DeleteSessionsForUser(writeCtx(r), targetID)
 	d.Elevations.RevokeUser(targetID, "")
 	return revoked, err
 }

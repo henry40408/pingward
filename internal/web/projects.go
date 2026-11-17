@@ -104,7 +104,7 @@ func (d *Deps) projectCreate(w http.ResponseWriter, r *http.Request) {
 		writeHTML(w, http.StatusOK, d.projectForm(r, user, in, refusal))
 		return
 	}
-	id, err := d.Store.CreateProject(r.Context(), user.ID, settings, d.Now())
+	id, err := d.Store.CreateProject(writeCtx(r), user.ID, settings, d.Now())
 	if err != nil {
 		internalError(w)
 		return
@@ -222,7 +222,7 @@ func (d *Deps) projectUpdate(admin bool) http.HandlerFunc {
 			writeHTML(w, http.StatusOK, d.projectFormAt(r, who.user, target, in, refusal))
 			return
 		}
-		if err := d.Store.UpdateProject(r.Context(), id, settings); err != nil {
+		if err := d.Store.UpdateProject(writeCtx(r), id, settings); err != nil {
 			internalError(w)
 			return
 		}
@@ -248,7 +248,7 @@ func (d *Deps) projectDelete(admin bool) http.HandlerFunc {
 			d.confirmationPage(w, r, who.user.IsAdmin, confirmDeleteProject, show+"/delete", show)
 			return
 		}
-		if err := d.Store.DeleteProject(r.Context(), id); err != nil {
+		if err := d.Store.DeleteProject(writeCtx(r), id); err != nil {
 			internalError(w)
 			return
 		}

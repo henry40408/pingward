@@ -148,7 +148,7 @@ func (d *Deps) accountPassword(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *Deps) changePassword(w http.ResponseWriter, r *http.Request, user *models.User, newPassword string) {
-	ctx := r.Context()
+	ctx := writeCtx(r)
 	hash, err := auth.HashPassword(newPassword)
 	if err != nil {
 		internalError(w)
@@ -184,10 +184,10 @@ func (d *Deps) changePassword(w http.ResponseWriter, r *http.Request, user *mode
 func (d *Deps) revokeOtherSessions(r *http.Request, userID int64) (revoked int64, keepHandle string, err error) {
 	id, ok := d.sessionID(r)
 	if !ok {
-		revoked, err = d.Store.DeleteSessionsForUser(r.Context(), userID)
+		revoked, err = d.Store.DeleteSessionsForUser(writeCtx(r), userID)
 		return revoked, "", err
 	}
-	revoked, err = d.Store.DeleteOtherSessionsForUser(r.Context(), userID, id)
+	revoked, err = d.Store.DeleteOtherSessionsForUser(writeCtx(r), userID, id)
 	return revoked, apikey.Hash(id), err
 }
 
@@ -217,7 +217,7 @@ func (d *Deps) apiKeyCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := apikey.Generate()
-	_, err := d.Store.InsertAPIKey(r.Context(), store.NewAPIKey{
+	_, err := d.Store.InsertAPIKey(writeCtx(r), store.NewAPIKey{
 		UserID: user.ID, Name: name, TokenHash: key.Hash, Prefix: key.Prefix, ExpiresAt: expiresAt,
 	}, d.Now())
 	if err != nil {
@@ -256,7 +256,7 @@ func (d *Deps) apiKeyDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Owner-scoped: a key the caller does not own is silently a no-op.
-	if _, err := d.Store.DeleteAPIKey(r.Context(), id, user.ID); err != nil {
+	if _, err := d.Store.DeleteAPIKey(writeCtx(r), id, user.ID); err != nil {
 		internalError(w)
 		return
 	}
@@ -291,7 +291,7 @@ func (d *Deps) sessionRevoke(w http.ResponseWriter, r *http.Request) {
 func (d *Deps) revokeSession(w http.ResponseWriter, r *http.Request, user *models.User, target models.Session) {
 	currentID, hasCurrent := d.sessionID(r)
 	isCurrent := hasCurrent && currentID == target.ID
-	if _, err := d.Store.DeleteSessionOwned(r.Context(), target.ID, user.ID); err != nil {
+	if _, err := d.Store.DeleteSessionOwned(writeCtx(r), target.ID, user.ID); err != nil {
 		internalError(w)
 		return
 	}
@@ -319,7 +319,7 @@ func (d *Deps) sessionsRevokeOthers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id, hasSession := d.sessionID(r); hasSession {
-		count, err := d.Store.DeleteOtherSessionsForUser(r.Context(), user.ID, id)
+		count, err := d.Store.DeleteOtherSessionsForUser(writeCtx(r), user.ID, id)
 		if err != nil {
 			internalError(w)
 			return

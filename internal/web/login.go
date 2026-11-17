@@ -113,7 +113,7 @@ func (d *Deps) loginSubmit(w http.ResponseWriter, r *http.Request) {
 // (header present, no URL) flash that. Targets never come from the request.
 func (d *Deps) logout(w http.ResponseWriter, r *http.Request) {
 	if id, ok := d.sessionID(r); ok {
-		if err := d.Store.DeleteSession(r.Context(), id); err != nil {
+		if err := d.Store.DeleteSession(writeCtx(r), id); err != nil {
 			internalError(w)
 			return
 		}
