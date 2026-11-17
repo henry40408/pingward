@@ -8,6 +8,8 @@ import (
 
 	"github.com/henry40408/pingward/internal/config"
 	"github.com/henry40408/pingward/internal/elevate"
+	"github.com/henry40408/pingward/internal/events"
+	"github.com/henry40408/pingward/internal/models"
 	"github.com/henry40408/pingward/internal/ratelimit"
 	"github.com/henry40408/pingward/internal/store"
 )
@@ -24,6 +26,15 @@ type Deps struct {
 	SetupLimiter   *ratelimit.Limiter[netip.Addr]
 	AccountLimiter *ratelimit.Limiter[string]
 	Elevations     *elevate.Elevations
+
+	// Events feeds the live-tail streams.
+	Events *events.Broker
+	// Stopping is closed when shutdown begins, so streams end instead of
+	// holding Shutdown open. A nil channel never fires.
+	Stopping <-chan struct{}
+	// DueTime is the scheduler's deadline for a check; nil reads as unknown.
+	// Wired with the scheduler once cron lands (Step 9).
+	DueTime func(models.Check) *time.Time
 }
 
 // NewDeps wires the limiters and elevation grants a server needs. now is read
@@ -36,6 +47,7 @@ func NewDeps(store *store.Store, cfg *config.Config, logger *slog.Logger, now fu
 		SetupLimiter:   ratelimit.New[netip.Addr](ratelimit.SetupMaxAttempts, ratelimit.SetupWindow, start),
 		AccountLimiter: ratelimit.New[string](ratelimit.AccountMaxAttempts, ratelimit.AccountWindow, start),
 		Elevations:     elevate.New(elevate.TTL),
+		Events:         events.NewBroker(),
 	}
 }
 

@@ -24,6 +24,41 @@ var (
 		message: "Every other signed-in browser is signed out at once. Only this one stays. API keys are unaffected — they are separate credentials, revoked from the API keys card below.",
 		button:  "Revoke the others",
 	}
+	confirmDeleteProject = confirmCopy{
+		title:   "Delete this project?",
+		message: "Deleting a project deletes everything inside it: every check it holds, their ping history, and the notification channels configured on it. Any job still pinging one of those checks will start getting 404s. This cannot be undone.",
+		button:  "Delete project",
+	}
+	confirmDeleteChannel = confirmCopy{
+		title:   "Delete this channel?",
+		message: "Checks bound to it stop notifying through it. This cannot be undone.",
+		button:  "Delete channel",
+	}
+	confirmDeleteCheck = confirmCopy{
+		title:   "Delete this check?",
+		message: "The check and its whole ping history go away, and its ping URL stops answering — a job still calling it will start getting 404s. This cannot be undone.",
+		button:  "Delete check",
+	}
+	confirmRegenerateURL = confirmCopy{
+		title:   "Regenerate this check's ping URL?",
+		message: "The current URL stops working immediately. Every job that pings this check must be updated to the new URL, or the check will go down when its next ping never arrives.",
+		button:  "Regenerate URL",
+	}
+	confirmDeleteUser = confirmCopy{
+		title:   "Delete this user?",
+		message: "The account goes away along with everything it owns: its projects, their checks, and the whole ping history behind them. This cannot be undone. To cut off access while keeping the data, disable the account instead.",
+		button:  "Delete user",
+	}
+	confirmDemoteAdmin = confirmCopy{
+		title:   "Revoke this user's admin rights?",
+		message: "They keep their account and their own projects, but lose access to /admin and to every other user's data.",
+		button:  "Revoke admin rights",
+	}
+	confirmDisableUser = confirmCopy{
+		title:   "Disable this user?",
+		message: "They cannot sign in again until the account is re-enabled. Nothing they own is deleted, and their checks keep running and alerting.",
+		button:  "Disable user",
+	}
 	confirmRevokeAPIKey = confirmCopy{
 		title:   "Revoke this API key?",
 		message: "Anything using this key stops being able to reach the API immediately. The key cannot be recovered — a replacement is a new key with a new token.",

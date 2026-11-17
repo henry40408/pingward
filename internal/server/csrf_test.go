@@ -1,14 +1,18 @@
 package server_test
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/henry40408/pingward/internal/auth"
+	"github.com/henry40408/pingward/internal/models"
 	"github.com/henry40408/pingward/internal/secret"
+	"github.com/henry40408/pingward/internal/store"
 	"github.com/henry40408/pingward/internal/testutil"
 	"github.com/henry40408/pingward/internal/web"
 )
@@ -92,27 +96,27 @@ func TestAWrongHeaderTokenIsNotRescuedByTheFormField(t *testing.T) {
 }
 
 // The guard finds _csrf among repeated channel_ids keys, wherever it sits in
-// the body, and restores the body so the handler sees every value. The route
-// is a probe: the real channel-binding handler arrives with step 17.
+// the body, and restores the body so the handler sees every value.
 func TestMultiValueFormAuthorizesViaCSRFFieldAndReachesTheHandler(t *testing.T) {
-	var seen []string
-	probe := web.Route{Method: "POST", Pattern: "/probe", Handler: func(w http.ResponseWriter, r *http.Request) {
-		seen = r.PostForm["channel_ids"]
-		if len(seen) == 0 {
-			_ = r.ParseForm()
-			seen = r.PostForm["channel_ids"]
-		}
-		w.WriteHeader(http.StatusSeeOther)
-	}}
-	a := newApp(t, nil, probe)
-	a.loggedInAdmin(t)
-	token := testutil.NewestSessionCSRF(t, a.store)
-	body := "channel_ids=1&channel_ids=2&_csrf=" + token
-	wantStatus(t, a.client.PostRaw("/probe", body, nil), http.StatusSeeOther)
-	if strings.Join(seen, ",") != "1,2" {
-		t.Fatalf("the handler must read the restored body, got %v", seen)
+	a := newApp(t, nil)
+	ownerID := a.addUser(t, "owner", false)
+	a.login(t, "owner")
+	f := a.seed(t, ownerID, "multi")
+	second, err := a.store.CreateChannel(t.Context(), store.NewChannel{
+		ProjectID: f.projectID, Kind: models.ChannelWebhook, Name: "second", ConfigJSON: `{"url":"http://example.invalid/y"}`,
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
 	}
-	wantStatus(t, a.client.PostRaw("/probe", "channel_ids=1", nil), http.StatusForbidden)
+	path := fmt.Sprintf("/checks/%d/channels", f.checkID)
+	token := testutil.NewestSessionCSRF(t, a.store)
+	body := fmt.Sprintf("channel_ids=%d&channel_ids=%d&_csrf=%s", f.channelID, second, token)
+	wantStatus(t, a.client.PostRaw(path, body, nil), http.StatusSeeOther)
+	bound, _ := a.store.BoundChannelIDs(t.Context(), f.checkID)
+	if len(bound) != 2 {
+		t.Fatalf("the handler must read the restored body, bound %v", bound)
+	}
+	wantStatus(t, a.client.PostRaw(path, "channel_ids=1", nil), http.StatusForbidden)
 }
 
 // The first _csrf wins: a later valid duplicate cannot rescue a bad first one.
