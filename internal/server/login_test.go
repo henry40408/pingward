@@ -209,8 +209,15 @@ func TestForgedNewlineInTheUsernameCannotOpenASecondLogLine(t *testing.T) {
 	if lines := strings.Count(strings.TrimSpace(a.logs.String()), "\n"); lines != 0 {
 		t.Fatalf("the log has %d extra lines:\n%s", lines, a.logs.String())
 	}
-	if events := loginFailures(t, a); len(events) != 1 {
+	events := loginFailures(t, a)
+	if len(events) != 1 {
 		t.Fatalf("events = %v", events)
+	}
+	if username, _ := events[0]["username"].(string); !strings.HasPrefix(username, "eve") {
+		t.Fatalf("the username must still be logged, got %q", events[0]["username"])
+	}
+	if !strings.Contains(a.logs.String(), `\n`) {
+		t.Fatal("the newline must be escaped inside the field")
 	}
 }
 
@@ -230,6 +237,11 @@ func TestWrongCurrentPasswordOnAccountIsLoggedWithItsSurface(t *testing.T) {
 	events := a.logs.EventsNamed(t, "reauth.failed")
 	if len(events) != 2 || events[0]["surface"] != "password_change" || events[1]["surface"] != "api_key_create" {
 		t.Fatalf("events = %v", events)
+	}
+	for _, event := range events {
+		if event["reason"] != "bad_current_password" {
+			t.Fatalf("event = %v", event)
+		}
 	}
 	if strings.Contains(a.logs.String(), wrongPassword) {
 		t.Fatal("the submitted password must never be logged")
