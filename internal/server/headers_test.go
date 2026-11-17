@@ -115,3 +115,8 @@ func TestHSTSOverridesAHandlersOwnValue(t *testing.T) {
 		t.Errorf("HSTS = %v, want exactly max-age=600", got)
 	}
 }
+
+func TestHealthzReturnsOK(t *testing.T) {
+	a := newApp(t, nil)
+	wantStatus(t, a.client.Get("/healthz"), http.StatusOK)
+}

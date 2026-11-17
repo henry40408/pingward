@@ -10,8 +10,11 @@ import (
 	"time"
 
 	"github.com/henry40408/pingward/internal/models"
+	"github.com/henry40408/pingward/internal/ping"
+	"github.com/henry40408/pingward/internal/server"
 	"github.com/henry40408/pingward/internal/store"
 	"github.com/henry40408/pingward/internal/testutil"
+	"github.com/henry40408/pingward/internal/web"
 )
 
 type fixture struct {
@@ -213,5 +216,46 @@ func waitFor(t *testing.T, condition func() bool) {
 			t.Fatal("condition never held")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Drives the real /ping/{uuid} handler, not Events.Publish, so a ping that
+// stops publishing would fail here.
+func TestOwnerReceivesChangedEventWhenTheCheckIsPinged(t *testing.T) {
+	a := newApp(t, nil)
+	ownerID := a.addUser(t, "owner", false)
+	f := a.seed(t, ownerID, "s")
+	pings := &ping.Handler{
+		Store: a.store, Config: a.deps.Config, Events: a.deps.Events, Now: time.Now,
+		DueTime: func(models.Check) *time.Time { return nil },
+	}
+	client := testutil.NewClient(t, server.New(a.deps, web.Routes(a.deps), pings.Mount))
+	csrf := testutil.AnonymousCSRF(t, client, "/login")
+	wantStatus(t, client.PostForm("/login", url.Values{"_csrf": {csrf}, "username": {"owner"}, "password": {testPassword}}), http.StatusSeeOther)
+
+	// Subscribe first: publishing is gated on someone watching.
+	res, err := client.HTTP.Get(client.Server.URL + fmt.Sprintf("/checks/%d/events", f.checkID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("content type = %q", ct)
+	}
+	waitFor(t, func() bool { return a.deps.Events.Subscribers() == 1 })
+	wantStatus(t, client.Do("POST", "/ping/uuid-s", strings.NewReader("done"), nil), http.StatusOK)
+
+	got := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(res.Body).ReadString('\n')
+		got <- line
+	}()
+	select {
+	case line := <-got:
+		if !strings.Contains(line, "changed") {
+			t.Fatalf("frame = %q", line)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the ping never reached the subscriber")
 	}
 }
