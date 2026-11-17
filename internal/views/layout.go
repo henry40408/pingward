@@ -1,6 +1,8 @@
 package views
 
 import (
+	"strconv"
+
 	"github.com/henry40408/pingward/internal/assets"
 	"github.com/henry40408/pingward/internal/version"
 )
@@ -71,3 +73,10 @@ func nav(chrome Chrome) node {
 func CSRFField(csrf string) node {
 	return void("input", a("type", "hidden"), a("name", "_csrf"), a("value", csrf))
 }
+
+// navChrome is the chrome of every signed-in page.
+func navChrome(isAdmin bool, csrf string) Chrome {
+	return Chrome{ShowNav: true, IsAdmin: isAdmin, CSRF: csrf}
+}
+
+func num[T ~int | ~int64](n T) string { return strconv.FormatInt(int64(n), 10) }

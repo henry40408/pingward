@@ -10,11 +10,41 @@ type node string
 type attr struct {
 	name, value string
 	flag        bool
+	omit        bool
 }
 
 func a(name, value string) attr { return attr{name: name, value: value} }
 
 func flag(name string) attr { return attr{name: name, flag: true} }
+
+// flagIf is maud's `name[cond]`: a bare attribute only when cond holds.
+func flagIf(cond bool, name string) attr { return attr{name: name, flag: true, omit: !cond} }
+
+// attrIf is maud's `name=[option]`: the attribute is dropped when cond is false.
+func attrIf(cond bool, name, value string) attr {
+	return attr{name: name, value: value, omit: !cond}
+}
+
+// when renders n only if cond holds (maud's `@if`).
+func when(cond bool, n node) node {
+	if !cond {
+		return ""
+	}
+	return n
+}
+
+// each renders one node per item (maud's `@for`).
+func each[T any](items []T, render func(T) node) node {
+	nodes := make([]node, 0, len(items))
+	for _, item := range items {
+		nodes = append(nodes, render(item))
+	}
+	return group(nodes...)
+}
+
+// Markup is a rendered fragment that other pages embed, such as the history
+// tables inside the check page.
+type Markup = node
 
 // escape covers both contexts the views use, element text and double-quoted
 // attribute values. maud escapes exactly these four characters in both, and
@@ -41,6 +71,9 @@ func openTag(tag string, attrs []attr) string {
 	var b strings.Builder
 	b.WriteString("<" + tag)
 	for _, at := range attrs {
+		if at.omit {
+			continue
+		}
 		b.WriteString(" " + at.name)
 		if !at.flag {
 			b.WriteString(`="` + escape(at.value) + `"`)
