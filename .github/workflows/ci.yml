@@ -255,6 +255,21 @@ jobs:
           E2E_SHARD: ${{ matrix.shard }}
         run: ./e2e-test
 
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: |
+          unformatted="$(git ls-files -z '*.go' | grep -zvE '(^|/)vendor/' | xargs -0 gofmt -l 2>&1)"
+          echo "$unformatted"
+          test -z "$unformatted"
+      - run: go vet ./...
+      - run: go test -race ./...
+
   lint-workflow:
     name: lint-workflow
     runs-on: ubuntu-latest
