@@ -7,48 +7,48 @@ use axum::routing::get;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::LazyLock;
 
-const APP_CSS_TEMPLATE: &str = include_str!("../assets/app.css");
+const APP_CSS_TEMPLATE: &str = include_str!("../internal/assets/static/app.css");
 
 /// Replaced by `FONT_VERSION` at startup; sits inside a quoted `url("…")` so
-/// `assets/app.css` stays valid CSS.
+/// `internal/assets/static/app.css` stays valid CSS.
 const FONT_PLACEHOLDER: &str = "{{FONT_V}}";
 
 /// One table, so the version hash and the handler agree on what is served.
 const FONTS: &[(&str, &[u8])] = &[
     (
         "inter-400.woff2",
-        include_bytes!("../assets/fonts/inter-400.woff2"),
+        include_bytes!("../internal/assets/static/fonts/inter-400.woff2"),
     ),
     (
         "inter-500.woff2",
-        include_bytes!("../assets/fonts/inter-500.woff2"),
+        include_bytes!("../internal/assets/static/fonts/inter-500.woff2"),
     ),
     (
         "inter-600.woff2",
-        include_bytes!("../assets/fonts/inter-600.woff2"),
+        include_bytes!("../internal/assets/static/fonts/inter-600.woff2"),
     ),
     (
         "inter-700.woff2",
-        include_bytes!("../assets/fonts/inter-700.woff2"),
+        include_bytes!("../internal/assets/static/fonts/inter-700.woff2"),
     ),
     (
         "ibm-plex-mono-400.woff2",
-        include_bytes!("../assets/fonts/ibm-plex-mono-400.woff2"),
+        include_bytes!("../internal/assets/static/fonts/ibm-plex-mono-400.woff2"),
     ),
     (
         "ibm-plex-mono-500.woff2",
-        include_bytes!("../assets/fonts/ibm-plex-mono-500.woff2"),
+        include_bytes!("../internal/assets/static/fonts/ibm-plex-mono-500.woff2"),
     ),
     (
         "ibm-plex-mono-600.woff2",
-        include_bytes!("../assets/fonts/ibm-plex-mono-600.woff2"),
+        include_bytes!("../internal/assets/static/fonts/ibm-plex-mono-600.woff2"),
     ),
 ];
 
 /// Files, not inline `<script>`, so the CSP can stay `script-src 'self'`.
 const SCRIPTS: &[(&str, &str)] = &[
-    ("app.js", include_str!("../assets/app.js")),
-    ("theme-init.js", include_str!("../assets/theme-init.js")),
+    ("app.js", include_str!("../internal/assets/static/app.js")),
+    ("theme-init.js", include_str!("../internal/assets/static/theme-init.js")),
 ];
 
 /// `apple-touch-icon.png` is rendered from `favicon.svg`: rerun
@@ -57,12 +57,12 @@ const ICONS: &[(&str, &str, &[u8])] = &[
     (
         "favicon.svg",
         "image/svg+xml",
-        include_bytes!("../assets/favicon.svg"),
+        include_bytes!("../internal/assets/static/favicon.svg"),
     ),
     (
         "apple-touch-icon.png",
         "image/png",
-        include_bytes!("../assets/apple-touch-icon.png"),
+        include_bytes!("../internal/assets/static/apple-touch-icon.png"),
     ),
 ];
 

@@ -1,5 +1,5 @@
-//! Renders the committed `assets/apple-touch-icon.png` from
-//! `assets/favicon.svg` with `resvg`. Rerun after editing the SVG:
+//! Renders the committed `internal/assets/static/apple-touch-icon.png` from
+//! `internal/assets/static/favicon.svg` with `resvg`. Rerun after editing the SVG:
 //! `cd e2e && cargo run --bin icons`.
 
 use std::path::Path;
@@ -16,8 +16,8 @@ fn main() -> Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .context("e2e/ always has a parent")?;
-    let source = root.join("assets/favicon.svg");
-    let target = root.join("assets/apple-touch-icon.png");
+    let source = root.join("internal/assets/static/favicon.svg");
+    let target = root.join("internal/assets/static/apple-touch-icon.png");
 
     let svg = std::fs::read_to_string(&source)
         .with_context(|| format!("reading {}", source.display()))?;
@@ -35,7 +35,7 @@ fn main() -> Result<()> {
         .save_png(&target)
         .with_context(|| format!("writing {}", target.display()))?;
 
-    println!("wrote assets/apple-touch-icon.png ({SIZE}x{SIZE})");
+    println!("wrote internal/assets/static/apple-touch-icon.png ({SIZE}x{SIZE})");
     Ok(())
 }
 

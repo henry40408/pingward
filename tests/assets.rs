@@ -50,7 +50,7 @@ async fn stylesheet_font_urls_are_cache_busted() {
     let res = server.get("/assets/app.css").await;
     res.assert_status_ok();
     let css = res.text();
-    // Name-agnostic: a rename in either `assets/app.css` or `FONT_PLACEHOLDER`
+    // Name-agnostic: a rename in either `internal/assets/static/app.css` or `FONT_PLACEHOLDER`
     // would silently skip substitution and ship a literal placeholder.
     assert!(
         !css.contains("{{"),

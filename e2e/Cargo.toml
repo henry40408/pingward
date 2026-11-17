@@ -25,7 +25,7 @@ reqwest = { version = "0.13.5", default-features = false, features = [
   "charset",
   "form",
 ] }
-# Renders `assets/apple-touch-icon.png` from `assets/favicon.svg`, replacing the
+# Renders `internal/assets/static/apple-touch-icon.png` from `internal/assets/static/favicon.svg`, replacing the
 # Chromium screenshot `render-icon.mjs` took. Pulling the rasteriser in directly
 # means the icon no longer depends on a browser being installed.
 resvg = "0.49"
