@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/henry40408/pingward/internal/models"
 	"github.com/henry40408/pingward/internal/store"
 	"github.com/henry40408/pingward/internal/testutil"
 	"github.com/henry40408/pingward/internal/web"
@@ -66,7 +67,11 @@ func TestAdminSeesTheAdminLinkAndAMemberDoesNot(t *testing.T) {
 		t.Fatal("an admin must see the Admin link")
 	}
 	member, _ := memberApp(t)
-	if strings.Contains(member.client.Get("/").Body, `href="/admin"`) {
+	memberBody := member.client.Get("/").Body
+	if !strings.Contains(memberBody, `href="/account"`) {
+		t.Fatal("the member must be signed in for the absence below to mean anything")
+	}
+	if strings.Contains(memberBody, `href="/admin"`) {
 		t.Fatal("a member must not")
 	}
 }
@@ -96,7 +101,14 @@ func (a *app) seedAudit(t *testing.T, adminID int64, count int) {
 		if i%2 == 1 {
 			action = "user.create"
 		}
-		if _, err := a.store.RecordAudit(t.Context(), store.NewAudit{ActorUserID: adminID, ActorUsername: "admin", Action: action}, at.Add(time.Duration(i)*time.Second)); err != nil {
+		targetType, targetID, ownerID := "project", int64(i), int64(9)
+		method, path, detail := "GET", "/admin/projects/1", fmt.Sprintf("row %d", i)
+		entry := store.NewAudit{
+			ActorUserID: adminID, ActorUsername: "admin", Action: action,
+			TargetType: &targetType, TargetID: &targetID, TargetOwnerID: &ownerID,
+			Method: &method, Path: &path, Detail: &detail,
+		}
+		if _, err := a.store.RecordAudit(t.Context(), entry, at.Add(time.Duration(i)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -113,9 +125,66 @@ func rowCount(body string) int { return strings.Count(body, `data-testid="audit-
 
 func TestAdminAuditEmptyState(t *testing.T) {
 	a, _ := adminApp(t)
-	body := a.auditFragment(t, "/admin/audit").Body
-	if !strings.Contains(body, "No audit entries yet.") && rowCount(body) == 0 {
-		t.Fatal("an empty trail needs its empty state")
+	for _, body := range []string{a.client.Get("/admin").Body, a.auditFragment(t, "/admin/audit").Body} {
+		if !strings.Contains(body, "No audit entries yet.") {
+			t.Fatalf("an empty trail needs its empty state: %s", body)
+		}
+	}
+}
+
+// Every column of the audit row reaches /admin, the rest via the expandable row.
+func TestAdminPageShowsTheAuditTrail(t *testing.T) {
+	a, _ := adminApp(t)
+	a.seedAudit(t, 1, 3)
+	body := a.client.Get("/admin").Body
+	for _, want := range []string{
+		"Audit trail", `data-testid="audit-row"`, "admin.access",
+		"project #1", "GET /admin/projects/1", "row 1", "user #9",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/admin is missing %q", want)
+		}
+	}
+}
+
+func TestAdminAuditFragmentFiltersByActionExactly(t *testing.T) {
+	a, _ := adminApp(t)
+	a.seedAudit(t, 1, 6)
+	body := a.auditFragment(t, "/admin/audit?aaction=user.create").Body
+	if n := rowCount(body); n != 3 {
+		t.Fatalf("rows = %d, want the 3 user.create rows", n)
+	}
+	// The Action select still lists every action, so assert on the cell.
+	if strings.Contains(body, `<td class="mono">admin.access</td>`) {
+		t.Error("a filtered-out action is still a row")
+	}
+	if !strings.Contains(body, `data-testid="audit-clear"`) {
+		t.Error("the Clear link must show while filtered")
+	}
+}
+
+// A filter matching nothing must not read as "no audit entries exist".
+func TestAdminAuditFilteredByActorWithNoMatchHasItsOwnEmptyState(t *testing.T) {
+	a, _ := adminApp(t)
+	a.seedAudit(t, 1, 2)
+	if body := a.auditFragment(t, "/admin/audit?aactor=nobody").Body; !strings.Contains(body, "No audit entries match the filter.") {
+		t.Fatalf("filtered empty state missing: %s", body)
+	}
+}
+
+func TestAdminAuditPagesTwentyAtATime(t *testing.T) {
+	a, _ := adminApp(t)
+	a.seedAudit(t, 1, 24)
+	first := a.auditFragment(t, "/admin/audit").Body
+	if n := rowCount(first); n != 20 {
+		t.Fatalf("first page = %d rows, want 20", n)
+	}
+	match := olderHref.FindStringSubmatch(first)
+	if match == nil {
+		t.Fatal("an Older link is expected with 24 rows")
+	}
+	if n := rowCount(a.auditFragment(t, strings.ReplaceAll(match[1], "&amp;", "&")).Body); n != 4 {
+		t.Fatalf("second page = %d rows, want 4", n)
 	}
 }
 
@@ -281,7 +350,14 @@ func TestAdminMutatingAnotherUsersCheckIsStillAudited(t *testing.T) {
 	a, _ := adminApp(t)
 	checkID, path := a.revealTarget(t)
 	wantStatus(t, a.post(t, path+"/pause", url.Values{}), http.StatusSeeOther)
+	var status string
+	if err := a.store.DB.QueryRowContext(t.Context(), "SELECT status FROM checks WHERE id = ?", checkID).Scan(&status); err != nil || status != "paused" {
+		t.Fatalf("status = %q (%v), want paused", status, err)
+	}
 	entry := a.lastAudit(t, "admin.access")
+	if entry.Method == nil || *entry.Method != "POST" {
+		t.Fatalf("audit method = %v, want POST", entry.Method)
+	}
 	if entry.TargetType == nil || *entry.TargetType != "check" || entry.TargetID == nil || *entry.TargetID != checkID {
 		t.Fatalf("audit = %+v", entry)
 	}
@@ -301,7 +377,50 @@ func TestAdminDeletesAnotherUsersProjectAndLandsOnAdmin(t *testing.T) {
 	f := a.seed(t, memberID, "private")
 	path := fmt.Sprintf("/admin/projects/%d/delete?confirmed=1", f.projectID)
 	wantLocation(t, a.post(t, path, url.Values{}), "/admin")
+	if n := countRows(t, a, "SELECT COUNT(*) FROM projects WHERE id = ?", f.projectID); n != 0 {
+		t.Fatal("the project must be gone")
+	}
 	if entry := a.lastAudit(t, "admin.access"); entry.TargetOwnerID == nil || *entry.TargetOwnerID != memberID {
 		t.Fatalf("audit = %+v", entry)
+	}
+}
+
+func TestAdminDashboardShowsTheRunningBadgeWithACount(t *testing.T) {
+	a, memberID := adminApp(t)
+	f := a.seed(t, memberID, "proj")
+	// An in-flight start with no finish is stored as new and displayed as running.
+	started := time.Now()
+	if err := a.store.MarkPing(t.Context(), f.checkID, store.PingMark{Status: models.StatusNew, LastStartAt: &started}); err != nil {
+		t.Fatal(err)
+	}
+	res := a.client.Get("/admin")
+	wantStatus(t, res, http.StatusOK)
+	if !strings.Contains(res.Body, `<span class="badge running">1 running</span>`) {
+		t.Fatal("expected the running badge to render with a count of 1")
+	}
+}
+
+func TestAdminDashboardAbsoluteTimesAreWrappedForLocalTime(t *testing.T) {
+	a, memberID := adminApp(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	stamp := now.Format(time.RFC3339)
+	for _, key := range []string{"last_scan_at", "last_prune_at"} {
+		if err := a.store.SetSetting(t.Context(), key, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := a.seed(t, memberID, "p2")
+	boom := "boom"
+	failure := store.NewNotification{CheckID: f.checkID, ChannelID: f.channelID, Event: models.EventDown, Status: models.NotifyError, Error: &boom}
+	if err := a.store.RecordNotification(t.Context(), failure, now); err != nil {
+		t.Fatal(err)
+	}
+	body := a.client.Get("/admin").Body
+	// Matched without the tag: the heartbeats are divs.
+	if n := strings.Count(body, `localtime" data-ts="`); n < 3 {
+		t.Fatalf("localtime elements = %d, want >= 3 (scan, prune, failure)", n)
+	}
+	if !strings.Contains(body, fmt.Sprintf(`data-ts="%s"`, stamp)) {
+		t.Fatal("last_scan_at must appear as an RFC3339 data-ts attribute")
 	}
 }
