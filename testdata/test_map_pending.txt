@@ -1,24 +1,4 @@
 # Rust tests with no Go counterpart yet. Resolve by adding a line to test_map.txt and deleting it here.
-src/config.rs::log_format_defaults_to_full
-src/config.rs::log_format_accepts_the_other_console_renderers
-src/config.rs::log_format_text_still_selects_the_renderer_it_named
-src/config.rs::log_format_json_is_case_insensitive_and_trimmed
-src/config.rs::log_format_unrecognized_falls_back_to_full
-src/config.rs::scan_interval_accepts_human_readable_duration
-src/config.rs::prune_interval_accepts_human_readable_duration
-src/config.rs::duration_env_var_invalid_falls_back_to_default
-src/config.rs::duration_env_var_zero_is_preserved
-src/config.rs::cascade_prefers_most_specific
-src/config.rs::nag_cascade_prefers_most_specific_and_is_opt_in
-src/config.rs::smtp_none_when_host_or_from_missing
-src/config.rs::smtp_defaults_port_and_tls_and_optional_auth
-src/config.rs::cookie_secure_invalid_value_falls_back_to_derived
-src/config.rs::smtp_tls_implicit_defaults_port_465
-src/config.rs::hsts_max_age_defaults_to_off
-src/config.rs::hsts_max_age_accepts_human_readable_duration
-src/config.rs::hsts_max_age_invalid_falls_back_to_off
-src/db.rs::migrate_works_without_migrations_dir_on_disk
-src/db.rs::connect_creates_sqlite_file_without_mode_param
 src/markdown.rs::empty_string_renders_empty
 src/markdown.rs::paragraph_with_single_newline_becomes_br
 src/markdown.rs::blank_line_separates_paragraphs
@@ -51,8 +31,6 @@ src/markdown.rs::to_plain_strips_markers_and_collapses_whitespace
 src/markdown.rs::to_plain_reduces_link_to_text
 src/markdown.rs::truncate_plain_appends_ellipsis_when_truncated
 src/markdown.rs::truncate_plain_is_char_boundary_safe_on_multibyte
-src/models.rs::unknown_status_is_error
-src/notify.rs::test_event_roundtrips_and_renders
 src/prune.rs::parse_days_off_and_positive_cases
 src/prune.rs::retention_cutoff_off_overflow_and_valid
 src/prune.rs::prune_once_deletes_old_when_retention_set
