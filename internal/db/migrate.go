@@ -87,15 +87,17 @@ func (d *DB) migrateFrom(ctx context.Context, files fs.FS) error {
 	}
 	defer conn.Close()
 
-	if _, err := conn.ExecContext(ctx, createMigrationsTable(d.dialect)); err != nil {
-		return err
-	}
+	// Lock before creating the table: two replicas starting on an empty
+	// database would otherwise both run CREATE TABLE and collide.
 	if d.dialect == Postgres {
 		unlock, err := lockPostgres(ctx, conn)
 		if err != nil {
 			return err
 		}
 		defer unlock()
+	}
+	if _, err := conn.ExecContext(ctx, createMigrationsTable(d.dialect)); err != nil {
+		return err
 	}
 	return applyPending(ctx, applier{conn: conn, dialect: d.dialect}, migrations)
 }
