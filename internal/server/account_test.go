@@ -67,6 +67,17 @@ func TestAccountPageListsAndMarksTheCurrentSession(t *testing.T) {
 	a, _ := memberApp(t)
 	res := a.client.Get("/account")
 	wantStatus(t, res, http.StatusOK)
+	// The session id is the cookie's bearer secret; rows use its SHA-256 handle.
+	sessionID := a.sessionID(t)
+	if strings.Contains(res.Body, sessionID) {
+		t.Error("the raw session id (the cookie secret) must never be rendered")
+	}
+	if !strings.Contains(res.Body, "session-row-"+apikey.Hash(sessionID)) {
+		t.Error("the session row must carry the handle")
+	}
+	if strings.Contains(res.Body, "session-revoke-others") {
+		t.Error("a lone session has nothing to revoke")
+	}
 	if !strings.Contains(res.Body, `data-testid="session-current"`) {
 		t.Error("the current session must be marked")
 	}
@@ -159,17 +170,25 @@ func TestChangingThePasswordRotatesItAndSignsOutOtherSessions(t *testing.T) {
 
 func TestRejectedPasswordChangesTouchNeitherThePasswordNorTheSessions(t *testing.T) {
 	a, id := memberApp(t)
+	a.secondSession(t, "member")
 	before := storedHash(t, a, id)
 	forms := map[string]url.Values{
 		"wrong current": passwordForm("nope", "a-brand-new-passphrase", "a-brand-new-passphrase"),
 		"mismatch":      passwordForm(testPassword, "a-brand-new-passphrase", "something-else-entirely"),
-		"too short":     passwordForm(testPassword, "short", "short"),
+		"blank":         passwordForm(testPassword, "", ""),
+		"too short":     passwordForm(testPassword, "short pass", "short pass"),
 	}
 	for name, form := range forms {
 		res := a.post(t, "/account/password", form)
 		wantStatus(t, res, http.StatusOK)
+		if !strings.Contains(res.Body, "password-error") {
+			t.Errorf("%s: the error must be shown", name)
+		}
 		if storedHash(t, a, id) != before {
 			t.Fatalf("%s: the password must not change", name)
+		}
+		if rows := countRows(t, a, "SELECT COUNT(*) FROM sessions WHERE user_id = ?", id); rows != 2 {
+			t.Fatalf("%s: sessions = %d, want 2", name, rows)
 		}
 	}
 	if !strings.Contains(a.post(t, "/account/password", passwordForm("nope", "x", "y")).Body, "Current password is incorrect.") {
@@ -202,6 +221,12 @@ func TestPasswordlessAccountHasNoPasswordFormAndCannotSetOne(t *testing.T) {
 	header := http.Header{"X-Forwarded-User": {"alice"}, "Cookie": {cookie.Name + "=" + cookie.Value}}
 	page := a.client.Do("GET", "/account", nil, header)
 	token := extractCSRF(t, page.Body)
+	if strings.Contains(page.Body, "password-submit") {
+		t.Error("a passwordless account gets no password form")
+	}
+	if strings.Contains(page.Body, "api-key-password-input") {
+		t.Error("no stored password means no re-authentication field")
+	}
 	res := a.client.PostRaw("/account/password", withToken(passwordForm("", "a-brand-new-passphrase", "a-brand-new-passphrase"), token).Encode(), header)
 	wantStatus(t, res, http.StatusForbidden)
 	user, _ := a.store.FindUserByUsername(t.Context(), "alice")
@@ -209,7 +234,7 @@ func TestPasswordlessAccountHasNoPasswordFormAndCannotSetOne(t *testing.T) {
 		t.Fatal("a passwordless account must stay passwordless")
 	}
 	// Minting a key has nothing to re-authenticate against.
-	res = a.client.PostRaw("/account/api-keys", withToken(keyForm("", "ci", ""), token).Encode(), header)
+	res = a.client.PostRaw("/account/api-keys", withToken(url.Values{"name": {"ci"}, "expires_in": {""}}, token).Encode(), header)
 	wantStatus(t, res, http.StatusOK)
 	if n := countRows(t, a, "SELECT COUNT(*) FROM api_keys"); n != 1 {
 		t.Fatalf("keys = %d, want 1", n)
@@ -224,11 +249,19 @@ func TestCreatingAKeyShowsTheTokenOnce(t *testing.T) {
 	if len(keys) != 1 || keys[0].ExpiresAt != nil {
 		t.Fatalf("keys = %+v", keys)
 	}
-	if !strings.Contains(res.Body, "pw_") {
-		t.Error("the new token is shown once")
+	token := extractDataCopy(t, res.Body)
+	if !strings.HasPrefix(token, "pw_") || len(token) != 67 { // "pw_" + 64 hex
+		t.Fatalf("token = %q", token)
 	}
-	if again := a.client.Get("/account"); strings.Contains(again.Body, `data-testid="new-api-key"`) {
-		t.Error("the token must not be shown again")
+	if userID, found, err := a.store.ValidateAPIKey(t.Context(), apikey.Hash(token), time.Now()); err != nil || !found || userID != id {
+		t.Fatalf("the shown token must authenticate its owner (%d %v %v)", userID, found, err)
+	}
+	again := a.client.Get("/account").Body
+	if strings.Contains(again, token) {
+		t.Error("the plaintext token must not reappear")
+	}
+	if !strings.Contains(again, keys[0].Prefix) {
+		t.Error("the prefix identifies the key afterwards")
 	}
 }
 
@@ -259,6 +292,9 @@ func TestKeysAreCallerScopedAndRevocable(t *testing.T) {
 	var theirs int64
 	if err := a.store.DB.QueryRowContext(t.Context(), "SELECT id FROM api_keys WHERE name = 'theirs'").Scan(&theirs); err != nil {
 		t.Fatal(err)
+	}
+	if page := a.client.Get("/account").Body; strings.Contains(page, "theirs") {
+		t.Error("another user's key must not be listed")
 	}
 	wantStatus(t, a.post(t, "/account/api-keys/"+itoa(theirs)+"/delete?confirmed=1", url.Values{}), http.StatusSeeOther)
 	if n := countRows(t, a, "SELECT COUNT(*) FROM api_keys WHERE name = 'theirs'"); n != 1 {
@@ -292,7 +328,7 @@ func TestKeyCreationWithoutOrWithWrongPasswordIsRefused(t *testing.T) {
 	for _, password := range []string{"", "not-my-password"} {
 		res := a.post(t, "/account/api-keys", keyForm(password, "ci", ""))
 		wantStatus(t, res, http.StatusOK)
-		if !strings.Contains(res.Body, "Current password is incorrect.") {
+		if !strings.Contains(res.Body, "Current password is incorrect.") || !strings.Contains(res.Body, "api-key-error") {
 			t.Errorf("password %q: want the refusal", password)
 		}
 	}
@@ -307,7 +343,7 @@ func TestKeyCreationWithoutOrWithWrongPasswordIsRefused(t *testing.T) {
 func TestPasswordIsCheckedBeforeTheRestOfTheKeyForm(t *testing.T) {
 	a, _ := memberApp(t)
 	res := a.post(t, "/account/api-keys", keyForm("wrong", "", "garbage"))
-	if !strings.Contains(res.Body, "Current password is incorrect.") || strings.Contains(res.Body, "a name is required") {
+	if !strings.Contains(res.Body, "Current password is incorrect.") || strings.Contains(res.Body, "a name is required") || strings.Contains(res.Body, "expiry must be a duration") {
 		t.Fatal("the password gate must come first")
 	}
 }
@@ -337,12 +373,11 @@ func TestCorrectPasswordClearsTheAccountBudget(t *testing.T) {
 		a.post(t, "/account/api-keys", keyForm("not-my-password", "ci", ""))
 	}
 	a.post(t, "/account/api-keys", keyForm(testPassword, "one", ""))
-	for range ratelimit.AccountMaxAttempts - 1 {
-		a.post(t, "/account/api-keys", keyForm("not-my-password", "ci", ""))
-	}
-	res := a.post(t, "/account/api-keys", keyForm(testPassword, "two", ""))
-	if strings.Contains(res.Body, "Too many attempts") {
-		t.Fatal("the success must have reset the budget")
+	for range ratelimit.AccountMaxAttempts {
+		res := a.post(t, "/account/api-keys", keyForm("not-my-password", "ci2", ""))
+		if strings.Contains(res.Body, "Too many attempts") {
+			t.Fatal("the success must have reset the budget")
+		}
 	}
 }
 
@@ -356,13 +391,31 @@ func TestOpeningTheAccountPageReapsOnlyTheCallersCappedSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	wantStatus(t, a.client.Get("/account"), http.StatusOK)
+	res := a.client.Get("/account")
+	wantStatus(t, res, http.StatusOK)
+	if strings.Contains(res.Body, "session-row-"+apikey.Hash("stale-"+itoa(id))) {
+		t.Error("a capped session must not be listed")
+	}
 	if n := countRows(t, a, "SELECT COUNT(*) FROM sessions WHERE id = ?", "stale-"+itoa(id)); n != 0 {
-		t.Error("the caller's capped session must be reaped")
+		t.Error("the caller's capped session must be reaped, not merely hidden")
+	}
+	if n := countRows(t, a, "SELECT COUNT(*) FROM sessions WHERE user_id = ?", id); n != 1 {
+		t.Errorf("the live session must stay, sessions = %d", n)
 	}
 	if n := countRows(t, a, "SELECT COUNT(*) FROM sessions WHERE id = ?", "stale-"+itoa(other)); n != 1 {
 		t.Error("another user's session must be left alone")
 	}
+}
+
+func extractDataCopy(t *testing.T, html string) string {
+	t.Helper()
+	const marker = `data-copy="`
+	start := strings.Index(html, marker)
+	if start < 0 {
+		t.Fatal("token banner missing")
+	}
+	rest := html[start+len(marker):]
+	return rest[:strings.Index(rest, `"`)]
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
