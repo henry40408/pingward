@@ -12,7 +12,7 @@ import (
 // minimumMappedTests is the number of Rust tests with a Go counterpart; raise
 // it as the pending list shrinks. Before switching over, testdata/
 // test_map_pending.txt must be empty or every entry justified in the exec log.
-const minimumMappedTests = 554
+const minimumMappedTests = 555
 
 func readEntries(t *testing.T, name string) []string {
 	t.Helper()
