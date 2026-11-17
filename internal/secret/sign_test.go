@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -195,5 +196,14 @@ func TestHexRoundTripAllBytes(t *testing.T) {
 	enc := hex.EncodeToString(all)
 	if len(enc) != 512 || !strings.HasPrefix(enc, "000102") || !strings.HasSuffix(enc, "fdfeff") {
 		t.Fatal("unexpected hex")
+	}
+	back, err := hex.DecodeString(enc)
+	if err != nil || !bytes.Equal(back, all) {
+		t.Fatal("hex must decode back to the input")
+	}
+	for in, want := range map[string]string{"": "", "\x00": "00", "\xff": "ff", "\x0f": "0f", "\x00\x0f\xf0\xff": "000ff0ff"} {
+		if got := hex.EncodeToString([]byte(in)); got != want {
+			t.Fatalf("%x: got %s want %s", in, got, want)
+		}
 	}
 }

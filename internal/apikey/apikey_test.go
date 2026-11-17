@@ -32,3 +32,13 @@ func TestHashIsSHA256Hex(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestHashIsStableAndSpecific(t *testing.T) {
+	first, again := Hash("pw_abc"), Hash("pw_abc")
+	if first != again {
+		t.Fatal("the hash must be stable")
+	}
+	if Hash("pw_abc") == Hash("pw_abd") {
+		t.Fatal("different keys must hash differently")
+	}
+}

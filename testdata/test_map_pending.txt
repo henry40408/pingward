@@ -1,9 +1,4 @@
 # Rust tests with no Go counterpart yet. Resolve by adding a line to test_map.txt and deleting it here.
-src/apikey.rs::hash_is_stable_and_specific
-src/auth.rs::verify_accepts_hash_from_argon2_0_5
-src/auth.rs::log_username_truncates_and_stays_debug_escapable
-src/auth.rs::forward_auth_honored_only_from_trusted_proxy
-src/auth.rs::client_ip_takes_the_first_forwarded_entry_and_ignores_junk
 src/config.rs::log_format_defaults_to_full
 src/config.rs::log_format_accepts_the_other_console_renderers
 src/config.rs::log_format_text_still_selects_the_renderer_it_named
@@ -24,16 +19,6 @@ src/config.rs::hsts_max_age_accepts_human_readable_duration
 src/config.rs::hsts_max_age_invalid_falls_back_to_off
 src/db.rs::migrate_works_without_migrations_dir_on_disk
 src/db.rs::connect_creates_sqlite_file_without_mode_param
-src/duration.rs::parses_bare_seconds
-src/duration.rs::parses_each_unit
-src/duration.rs::parses_combos
-src/duration.rs::tolerates_whitespace_and_uppercase
-src/duration.rs::rejects_blank
-src/duration.rs::rejects_invalid
-src/duration.rs::parses_negative
-src/duration.rs::rejects_overflow
-src/duration.rs::formats_durations
-src/duration.rs::round_trips
 src/markdown.rs::empty_string_renders_empty
 src/markdown.rs::paragraph_with_single_newline_becomes_br
 src/markdown.rs::blank_line_separates_paragraphs
@@ -77,10 +62,6 @@ src/prune.rs::prune_once_off_when_unset_or_zero
 src/prune.rs::run_prune_loop_returns_on_shutdown
 src/prune.rs::run_prune_loop_keeps_running_without_shutdown
 src/prune.rs::prune_once_deletes_expired_sessions
-src/ratelimit.rs::distinct_ips_have_independent_buckets
-src/ratelimit.rs::a_string_keyed_limiter_counts_per_key
-src/ratelimit.rs::account_key_bounds_its_length_without_touching_case
-src/ratelimit.rs::rate_limit_key_honours_ipv6_and_ignores_garbage_headers_when_untrusted
 src/scheduler.rs::period_due_is_last_ping_plus_period_plus_grace
 src/scheduler.rs::cron_due_is_next_trigger_plus_grace
 src/scheduler.rs::period_without_period_secs_is_none
@@ -100,18 +81,6 @@ src/scheduler.rs::no_overrun_without_max_runtime_or_start
 src/scheduler.rs::scan_once_downs_overrun_check
 src/scheduler.rs::nag_once_reminds_due_unacked_check
 src/scheduler.rs::nag_once_skips_acked_and_off_and_no_baseline
-src/secret.rs::generated_setup_token_is_two_groups_of_five_crockford_chars
-src/secret.rs::hex_encode_fixed_vectors
-src/secret.rs::signature_is_required
-src/secret.rs::tampered_signature_is_rejected
-src/secret.rs::tampered_id_is_rejected
-src/secret.rs::malformed_values_are_rejected
-src/secret.rs::a_different_secret_invalidates_the_cookie
-src/secret.rs::csrf_token_differs_from_the_session_signature
-src/secret.rs::flash_value_round_trips
-src/secret.rs::an_unsigned_or_tampered_flash_is_rejected
-src/secret.rs::resolve_uses_a_long_enough_env_value
-src/secret.rs::resolve_rejects_a_short_env_value
 src/shutdown.rs::wait_resolves_after_trigger
 src/shutdown.rs::wait_resolves_immediately_when_already_triggered
 src/shutdown.rs::wait_resolves_when_sender_dropped
@@ -215,7 +184,6 @@ tests/forms_view.rs::check_form_duration_fields_offer_the_shared_suggestions
 tests/forms_view.rs::every_suggested_duration_is_accepted_by_the_check_form
 tests/password_policy.rs::an_over_long_password_is_refused_not_truncated
 tests/pg_store.rs::postgres_full_round_trip
-tests/project_view.rs::project_page_shows_late_for_stored_up_check_in_grace_window
 tests/project_view.rs::project_and_check_descriptions_render_on_project_page
 tests/scheduler.rs::overdue_check_transitions_to_down_and_emits_event
 tests/scheduler.rs::healthy_check_is_not_downed

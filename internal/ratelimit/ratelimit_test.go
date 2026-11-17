@@ -248,3 +248,15 @@ func TestReleaseSaturatesAtZero(t *testing.T) {
 		t.Fatal("overflow count must not underflow")
 	}
 }
+
+func TestAStringKeyedLimiterCountsPerKey(t *testing.T) {
+	l := newLimiter(2, time.Minute)
+	for attempt, want := range []bool{true, true, false} {
+		if got := l.Charge("alice", t0); got != want {
+			t.Fatalf("alice attempt %d: allowed=%v", attempt+1, got)
+		}
+	}
+	if !l.Charge("bob", t0) {
+		t.Fatal("a lockout is never global")
+	}
+}

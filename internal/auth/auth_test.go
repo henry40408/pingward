@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -175,6 +176,9 @@ func TestLogUsernameTruncates(t *testing.T) {
 	if LogUsername(forged) != forged {
 		t.Error("newline must survive for the caller to quote")
 	}
+	if strings.Contains(fmt.Sprintf("%q", LogUsername(forged)), "\n") {
+		t.Error("the quoted rendering must neutralise the newline")
+	}
 }
 
 func TestSessionCookieNameIsPrefixedOnlyWhenSecure(t *testing.T) {
@@ -265,5 +269,16 @@ func TestIsPastAbsoluteCapBoundary(t *testing.T) {
 	if !IsPastAbsoluteCap(&created, cap) || IsPastAbsoluteCap(&created, cap.Add(-time.Second)) ||
 		IsPastAbsoluteCap(nil, cap.Add(365*24*time.Hour)) {
 		t.Fatal("cap boundary")
+	}
+}
+
+// A hash made by the argon2 0.5 crate, the one the Rust build stored.
+func TestVerifyAcceptsAHashFromArgon2Crate05(t *testing.T) {
+	const phc = "$argon2id$v=19$m=19456,t=2,p=1$7GpHNWosgZqygblv9zwMuA$mZ2ug4DZpfCWRzPvF3HZwnIhPZyrsljPLgfNdsPKXuk"
+	if !VerifyPassword("correct horse", phc) {
+		t.Fatal("the stored Rust hash must verify")
+	}
+	if VerifyPassword("wrong horse", phc) {
+		t.Fatal("a wrong password must not verify")
 	}
 }
