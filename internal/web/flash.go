@@ -1,7 +1,10 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/henry40408/pingward/internal/secret"
 )
@@ -79,4 +82,48 @@ func (d *Deps) takeFlash(w http.ResponseWriter, r *http.Request, surface string)
 	}
 	http.SetCookie(w, d.flashRemovalCookie())
 	return message, true
+}
+
+// passwordResetKeysPrefix starts "password_reset_keys:<revoked>:<keys>", which
+// carries counts and so sits outside flashMessages' fixed keys.
+const passwordResetKeysPrefix = "password_reset_keys:"
+
+// setPasswordResetKeysFlash warns that a reset revoked sessions but not API
+// keys. The counts are server-computed.
+func (d *Deps) setPasswordResetKeysFlash(w http.ResponseWriter, revoked, keys int64) {
+	value := passwordResetKeysPrefix + strconv.FormatInt(revoked, 10) + ":" + strconv.FormatInt(keys, 10)
+	http.SetCookie(w, d.flashCookieRaw(secret.SignFlash(d.Config.Secret, value)))
+}
+
+// takePasswordResetKeysFlash is takeFlash for the counted message; "" when absent.
+func (d *Deps) takePasswordResetKeysFlash(w http.ResponseWriter, r *http.Request) string {
+	rest, found := strings.CutPrefix(d.flashPayload(r), passwordResetKeysPrefix)
+	if !found {
+		return ""
+	}
+	revokedText, keysText, found := strings.Cut(rest, ":")
+	if !found {
+		return ""
+	}
+	revoked, revokedErr := strconv.ParseUint(revokedText, 10, 64)
+	keys, keysErr := strconv.ParseUint(keysText, 10, 64)
+	if revokedErr != nil || keysErr != nil {
+		return ""
+	}
+	sessionsWord, keysWord, keysVerb := "sessions", "keys", "continue"
+	if revoked == 1 {
+		sessionsWord = "session"
+	}
+	if keys == 1 {
+		keysWord, keysVerb = "key", "continues"
+	}
+	http.SetCookie(w, d.flashRemovalCookie())
+	return fmt.Sprintf("Password reset revoked %d %s, but this account still has %d API %s that %s to work. An API key can only be revoked from its owner's own /account page — to cut off another user's access immediately, disable their account instead.",
+		revoked, sessionsWord, keys, keysWord, keysVerb)
+}
+
+// usersBlocked is the refusal for the self-guard and last-enabled-admin guard.
+func (d *Deps) usersBlocked(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, d.flashCookie("users_blocked"))
+	redirect(w, r, "/admin")
 }

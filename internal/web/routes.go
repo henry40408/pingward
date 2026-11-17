@@ -9,7 +9,7 @@ type Route struct {
 	Handler http.HandlerFunc
 }
 
-// Routes lists every web route. The admin pages arrive with Step 18.
+// Routes lists every web route.
 func Routes(d *Deps) []Route {
 	routes := []Route{
 		{"GET", "/{$}", d.dashboard},
@@ -26,8 +26,17 @@ func Routes(d *Deps) []Route {
 		{"POST", "/account/api-keys/{id}/delete", d.apiKeyDelete},
 		{"POST", "/account/sessions/{handle}/revoke", d.sessionRevoke},
 		{"POST", "/account/sessions/revoke-others", d.sessionsRevokeOthers},
+		{"GET", "/admin", d.adminPage},
+		{"GET", "/admin/audit", d.adminAuditFragment},
+		{"POST", "/admin/settings", d.settingsSave},
 		{"GET", "/admin/unlock", d.adminUnlockPage},
 		{"POST", "/admin/unlock", d.adminUnlock},
+		{"POST", "/admin/users", d.usersCreate},
+		{"POST", "/admin/users/{id}/delete", d.usersDelete},
+		{"POST", "/admin/users/{id}/password", d.usersSetPassword},
+		{"POST", "/admin/users/{id}/admin", d.usersToggleAdmin},
+		{"POST", "/admin/users/{id}/disabled", d.usersSetDisabled},
+		{"POST", "/admin/checks/{id}/ping-url", d.adminCheckRevealPingURL},
 	}
 	return append(routes, resourceRoutes(d)...)
 }
