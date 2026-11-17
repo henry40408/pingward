@@ -20,6 +20,14 @@ func Routes(d *Deps) []Route {
 		{"POST", "/logout", d.logout},
 		{"GET", "/projects/new", d.projectNew},
 		{"POST", "/projects", d.projectCreate},
+		{"GET", "/account", d.accountPage},
+		{"POST", "/account/password", d.accountPassword},
+		{"POST", "/account/api-keys", d.apiKeyCreate},
+		{"POST", "/account/api-keys/{id}/delete", d.apiKeyDelete},
+		{"POST", "/account/sessions/{handle}/revoke", d.sessionRevoke},
+		{"POST", "/account/sessions/revoke-others", d.sessionsRevokeOthers},
+		{"GET", "/admin/unlock", d.adminUnlockPage},
+		{"POST", "/admin/unlock", d.adminUnlock},
 	}
 }
 
