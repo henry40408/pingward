@@ -46,12 +46,16 @@ func withToken(form url.Values, token string) url.Values {
 func TestFormIncludesCSRFAndFormPostSucceeds(t *testing.T) {
 	a := newApp(t, nil)
 	a.loggedInAdmin(t)
-	token := extractCSRF(t, a.client.Get("/projects/new").Body)
+	wantStatus(t, a.unlock(t, testPassword, nil), http.StatusSeeOther)
+	token := extractCSRF(t, a.client.Get("/admin").Body)
 	if token == "" {
 		t.Fatal("rendered form must embed a non-empty _csrf token")
 	}
-	wantStatus(t, a.client.PostForm("/projects", withToken(newProjectForm(), token)), http.StatusSeeOther)
-	wantStatus(t, a.client.PostForm("/projects", newProjectForm()), http.StatusForbidden)
+	wantLocation(t, a.client.PostForm("/admin/users", withToken(newUserForm("bob", "bob's long passphrase"), token)), "/admin")
+	if a.userByName(t, "bob") == nil {
+		t.Fatal("the authorised POST must reach the handler")
+	}
+	wantStatus(t, a.client.PostForm("/admin/users", newUserForm("carol", "pw")), http.StatusForbidden)
 }
 
 func TestProtectedPostWithoutTokenIsForbidden(t *testing.T) {
