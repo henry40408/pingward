@@ -182,7 +182,7 @@ func TestRFC3339UsesChronoDigitGroups(t *testing.T) {
 		120_500_000: "2026-11-17T15:31:06.120500+00:00",
 		949262560:   "2026-11-17T15:31:06.949262560+00:00",
 	} {
-		if got := rfc3339(base.Add(time.Duration(nanos))); got != want {
+		if got := RFC3339(base.Add(time.Duration(nanos))); got != want {
 			t.Fatalf("%s != %s", got, want)
 		}
 	}

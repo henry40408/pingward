@@ -33,12 +33,12 @@ func NextDueFor(check models.Check, due *time.Time, now time.Time) NextDue {
 		// Anchored on creation; don't imply a run already happened.
 		label = "first ping due " + FmtUntil(*due, now)
 	}
-	return NextDue{Label: label, ISO: rfc3339(*due)}
+	return NextDue{Label: label, ISO: RFC3339(*due)}
 }
 
-// rfc3339 prints a UTC time like chrono's to_rfc3339: "+00:00" rather than "Z",
+// RFC3339 prints a UTC time like chrono's to_rfc3339: "+00:00" rather than "Z",
 // and fractional digits in groups of three, only when the time has any.
-func rfc3339(at time.Time) string {
+func RFC3339(at time.Time) string {
 	at = at.UTC()
 	layout := "2006-01-02T15:04:05"
 	switch nanos := at.Nanosecond(); {
