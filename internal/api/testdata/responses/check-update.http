@@ -1,0 +1,10 @@
+PATCH /api/v1/checks/4
+body: {"name":"api-check2","grace_secs":120}
+HTTP/1.1 400 Bad Request
+content-type: application/json
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: same-origin
+permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+
+{"error":{"code":"bad_request","message":"period_secs required for period mode"}}

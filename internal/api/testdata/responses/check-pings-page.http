@@ -1,0 +1,9 @@
+GET /api/v1/checks/1/pings?limit=2
+HTTP/1.1 200 OK
+content-type: application/json
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: same-origin
+permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+
+{"items":[{"id":7,"check_id":1,"kind":"fail","exit_code":999,"body":"","source_ip":"192.168.215.1","created_at":"2026-11-17T15:25:17.112763576Z"},{"id":5,"check_id":1,"kind":"fail","exit_code":3,"body":"","source_ip":"192.168.215.1","created_at":"2026-11-17T15:25:17.097929016Z"}],"has_newer":false,"has_older":true,"next_before":5,"next_after":null}

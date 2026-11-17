@@ -1,0 +1,8 @@
+PUT /api/v1/projects
+HTTP/1.1 405 Method Not Allowed
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: same-origin
+permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+allow: GET,HEAD,POST
+

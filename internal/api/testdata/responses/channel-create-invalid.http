@@ -1,0 +1,10 @@
+POST /api/v1/projects/3/channels
+body: {"name":"api-hook","kind":"nope"}
+HTTP/1.1 400 Bad Request
+content-type: application/json
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: same-origin
+permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+
+{"error":{"code":"bad_request","message":"unknown channel kind"}}

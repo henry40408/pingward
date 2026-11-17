@@ -1,0 +1,7 @@
+DELETE /api/v1/projects/3
+HTTP/1.1 204 No Content
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: same-origin
+permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+
