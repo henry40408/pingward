@@ -30,6 +30,18 @@ Run from the repository root. The Go version comes from `go.mod` alone (`go` +
   `go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash .`. The
   efficacy threshold and the `e2e/` and `vendor/` exclusions live in
   `.gremlins.yaml`, not on the command line (gremlins ignores the flag).
+  The job is sharded (`mutation-shard` matrix in `ci.yml`, plus an aggregate
+  `mutation` job that is the required check): each shard runs `unleash .` with
+  `--exclude-files` listing the complement of its packages (RE2 has no
+  lookahead), `GOMAXPROCS=2`, `--workers 2` and `ulimit -v 4194304`. A mutant
+  can make a loop run forever and allocate until the runner is SIGTERMed (exit
+  143), so packages with loops that could do this have a `TestMain` watchdog
+  (`main_test.go`) that aborts a hung or ballooning test binary. **A new
+  package must be added to the shards by hand**: put it in one shard and in
+  the `exclude` list of every other shard except `rest` (which excludes only
+  the other shards' packages, so an unlisted package still runs there). Never
+  pass `--test-cpu` (gremlins v0.6.0 builds an invalid `-cpu 2` argument and
+  every mutant counts as killed).
 - Dependency checks (CI-enforced, the `deps` job): `go mod tidy -diff`,
   `go mod vendor` then `git status --porcelain -- vendor go.mod go.sum` must
   print nothing, `go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...`, and
