@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/henry40408/pingward/internal/models"
+	"github.com/henry40408/pingward/internal/tz"
 	"github.com/henry40408/pingward/internal/view"
 )
 
@@ -37,9 +38,6 @@ func sameHTML(t *testing.T, name, wantHTML, gotHTML string) {
 	}
 	t.Fatalf("%s differs at %d\n got: ...%s\nwant: ...%s", name, at, got[max(at-80, 0):min(at+160, len(got))], want[max(at-80, 0):min(at+160, len(want))])
 }
-
-// timezoneList is the one part of the pages that waits for the chrono-tz fixture.
-var timezoneList = regexp.MustCompile(`<datalist id="tz-list">.*?</datalist>`)
 
 func TestLoginAndSetupMatchRust(t *testing.T) {
 	sameAsGolden(t, "login", Login(AuthView{CSRF: "c"}))
@@ -92,13 +90,13 @@ func TestProjectFormsMatchRust(t *testing.T) {
 	}))
 }
 
-func TestCheckFormMatchesRustExceptTheTimezoneList(t *testing.T) {
-	want := timezoneList.ReplaceAllString(golden(t, "check-edit"), `<datalist id="tz-list"></datalist>`)
+func TestCheckFormMatchesRust(t *testing.T) {
 	got := CheckForm(CheckFormView{
 		IsAdmin: true, Heading: "Edit check", Action: "/checks/1", Name: "nightly-backup", Description: "Runs `backup.sh`",
 		ScheduleKind: "period", PeriodSecs: "1d", GraceSecs: "1h", Timezone: "UTC", MaxRuntimeSecs: "30m", NagIntervalSecs: "2h",
+		Timezones: tz.Names(),
 	})
-	sameHTML(t, "check-edit", want, got)
+	sameAsGolden(t, "check-edit", got)
 }
 
 func TestDashboardMatchesRust(t *testing.T) {

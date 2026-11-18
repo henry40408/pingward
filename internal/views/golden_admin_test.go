@@ -5,10 +5,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/henry40408/pingward/internal/tz"
 )
 
 var (
-	datalists    = regexp.MustCompile(`<datalist id="(tz-list|dur-list)">.*?</datalist>`)
 	environment  = regexp.MustCompile(`<div class="card"><div class="ch"><h2>Environment</h2>.*?</div></div><div class="card"><div class="ch"><h2>Admin actions`)
 	rustTimeZone = time.UTC
 )
@@ -157,14 +158,13 @@ func TestAdminPageMatchesRustExceptTheEnvironmentTable(t *testing.T) {
 		LastScan:       LoopStamp{At: "2026-11-17T15:29:19.685711823+00:00", UTC: "2026-11-17 15:29:19 UTC", Ago: "20s ago"},
 		LastPrune:      LoopStamp{At: "2026-11-17T15:24:38.290708752+00:00", UTC: "2026-11-17 15:24:38 UTC", Ago: "5m ago"},
 		ScanInterval:   "30s", NagInterval: "1h", PingsRetentionDays: "30", NotificationsRetentionDays: "60", AuditRetentionDays: "90",
-		DisplayTimezone:  "Asia/Taipei",
+		DisplayTimezone: "Asia/Taipei", Timezones: tz.Names(),
 		Users:            []AdminUserRow{{ID: 1, Username: "admin", IsAdmin: true, IsSelf: true}, {ID: 2, Username: "bob"}},
 		ElevationFlash:   "Confirmed. If an action was refused a moment ago it was not performed — do it again now.",
 		ElevationApplies: true, ElevationRemaining: "12m57s",
 		Projects: []AdminProjectRow{{1, "Alpha", "admin"}, {2, "Beta", "admin"}, {4, "BobProject", "bob"}},
 	})
 	strip := func(html string) string {
-		html = datalists.ReplaceAllString(html, "")
 		return environment.ReplaceAllString(html, "ENV")
 	}
 	sameHTML(t, "admin", strip(golden(t, "admin")), strip(got))
