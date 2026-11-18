@@ -1,0 +1,94 @@
+package views
+
+import "strings"
+
+// node is markup that is already safe to concatenate: every piece of text and
+// every attribute value in it went through escape.
+type node string
+
+// attr is one attribute. A flag renders bare (`defer`), like maud does.
+type attr struct {
+	name, value string
+	flag        bool
+	omit        bool
+}
+
+func a(name, value string) attr { return attr{name: name, value: value} }
+
+func flag(name string) attr { return attr{name: name, flag: true} }
+
+// flagIf is maud's `name[cond]`: a bare attribute only when cond holds.
+func flagIf(cond bool, name string) attr { return attr{name: name, flag: true, omit: !cond} }
+
+// attrIf is maud's `name=[option]`: the attribute is dropped when cond is false.
+func attrIf(cond bool, name, value string) attr {
+	return attr{name: name, value: value, omit: !cond}
+}
+
+// when renders n only if cond holds (maud's `@if`).
+func when(cond bool, n node) node {
+	if !cond {
+		return ""
+	}
+	return n
+}
+
+// each renders one node per item (maud's `@for`).
+func each[T any](items []T, render func(T) node) node {
+	nodes := make([]node, 0, len(items))
+	for _, item := range items {
+		nodes = append(nodes, render(item))
+	}
+	return group(nodes...)
+}
+
+// Markup is a rendered fragment that other pages embed, such as the history
+// tables inside the check page.
+type Markup = node
+
+// escape covers both contexts the views use, element text and double-quoted
+// attribute values. maud escapes exactly these four characters in both, and
+// html/template would write `&#34;` instead of `&quot;`.
+var escape = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;").Replace
+
+// text escapes s for use as element content.
+func text(s string) node { return node(escape(s)) }
+
+// raw marks s as already-safe markup. Use it only for constants and for output
+// of this package's own builders, never for user input.
+func raw(s string) node { return node(s) }
+
+// group concatenates nodes without any whitespace between them.
+func group(children ...node) node {
+	var b strings.Builder
+	for _, child := range children {
+		b.WriteString(string(child))
+	}
+	return node(b.String())
+}
+
+func openTag(tag string, attrs []attr) string {
+	var b strings.Builder
+	b.WriteString("<" + tag)
+	for _, at := range attrs {
+		if at.omit {
+			continue
+		}
+		b.WriteString(" " + at.name)
+		if !at.flag {
+			b.WriteString(`="` + escape(at.value) + `"`)
+		}
+	}
+	b.WriteString(">")
+	return b.String()
+}
+
+// el renders an element with children and a closing tag.
+func el(tag string, attrs []attr, children ...node) node {
+	return node(openTag(tag, attrs) + string(group(children...)) + "</" + tag + ">")
+}
+
+// void renders an element that has no content and no closing tag.
+func void(tag string, attrs ...attr) node {
+	return node(openTag(tag, attrs))
+}

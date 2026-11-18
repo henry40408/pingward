@@ -1,0 +1,10 @@
+POST /api/v1/projects/3/checks
+body: {"name":"x","schedule_kind":"cron","cron_expr":"nope","grace_secs":60}
+HTTP/1.1 400 Bad Request
+content-type: application/json
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: same-origin
+permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+
+{"error":{"code":"bad_request","message":"invalid cron expression: nope\n^\nThe 'Seconds' field does not support using names. 'nope' specified."}}

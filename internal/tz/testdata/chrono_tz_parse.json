@@ -1,0 +1,242 @@
+[
+  {
+    "input": "UTC",
+    "name": "UTC"
+  },
+  {
+    "input": "utc",
+    "name": null
+  },
+  {
+    "input": "Utc",
+    "name": null
+  },
+  {
+    "input": "UCT",
+    "name": "UCT"
+  },
+  {
+    "input": "Asia/Taipei",
+    "name": "Asia/Taipei"
+  },
+  {
+    "input": "asia/taipei",
+    "name": null
+  },
+  {
+    "input": "ASIA/TAIPEI",
+    "name": null
+  },
+  {
+    "input": "America/New_York",
+    "name": "America/New_York"
+  },
+  {
+    "input": "america/new_york",
+    "name": null
+  },
+  {
+    "input": "Etc/GMT+5",
+    "name": "Etc/GMT+5"
+  },
+  {
+    "input": "etc/gmt+5",
+    "name": null
+  },
+  {
+    "input": "GMT",
+    "name": "GMT"
+  },
+  {
+    "input": "gmt",
+    "name": null
+  },
+  {
+    "input": "Zulu",
+    "name": "Zulu"
+  },
+  {
+    "input": "zulu",
+    "name": null
+  },
+  {
+    "input": "EST",
+    "name": "EST"
+  },
+  {
+    "input": "est",
+    "name": null
+  },
+  {
+    "input": "EST5EDT",
+    "name": "EST5EDT"
+  },
+  {
+    "input": "Local",
+    "name": null
+  },
+  {
+    "input": "local",
+    "name": null
+  },
+  {
+    "input": "Not/AZone",
+    "name": null
+  },
+  {
+    "input": "",
+    "name": null
+  },
+  {
+    "input": " UTC",
+    "name": null
+  },
+  {
+    "input": "UTC ",
+    "name": null
+  },
+  {
+    "input": "Asia/Taipei ",
+    "name": null
+  },
+  {
+    "input": "Taipei",
+    "name": null
+  },
+  {
+    "input": "Asia/Kolkata",
+    "name": "Asia/Kolkata"
+  },
+  {
+    "input": "Asia/Calcutta",
+    "name": "Asia/Calcutta"
+  },
+  {
+    "input": "US/Eastern",
+    "name": "US/Eastern"
+  },
+  {
+    "input": "us/eastern",
+    "name": null
+  },
+  {
+    "input": "Europe/Kyiv",
+    "name": "Europe/Kyiv"
+  },
+  {
+    "input": "Europe/Kiev",
+    "name": "Europe/Kiev"
+  },
+  {
+    "input": "America/Argentina/Buenos_Aires",
+    "name": "America/Argentina/Buenos_Aires"
+  },
+  {
+    "input": "america/argentina/buenos_aires",
+    "name": null
+  },
+  {
+    "input": "UTC+8",
+    "name": null
+  },
+  {
+    "input": "+08:00",
+    "name": null
+  },
+  {
+    "input": "Asia//Taipei",
+    "name": null
+  },
+  {
+    "input": "/UTC",
+    "name": null
+  },
+  {
+    "input": "UTC/",
+    "name": null
+  },
+  {
+    "input": "../UTC",
+    "name": null
+  },
+  {
+    "input": "posixrules",
+    "name": null
+  },
+  {
+    "input": "right/UTC",
+    "name": null
+  },
+  {
+    "input": "Factory",
+    "name": null
+  },
+  {
+    "input": "localtime",
+    "name": null
+  },
+  {
+    "input": "Asia/Taipei\n",
+    "name": null
+  },
+  {
+    "input": "Asia/Tapei",
+    "name": null
+  },
+  {
+    "input": "Etc/UTC",
+    "name": "Etc/UTC"
+  },
+  {
+    "input": "Etc/Greenwich",
+    "name": "Etc/Greenwich"
+  },
+  {
+    "input": "Greenwich",
+    "name": "Greenwich"
+  },
+  {
+    "input": "Japan",
+    "name": "Japan"
+  },
+  {
+    "input": "japan",
+    "name": null
+  },
+  {
+    "input": "Asia/Ho_Chi_Minh",
+    "name": "Asia/Ho_Chi_Minh"
+  },
+  {
+    "input": "Asia/Saigon",
+    "name": "Asia/Saigon"
+  },
+  {
+    "input": "WET",
+    "name": "WET"
+  },
+  {
+    "input": "CET",
+    "name": "CET"
+  },
+  {
+    "input": "MST7MDT",
+    "name": "MST7MDT"
+  },
+  {
+    "input": "PST8PDT",
+    "name": "PST8PDT"
+  },
+  {
+    "input": "Navajo",
+    "name": "Navajo"
+  },
+  {
+    "input": "ROC",
+    "name": "ROC"
+  },
+  {
+    "input": "PRC",
+    "name": "PRC"
+  }
+]

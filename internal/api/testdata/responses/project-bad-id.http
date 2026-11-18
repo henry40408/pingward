@@ -1,0 +1,9 @@
+GET /api/v1/projects/abc
+HTTP/1.1 400 Bad Request
+content-type: text/plain; charset=utf-8
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: same-origin
+permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+
+Invalid URL: Cannot parse `abc` to a `i64`

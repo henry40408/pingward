@@ -1,0 +1,10 @@
+POST /api/v1/projects
+body: {}
+HTTP/1.1 400 Bad Request
+content-type: application/json
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: same-origin
+permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+
+{"error":{"code":"bad_request","message":"Failed to deserialize the JSON body into the target type: missing field `name` at line 1 column 2"}}

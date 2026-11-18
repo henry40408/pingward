@@ -1,0 +1,9 @@
+GET /api/v1/checks/2
+HTTP/1.1 200 OK
+content-type: application/json
+x-content-type-options: nosniff
+x-frame-options: DENY
+referrer-policy: same-origin
+permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
+
+{"id":2,"project_id":1,"name":"weekly-report","description":"","ping_uuid":"cc1160bb-1da8-42d0-add2-4d2ebee414a9","status":"up","schedule_kind":"cron","period_secs":null,"grace_secs":600,"cron_expr":"0 0 9 * * Mon *","timezone":"Asia/Taipei","scan_interval_secs":null,"max_runtime_secs":null,"nag_interval_secs":null,"last_ping_at":"2026-11-17T15:25:17.105064025Z","last_start_at":null,"next_due_at":"2026-11-23T01:10:00Z","acknowledged":false,"created_at":"2026-11-17T15:25:06.931737668Z"}
