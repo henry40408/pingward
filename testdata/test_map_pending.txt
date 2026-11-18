@@ -3,12 +3,5 @@ src/shutdown.rs::wait_resolves_after_trigger
 src/shutdown.rs::wait_resolves_immediately_when_already_triggered
 src/shutdown.rs::wait_resolves_when_sender_dropped
 src/shutdown.rs::wait_pends_until_triggered
-src/view.rs::next_due_counts_down_from_the_last_ping
-src/view.rs::next_due_is_unknown_when_the_schedule_cannot_be_evaluated
-tests/check_detail.rs::check_description_markdown_renders_on_check_page
-tests/dashboard_view.rs::dashboard_shows_truncated_descriptions_with_markdown_stripped
 tests/pg_store.rs::postgres_full_round_trip
-tests/project_view.rs::project_and_check_descriptions_render_on_project_page
-tests/security_headers.rs::the_origin_wide_headers_are_on_every_router
 tests/setup_token_log.rs::the_setup_token_is_printed_on_stderr_only
-tests/web_ownership.rs::member_cannot_reach_another_users_resource_on_any_web_route

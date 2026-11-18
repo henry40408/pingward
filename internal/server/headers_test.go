@@ -7,7 +7,6 @@ import (
 )
 
 // One route per router, so an "app-wide" header is checked on all of them.
-// /ping is a stub until its step lands.
 var everyRouter = []string{"/login", "/ping/does-not-exist", "/healthz", "/assets/app.css", "/api/openapi.json"}
 
 func TestOriginWideHeadersAreOnEveryRouter(t *testing.T) {

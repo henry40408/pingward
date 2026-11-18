@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/henry40408/pingward/internal/api"
 	"github.com/henry40408/pingward/internal/auth"
 	"github.com/henry40408/pingward/internal/server"
 	"github.com/henry40408/pingward/internal/store"
@@ -22,20 +21,12 @@ type app struct {
 	logs   *testutil.LockedBuffer
 }
 
-// mounts is the ping router, still a stub until it is wired in, and the real API.
-func mounts(deps *web.Deps) func(*http.ServeMux) {
-	return func(mux *http.ServeMux) {
-		mux.HandleFunc("/ping/", func(w http.ResponseWriter, _ *http.Request) { http.NotFound(w, nil) })
-		api.New(deps).Mount(mux)
-	}
-}
-
 func newApp(t *testing.T, env map[string]string, extraRoutes ...web.Route) *app {
 	t.Helper()
 	st := testutil.NewStore(t)
 	logger, logs := testutil.JSONLogger()
 	deps := web.NewDeps(st, testutil.TestConfig(env), logger, time.Now)
-	handler := server.New(deps, append(web.Routes(deps), extraRoutes...), mounts(deps))
+	handler := server.New(deps, append(web.Routes(deps), extraRoutes...), server.Mounts(deps))
 	return &app{client: testutil.NewClient(t, handler), store: st, deps: deps, logs: logs}
 }
 
@@ -82,7 +73,7 @@ func newProjectForm() url.Values {
 }
 
 func newHandler(deps *web.Deps) http.Handler {
-	return server.New(deps, web.Routes(deps), mounts(deps))
+	return server.New(deps, web.Routes(deps), server.Mounts(deps))
 }
 
 var setsOwnHSTS = web.Route{Method: "GET", Pattern: "/own-hsts", Handler: func(w http.ResponseWriter, _ *http.Request) {

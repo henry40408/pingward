@@ -11,6 +11,7 @@ import (
 	"github.com/henry40408/pingward/internal/events"
 	"github.com/henry40408/pingward/internal/models"
 	"github.com/henry40408/pingward/internal/ratelimit"
+	"github.com/henry40408/pingward/internal/scheduler"
 	"github.com/henry40408/pingward/internal/store"
 )
 
@@ -33,7 +34,6 @@ type Deps struct {
 	// holding Shutdown open. A nil channel never fires.
 	Stopping <-chan struct{}
 	// DueTime is the scheduler's deadline for a check; nil reads as unknown.
-	// Wired with the scheduler once cron lands (Step 9).
 	DueTime func(models.Check) *time.Time
 }
 
@@ -48,6 +48,7 @@ func NewDeps(store *store.Store, cfg *config.Config, logger *slog.Logger, now fu
 		AccountLimiter: ratelimit.New[string](ratelimit.AccountMaxAttempts, ratelimit.AccountWindow, start),
 		Elevations:     elevate.New(elevate.TTL),
 		Events:         events.NewBroker(),
+		DueTime:        scheduler.DueTime,
 	}
 }
 
