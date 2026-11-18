@@ -162,20 +162,29 @@ jobs:
       - run: go clean -testcache
       - name: Mutate the whole module (push)
         if: github.event_name != 'pull_request'
+        env:
+          # Without a limit, gremlins runs one worker per CPU and each `go test`
+          # uses every CPU, which got the runner SIGTERMed (exit 143).
+          GOMAXPROCS: 2
         run: |
-          go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash .
+          set -o pipefail
+          go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash \
+            --workers 2 . 2>&1 | tee "$RUNNER_TEMP/mutation.log"
       - name: Mutate the changed lines (pull request)
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
+          GOMAXPROCS: 2
         run: |
           # Stream the output so a killed runner still leaves a log. Two
-          # workers with one CPU per test run keep a whole-module diff within
-          # the runner's memory.
+          # workers with GOMAXPROCS=2 keep a whole-module diff within the
+          # runner's memory. Do not pass `--test-cpu`: gremlins v0.6.0 builds
+          # the single argument `-cpu 2`, `go test` rejects it, and every
+          # mutant then counts as killed.
           status=0
           set -o pipefail
           go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash \
-            --workers 2 --test-cpu 2 \
+            --workers 2 \
             --diff "origin/$BASE_REF" . 2>&1 | tee "$RUNNER_TEMP/mutation.log" || status=$?
           set +o pipefail
           # A diff with no mutable Go line (docs, CI only) yields zero mutants,
