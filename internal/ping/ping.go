@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/henry40408/pingward/internal/events"
 	"github.com/henry40408/pingward/internal/models"
 	"github.com/henry40408/pingward/internal/notify"
+	"github.com/henry40408/pingward/internal/safego"
 	"github.com/henry40408/pingward/internal/store"
 )
 
@@ -36,6 +38,8 @@ type Handler struct {
 	// Deliver sends an event to the check's channels. It runs in its own
 	// goroutine, off the response path; nil disables delivery.
 	Deliver func(ctx context.Context, event notify.Event, now time.Time)
+	// Logger records a panic in the delivery goroutine; nil uses slog.Default.
+	Logger *slog.Logger
 }
 
 // Mount registers the ping routes. Static segments beat {code} in the mux.
@@ -181,7 +185,11 @@ func (h *Handler) deliverAsync(check models.Check, kind models.EventKind, cause 
 	if h.Deliver == nil {
 		return
 	}
-	go func() {
+	logger := h.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	safego.Go(logger, "ping delivery", func() {
 		ctx := context.Background()
 		var projectName *string
 		if project, err := h.Store.FindProject(ctx, check.ProjectID); err == nil && project != nil {
@@ -198,5 +206,5 @@ func (h *Handler) deliverAsync(check models.Check, kind models.EventKind, cause 
 			CheckID: check.ID, CheckName: check.Name, Kind: kind, At: now,
 			ProjectID: check.ProjectID, Detail: detail,
 		}, now)
-	}()
+	})
 }

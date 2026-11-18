@@ -16,7 +16,7 @@ func Mounts(d *web.Deps) func(*http.ServeMux) {
 	deliverer := NewDeliverer(d)
 	pings := &ping.Handler{
 		Store: d.Store, Config: d.Config, Events: d.Events, Now: d.Now, DueTime: d.DueTime,
-		Deliver: deliverer.DeliverEvent,
+		Deliver: deliverer.DeliverEvent, Logger: d.Logger,
 	}
 	return func(mux *http.ServeMux) {
 		pings.Mount(mux)

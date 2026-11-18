@@ -312,3 +312,18 @@ func TestPingStillRecordsAfterTheClientDisconnects(t *testing.T) {
 		t.Fatalf("status = %s, want down", got)
 	}
 }
+
+func TestPanickingDeliveryIsLoggedAndTheResponseStillSucceeds(t *testing.T) {
+	f := newFixture(t, nil)
+	logger, logs := testutil.JSONLogger()
+	f.handler.Logger = logger
+	f.handler.Deliver = func(context.Context, notify.Event, time.Time) { panic("channel exploded") }
+	f.wantStatus(t, f.send("POST", "/ping/abc/fail", ""), 200)
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "channel exploded") {
+		if time.Now().After(deadline) {
+			t.Fatal("panic was not logged")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -513,4 +514,13 @@ func TestNagOnceIgnoresANonNumericGlobalInterval(t *testing.T) {
 	if got := nag(t, f, t0.Add(24*time.Hour)); len(got) != 0 {
 		t.Fatalf("events = %+v", got)
 	}
+}
+
+func TestPanickingDeliveryIsLoggedAndDoesNotCrash(t *testing.T) {
+	f := newFixture(t)
+	logger, logs := testutil.JSONLogger()
+	f.deps.Logger = logger
+	f.deps.Deliver = func(context.Context, notify.Event, time.Time) { panic("channel exploded") }
+	f.deps.deliver(context.Background(), []notify.Event{{Kind: models.EventDown}})
+	waitFor(t, "the panic log", func() bool { return strings.Contains(logs.String(), "channel exploded") })
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/henry40408/pingward/internal/db"
 	"github.com/henry40408/pingward/internal/prune"
+	"github.com/henry40408/pingward/internal/safego"
 	"github.com/henry40408/pingward/internal/scheduler"
 	"github.com/henry40408/pingward/internal/server"
 	"github.com/henry40408/pingward/internal/store"
@@ -23,6 +24,8 @@ import (
 const (
 	httpDrainTimeout = 3 * time.Second
 	dbCloseTimeout   = 5 * time.Second
+	// loopRestartBackoff is the first wait before a panicked loop restarts.
+	loopRestartBackoff = time.Second
 	// readHeaderTimeout guards against slow-header clients; it does not limit
 	// bodies or the long-lived event streams.
 	readHeaderTimeout = 10 * time.Second
@@ -132,8 +135,12 @@ func startLoops(s started, deps *web.Deps) *backgroundLoops {
 	}
 	pruning := prune.Loop{Store: deps.Store, Logger: s.logger, IntervalSecs: s.cfg.PruneIntervalSecs, Now: deps.Now}
 	loops.group.Add(2)
-	go func() { defer loops.group.Done(); scan.RunScanLoop(ctx) }()
-	go func() { defer loops.group.Done(); pruning.Run(ctx) }()
+	supervise := func(name string, run func(context.Context)) {
+		defer loops.group.Done()
+		safego.Supervise(ctx, s.logger, name, loopRestartBackoff, func() { run(ctx) })
+	}
+	go supervise("scan loop", scan.RunScanLoop)
+	go supervise("prune loop", pruning.Run)
 	return loops
 }
 

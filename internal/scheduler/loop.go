@@ -8,6 +8,7 @@ import (
 	"github.com/henry40408/pingward/internal/db"
 	"github.com/henry40408/pingward/internal/events"
 	"github.com/henry40408/pingward/internal/notify"
+	"github.com/henry40408/pingward/internal/safego"
 	"github.com/henry40408/pingward/internal/store"
 )
 
@@ -75,7 +76,7 @@ func (d Deps) deliver(ctx context.Context, batch []notify.Event) {
 		return
 	}
 	for _, event := range batch {
-		go d.Deliver(ctx, event, d.Now())
+		safego.Go(d.Logger, "scheduler delivery", func() { d.Deliver(ctx, event, d.Now()) })
 	}
 }
 
