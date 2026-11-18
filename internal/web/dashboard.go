@@ -2,6 +2,7 @@ package web
 
 import (
 	"cmp"
+	"github.com/henry40408/pingward/internal/markdown"
 	"net/http"
 	"slices"
 	"strings"
@@ -218,7 +219,7 @@ func (d *Deps) dashboardView(r *http.Request, user *models.User, query string, f
 		}
 		groups = append(groups, views.ProjectGroup{
 			ID: entry.project.ID, Name: entry.project.Name, Count: len(rows), Checks: rows,
-			Description: plainSummary(entry.project.Description, dashboardSummaryChars),
+			Description: markdown.TruncatePlain(entry.project.Description, dashboardSummaryChars),
 		})
 	}
 	return views.DashboardView{
@@ -238,7 +239,7 @@ func dashboardCheckRow(check models.Check, status view.DisplayStatus, pings []mo
 		Bars: view.Heartbeat(pings, view.HeartbeatOptions{
 			MaxRuntimeSecs: check.MaxRuntimeSecs, Paused: check.Status == models.StatusPaused, Count: dashboardBars,
 		}),
-		Description: plainSummary(check.Description, dashboardSummaryChars),
+		Description: markdown.TruncatePlain(check.Description, dashboardSummaryChars),
 		NoChannel:   noChannel,
 	}
 }

@@ -2,6 +2,7 @@ package web
 
 import (
 	"fmt"
+	"github.com/henry40408/pingward/internal/markdown"
 	"net/http"
 	"strings"
 	"unicode"
@@ -148,7 +149,7 @@ func (d *Deps) renderProjectPage(w http.ResponseWriter, r *http.Request, who acc
 	for i, check := range checks {
 		rows[i] = views.ProjectCheckRow{
 			ID: check.ID, Name: check.Name, Status: string(view.Status(check, now)), Schedule: scheduleLabel(check),
-			Description: plainSummary(check.Description, dashboardSummaryChars), NoChannel: !withChannels[check.ID],
+			Description: markdown.TruncatePlain(check.Description, dashboardSummaryChars), NoChannel: !withChannels[check.ID],
 		}
 	}
 	channelRows := make([]views.ProjectChannelRow, len(channels))
@@ -157,7 +158,7 @@ func (d *Deps) renderProjectPage(w http.ResponseWriter, r *http.Request, who acc
 	}
 	writeHTML(w, http.StatusOK, views.Project(views.ProjectView{
 		CSRF: d.csrfToken(r), IsAdmin: who.user.IsAdmin, Admin: who.admin, Project: *project,
-		DescriptionHTML: renderMarkdown(project.Description), Checks: rows, Channels: channelRows, TestResult: test,
+		DescriptionHTML: markdown.Render(project.Description), Checks: rows, Channels: channelRows, TestResult: test,
 	}))
 }
 

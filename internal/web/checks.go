@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"github.com/henry40408/pingward/internal/markdown"
 	"net/http"
 	"strings"
 	"time"
@@ -126,7 +127,7 @@ func (d *Deps) checkPageView(r *http.Request, who access, in checkPageInput, opt
 	}
 	return views.CheckView{
 		CSRF: d.csrfToken(r), IsAdmin: who.user.IsAdmin, Admin: who.admin, Check: check,
-		DescriptionHTML: renderMarkdown(check.Description), ProjectName: project.Name,
+		DescriptionHTML: markdown.Render(check.Description), ProjectName: project.Name,
 		Status: string(view.Status(check, now)), Since: statusSinceLabel(check, now),
 		NextDue:  view.NextDueFor(check, d.dueTime(check), now),
 		Schedule: scheduleLabel(check), PingURL: pingURL, PingURLHidden: !showURL,
