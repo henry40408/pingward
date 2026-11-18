@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/henry40408/pingward/internal/api"
 	"github.com/henry40408/pingward/internal/auth"
 	"github.com/henry40408/pingward/internal/server"
 	"github.com/henry40408/pingward/internal/store"
@@ -21,15 +22,12 @@ type app struct {
 	logs   *testutil.LockedBuffer
 }
 
-// stubMounts stand in for the ping and API routers, which later steps add;
-// they exist so app-wide headers and CSRF exemption can be checked on a
-// sibling router.
-func stubMounts(mux *http.ServeMux) {
-	mux.HandleFunc("/ping/", func(w http.ResponseWriter, _ *http.Request) { http.NotFound(w, nil) })
-	mux.HandleFunc("/api/openapi.json", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("{}"))
-	})
+// mounts is the ping router, still a stub until it is wired in, and the real API.
+func mounts(deps *web.Deps) func(*http.ServeMux) {
+	return func(mux *http.ServeMux) {
+		mux.HandleFunc("/ping/", func(w http.ResponseWriter, _ *http.Request) { http.NotFound(w, nil) })
+		api.New(deps).Mount(mux)
+	}
 }
 
 func newApp(t *testing.T, env map[string]string, extraRoutes ...web.Route) *app {
@@ -37,7 +35,7 @@ func newApp(t *testing.T, env map[string]string, extraRoutes ...web.Route) *app 
 	st := testutil.NewStore(t)
 	logger, logs := testutil.JSONLogger()
 	deps := web.NewDeps(st, testutil.TestConfig(env), logger, time.Now)
-	handler := server.New(deps, append(web.Routes(deps), extraRoutes...), stubMounts)
+	handler := server.New(deps, append(web.Routes(deps), extraRoutes...), mounts(deps))
 	return &app{client: testutil.NewClient(t, handler), store: st, deps: deps, logs: logs}
 }
 
@@ -84,7 +82,7 @@ func newProjectForm() url.Values {
 }
 
 func newHandler(deps *web.Deps) http.Handler {
-	return server.New(deps, web.Routes(deps), stubMounts)
+	return server.New(deps, web.Routes(deps), mounts(deps))
 }
 
 var setsOwnHSTS = web.Route{Method: "GET", Pattern: "/own-hsts", Handler: func(w http.ResponseWriter, _ *http.Request) {

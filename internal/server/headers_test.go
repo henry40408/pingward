@@ -7,7 +7,7 @@ import (
 )
 
 // One route per router, so an "app-wide" header is checked on all of them.
-// /ping and /api are stubs until their steps land.
+// /ping is a stub until its step lands.
 var everyRouter = []string{"/login", "/ping/does-not-exist", "/healthz", "/assets/app.css", "/api/openapi.json"}
 
 func TestOriginWideHeadersAreOnEveryRouter(t *testing.T) {
@@ -55,7 +55,7 @@ func TestBrowserUICarriesAScriptSrcSelfPolicy(t *testing.T) {
 // for everyone. The same holds for every non-web router.
 func TestOnlyWebRoutesCarryTheCSPAndNoStore(t *testing.T) {
 	a := newApp(t, nil)
-	for _, route := range []string{"/ping/does-not-exist", "/healthz", "/assets/app.css", "/api/openapi.json"} {
+	for _, route := range []string{"/ping/does-not-exist", "/healthz", "/assets/app.css", "/api/v1/projects"} {
 		res := a.client.Get(route)
 		if res.Header.Get("Content-Security-Policy") != "" {
 			t.Errorf("%s must not inherit the browser UI's CSP", route)
@@ -119,4 +119,17 @@ func TestHSTSOverridesAHandlersOwnValue(t *testing.T) {
 func TestHealthzReturnsOK(t *testing.T) {
 	a := newApp(t, nil)
 	wantStatus(t, a.client.Get("/healthz"), http.StatusOK)
+}
+
+// Scalar loads from a CDN, so /api/docs skips the CSP rather than widening it
+// for everyone; the other origin-wide headers stay.
+func TestTheAPIDocsPageIsOutsideTheCSPButNotTheRest(t *testing.T) {
+	a := newApp(t, nil)
+	res := a.client.Get("/api/docs")
+	if res.Header.Get("Content-Security-Policy") != "" {
+		t.Error("/api/docs must not inherit the browser UI's CSP")
+	}
+	if got := res.Header.Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
 }
