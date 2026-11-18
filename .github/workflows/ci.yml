@@ -255,6 +255,30 @@ jobs:
           E2E_SHARD: ${{ matrix.shard }}
         run: ./e2e-test
 
+  # The Go e2e suite runs next to the Rust one while the rewrite is verified.
+  # continue-on-error: it is not yet a required check; it becomes one (and the
+  # Rust e2e jobs go away) when the Rust code is removed.
+  e2e-go:
+    name: e2e-go (${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/3", "2/3", "3/3"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build pingward
+        run: go build -mod=vendor -o bin/pingward ./cmd/pingward
+      - name: Run E2E tests
+        working-directory: e2e
+        env:
+          E2E_SHARD: ${{ matrix.shard }}
+        run: go test -mod=vendor -count=1 -timeout 30m .
+
   go:
     name: go
     runs-on: ubuntu-latest
