@@ -524,3 +524,23 @@ func TestPanickingDeliveryIsLoggedAndDoesNotCrash(t *testing.T) {
 	f.deps.deliver(context.Background(), []notify.Event{{Kind: models.EventDown}})
 	waitFor(t, "the panic log", func() bool { return strings.Contains(logs.String(), "channel exploded") })
 }
+
+func TestPassesLogAFailedScanOrNagOnlyWhenItFails(t *testing.T) {
+	f := newFixture(t)
+	f.deps.scanPass(context.Background())
+	f.deps.nagPass(context.Background())
+	if f.logs.String() != "" {
+		t.Fatalf("healthy passes must not log: %s", f.logs.String())
+	}
+
+	if err := f.deps.Store.DB.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.deps.scanPass(context.Background())
+	f.deps.nagPass(context.Background())
+	for _, msg := range []string{"scan_once failed", "nag_once failed"} {
+		if len(f.logs.EventsNamed(t, msg)) != 1 {
+			t.Errorf("want exactly one %q in: %s", msg, f.logs.String())
+		}
+	}
+}

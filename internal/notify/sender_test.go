@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -195,4 +196,88 @@ func newLoopingRedirector(t *testing.T) *httptest.Server {
 	}))
 	t.Cleanup(server.Close)
 	return server
+}
+
+// hopServer redirects /hop/N to /hop/N-1 and answers 200 at /hop/0.
+func hopServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var remaining int
+		if _, err := fmt.Sscanf(r.URL.Path, "/hop/%d", &remaining); err != nil || remaining == 0 {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/hop/%d", remaining-1), http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestRedirectLimitAllowsNineHopsAndRefusesTen(t *testing.T) {
+	server := hopServer(t)
+	cases := []struct {
+		hops    int
+		wantErr string
+	}{
+		{hops: maxRedirects - 1},
+		{hops: maxRedirects, wantErr: "notify failed: too many redirects"},
+	}
+	for _, tc := range cases {
+		err := NewWebhook(fmt.Sprintf("%s/hop/%d", server.URL, tc.hops)).Send(bg, simpleEvent("x", models.EventDown))
+		switch {
+		case tc.wantErr == "" && err != nil:
+			t.Errorf("%d hops: unexpected error %v", tc.hops, err)
+		case tc.wantErr != "" && (err == nil || err.Error() != tc.wantErr):
+			t.Errorf("%d hops: error = %v, want %q", tc.hops, err, tc.wantErr)
+		}
+	}
+}
+
+func TestPostTreatsOnly2xxAsSuccess(t *testing.T) {
+	for status, wantOK := range map[int]bool{200: true, 204: true, 299: true, 300: false, 400: false, 500: false} {
+		err := NewWebhook(newSink(t, status).URL).Send(bg, simpleEvent("x", models.EventDown))
+		if (err == nil) != wantOK {
+			t.Errorf("status %d: err = %v, want success=%v", status, err, wantOK)
+		}
+	}
+}
+
+func TestPushoverPriorityIsOneOnlyForDownAndReminder(t *testing.T) {
+	for kind, want := range map[models.EventKind]string{
+		models.EventDown: "priority=1", models.EventReminder: "priority=1",
+		models.EventUp: "priority=0", models.EventTest: "priority=0",
+	} {
+		server := newSink(t, 200)
+		if err := newPushover("tok", "usr", server.URL).Send(bg, simpleEvent("backup", kind)); err != nil {
+			t.Fatal(err)
+		}
+		if body := server.only(t).body; !strings.HasSuffix(body, want) && !strings.Contains(body, want+"&") {
+			t.Errorf("%s: body %q lacks %s", kind, body, want)
+		}
+	}
+}
+
+func TestNotifierForPicksTheSlackSenderOnlyForSlackChannels(t *testing.T) {
+	cases := []struct {
+		kind     models.ChannelKind
+		wantBody string
+		notBody  string
+	}{
+		{models.ChannelSlack, `"text":`, `"check":`},
+		{models.ChannelWebhook, `"check":`, ""},
+	}
+	for _, tc := range cases {
+		server := newSink(t, 200)
+		notifier, ok := NotifierFor(channelWith(tc.kind, `{"url":"`+server.URL+`"}`), nil)
+		if !ok {
+			t.Fatalf("%s: no notifier", tc.kind)
+		}
+		if err := notifier.Send(bg, simpleEvent("backup", models.EventDown)); err != nil {
+			t.Fatal(err)
+		}
+		body := server.only(t).body
+		if !strings.Contains(body, tc.wantBody) || tc.notBody != "" && strings.Contains(body, tc.notBody) {
+			t.Errorf("%s: body %s", tc.kind, body)
+		}
+	}
 }

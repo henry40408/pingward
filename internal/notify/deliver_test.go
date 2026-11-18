@@ -1,7 +1,9 @@
 package notify
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -271,5 +273,71 @@ func TestDeliverEventKeepsGoingWhenRecordingFails(t *testing.T) {
 	Deliverer{Store: failing, Retry: DefaultRetryPolicy}.DeliverEvent(bg, Event{CheckID: 1, Kind: models.EventDown, At: time.Now()}, time.Now())
 	if len(server.requests) != 2 || failing.recorded != 2 {
 		t.Fatalf("requests %d, recorded %d", len(server.requests), failing.recorded)
+	}
+}
+
+func TestSendWithRetryDoesNotSleepAfterTheFinalFailure(t *testing.T) {
+	broken := &countingNotifier{failures: 99}
+	policy := RetryPolicy{MaxAttempts: 1, BaseBackoff: 3 * time.Second}
+	start := time.Now()
+	if err := SendWithRetry(bg, broken, Event{}, policy); err == nil || broken.calls != 1 {
+		t.Fatalf("%v after %d calls", err, broken.calls)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("slept after the last attempt: %v", elapsed)
+	}
+}
+
+func TestSendWithRetryMakesExactlyMaxAttemptsCalls(t *testing.T) {
+	for _, attempts := range []int{0, 1, 2, 4} {
+		broken := &countingNotifier{failures: 99}
+		policy := RetryPolicy{MaxAttempts: attempts, BaseBackoff: time.Millisecond}
+		if err := SendWithRetry(bg, broken, Event{}, policy); err == nil {
+			t.Fatalf("attempts=%d: want error", attempts)
+		}
+		if want := max(attempts, 1); broken.calls != want {
+			t.Errorf("MaxAttempts %d: %d calls, want %d", attempts, broken.calls, want)
+		}
+	}
+}
+
+type recordingStore struct {
+	channels  []models.Channel
+	recordErr error
+}
+
+func (s recordingStore) ChannelsForCheck(context.Context, int64) ([]models.Channel, error) {
+	return s.channels, nil
+}
+
+func (s recordingStore) RecordNotification(context.Context, store.NewNotification, time.Time) error {
+	return s.recordErr
+}
+
+func captureDefaultLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var out bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&out, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &out
+}
+
+func TestDeliverEventLogsARecordFailureOnlyWhenRecordingFails(t *testing.T) {
+	server := newSink(t, 200)
+	channels := []models.Channel{channelWith(models.ChannelWebhook, `{"url":"`+server.URL+`"}`)}
+	ev := simpleEvent("job", models.EventDown)
+
+	out := captureDefaultLog(t)
+	Deliverer{Store: recordingStore{channels: channels}, Retry: DefaultRetryPolicy}.DeliverEvent(bg, ev, time.Now())
+	if strings.Contains(out.String(), "failed to record notification") {
+		t.Fatalf("logged a failure although recording succeeded: %s", out)
+	}
+
+	out.Reset()
+	failing := recordingStore{channels: channels, recordErr: context.DeadlineExceeded}
+	Deliverer{Store: failing, Retry: DefaultRetryPolicy}.DeliverEvent(bg, ev, time.Now())
+	if !strings.Contains(out.String(), "failed to record notification") {
+		t.Fatalf("a recording failure was not logged: %s", out)
 	}
 }

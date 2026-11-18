@@ -192,3 +192,74 @@ func TestRFC3339UsesChronoDigitGroups(t *testing.T) {
 		}
 	}
 }
+
+func TestRunDurationOrdersByTimeThenIDAndKeepsAZeroLength(t *testing.T) {
+	// The finish has the lower id, so only the timestamp may order the pair.
+	got := RunDurations([]models.PingSummary{
+		ping(5, models.PingStart, 0), ping(3, models.PingSuccess, 10*time.Second),
+	})
+	if got[3] != 10 || len(got) != 1 {
+		t.Fatalf("time must order before id: %v", got)
+	}
+	// Same instant: the id breaks the tie, and a zero-second run is kept.
+	got = RunDurations([]models.PingSummary{
+		ping(8, models.PingSuccess, time.Minute), ping(7, models.PingStart, time.Minute),
+	})
+	if secs, ok := got[8]; !ok || secs != 0 {
+		t.Fatalf("a run of zero seconds is still a run: %v", got)
+	}
+}
+
+func TestHeartbeatCeilingNeedsTwoMeasuredRuns(t *testing.T) {
+	one := []models.PingSummary{ping(1, models.PingStart, 0), ping(2, models.PingSuccess, 10*time.Second)}
+	if b := Heartbeat(one, HeartbeatOptions{Count: 6}); b[0].Title != "no runtime limit set" {
+		t.Fatalf("one measured run gives no ceiling: %v", b)
+	}
+	two := []models.PingSummary{
+		ping(1, models.PingStart, 0), ping(2, models.PingSuccess, 10*time.Second),
+		ping(3, models.PingStart, time.Minute), ping(4, models.PingSuccess, time.Minute+20*time.Second),
+	}
+	b := Heartbeat(two, HeartbeatOptions{Count: 6})
+	if len(b) != 2 || b[1].Title != "20s / 20s" || b[1].Height != maxHeight {
+		t.Fatalf("two measured runs set the ceiling to the longer one: %v", b)
+	}
+}
+
+func TestHeartbeatTreatsAZeroMaxRuntimeAsNone(t *testing.T) {
+	zero := int64(0)
+	runs := []models.PingSummary{
+		ping(1, models.PingStart, 0), ping(2, models.PingSuccess, 10*time.Second),
+		ping(3, models.PingStart, time.Minute), ping(4, models.PingSuccess, time.Minute+20*time.Second),
+	}
+	b := Heartbeat(runs, HeartbeatOptions{Count: 6, MaxRuntimeSecs: &zero})
+	if b[1].Title != "20s / 20s" || b[1].Class != "" {
+		t.Fatalf("a zero limit must fall back to the window maximum and never mark a bar hot: %v", b)
+	}
+}
+
+func TestHeartbeatWithOnlyZeroSecondRunsHasNoCeiling(t *testing.T) {
+	runs := []models.PingSummary{
+		ping(1, models.PingStart, 0), ping(2, models.PingSuccess, 0),
+		ping(3, models.PingStart, time.Minute), ping(4, models.PingSuccess, time.Minute),
+	}
+	for _, b := range Heartbeat(runs, HeartbeatOptions{Count: 6}) {
+		if b.Class != "none" || b.Height != noneHeight {
+			t.Fatalf("a zero ceiling cannot scale a bar: %v", b)
+		}
+	}
+}
+
+func TestHeartbeatMarksARunHotFromEightyPercentOfTheLimit(t *testing.T) {
+	limit := int64(100)
+	for _, c := range []struct {
+		secs int
+		want string
+	}{{79, ""}, {80, "hot"}} {
+		runs := []models.PingSummary{
+			ping(1, models.PingStart, 0), ping(2, models.PingSuccess, time.Duration(c.secs)*time.Second),
+		}
+		if b := Heartbeat(runs, HeartbeatOptions{Count: 6, MaxRuntimeSecs: &limit}); b[0].Class != c.want {
+			t.Errorf("%ds of 100s: class %q, want %q", c.secs, b[0].Class, c.want)
+		}
+	}
+}

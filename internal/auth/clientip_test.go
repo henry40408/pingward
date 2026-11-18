@@ -286,3 +286,24 @@ func TestRateLimitKeyIgnoresHeadersFromAnUntrustedV6Peer(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestIsVisibleASCIIBoundaries(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"empty", "", true},
+		{"unit separator 31", "a\x1fb", false},
+		{"space 32", "a b", true},
+		{"tilde 126", "a~b", true},
+		{"delete 127", "a\x7fb", false},
+		{"tab", "a\tb", true},
+		{"non-ASCII byte", "café", false},
+	}
+	for _, tc := range cases {
+		if got := isVisibleASCII(tc.value); got != tc.want {
+			t.Errorf("%s: isVisibleASCII(%q) = %v, want %v", tc.name, tc.value, got, tc.want)
+		}
+	}
+}

@@ -18,6 +18,14 @@ func TestLossyUTF8MatchesRustFromUTF8Lossy(t *testing.T) {
 		{"4-byte truncated after two", []byte{0xF0, 0x9F, 0x98, 'x'}, "�x"},
 		{"F5 and above are single", []byte{0xF5, 0x80}, "��"},
 		{"empty", nil, ""},
+		// Each truncated sequence stops with every byte at the edge of the
+		// range its position allows, and must still be one error.
+		{"E0 A0 is the lowest valid second byte", []byte{0xE0, 0xA0}, "�"},
+		{"ED 9F is the highest valid second byte", []byte{0xED, 0x9F}, "�"},
+		{"E1 80 is the lowest second byte", []byte{0xE1, 0x80}, "�"},
+		{"E1 BF is the highest second byte", []byte{0xE1, 0xBF}, "�"},
+		{"F1 80 80 has the lowest continuation bytes", []byte{0xF1, 0x80, 0x80}, "�"},
+		{"F1 BF BF has the highest continuation bytes", []byte{0xF1, 0xBF, 0xBF}, "�"},
 	}
 	for _, c := range cases {
 		if got := lossyUTF8(c.in); got != c.want {

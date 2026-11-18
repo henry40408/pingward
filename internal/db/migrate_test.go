@@ -312,3 +312,12 @@ func TestMigrationErrorsReadLikeSqlx(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckNoneMissingReportsTheLowestMissingVersion(t *testing.T) {
+	applied := map[int64][]byte{7: nil, 3: nil, 5: nil, 1: nil}
+	err := checkNoneMissing(applied, []migration{{version: 1}, {version: 5}})
+	var missing VersionMissingError
+	if !errors.As(err, &missing) || missing.Version != 3 {
+		t.Fatalf("got %v, want version 3 reported first", err)
+	}
+}

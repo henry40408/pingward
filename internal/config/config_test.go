@@ -409,3 +409,41 @@ func TestOrphanLogoutURLWarning(t *testing.T) {
 		}
 	}
 }
+
+func TestSMTPAuthWithTLSNoneWarnsOnlyWithBothCredentials(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra map[string]string
+		want  int
+	}{
+		{"password alone", map[string]string{"PINGWARD_SMTP_TLS": "none", "PINGWARD_SMTP_PASSWORD": "p"}, 0},
+		{"username alone", map[string]string{"PINGWARD_SMTP_TLS": "none", "PINGWARD_SMTP_USERNAME": "u"}, 0},
+		{"both with starttls", map[string]string{"PINGWARD_SMTP_USERNAME": "u", "PINGWARD_SMTP_PASSWORD": "p"}, 0},
+		{"both with tls", map[string]string{"PINGWARD_SMTP_TLS": "tls", "PINGWARD_SMTP_USERNAME": "u", "PINGWARD_SMTP_PASSWORD": "p"}, 0},
+		{"both with none", map[string]string{"PINGWARD_SMTP_TLS": "none", "PINGWARD_SMTP_USERNAME": "u", "PINGWARD_SMTP_PASSWORD": "p"}, 1},
+	}
+	for _, tc := range cases {
+		if got := load(smtpEnv(tc.extra)).Warnings; len(got) != tc.want {
+			t.Errorf("%s: warnings = %v, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestSMTPStringReportsAuthOnlyWithBothCredentials(t *testing.T) {
+	user, pass := "u", "p"
+	cases := []struct {
+		name string
+		cfg  SMTPConfig
+		want string
+	}{
+		{"none", SMTPConfig{}, "auth=false"},
+		{"username only", SMTPConfig{Username: &user}, "auth=false"},
+		{"password only", SMTPConfig{Password: &pass}, "auth=false"},
+		{"both", SMTPConfig{Username: &user, Password: &pass}, "auth=true"},
+	}
+	for _, tc := range cases {
+		if got := tc.cfg.String(); !strings.Contains(got, tc.want) {
+			t.Errorf("%s: %q lacks %q", tc.name, got, tc.want)
+		}
+	}
+}

@@ -3,9 +3,11 @@ package store_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/henry40408/pingward/internal/auth"
 	"github.com/henry40408/pingward/internal/store"
 	"github.com/henry40408/pingward/internal/testutil"
 )
@@ -143,9 +145,14 @@ func TestAPIKeyLifecycle(t *testing.T) {
 	if got := keys[1].LastUsedAt; got == nil || !got.Equal(t0) {
 		t.Fatalf("last used %v", got)
 	}
-	s.ValidateAPIKey(ctx, "h1", t0.Add(61*time.Second))
+	s.ValidateAPIKey(ctx, "h1", t0.Add(60*time.Second))
 	keys, _ = s.ListAPIKeysForUser(ctx, owner)
-	if got := keys[1].LastUsedAt; !got.Equal(t0.Add(61 * time.Second)) {
+	if got := keys[1].LastUsedAt; !got.Equal(t0.Add(60 * time.Second)) {
+		t.Fatalf("last used must refresh at exactly 60s, got %v", got)
+	}
+	s.ValidateAPIKey(ctx, "h1", t0.Add(121*time.Second))
+	keys, _ = s.ListAPIKeysForUser(ctx, owner)
+	if got := keys[1].LastUsedAt; !got.Equal(t0.Add(121 * time.Second)) {
 		t.Fatalf("last used %v", got)
 	}
 	if ok, _ := s.DeleteAPIKey(ctx, first, other); ok {
@@ -175,9 +182,14 @@ func TestSessionSlidingAndThrottle(t *testing.T) {
 	if !sessions[0].LastSeenAt.Equal(t0) {
 		t.Fatal("last seen must be throttled at 30s")
 	}
-	s.FindSessionUser(ctx, "fresh", t0.Add(61*time.Second))
+	s.FindSessionUser(ctx, "fresh", t0.Add(60*time.Second))
 	sessions, _ = s.ListSessionsForUser(ctx, uid, t0)
-	if !sessions[0].LastSeenAt.Equal(t0.Add(61 * time.Second)) {
+	if !sessions[0].LastSeenAt.Equal(t0.Add(60 * time.Second)) {
+		t.Fatal("last seen must refresh at exactly 60s")
+	}
+	s.FindSessionUser(ctx, "fresh", t0.Add(121*time.Second))
+	sessions, _ = s.ListSessionsForUser(ctx, uid, t0)
+	if !sessions[0].LastSeenAt.Equal(t0.Add(121 * time.Second)) {
 		t.Fatal("last seen must refresh at 61s")
 	}
 
@@ -208,8 +220,13 @@ func TestSessionExpiryAndAbsoluteCap(t *testing.T) {
 	if got, _ := s.ListSessionsForUser(ctx, uid, later); len(got) != 0 {
 		t.Fatalf("capped session listed: %+v", got)
 	}
-	if n, _ := s.DeleteCappedSessionsForUser(ctx, uid, later); n != 2 { // "idle" is as old as "capped"
-		t.Fatalf("deleted %d", n)
+	newSession(t, s, "recent", uid, later.Add(-time.Hour), later.Add(time.Hour))
+	newSession(t, s, "at-cap", uid, later.Add(-auth.SessionAbsoluteMax), later.Add(time.Hour))
+	if n, _ := s.DeleteCappedSessionsForUser(ctx, uid, later); n != 3 { // "idle" is as old as "capped"
+		t.Fatalf("deleted %d, want idle, capped and at-cap but not recent", n)
+	}
+	if got, _ := s.ListSessionsForUser(ctx, uid, later); len(got) != 1 || got[0].ID != "recent" {
+		t.Fatalf("only the recent session may survive: %+v", got)
 	}
 }
 
@@ -319,5 +336,19 @@ func TestPostgresRoundTrip(t *testing.T) {
 	newSession(t, s, "pg", id, t0, t0.Add(time.Hour))
 	if u, err := s.FindSessionUser(ctx, "pg", t0); err != nil || u == nil {
 		t.Fatalf("%v %v", u, err)
+	}
+}
+
+func TestSlidingTheExpiryLogsTheRenewal(t *testing.T) {
+	s := testutil.NewStore(t)
+	var logs *testutil.LockedBuffer
+	s.Logger, logs = testutil.JSONLogger()
+	uid := mustUser(t, s, "u")
+	newSession(t, s, "old", uid, t0, t0.Add(10*time.Hour))
+	if _, err := s.FindSessionUser(ctx, "old", t0); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), `"session.renewed"`) {
+		t.Fatalf("a renewed session must be logged, got %q", logs.String())
 	}
 }

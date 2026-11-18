@@ -186,3 +186,23 @@ func TestAnUnknownTimezoneRendersInUTC(t *testing.T) {
 		}
 	}
 }
+
+func TestFmtAtRelAddsAgoOnlyWhenAtIsInThePast(t *testing.T) {
+	at := utc(2026, 7, 29, 9, 3)
+	plain := fmtAt(at, nil)
+	cases := []struct {
+		name string
+		now  time.Time
+		want string
+	}{
+		{"same instant", at, plain},
+		{"sub-second later", at.Add(999 * time.Millisecond), plain},
+		{"one second later", at.Add(time.Second), plain + " (1s ago)"},
+		{"in the future", at.Add(-time.Second), plain},
+	}
+	for _, tc := range cases {
+		if got := fmtAtRel(at, tc.now, nil); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

@@ -282,3 +282,35 @@ func TestVerifyAcceptsAHashFromArgon2Crate05(t *testing.T) {
 		t.Fatal("a wrong password must not verify")
 	}
 }
+
+func TestParsePHCAcceptsTheLargestThreadCount(t *testing.T) {
+	const tail = "$AAAA$AAAA"
+	p, ok := parsePHC("$argon2id$v=19$m=19456,t=2,p=255" + tail)
+	if !ok || p.threads != 255 {
+		t.Fatalf("p=255: got (%+v, %v)", p, ok)
+	}
+	if _, ok := parsePHC("$argon2id$v=19$m=19456,t=2,p=256" + tail); ok {
+		t.Fatal("p=256 must be refused")
+	}
+}
+
+func TestRefreshedExpiryDoesNotSlideAtExactlyHalfTheIdleWindow(t *testing.T) {
+	now := ts(2026, 1, 1)
+	created := ptr(now.Add(-24 * time.Hour))
+	if got := RefreshedExpiry(created, now.Add(SessionIdleTTL/2), now); got != nil {
+		t.Fatalf("exactly half remains: %+v", got)
+	}
+	if got := RefreshedExpiry(created, now.Add(SessionIdleTTL/2-time.Nanosecond), now); got == nil {
+		t.Fatal("just under half remains: want a renewal")
+	}
+}
+
+func TestLogUsernameKeepsExactlyTheMaximumLength(t *testing.T) {
+	exact := strings.Repeat("a", logUsernameMaxChars)
+	if got := LogUsername(exact); got != exact {
+		t.Fatalf("got %q, want it untouched", got)
+	}
+	if got := LogUsername(exact + "a"); got != exact+"…" {
+		t.Fatalf("one over: got %q", got)
+	}
+}

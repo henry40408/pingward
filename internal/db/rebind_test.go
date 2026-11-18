@@ -20,6 +20,12 @@ func TestRebind(t *testing.T) {
 		{"unterminated block comment", "SELECT /* $1", "SELECT /* $1"},
 		{"dollar without digit", "SELECT $a, $", "SELECT $a, $"},
 		{"no placeholder", "SELECT 1", "SELECT 1"},
+		{"digit range ends", "SELECT $0, $9", "SELECT ?0, ?9"},
+		{"characters next to the digit range", "SELECT $/, $:", "SELECT $/, $:"},
+		{"empty string literal", "SELECT '', $1", "SELECT '', ?1"},
+		{"query ends with a closing quote", "SELECT $1, 'a'", "SELECT ?1, 'a'"},
+		{"empty block comment", "SELECT /**/ $1", "SELECT /**/ ?1"},
+		{"block comment opened by a slash", "SELECT /*/ $1 */ $1", "SELECT /*/ $1 */ ?1"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
