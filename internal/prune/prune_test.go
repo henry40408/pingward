@@ -2,6 +2,8 @@ package prune
 
 import (
 	"context"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -303,5 +305,50 @@ func TestHeartbeatSettingWrites(t *testing.T) {
 	loop.pass(context.Background())
 	if value, err := f.store.GetSetting(context.Background(), "last_prune_at"); err != nil || value == nil {
 		t.Fatalf("value = %v, err = %v", value, err)
+	}
+}
+
+func TestRetentionCutoffAcceptsTheLargestRangeAndRefusesOnePast(t *testing.T) {
+	largest := (now.Unix() - minCutoff.Unix()) / 86400
+	if _, ok := retentionCutoff(now, ptr(strconv.FormatInt(largest, 10))); !ok {
+		t.Errorf("%d days reaches the earliest representable date and must be accepted", largest)
+	}
+	if _, ok := retentionCutoff(now, ptr(strconv.FormatInt(largest+1, 10))); ok {
+		t.Errorf("%d days goes past the earliest representable date and must be refused", largest+1)
+	}
+}
+
+func TestRunLoopWaitsForTheIntervalBetweenPasses(t *testing.T) {
+	f := newFixture(t)
+	loop, _ := newLoop(t, f)
+	var clockReads atomic.Int64
+	loop.Now = func() time.Time {
+		clockReads.Add(1)
+		return time.Now()
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { loop.Run(ctx); close(done) }()
+	time.Sleep(300 * time.Millisecond)
+	stop()
+	<-done
+	// One pass reads the clock a couple of times; a loop that does not wait
+	// would pass hundreds of times.
+	if reads := clockReads.Load(); reads > 10 {
+		t.Fatalf("the clock was read %d times in 300ms: the loop is not waiting for its interval", reads)
+	}
+}
+
+func TestRunLoopOmitsTheSessionLineWhenNoSessionExpired(t *testing.T) {
+	f := newFixture(t)
+	f.insertPing(t, time.Now().AddDate(0, 0, -10))
+	setSetting(t, f.store, "pings_retention_days", "7")
+	loop, logs := newLoop(t, f)
+	loop.pass(context.Background())
+	if len(logs.EventsNamed(t, "pruned 1 pings, 0 notifications, 0 audit entries, 0 sessions")) != 1 {
+		t.Fatalf("logs: %s", logs.String())
+	}
+	if destroyed := logs.EventsNamed(t, "session.destroyed"); len(destroyed) != 0 {
+		t.Fatalf("no session expired, yet %v was logged", destroyed)
 	}
 }

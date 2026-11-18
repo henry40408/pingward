@@ -207,3 +207,14 @@ func TestHexRoundTripAllBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestAnEmptySignedValueRoundTrips(t *testing.T) {
+	signed := SignSession(testSecret, "")
+	if !strings.HasPrefix(signed, sigSeparator) {
+		t.Fatalf("signed = %q, want a leading separator", signed)
+	}
+	got, ok := VerifySession(testSecret, signed)
+	if !ok || got != "" {
+		t.Fatalf("got (%q, %v), want (\"\", true)", got, ok)
+	}
+}

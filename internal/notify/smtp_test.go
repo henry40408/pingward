@@ -216,3 +216,56 @@ func TestEmailFailsWhenNothingListens(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+func TestEmailSendEndsTheSessionWithQuit(t *testing.T) {
+	server := startFakeSMTP(t)
+	smtp := server.config(config.TLSNone, nil, nil)
+	if err := NewEmail(smtp, "ops@example.com").Send(bg, simpleEvent("backup", models.EventDown)); err != nil {
+		t.Fatal(err)
+	}
+	requireContains(t, server.transcript(), "\nQUIT")
+}
+
+func TestBuildEmailSetsAMessageIDOnTheSenderDomain(t *testing.T) {
+	message, err := buildEmail("alerts@example.com", "ops@example.com", simpleEvent("backup", models.EventDown))
+	if err != nil {
+		t.Fatal(err)
+	}
+	header, _, _ := strings.Cut(string(message.data), "\r\n\r\n")
+	for _, line := range strings.Split(header, "\r\n") {
+		id, found := strings.CutPrefix(line, "Message-ID: <")
+		if !found {
+			continue
+		}
+		local, domain, _ := strings.Cut(id, "@")
+		if len(local) != 32 || domain != "example.com>" {
+			t.Fatalf("Message-ID line %q", line)
+		}
+		return
+	}
+	t.Fatal("no Message-ID header")
+}
+
+func TestNewMessageIDTakesTheDomainAfterTheLastAt(t *testing.T) {
+	cases := []struct {
+		from       string
+		wantDomain string
+	}{
+		{"alerts@example.com", "example.com"},
+		{"a@b@c.org", "c.org"},
+		{"@lead.example", "lead.example"},
+		{"no-at-sign", "localhost"},
+		{"", "localhost"},
+		{"trailing@", ""},
+	}
+	for _, tc := range cases {
+		id, err := newMessageID(tc.from)
+		if err != nil {
+			t.Fatal(err)
+		}
+		local, domain, found := strings.Cut(id, "@")
+		if !found || len(local) != 33 || !strings.HasPrefix(local, "<") || domain != tc.wantDomain+">" {
+			t.Errorf("from %q: id %q, want domain %q", tc.from, id, tc.wantDomain)
+		}
+	}
+}

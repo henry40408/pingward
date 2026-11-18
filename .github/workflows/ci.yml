@@ -136,16 +136,38 @@ jobs:
           PINGWARD_TEST_MAILPIT_API: http://localhost:8025
         run: go test -mod=vendor -race ./...
 
-  # Pushes to main mutate the whole module; pull requests mutate only the lines
-  # changed against the base branch. The efficacy threshold and the `e2e/` and
+  # Pushes to main mutate the whole module, split into shards that run on their
+  # own runners; pull requests mutate only the lines changed against the base
+  # branch, in the same shards. The efficacy threshold and the `e2e/` and
   # `vendor/` exclusions live in `.gremlins.yaml`: gremlins v0.6.0 silently
   # ignores `--threshold-efficacy` on the command line, so the job could never
   # fail on a low score. The tests that need PostgreSQL or SMTP skip here (no
   # services), which gremlins counts as not covered.
-  mutation:
-    name: mutation
+  #
+  # gremlins `unleash` takes one path, so every shard runs `.` and
+  # `--exclude-files` drops the files outside its slice (RE2 has no lookahead,
+  # so each entry lists the complement). `--exclude-files` replaces the list in
+  # `.gremlins.yaml`, so `e2e/` and `vendor/` are repeated in every entry.
+  # A NEW PACKAGE MUST BE ADDED BY HAND: put it in one shard's slice and in the
+  # `exclude` list of every other shard except `rest`. `rest` excludes only the
+  # other shards' packages, so a package nobody lists still runs there.
+  # The shards are `store` (internal/store, internal/db), `rendering`
+  # (internal/views, view, web, markdown, assets) and `rest` (everything else,
+  # including `cmd/`).
+  mutation-shard:
+    name: mutation-shard (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: store
+            exclude: '^(e2e|vendor|cmd)/|^internal/(api|apikey|assets|auth|config|cron|duration|elevate|events|ids|markdown|models|notify|ping|prune|ratelimit|safego|scheduler|secret|server|testutil|tz|version|view|views|web)/'
+          - name: rendering
+            exclude: '^(e2e|vendor|cmd)/|^internal/(api|apikey|auth|config|cron|db|duration|elevate|events|ids|models|notify|ping|prune|ratelimit|safego|scheduler|secret|server|store|testutil|tz|version)/'
+          - name: rest
+            exclude: '^(e2e|vendor)/|^internal/(assets|db|markdown|store|view|views|web)/'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -160,21 +182,29 @@ jobs:
       # "times out", which the efficacy score ignores: the job would pass
       # without testing anything.
       - run: go clean -testcache
-      - name: Mutate the whole module (push)
+      - name: Mutate the shard (push)
         if: github.event_name != 'pull_request'
         env:
           # Without a limit, gremlins runs one worker per CPU and each `go test`
           # uses every CPU, which got the runner SIGTERMed (exit 143).
           GOMAXPROCS: 2
+          SHARD_EXCLUDE: ${{ matrix.shard.exclude }}
         run: |
+          # A mutant can turn a loop into one that never ends and keeps
+          # allocating. Memory ran out before gremlins' timeout fired and the
+          # runner was killed with SIGTERM (exit 143). The address-space limit
+          # makes such a test process crash instead, which counts as a killed
+          # mutant.
+          ulimit -v 4194304
           set -o pipefail
           go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash \
-            --workers 2 . 2>&1 | tee "$RUNNER_TEMP/mutation.log"
-      - name: Mutate the changed lines (pull request)
+            --workers 2 --exclude-files "$SHARD_EXCLUDE" . 2>&1 | tee "$RUNNER_TEMP/mutation.log"
+      - name: Mutate the changed lines of the shard (pull request)
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
           GOMAXPROCS: 2
+          SHARD_EXCLUDE: ${{ matrix.shard.exclude }}
         run: |
           # Stream the output so a killed runner still leaves a log. Two
           # workers with GOMAXPROCS=2 keep a whole-module diff within the
@@ -182,14 +212,16 @@ jobs:
           # the single argument `-cpu 2`, `go test` rejects it, and every
           # mutant then counts as killed.
           status=0
+          ulimit -v 4194304 # see the push step
           set -o pipefail
           go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash \
-            --workers 2 \
+            --workers 2 --exclude-files "$SHARD_EXCLUDE" \
             --diff "origin/$BASE_REF" . 2>&1 | tee "$RUNNER_TEMP/mutation.log" || status=$?
           set +o pipefail
-          # A diff with no mutable Go line (docs, CI only) yields zero mutants,
-          # which gremlins scores as 0% and so fails the threshold. That is not
-          # a low score, so treat it as a pass.
+          # A shard whose diff has no mutable Go line (docs, CI only, or other
+          # shards' files) yields zero mutants, which gremlins scores as 0% and
+          # so fails the threshold. That is not a low score, so treat it as a
+          # pass.
           if [ "$status" -ne 0 ] \
             && grep -q '^Killed: 0, Lived: 0, Not covered: 0$' "$RUNNER_TEMP/mutation.log" \
             && grep -q '^Timed out: 0, ' "$RUNNER_TEMP/mutation.log"; then
@@ -197,6 +229,22 @@ jobs:
             exit 0
           fi
           exit "$status"
+
+  # The one required check: branch protection names `mutation`, so shards can
+  # be added or renamed without touching it. `always()` makes it run (and fail)
+  # when a shard fails or is cancelled instead of being skipped.
+  mutation:
+    name: mutation
+    runs-on: ubuntu-latest
+    needs: mutation-shard
+    if: always()
+    steps:
+      - name: Require every shard to pass
+        env:
+          SHARDS_RESULT: ${{ needs.mutation-shard.result }}
+        run: |
+          echo "mutation shards: $SHARDS_RESULT"
+          [ "$SHARDS_RESULT" = success ]
 
   coverage:
     name: coverage

@@ -260,3 +260,23 @@ func TestAStringKeyedLimiterCountsPerKey(t *testing.T) {
 		t.Fatal("a lockout is never global")
 	}
 }
+
+func TestAnEntryExpiresExactlyWhenItsWindowEnds(t *testing.T) {
+	l := newLimiter(5, time.Minute)
+	l.maxEntries = 2
+	l.Charge(ip(1), t0)
+	l.Charge(ip(2), t0)
+	l.Charge(ip(3), t0.Add(time.Minute))
+	if l.tracked() != 1 {
+		t.Fatalf("both entries are a full window old and must be pruned: len = %d", l.tracked())
+	}
+}
+
+func TestReleaseDropsATrackedKeyWhoseCountIsAlreadyZero(t *testing.T) {
+	l := newLimiter(5, time.Minute)
+	l.perKey["k"] = &counter{started: t0}
+	l.Release("k")
+	if l.tracked() != 0 {
+		t.Fatalf("an empty bucket must be dropped, not wrapped around: %+v", l.perKey["k"])
+	}
+}

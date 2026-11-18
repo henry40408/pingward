@@ -142,3 +142,62 @@ func TestFieldsRejectNullForRequiredAndWrongTypes(t *testing.T) {
 		t.Errorf("duration string refused: %q", f.refusal())
 	}
 }
+
+func readFieldsFrom(t *testing.T, body string) *fields {
+	t.Helper()
+	request := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	f, ok := readFields(httptest.NewRecorder(), request)
+	if !ok {
+		t.Fatalf("body %s refused", body)
+	}
+	return f
+}
+
+func TestSyntaxErrorNamesTheJSONProblem(t *testing.T) {
+	got := syntaxError([]byte(`{ nope`))
+	if !strings.Contains(got, "invalid character") {
+		t.Fatalf("got %q, want the decoder's message", got)
+	}
+	if got := syntaxError([]byte(`{}`)); got != "invalid JSON" {
+		t.Fatalf("valid JSON: got %q", got)
+	}
+}
+
+func TestReadFieldsReportsTheSyntaxErrorInTheResponse(t *testing.T) {
+	request := httptest.NewRequest("POST", "/", strings.NewReader(`{ nope`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	readFields(recorder, request)
+	if body := recorder.Body.String(); !strings.Contains(body, "invalid character") {
+		t.Fatalf("body = %s", body)
+	}
+}
+
+func TestOptionalTextReadsAPresentValueAndSkipsAfterAnError(t *testing.T) {
+	f := readFieldsFrom(t, `{"d":"hello"}`)
+	if got := f.optionalText("d"); got != "hello" || f.refusal() != "" {
+		t.Fatalf("got %q, refusal %q", got, f.refusal())
+	}
+	f = readFieldsFrom(t, `{"d":"hello"}`)
+	f.required("missing")
+	if got := f.optionalText("d"); got != "" {
+		t.Fatalf("after an error got %q, want empty", got)
+	}
+}
+
+func TestFlagAcceptsBooleansAndRefusesOtherTypes(t *testing.T) {
+	for body, want := range map[string]bool{`{"on":true}`: true, `{"on":false}`: false, `{}`: false} {
+		f := readFieldsFrom(t, body)
+		if got := f.flag("on"); got != want || f.refusal() != "" {
+			t.Errorf("%s: got %v, refusal %q", body, got, f.refusal())
+		}
+	}
+	for _, body := range []string{`{"on":"yes"}`, `{"on":1}`, `{"on":null}`} {
+		f := readFieldsFrom(t, body)
+		f.flag("on")
+		if f.refusal() == "" {
+			t.Errorf("%s: accepted", body)
+		}
+	}
+}

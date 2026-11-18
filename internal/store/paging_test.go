@@ -304,7 +304,9 @@ func TestPingSummariesMatchTheWideQueryRowForRow(t *testing.T) {
 	}
 	silent := mustCheck(t, s, periodCheck(1, "u-silent"))
 
-	narrow, err := s.ListRecentPingSummariesForChecks(ctx, append(append([]int64{}, ids...), silent), 3)
+	// The limit differs from every check ID so a wrong placeholder index
+	// binds the wrong number.
+	narrow, err := s.ListRecentPingSummariesForChecks(ctx, append(append([]int64{}, ids...), silent), 2)
 	if err != nil || len(narrow) != len(ids) {
 		t.Fatalf("%v %v", narrow, err)
 	}
@@ -312,23 +314,23 @@ func TestPingSummariesMatchTheWideQueryRowForRow(t *testing.T) {
 		t.Fatal("a check with no pings must be absent from the batch")
 	}
 	for _, cid := range ids {
-		wide, _ := s.ListRecentPings(ctx, cid, 3)
+		wide, _ := s.ListRecentPings(ctx, cid, 2)
 		want := make([]models.PingSummary, len(wide))
 		for i, ping := range wide {
 			want[i] = ping.Summary()
 		}
-		if len(want) != 3 {
+		if len(want) != 2 {
 			t.Fatalf("per-check limit: %d", len(want))
 		}
 		if !reflect.DeepEqual(want, narrow[cid]) {
 			t.Fatalf("batched, check %d: %v vs %v", cid, want, narrow[cid])
 		}
-		single, _ := s.ListRecentPingSummaries(ctx, cid, 3)
+		single, _ := s.ListRecentPingSummaries(ctx, cid, 2)
 		if !reflect.DeepEqual(want, single) {
 			t.Fatalf("per-check, check %d", cid)
 		}
 	}
-	if empty, err := s.ListRecentPingSummariesForChecks(ctx, nil, 3); err != nil || len(empty) != 0 {
+	if empty, err := s.ListRecentPingSummariesForChecks(ctx, nil, 2); err != nil || len(empty) != 0 {
 		t.Fatalf("%v %v", empty, err)
 	}
 }

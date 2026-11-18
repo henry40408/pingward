@@ -68,3 +68,34 @@ func TestFormatRoundTripsThroughParse(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDigitAndOverflowBoundaries(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  int64
+		ok    bool
+	}{
+		{"digit nine bare", "9", 9, true},
+		{"digit nine with unit", "9s", 9, true},
+		{"nines", "99m", 5940, true},
+		{"zero then nine", "09s", 9, true},
+		{"slash below zero", "1/s", 0, false},
+		{"colon above nine", "1:s", 0, false},
+		{"largest seconds component", "9223372036854775807s", 9223372036854775807, true},
+		{"largest minutes component", "153722867280912930m", 9223372036854775800, true},
+		{"largest days component", "106751991167300d", 9223372036854720000, true},
+		{"one past largest seconds component", "9223372036854775808s", 0, false},
+		{"one past largest minutes component", "153722867280912931m", 0, false},
+		{"sum landing exactly on max int64", "9223372036854775800s7s", 9223372036854775807, true},
+		{"sum one past max int64", "9223372036854775800s8s", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := Parse(tc.input)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("Parse(%q) = %d, %v; want %d, %v", tc.input, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}

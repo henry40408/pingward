@@ -327,3 +327,18 @@ func TestPanickingDeliveryIsLoggedAndTheResponseStillSucceeds(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestTheDownNotificationNamesTheProjectAndUsesTheDisplayTimezone(t *testing.T) {
+	f := newFixture(t, nil)
+	if err := f.store.SetSetting(context.Background(), "display_timezone", "Asia/Taipei"); err != nil {
+		t.Fatal(err)
+	}
+	f.send("POST", "/ping/abc/fail", "")
+	event := f.wantEvent(t)
+	if event.Detail.ProjectName == nil || *event.Detail.ProjectName != "p" {
+		t.Fatalf("project name = %v, want p", event.Detail.ProjectName)
+	}
+	if event.Detail.Timezone == nil || *event.Detail.Timezone != "Asia/Taipei" {
+		t.Fatalf("timezone = %v, want the display timezone", event.Detail.Timezone)
+	}
+}

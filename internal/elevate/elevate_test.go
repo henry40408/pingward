@@ -83,3 +83,19 @@ func TestASecondGrantRestartsTheWindow(t *testing.T) {
 		t.Fatalf("remaining = %d", secs)
 	}
 }
+
+func TestGrantSweepsAnEntryExactlyTTLOld(t *testing.T) {
+	e := New(TTL)
+	e.Grant("old", 1, t0)
+	e.Grant("new", 2, t0.Add(TTL-time.Nanosecond))
+	if _, kept := e.granted["old"]; !kept {
+		t.Fatal("an entry just under the TTL must survive the sweep")
+	}
+	e.Grant("newest", 3, t0.Add(TTL))
+	if _, kept := e.granted["old"]; kept {
+		t.Fatal("an entry exactly TTL old must be swept")
+	}
+	if _, kept := e.granted["new"]; !kept {
+		t.Fatal("a younger entry must survive the sweep")
+	}
+}
