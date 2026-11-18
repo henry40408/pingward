@@ -3,15 +3,16 @@ package server_test
 import (
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/henry40408/pingward/internal/duration"
+	"github.com/henry40408/pingward/internal/models"
+	"github.com/henry40408/pingward/internal/store"
 	"github.com/henry40408/pingward/internal/testutil"
 )
-
-// The Rust check-form tests (restyled fields, description round trip, channel
-// binding on create, duration suggestions and their acceptance) wait for the
-// check forms, which are blocked on the cron/tz/markdown fixtures.
 
 // suggestedDurations is src/view.rs durations(), written out so a broken list
 // cannot agree with itself.
@@ -177,4 +178,129 @@ func TestAPIKeyExpiryOffersItsOwnSuggestions(t *testing.T) {
 	wantList(t, body, "expiry-list", suggestedExpiries)
 	wantWired(t, body, "expiry-list", "expires_in")
 	wantAbsent(t, body, `<datalist id="dur-list">`, "/account has no interval fields, so the shared list has no business there")
+}
+
+func checkFormValues(name, description string) url.Values {
+	return url.Values{
+		"name": {name}, "description": {description}, "schedule_kind": {"period"}, "period_secs": {"3600"},
+		"cron_expr": {""}, "grace_secs": {"300"}, "timezone": {"UTC"},
+		"scan_interval_secs": {""}, "max_runtime_secs": {""}, "nag_interval_secs": {""},
+	}
+}
+
+func (a *app) onlyCheckOf(t *testing.T, projectID int64) models.Check {
+	t.Helper()
+	checks, err := a.store.ListChecksForProject(t.Context(), projectID)
+	if err != nil || len(checks) != 1 {
+		t.Fatalf("checks = %v, %v", checks, err)
+	}
+	return checks[0]
+}
+
+func TestCheckFormIsRestyledAndKeepsFields(t *testing.T) {
+	a, projectID := projectWith(t)
+	res := a.client.Get("/projects/" + itoa(projectID) + "/checks/new")
+	wantStatus(t, res, http.StatusOK)
+	wantContains(t, res.Body, `class="field"`, "form restyled")
+	for _, name := range []string{
+		"name", "description", "schedule_kind", "period_secs", "cron_expr", "grace_secs", "timezone",
+		"scan_interval_secs", "max_runtime_secs", "nag_interval_secs",
+	} {
+		wantContains(t, res.Body, `name="`+name+`"`, "check form field "+name)
+	}
+}
+
+func TestCheckDescriptionRoundTripsAndIsLengthValidated(t *testing.T) {
+	a, projectID := projectWith(t)
+	wantStatus(t, a.postWithToken("/projects/"+itoa(projectID)+"/checks", checkFormValues("backup", "runs *nightly*")), http.StatusSeeOther)
+	check := a.onlyCheckOf(t, projectID)
+	if check.Description != "runs *nightly*" {
+		t.Fatalf("stored description = %q", check.Description)
+	}
+	path := "/checks/" + itoa(check.ID)
+	edit := a.client.Get(path + "/edit")
+	wantStatus(t, edit, http.StatusOK)
+	wantContains(t, edit.Body, "runs *nightly*", "edit form round-trips the stored description")
+
+	res := a.postWithToken(path, checkFormValues("backup", strings.Repeat("a", 2001)))
+	wantStatus(t, res, http.StatusOK)
+	wantContains(t, res.Body, "description must be at most 2000 characters", "2001 characters rejected with the exact message")
+
+	boundary := strings.Repeat("b", 2000)
+	wantStatus(t, a.postWithToken(path, checkFormValues("backup", boundary)), http.StatusSeeOther)
+	if got := a.onlyCheckOf(t, projectID).Description; got != boundary {
+		t.Fatal("a 2000-character description is exactly at the limit and must be accepted")
+	}
+}
+
+func TestCheckCreatedViaWebFormIsBoundToExistingChannels(t *testing.T) {
+	a, projectID := projectWith(t)
+	var want []int64
+	for _, name := range []string{"hook1", "hook2"} {
+		id, err := a.store.CreateChannel(t.Context(), store.NewChannel{
+			ProjectID: projectID, Kind: models.ChannelWebhook, Name: name, ConfigJSON: `{"url":"http://x"}`,
+		}, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, id)
+	}
+	wantStatus(t, a.postWithToken("/projects/"+itoa(projectID)+"/checks", checkFormValues("backup", "")), http.StatusSeeOther)
+	bound, err := a.store.BoundChannelIDs(t.Context(), a.onlyCheckOf(t, projectID).ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(bound)
+	if !slices.Equal(bound, want) {
+		t.Fatalf("bound = %v, want %v", bound, want)
+	}
+}
+
+func TestCheckFormDurationFieldsOfferTheSharedSuggestions(t *testing.T) {
+	a, projectID := projectWith(t)
+	body := a.client.Get("/projects/" + itoa(projectID) + "/checks/new").Body
+	wantList(t, body, "dur-list", suggestedDurations)
+	wantWired(t, body, "dur-list", "period_secs", "grace_secs", "scan_interval_secs", "max_runtime_secs", "nag_interval_secs")
+}
+
+// Each suggestion must survive all five duration fields.
+func TestEverySuggestedDurationIsAcceptedByTheCheckForm(t *testing.T) {
+	a, projectID := projectWith(t)
+	for _, suggestion := range suggestedDurations {
+		form := checkFormValues(suggestion, "")
+		for _, field := range []string{"period_secs", "grace_secs", "scan_interval_secs", "max_runtime_secs", "nag_interval_secs"} {
+			form.Set(field, suggestion)
+		}
+		res := a.postWithToken("/projects/"+itoa(projectID)+"/checks", form)
+		if res.StatusCode != http.StatusSeeOther {
+			t.Fatalf("the check form rejected its own suggestion %q: %d", suggestion, res.StatusCode)
+		}
+		want, _ := duration.Parse(suggestion)
+		stored := a.checkNamed(t, projectID, suggestion)
+		for label, got := range map[string]*int64{
+			"period": stored.PeriodSecs, "scan": stored.ScanIntervalSecs, "max runtime": stored.MaxRuntimeSecs, "nag": stored.NagIntervalSecs,
+		} {
+			if got == nil || *got != want {
+				t.Errorf("%q: %s = %v, want %d", suggestion, label, got, want)
+			}
+		}
+		if stored.GraceSecs != want {
+			t.Errorf("%q: grace = %d, want %d", suggestion, stored.GraceSecs, want)
+		}
+	}
+}
+
+func (a *app) checkNamed(t *testing.T, projectID int64, name string) models.Check {
+	t.Helper()
+	checks, err := a.store.ListChecksForProject(t.Context(), projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	t.Fatalf("no check stored for %q", name)
+	return models.Check{}
 }

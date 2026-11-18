@@ -702,3 +702,74 @@ func TestCheckPageShowsNotificationChannelAndError(t *testing.T) {
 		t.Fatalf("the channel name and error text must show: %s", res.Body)
 	}
 }
+
+func (a *app) createCheckViaForm(t *testing.T, projectID int64, override map[string]string) *testutil.Response {
+	t.Helper()
+	form := checkFormValues("job", "")
+	for key, value := range override {
+		form.Set(key, value)
+	}
+	return a.postWithToken("/projects/"+itoa(projectID)+"/checks", form)
+}
+
+func TestCreateCheckAndPauseResume(t *testing.T) {
+	a, projectID := projectWith(t)
+	wantStatus(t, a.createCheckViaForm(t, projectID, nil), http.StatusSeeOther)
+	path := "/checks/" + itoa(a.onlyCheckOf(t, projectID).ID)
+	wantStatus(t, a.postToken(path+"/pause"), http.StatusSeeOther)
+	if got := a.onlyCheckOf(t, projectID).Status; got != models.StatusPaused {
+		t.Fatalf("after pause: %s", got)
+	}
+	wantStatus(t, a.postToken(path+"/resume"), http.StatusSeeOther)
+	if got := a.onlyCheckOf(t, projectID).Status; got != models.StatusNew {
+		t.Fatalf("after resume: %s", got)
+	}
+}
+
+func TestAcknowledgePersists(t *testing.T) {
+	a, projectID := projectWith(t)
+	wantStatus(t, a.createCheckViaForm(t, projectID, nil), http.StatusSeeOther)
+	check := a.onlyCheckOf(t, projectID)
+	if err := a.store.SetStatus(t.Context(), check.ID, models.StatusDown); err != nil {
+		t.Fatal(err)
+	}
+	wantStatus(t, a.postToken("/checks/"+itoa(check.ID)+"/ack"), http.StatusSeeOther)
+	if !a.onlyCheckOf(t, projectID).Acknowledged {
+		t.Fatal("the acknowledgement was not stored")
+	}
+}
+
+func TestCreateCheckPersistsMaxRuntime(t *testing.T) {
+	a, projectID := projectWith(t)
+	wantStatus(t, a.createCheckViaForm(t, projectID, map[string]string{"max_runtime_secs": "120"}), http.StatusSeeOther)
+	if got := a.onlyCheckOf(t, projectID).MaxRuntimeSecs; got == nil || *got != 120 {
+		t.Fatalf("max runtime = %v", got)
+	}
+}
+
+func TestCreateCheckPersistsNagInterval(t *testing.T) {
+	a, projectID := projectWith(t)
+	wantStatus(t, a.createCheckViaForm(t, projectID, map[string]string{"nag_interval_secs": "120"}), http.StatusSeeOther)
+	if got := a.onlyCheckOf(t, projectID).NagIntervalSecs; got == nil || *got != 120 {
+		t.Fatalf("nag interval = %v", got)
+	}
+}
+
+func TestInvalidCronIsRejected(t *testing.T) {
+	a, projectID := projectWith(t)
+	res := a.createCheckViaForm(t, projectID, map[string]string{"schedule_kind": "cron", "period_secs": "", "cron_expr": "not a cron"})
+	wantStatus(t, res, http.StatusOK) // the form again, not a redirect
+	wantContains(t, res.Body, "invalid cron expression", "the refusal is shown")
+	checks, err := a.store.ListChecksForProject(t.Context(), projectID)
+	if err != nil || len(checks) != 0 {
+		t.Fatalf("checks = %v, %v", checks, err)
+	}
+}
+
+// A refused owner form still knows the viewer is an admin.
+func TestAdminKeepsNavLinkOnOwnerFormValidationError(t *testing.T) {
+	a, projectID := projectWith(t)
+	res := a.createCheckViaForm(t, projectID, map[string]string{"period_secs": ""})
+	wantStatus(t, res, http.StatusOK)
+	wantContains(t, res.Body, `href="/admin"`, "admin nav link")
+}

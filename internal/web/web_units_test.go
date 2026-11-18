@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,8 +11,7 @@ import (
 	"github.com/henry40408/pingward/internal/models"
 )
 
-// Ported from the src/web.rs unit tests. The twelve validate_check and
-// timezone tests wait for the check forms (cron/tz fixtures, Step 9).
+// Ported from the src/web.rs unit tests.
 
 func testConfig(env map[string]string) *config.Config {
 	cfg := config.Load(func(key string) (string, bool) {
@@ -292,5 +292,143 @@ func TestASecureFlashCookieIsHostPrefixedAndPrefixLegal(t *testing.T) {
 	}
 	if name := plain.flashCookie("settings").Name; name != flashCookieBase {
 		t.Errorf("plain flash cookie name = %q", name)
+	}
+}
+
+func baseCheckInput() checkInput {
+	return checkInput{name: "c", scheduleKind: "period", periodSecs: "3600", graceSecs: "300", timezone: "UTC"}
+}
+
+func wantCheckRefusal(t *testing.T, in checkInput, want string) {
+	t.Helper()
+	if _, refusal := validateCheck(in); refusal != want {
+		t.Errorf("refusal = %q, want %q", refusal, want)
+	}
+}
+
+func TestValidateCheckAcceptsAValidPeriodForm(t *testing.T) {
+	if _, refusal := validateCheck(baseCheckInput()); refusal != "" {
+		t.Errorf("refused: %s", refusal)
+	}
+}
+
+func TestValidateCheckRejectsAnUnknownTimezone(t *testing.T) {
+	in := baseCheckInput()
+	in.timezone = "Asia/Taipeh"
+	_, refusal := validateCheck(in)
+	if !strings.Contains(refusal, "Asia/Taipeh") || !strings.Contains(refusal, "IANA") {
+		t.Errorf("got %q", refusal)
+	}
+}
+
+func TestValidateCheckCarriesTheValidatedTimezone(t *testing.T) {
+	in := baseCheckInput()
+	in.timezone = "  Asia/Taipei  "
+	valid, _ := validateCheck(in)
+	if valid.timezone != "Asia/Taipei" {
+		t.Errorf("timezone = %q", valid.timezone)
+	}
+}
+
+func TestValidateTimezoneTreatsBlankAsUTCAndCanonicalizes(t *testing.T) {
+	for raw, want := range map[string]string{"": "UTC", "   ": "UTC", "Europe/Berlin": "Europe/Berlin"} {
+		if got, err := validateTimezone(raw); err != nil || got != want {
+			t.Errorf("validateTimezone(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	if _, err := validateTimezone("Mars/Olympus"); err == nil {
+		t.Error("Mars/Olympus must be refused")
+	}
+}
+
+// Blank means unset for a setting, so the check's own zone still applies.
+func TestOptionalTimezoneSettingTreatsBlankAsUnset(t *testing.T) {
+	if got, err := validateSetting("", "x", settingTimezone); err != nil || got != "" {
+		t.Errorf("blank: %q, %v", got, err)
+	}
+	if got, err := validateSetting(" Europe/Berlin ", "x", settingTimezone); err != nil || got != "Europe/Berlin" {
+		t.Errorf("padded: %q, %v", got, err)
+	}
+	if _, err := validateSetting("nonsense", "x", settingTimezone); err == nil {
+		t.Error("nonsense must be refused")
+	}
+}
+
+func TestValidateCheckRejectsAnEmptyOrWhitespaceOnlyName(t *testing.T) {
+	for _, name := range []string{"", "   "} {
+		in := baseCheckInput()
+		in.name = name
+		wantCheckRefusal(t, in, "name is required")
+	}
+}
+
+func TestValidateCheckTrimsTheName(t *testing.T) {
+	in := baseCheckInput()
+	in.name = "  backup  "
+	if valid, _ := validateCheck(in); valid.name != "backup" {
+		t.Errorf("name = %q", valid.name)
+	}
+}
+
+func TestValidateCheckAcceptsPositiveOverrides(t *testing.T) {
+	in := baseCheckInput()
+	in.scanInterval, in.maxRuntime, in.nag = "10", "20", "30"
+	valid, refusal := validateCheck(in)
+	if refusal != "" {
+		t.Fatal(refusal)
+	}
+	wantSeconds(t, "scan", valid.scanInterval, 10)
+	wantSeconds(t, "max runtime", valid.maxRuntime, 20)
+	wantSeconds(t, "nag", valid.nag, 30)
+}
+
+func TestValidateCheckRejectsABadOverride(t *testing.T) {
+	in := baseCheckInput()
+	in.scanInterval = "abc"
+	wantCheckRefusal(t, in, "scan interval must be a positive duration (e.g. 30, 5m, 1h30m)")
+	in = baseCheckInput()
+	in.maxRuntime = "0"
+	wantCheckRefusal(t, in, "max runtime must be a positive duration (e.g. 30, 5m, 1h30m)")
+}
+
+func TestValidateCheckAcceptsHumanReadableDurations(t *testing.T) {
+	in := checkInput{
+		name: "c", scheduleKind: "period", periodSecs: "1h30m", graceSecs: "5m", timezone: "UTC",
+		scanInterval: "30s", maxRuntime: "2m", nag: "1h",
+	}
+	valid, refusal := validateCheck(in)
+	if refusal != "" {
+		t.Fatal(refusal)
+	}
+	wantSeconds(t, "period", valid.periodSecs, 5400)
+	if valid.graceSecs != 300 {
+		t.Errorf("grace = %d", valid.graceSecs)
+	}
+	wantSeconds(t, "scan", valid.scanInterval, 30)
+	wantSeconds(t, "max runtime", valid.maxRuntime, 120)
+	wantSeconds(t, "nag", valid.nag, 3600)
+}
+
+func TestValidateCheckScheduleRefusals(t *testing.T) {
+	cases := []struct {
+		mutate func(*checkInput)
+		want   string
+	}{
+		{func(in *checkInput) { in.scheduleKind = "weekly" }, "invalid schedule kind"},
+		{func(in *checkInput) { in.periodSecs = " " }, "period_secs required for period mode"},
+		{func(in *checkInput) { in.periodSecs = "0" }, "period_secs must be > 0"},
+		{func(in *checkInput) { in.graceSecs = "x" }, "grace_secs must be a duration (e.g. 30, 5m, 1h30m)"},
+		{func(in *checkInput) { in.graceSecs = "-1" }, "grace_secs must be >= 0"},
+		{func(in *checkInput) { in.scheduleKind, in.cronExpr = "cron", "" }, "cron_expr required for cron mode"},
+	}
+	for _, c := range cases {
+		in := baseCheckInput()
+		c.mutate(&in)
+		wantCheckRefusal(t, in, c.want)
+	}
+	in := baseCheckInput()
+	in.scheduleKind, in.cronExpr = "cron", "not a cron"
+	if _, refusal := validateCheck(in); !strings.HasPrefix(refusal, "invalid cron expression: ") {
+		t.Errorf("got %q", refusal)
 	}
 }

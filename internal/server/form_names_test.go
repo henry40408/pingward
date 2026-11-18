@@ -51,3 +51,20 @@ func TestAdminProjectUpdateStoresATrimmedName(t *testing.T) {
 		t.Fatalf("stored name = %q", got)
 	}
 }
+
+func TestCheckCreateStoresATrimmedName(t *testing.T) {
+	a, projectID := projectWith(t)
+	wantStatus(t, a.postWithToken("/projects/"+itoa(projectID)+"/checks", checkFormValues("  backup  ", "")), http.StatusSeeOther)
+	if got := a.onlyCheckOf(t, projectID).Name; got != "backup" {
+		t.Fatalf("stored name = %q", got)
+	}
+}
+
+func TestCheckUpdateStoresATrimmedName(t *testing.T) {
+	a, projectID := projectWith(t)
+	checkID := a.addCheck(t, projectID, "old", "u-1")
+	wantStatus(t, a.postWithToken("/checks/"+itoa(checkID), checkFormValues("  renamed  ", "")), http.StatusSeeOther)
+	if got := a.onlyCheckOf(t, projectID).Name; got != "renamed" {
+		t.Fatalf("stored name = %q", got)
+	}
+}
