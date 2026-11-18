@@ -85,6 +85,9 @@ func (s *Server) launch(binary string, port int, options Options) error {
 	s.cmd = cmd
 	token := make(chan string, 1)
 	go readSetupToken(stderr, token)
+	if options.ExistingDatabase {
+		return s.waitUntilHealthy()
+	}
 	select {
 	case s.SetupToken = <-token:
 	case <-time.After(startupTimeout):

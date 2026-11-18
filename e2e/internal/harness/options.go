@@ -8,6 +8,9 @@ type Options struct {
 	// database the scan loop's first sleep is the environment default (30 s),
 	// since no per-check override exists yet. Zero keeps the default.
 	ScanIntervalSecs int
+	// ExistingDatabase says ExtraEnv points DATABASE_URL at a database that
+	// already has users: the server prints no setup token then.
+	ExistingDatabase bool
 	// ExtraEnv is for @smtp-env and @trusted-proxy, as KEY=value.
 	ExtraEnv []string
 }
