@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -24,6 +25,9 @@ import (
 const (
 	httpDrainTimeout = 3 * time.Second
 	dbCloseTimeout   = 5 * time.Second
+	// handlerGrace is how long handlers cut off by Close get to finish before
+	// the database closes under them.
+	handlerGrace = 2 * time.Second
 	// loopRestartBackoff is the first wait before a panicked loop restarts.
 	loopRestartBackoff = time.Second
 	// readHeaderTimeout guards against slow-header clients; it does not limit
@@ -54,8 +58,9 @@ func serve(p process, s started) int {
 		closeDatabase(s.logger, database)
 		return exitFailure
 	}
+	handlers := &inflightHandlers{}
 	srv := &http.Server{
-		Handler:           server.New(deps, web.Routes(deps), server.Mounts(deps)),
+		Handler:           handlers.track(server.New(deps, web.Routes(deps), server.Mounts(deps))),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 	loops := startLoops(s, deps)
@@ -75,7 +80,7 @@ func serve(p process, s started) int {
 	s.logger.Info("shutdown requested; draining")
 	close(stopping)
 	loops.stop()
-	drainHTTP(s.logger, srv)
+	drainHTTP(s.logger, srv, handlers)
 	loops.wait()
 	closeDatabase(s.logger, database)
 	return code
@@ -149,7 +154,7 @@ func (l *backgroundLoops) wait() { l.group.Wait() }
 
 // drainHTTP gives connections 3 seconds, then closes them: event streams never
 // end by themselves.
-func drainHTTP(logger *slog.Logger, srv *http.Server) {
+func drainHTTP(logger *slog.Logger, srv *http.Server, handlers *inflightHandlers) {
 	ctx, cancel := context.WithTimeout(context.Background(), httpDrainTimeout)
 	defer cancel()
 	err := srv.Shutdown(ctx)
@@ -161,6 +166,33 @@ func drainHTTP(logger *slog.Logger, srv *http.Server) {
 	}
 	logger.Warn("http connections still open after 3s; closing them")
 	_ = srv.Close()
+	// Close does not wait for handlers; one still writing would hit a closed database.
+	if !handlers.waitIdle(handlerGrace) {
+		logger.Warn("handlers still running after close; continuing shutdown")
+	}
+}
+
+// inflightHandlers counts requests being served.
+type inflightHandlers struct{ running atomic.Int64 }
+
+func (i *inflightHandlers) track(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i.running.Add(1)
+		defer i.running.Add(-1)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// waitIdle reports whether every handler returned within limit.
+func (i *inflightHandlers) waitIdle(limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for i.running.Load() > 0 {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return true
 }
 
 // closeDatabase bounds the close at 5 seconds so a stuck connection cannot

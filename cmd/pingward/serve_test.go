@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -213,5 +215,44 @@ func TestServeExitsWhenAMigrationIsHalfApplied(t *testing.T) {
 	code, stderr := runServeWith(t, map[string]string{"DATABASE_URL": url})
 	if code != exitFailure || !strings.Contains(stderr, "partially applied") {
 		t.Fatalf("exit code %d, stderr %q", code, stderr)
+	}
+}
+
+func TestWaitIdleWaitsForARunningHandlerWithinTheLimit(t *testing.T) {
+	handlers := &inflightHandlers{}
+	started, release := make(chan struct{}), make(chan struct{})
+	handler := handlers.track(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(started)
+		<-release
+	}))
+	go handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	<-started
+	if handlers.waitIdle(50 * time.Millisecond) {
+		t.Fatal("reported idle while a handler was running")
+	}
+	time.AfterFunc(100*time.Millisecond, func() { close(release) })
+	if !handlers.waitIdle(waitLimit) {
+		t.Fatal("did not see the handler finish")
+	}
+}
+
+func TestDrainHTTPWaitsForHandlersCutOffByClose(t *testing.T) {
+	handlers := &inflightHandlers{}
+	started := make(chan struct{})
+	var finished atomic.Bool
+	srv := httptest.NewUnstartedServer(handlers.track(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done() // Close cancels the request; finishing takes a moment.
+		time.Sleep(300 * time.Millisecond)
+		finished.Store(true)
+	})))
+	srv.Start()
+	defer srv.Close()
+	go http.Get(srv.URL) //nolint:errcheck
+	<-started
+	// Shutdown would wait for the handler itself, so exercise the Close path.
+	_ = srv.Config.Close()
+	if !handlers.waitIdle(handlerGrace) || !finished.Load() {
+		t.Fatalf("handler not finished after the wait (finished=%v)", finished.Load())
 	}
 }
