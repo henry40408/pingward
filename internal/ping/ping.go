@@ -86,7 +86,9 @@ func (h *Handler) apply(w http.ResponseWriter, r *http.Request, req request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	check, err := h.Store.FindCheckByUUID(r.Context(), req.uuid)
+	// A client that hangs up (curl -m) must not cancel the writes halfway.
+	ctx := context.WithoutCancel(r.Context())
+	check, err := h.Store.FindCheckByUUID(ctx, req.uuid)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -95,15 +97,15 @@ func (h *Handler) apply(w http.ResponseWriter, r *http.Request, req request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	if err := h.record(r, *check, req, body); err != nil {
+	if err := h.record(ctx, r, *check, req, body); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *Handler) record(r *http.Request, check models.Check, req request, body []byte) error {
-	ctx, now := r.Context(), h.Now()
+func (h *Handler) record(ctx context.Context, r *http.Request, check models.Check, req request, body []byte) error {
+	now := h.Now()
 	if len(body) > maxStoredBodyBytes {
 		body = body[:maxStoredBodyBytes]
 	}

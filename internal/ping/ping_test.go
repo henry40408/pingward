@@ -297,3 +297,18 @@ func TestPingWithoutTrustedProxiesRecordsThePeer(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+// A client that times out and hangs up must not abort the state change.
+func TestPingStillRecordsAfterTheClientDisconnects(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	request := httptest.NewRequestWithContext(ctx, "POST", "/ping/abc/fail", nil)
+	request.RemoteAddr = "192.0.2.1:5000"
+	recorder := httptest.NewRecorder()
+	f.mux.ServeHTTP(recorder, request)
+	f.wantStatus(t, recorder, 200)
+	if got := f.check(t).Status; got != models.StatusDown {
+		t.Fatalf("status = %s, want down", got)
+	}
+}
