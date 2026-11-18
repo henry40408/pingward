@@ -4,7 +4,10 @@ package main
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/henry40408/pingward/internal/config"
 )
@@ -16,13 +19,29 @@ type process struct {
 	lookupEnv func(string) (string, bool)
 	stdout    io.Writer
 	stderr    io.Writer
+	// interrupts delivers SIGINT and SIGTERM.
+	interrupts <-chan os.Signal
+	// serve runs the server after the startup checks pass; nil stops there,
+	// so the tests of that phase need no database.
+	serve func(p process, s started) int
+}
+
+// started is what the startup checks produce.
+type started struct {
+	cfg    config.Config
+	logger *slog.Logger
 }
 
 func main() {
+	// Buffered: a signal that arrives before serve listens must not be lost.
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, syscall.SIGINT, syscall.SIGTERM)
 	os.Exit(run(process{
-		lookupEnv: os.LookupEnv,
-		stdout:    os.Stdout,
-		stderr:    os.Stderr,
+		lookupEnv:  os.LookupEnv,
+		stdout:     os.Stdout,
+		stderr:     os.Stderr,
+		interrupts: interrupts,
+		serve:      serve,
 	}))
 }
 
@@ -44,7 +63,10 @@ func run(p process) int {
 	for _, warning := range startupWarnings(cfg) {
 		logger.Warn(warning)
 	}
-	return 0
+	if p.serve == nil {
+		return 0
+	}
+	return p.serve(p, started{cfg: cfg, logger: logger})
 }
 
 func startupWarnings(cfg config.Config) []string {
