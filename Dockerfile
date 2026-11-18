@@ -1,58 +1,38 @@
 # syntax=docker/dockerfile:1
 
-# ---- build: static musl binary via cargo-zigbuild -------------------------
-# Runs on the native build platform; zig cross-compiles, so no qemu.
-# The Rust version comes from rust-toolchain.toml. Don't change this to e.g.
-# `rust:1.97`: un-suffixed tags resolve to trixie (a silent Debian major bump).
-FROM --platform=$BUILDPLATFORM rust:bookworm AS build
-
-# cmake: aws-lc-sys (rustls crypto) C build. curl + xz: fetch and unpack zig.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends cmake curl xz-utils \
-    && rm -rf /var/lib/apt/lists/*
-
-# Not 0.15+: it adds a libc++-19 bindgen requirement.
-ARG ZIG_VERSION=0.14.1
-# >= 0.23.0 filters `-Wl,--fix-cortex-a53-843419` (passed by rustc >= 1.98 for
-# aarch64 musl), which zig's linker rejects.
-ARG ZIGBUILD_VERSION=0.23.0
-RUN cargo install cargo-zigbuild --version "${ZIGBUILD_VERSION}" --locked
-RUN set -eux; \
-    case "$(uname -m)" in \
-      x86_64) zarch=x86_64 ;; \
-      aarch64) zarch=aarch64 ;; \
-      *) echo "unsupported build arch $(uname -m)" >&2; exit 1 ;; \
-    esac; \
-    curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${zarch}-linux-${ZIG_VERSION}.tar.xz" \
-      | tar -xJ -C /opt; \
-    ln -s "/opt/zig-${zarch}-linux-${ZIG_VERSION}/zig" /usr/local/bin/zig
+# ---- build: cross-compile a static Go binary --------------------------------
+# Runs on the native build platform; Go cross-compiles to the target with
+# CGO off, so no qemu and no C toolchain.
+# No Go version tag: the image's Go is used when it is at least go.mod's
+# `toolchain` line; otherwise GOTOOLCHAIN=auto fetches that line (auto only
+# moves up). Keep the `bookworm` suffix — a bare tag
+# resolves to trixie, a silent Debian bump.
+FROM --platform=$BUILDPLATFORM golang:bookworm AS build
 
 WORKDIR /app
 
-# Install the pinned toolchain in its own layer, so source edits don't re-download it.
-COPY rust-toolchain.toml .
-RUN cargo --version
+# The official image sets GOTOOLCHAIN=local, which ignores go.mod's toolchain
+# line. Fetch a newer toolchain in a layer keyed on go.mod/go.sum alone, so
+# source edits do not re-download it.
+ENV GOTOOLCHAIN=auto
+COPY go.mod go.sum ./
+RUN go version
 
 COPY . .
 
-# Map TARGETARCH to the musl triple and build with the pinned toolchain.
-# GIT_VERSION comes from the workflow (`.git` is excluded from the context);
-# without it the image is labelled `dev`.
+# `vendor/` ships in the repository, so the build needs no network.
+ARG TARGETOS
 ARG TARGETARCH
 ARG GIT_VERSION=dev
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target,sharing=locked \
-    set -eux; \
-    case "$TARGETARCH" in \
-      amd64) target=x86_64-unknown-linux-musl ;; \
-      arm64) target=aarch64-unknown-linux-musl ;; \
-      *) echo "unsupported target arch $TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    rustup target add "$target"; \
-    GIT_VERSION="${GIT_VERSION}" cargo zigbuild --release --target "$target"; \
-    install -Dm755 "target/${target}/release/pingward" /out/pingward
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
+    go build -mod=vendor -trimpath \
+      -ldflags "-s -w -X github.com/henry40408/pingward/internal/version.version=${GIT_VERSION}" \
+      -o /out/pingward ./cmd/pingward
 
 # ---- runtime: minimal static image (CA certs + tzdata, no shell) ------------
+# Not :nonroot — running as root keeps bind-mounted data/cache dirs writable
+# without a permissions change.
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/pingward /pingward
 

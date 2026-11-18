@@ -5,82 +5,64 @@ The code map for contributors. Install, config and API usage are in
 
 ## Overview
 
-pingward is a single `axum` process serving a server-rendered browser UI
-(maud views compiled into the binary), machine `/ping/*` endpoints, and
-a bearer-authenticated REST API under `/api/v1` with an OpenAPI document and
-Scalar UI. All three share one `AppState` and one `sqlx::AnyPool` that talks to
-SQLite or Postgres.
+pingward is a single Go process (standard library `net/http`) serving a
+server-rendered browser UI (views embedded in the binary), machine `/ping/*`
+endpoints, and a bearer-authenticated REST API under `/api/v1` with an OpenAPI
+document and Scalar UI. All three share one `database/sql` pool that talks to
+SQLite or Postgres. It replaced an earlier Rust implementation; databases,
+cookies, API keys and the HTTP surface are unchanged.
 
 ## Repository layout
 
-| Path                   | Contents                                                                |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `src/`                 | Router composition, handlers, domain logic                              |
-| `src/api/`             | The `/api/v1` REST surface (DTOs, input parsing, extractors, handlers)  |
-| `src/views/`           | maud page views (one fn per page) and the shared `layout::page`          |
-| `assets/`              | CSS, scripts, embedded fonts and icons, served by `src/assets.rs`       |
-| `migrations/sqlite/`   | SQLite migrations                                                       |
-| `migrations/postgres/` | The same migrations, hand-duplicated for Postgres                       |
-| `tests/`               | Integration tests, one file per feature area (`cargo nextest run`)      |
-| `e2e/`                 | cucumber + thirtyfour browser tests; its own cargo workspace            |
+| Path                              | Contents                                                          |
+| --------------------------------- | ----------------------------------------------------------------- |
+| `cmd/pingward/`                   | Entry point: config, logging, retired-variable check, graceful shutdown |
+| `internal/`                       | All application packages (below)                                  |
+| `internal/db/migrations/sqlite/`  | SQLite migrations                                                 |
+| `internal/db/migrations/postgres/`| The same migrations, hand-duplicated for Postgres                 |
+| `internal/assets/static/`         | CSS, scripts, embedded fonts and icons                            |
+| `e2e/`                            | godog + chromedp browser tests; its own Go module                 |
+| `testdata/`                       | Inventory of the original Rust tests mapped to Go tests           |
 
-## Module map
+## Package map
 
-- `src/lib.rs` — module declarations and `app()`, which composes the `Router`.
-- `src/main.rs` — entry point: reads `Config`, sets up tracing, connects and
-  migrates the DB, spawns the two background loops, runs `axum::serve`, drains
-  on SIGTERM/SIGINT (see *Graceful shutdown*). Installs **mimalloc** as the
-  `#[global_allocator]` (binary only).
-- `src/web.rs` — the browser UI: `routes()`, page/form handlers, the session,
-  CSRF and response-header middleware, and owner/admin scoping helpers
-  (`owned_project`, `owned_check`, `admin_project`, `admin_check`).
-- `src/ping.rs` — `/ping/{uuid}[/fail|/start|/log|/{code}]`. The `ping_uuid`
-  is the only credential, so it is UUID **v4** (122 random bits); v7's index
-  locality is useless for an exact-match lookup and would leak creation time
-  and cut randomness to 74 bits.
-- `src/api/` — `mod.rs` (router, OpenAPI/Scalar handlers), `v1.rs` (handlers),
-  `dto.rs` (response shapes), `input.rs` (request bodies), `extract.rs`
-  (`ApiUser` bearer extractor), `error.rs` (JSON error type).
-- `src/auth.rs` — session cookie naming, argon2 hashing, the password policy,
-  forward-auth and client-IP resolution, and the `CurrentUser`/`OptionalUser`/
-  `AdminUser` extractors.
-- `src/secret.rs` — the process secret and every HMAC derived from it (session
-  cookie, CSRF token, flash cookie).
-- `src/elevate.rs` — the in-memory per-session unlock for `/admin`'s
-  access-granting actions.
-- `src/apikey.rs` — API key generation (`pw_...`) and SHA-256 hashing.
-- `src/ratelimit.rs` — `RateLimiter<K>`, the in-memory fixed-window limiter
-  behind both `POST /login` limiters, plus the key functions `rate_limit_key`
-  (per address) and `account_key` (per username).
-- `src/state.rs` — `AppState` (`store`, `config`, `events`, `login_limiter`,
-  `account_limiter`, `elevations`) with `FromRef` impls.
-- `src/store.rs` — `Store`, the only data-access layer.
-- `src/db.rs` — `connect()` (builds the pool, applies SQLite pragmas) and
-  `migrate()` (picks the embedded migrator by URL scheme).
-- `src/models.rs` — domain structs and the `str_enum!` string-backed enums
-  (`CheckStatus`, `PingKind`, `ScheduleKind`, `ChannelKind`, `NotifyStatus`).
-- `src/scheduler.rs` — `due_time`/`overrun_time`, `scan_once` (downs
-  overdue/overrun checks), `nag_once` (reminders), `run_scan_loop`.
-- `src/prune.rs` — `prune_once` (retention-based deletion of pings,
-  notifications and audit rows, plus expired sessions; returns `PruneCounts`)
-  and `run_prune_loop`. All three retention settings default to **off** — a
-  default that started deleting the audit trail on upgrade would destroy the
-  record it exists to keep.
-- `src/shutdown.rs` — the shutdown flag (`channel()` → `ShutdownTx`/`Shutdown`)
-  and `os_signal()`.
-- `src/notify.rs` — the `Notifier` trait and its six implementations,
-  `notifier_for`, `deliver_event`, and notification text.
-- `src/config.rs` — `Config` (`from_env`, testable via `from_map`),
-  `SmtpConfig`, and the `effective_scan_interval`/`effective_nag_interval`
-  cascades.
-- `src/duration.rs` — `parse_duration`/`fmt_duration` (`5m`, `1h30m`, `2d`),
-  lossless, used by form fields and duration env vars.
-- `src/view.rs` — view helpers: the lossy display formatter `fmt_secs`,
-  `fmt_utc`, `next_due`, and `display_status` (below).
-- `src/markdown.rs` — rendering of project/check descriptions.
-- `src/assets.rs` — serves `app.css`, `app.js`, `theme-init.js`, the fonts and
-  the icons, content-addressed by hash (`IMMUTABLE_CACHE`).
-- `src/error.rs` — `AppError`, the app-wide `IntoResponse` error.
+- `cmd/pingward` — `main.go` (run, exit codes), `env.go` (`legacyEnvVars`),
+  `logging.go` (`PINGWARD_LOG_LEVEL`/`PINGWARD_LOG_FORMAT`, slog), `serve.go`
+  (migrate, listen, scan and prune loops, drain, WAL checkpoint, DB close).
+- `internal/server` — `New` composes the handler; `Mounts` adds the ping router
+  and the API; security headers and HSTS wrap everything.
+- `internal/web` — the browser UI: `Routes`, handlers, session, CSRF guard,
+  forward-auth, flash cookies, elevation, audit of admin access, SSE.
+- `internal/ping` — `/ping/{uuid}[/fail|/start|/log|/{code}]`. The `ping_uuid`
+  is the only credential.
+- `internal/api` — the `/api/v1` REST surface: routes, DTOs, body parsing,
+  error envelope, embedded OpenAPI document and Scalar page.
+- `internal/auth` — argon2 password hashing and policy, client IP, trusted
+  proxies, forward-auth username.
+- `internal/secret` — the process secret and every HMAC derived from it
+  (session, CSRF, flash), plus the setup token.
+- `internal/elevate` — the in-memory per-session unlock for `/admin`.
+- `internal/apikey` — API key generation (`pw_...`) and SHA-256 hashing.
+- `internal/ratelimit` — the in-memory fixed-window limiter.
+- `internal/store` — the only data-access layer (all SQL).
+- `internal/db` — opening the pool, SQLite pragmas, embedded migrations with
+  sqlx-compatible bookkeeping, time formatting.
+- `internal/models` — domain structs and string-backed enums.
+- `internal/scheduler` — `DueTime`/`OverrunTime`, the scan and nag passes, the
+  scan loop.
+- `internal/prune` — retention-based deletion of pings, notifications, audit
+  rows and expired sessions.
+- `internal/events` — the in-process broker behind live tail.
+- `internal/notify` — the six notifiers, event text, retry policy.
+- `internal/config` — `Config` loaded from the environment (testable from a map).
+- `internal/cron`, `internal/tz`, `internal/duration`, `internal/markdown`,
+  `internal/ids` — cron parsing and next-fire, the timezone list, duration
+  parsing and formatting (`5m`, `1h30m`, `2d`), description rendering, IDs.
+- `internal/view`, `internal/views` — display helpers (status, heartbeat,
+  next due) and the page views (one function per page, shared layout).
+- `internal/assets` — serves `app.css`, `app.js`, `theme-init.js`, fonts, icons.
+- `internal/version` — the footer stamp set at link time.
+- `internal/testutil` — shared test helpers (clients, stores, log capture).
 
 **Display status** (`view::display_status`) layers `late` and `running` on top
 of the stored `CheckStatus`, so the stored status keeps its narrower meaning.
@@ -92,32 +74,25 @@ is only stamped by `ping::apply`, so it is `NULL` for a never-pinged check and
 for one downed by a `fail` ping, whereas `due_time` is what `scan_once`
 evaluates. The deadline includes grace (hence "due"); a paused check shows none.
 
+
 ## Request lifecycle / router composition
 
-`lib.rs::app()` merges sibling routers and attaches `AppState`:
+`server.New` builds one `http.ServeMux` and wraps it:
 
-```rust
-Router::new()
-    .route("/healthz", get(|| async { "ok" }))
-    .merge(web::routes()
-        .layer(csrf_guard)          // innermost
-        .layer(anonymous_session)
-        .layer(forward_auth_session)
-        .layer(no_store)
-        .layer(content_security_policy)) // outermost of the `web` layers
-    .merge(ping::routes())
-    .merge(api::routes())
-    .merge(assets::routes())
-    .layer(hsts)                        // app-wide
-    .layer(security_headers)            // outermost overall
-    .with_state(state)
+```go
+mux.HandleFunc("GET /healthz", ...)
+web.Mount(mux, deps, web.Routes(deps)) // per-route middleware, below
+// assets, then Mounts: ping router and API
+return securityHeaders(hsts(maxAge, mux)) // hsts app-wide; headers outermost
 ```
 
-Only `web::routes()` carries the session/CSRF layers. Because the other routers
-are merged as *siblings*, `/ping/*`, `/api/*`, assets and `/healthz` are
-**structurally** exempt from CSRF — no change inside `web::routes()` can start
-covering them. `csrf_guard` passes GET/HEAD/OPTIONS and otherwise requires the
-token in `X-CSRF-Token` or the `_csrf` form field.
+`web.Mount` wraps each web route in, from the outside in: content-security
+policy, no-store, forward-auth session, anonymous session, CSRF guard. Only web
+routes carry the session/CSRF layers. Because `/ping/*`, `/api/*`, assets and
+`/healthz` are registered directly on the mux, they are **structurally** exempt
+from CSRF: no change to the web middleware can start covering them. The guard
+passes GET/HEAD/OPTIONS and otherwise requires the token in `X-CSRF-Token` or
+the `_csrf` form field.
 
 **`no_store`** sets `Cache-Control: no-store` unless a response already has one,
 so authenticated pages and the `/login`/`/setup` forms (which embed a
@@ -153,7 +128,7 @@ position relative to the request chain is irrelevant.
 
 ### Working without JavaScript
 
-The UI must stay usable with scripts off; `tests/no_js.rs` and
+The UI must stay usable with scripts off; `internal/server/nojs_test.go` and
 `e2e/features/no_js.feature` guard it.
 
 - **`data-href` is a mouse convenience over a real link.** Each row's name is an
@@ -169,7 +144,7 @@ The UI must stay usable with scripts off; `tests/no_js.rs` and
   it, so `app.css`'s `@media (prefers-color-scheme: light) {
   :root:not([data-theme]) }` only ever applies to a scriptless browser and
   cannot fight the toggle. That light palette is therefore written **twice** (a
-  selector list cannot span a media query); `tests/no_js.rs` compares the
+  selector list cannot span a media query); `internal/server/nojs_test.go` compares the
   copies token by token.
 - **Script-only controls are not drawn** without script (`:root:not(.js)` hides
   `.copy`, `.live-toggle`, the theme toggle). Content is the opposite: `/admin`'s
@@ -240,7 +215,7 @@ ambient authority.
 
 ### Session and CSRF secret
 
-Every browser credential is keyed off one process secret (`src/secret.rs`,
+Every browser credential is keyed off one process secret (`internal/secret`,
 `PINGWARD_SECRET`):
 
 ```
@@ -257,12 +232,12 @@ signature, and every rendered form would print it.
   makes the row-free `anonymous_session` possible.
 - **The cookie is verified before any DB work** (`secret::verify_session`), so
   a forged or DB-leaked id never reaches a lookup. The cookie value is *not*
-  the session id; always go through `secret::session_id_from_jar`.
+  the session id; always go through the session verification in `internal/secret`.
 
 Rotating the secret ends every browser session at once (rows remain until
 pruned). Unset, a random secret is generated per process, so **every restart
 signs everyone out**; `main::warn_on_ephemeral_secret` says so at startup. API
-keys (SHA-256 digests, `src/apikey.rs`) never touch this secret.
+keys (SHA-256 digests, `internal/apikey`) never touch this secret.
 
 ### Cookie attributes
 
@@ -300,16 +275,16 @@ purpose: a permanent branch for a one-time, self-healing inconvenience
 
 ## Persistence
 
-One `sqlx::AnyPool` (`db::connect`) dispatches on the `DATABASE_URL` scheme.
+One `database/sql pool` (`db::connect`) dispatches on the `DATABASE_URL` scheme.
 All queries go through `Store`. The `Any` driver does **not** translate `?`, so
 use `$N` placeholders and `RETURNING id`.
 
-Migrations are hand-duplicated in `migrations/sqlite/` and
-`migrations/postgres/`; a schema change means writing both. Both sets are
-embedded with `sqlx::migrate!`, because the release image ships only the binary
-and runs from `/data` — a migrator reading `migrations/` from disk would panic.
+Migrations are hand-duplicated in `internal/db/migrations/sqlite/` and
+`internal/db/migrations/postgres/`; a schema change means writing both. Both sets are
+embedded with `go:embed`, because the release image ships only the binary
+and runs from `/data` — a migrator reading the files from disk would fail.
 
-`db::connect` applies SQLite-only pragmas per connection: `foreign_keys` (so
+`db.Open` applies SQLite-only pragmas per connection: `foreign_keys` (so
 `ON DELETE CASCADE` works; Postgres does this natively), `busy_timeout` 5000ms,
 and, for file DBs, WAL with `synchronous = NORMAL`. In-memory SQLite is capped
 at one connection since `:memory:` is per-connection.
@@ -342,7 +317,7 @@ a bar count.
 ## Auth & authorization
 
 Sessions are a `session_cookie_name(cookie_secure)` cookie plus argon2 password
-hashes (`src/auth.rs`). An optional forward-auth header
+hashes (`internal/auth`). An optional forward-auth header
 (`PINGWARD_FORWARD_AUTH_HEADER` + `PINGWARD_TRUSTED_PROXIES`) auto-provisions a
 passwordless non-admin user, only when the peer is a trusted proxy.
 
@@ -353,7 +328,7 @@ passwordless non-admin user, only when the peer is a trusted proxy.
   `Store::find_session_user` only once past the window's half-life (~one write
   per 36h). `last_seen_at` has its own 60s throttle for `/account`'s display.
 - **Absolute** — `SESSION_ABSOLUTE_MAX_DAYS` (30) from `created_at`, never
-  extended. Enforced in Rust (`auth::is_past_absolute_cap`), not SQL, because
+  extended. Enforced in Go (`auth::is_past_absolute_cap`), not SQL, because
   pre-`0010` rows can have `created_at = ''`, which sorts below every RFC3339
   string and would read as infinitely old. `list_sessions_for_user` filters on
   it; `delete_expired_sessions` deletes on either layer (excluding
@@ -405,7 +380,7 @@ once.
     not left one failure from lockout.
   - A lockout is a **DoS primitive** against any known username; accepted, not
     solved. The correct password is refused too
-    (`tests/login_rate_limit.rs::a_locked_account_refuses_even_the_correct_password`).
+    (the `login_rate_limit` tests).
     It is kept proportionate by being a rolling window, per account,
     per process, and irrelevant under forward auth.
 
@@ -421,7 +396,7 @@ windows would be the bypass. Refusing outright would turn a spray into a global
 lockout, and existing counters are never evicted (that would let a throttled
 client reset itself).
 
-State is in-process, like `AppState::events`: replicas count separately and a
+State is in-process, like `events.Broker`: replicas count separately and a
 restart resets everything.
 
 ### The password policy, and why `/login` is exempt from it
@@ -452,7 +427,7 @@ checked-in list. `validate_password` is the seam to add it at.
 account) it still verifies against a per-process throwaway hash
 (`dummy_password_hash`) and discards the result via `black_box`. Otherwise
 response time reveals which usernames exist
-(`tests/auth_web.rs::an_unknown_username_costs_the_same_as_a_wrong_password`
+(the `auth_web` tests
 measured ~1.9ms vs ~590ms without it). The preceding user lookup still differs,
 but by orders of magnitude less.
 
@@ -482,16 +457,16 @@ before name/expiry validation.
 
 ### Creating a user, and the order of the checks
 
-`Store::create_user` returns `CreateUserError`, not `sqlx::Error`, so a
+`Store::create_user` returns `CreateUserError`, not a raw driver error, so a
 duplicate username cannot fall into `AppError::Db`'s blank 500. `UsernameTaken`
 is classified from the backend's unique-violation code (SQLite 2067, Postgres
-23505; `tests/pg_store.rs` covers the latter).
+23505; the Postgres store tests covers the latter).
 
 `users_create` runs **username → password policy → duplicate → elevation gate →
 hash → insert**. Everything before the gate is read-only, so a doomed
 submission says why instead of demanding a confirmation first (a locked admin
 learns nothing the user list does not show). **The gate must stay immediately
-above the first side effect**; `tests/admin_elevation.rs` pins both halves.
+above the first side effect**; the `admin_elevation` tests pins both halves.
 
 The pre-check does not replace the error mapping — two admins can race it.
 `setup_submit` also handles `UsernameTaken`, for two visitors racing the first
@@ -503,7 +478,7 @@ changing that is a migration, not a validator tweak.
 ### Elevation for `/admin`'s access-granting actions
 
 `/admin`'s controls are single-button inline forms (`users_toggle_admin` posts
-no body), so re-auth is decoupled from the action (`src/elevate.rs`): a refused
+no body), so re-auth is decoupled from the action (`internal/elevate`): a refused
 action redirects to `GET /admin/unlock`; `POST /admin/unlock` runs
 `reauthenticate`; `web::elevation` checks freshness (`ELEVATION_TTL_SECS`,
 15 minutes).
@@ -573,8 +548,7 @@ The page copy is longer than the dialog's single line.
 
 ### Rejected authentication attempts
 
-Failures are `tracing` events under `pingward::auth` (separate from
-`pingward::session`). Nothing else records a rejected attempt — `audit_log`
+Failures are `slog` records with an `event` attribute. Nothing else records a rejected attempt — `audit_log`
 records successes and the limiters tell nobody — so this is the only spray
 signal. One event per layer, discriminated by a field, so one alert rule
 catches all of it:
@@ -593,20 +567,20 @@ catches all of it:
   answers before `login_limiter`, and bots never send `_csrf`, so that reason
   carries all the unthrottled noise, while the others mean a token was
   presented and failed. `no_session` is unreachable while the layer order holds,
-  so it warns. `tests/csrf_logging.rs` pins the levels — do not flatten them.
+  so it warns. the `csrf_logging` tests pins the levels — do not flatten them.
 
 The 403 stays bodyless; naming the missing field would only coach a scanner.
 
 The password is never logged. `username` goes through `auth::log_username`
 (truncated) and is rendered with `Debug` (`username = ?…`), which stops an
-embedded newline forging a log entry. `tests/auth_logging.rs` pins both.
+embedded newline forging a log entry. the `auth_logging` tests pins both.
 
 ### Session events
 
 Session lifecycle is logged under `pingward::session` rather than `audit_log`
 (which models "an admin acted on a target" and has no ip/user agent; these are
 high-volume, per-request), so it can be silenced independently
-(`RUST_LOG=info,pingward::session=warn`). A session is identified only by
+(`PINGWARD_LOG_LEVEL=warn (session events log at info)`). A session is identified only by
 `handle` — `auth::session_log_handle`, the `/account` SHA-256 handle cut to 16
 hex chars — **never the raw id**. Bulk teardowns log `count` instead.
 
@@ -646,17 +620,17 @@ extracts `AdminUser`/`ApiUser` itself, before any body extractor, so the guard
 rejects before the body is parsed. Tests derive the route list from the router
 source (`tests/common::routes_in_router_source`), so a new route that forgets
 its guard fails with no table to update:
-`tests/admin.rs::non_admin_forbidden_on_every_admin_route` and
-`tests/api_v1.rs::every_api_v1_route_requires_a_bearer_key` (`/api/docs` and
+the `admin` tests and
+the `api_v1` tests (`/api/docs` and
 `/api/openapi.json` are session-gated and fall outside the `/api/v1` prefix).
 
 `/api/v1` scoping goes through `resolve_project`/`resolve_check`/
-`resolve_channel` in `src/api/v1.rs`: owner, else audited admin access
+`resolve_channel` in `internal/api/resolve.go`: owner, else audited admin access
 (`admin.api.access`), else 404. Ownership is tested exhaustively and
 **two-sided** — non-owner gets 404 *and* owner gets non-404 on the same id,
 since a nonexistent id also 404s and a one-sided test would pass vacuously:
-`tests/api_v1.rs::member_cannot_reach_another_users_resource_on_any_api_route`
-and `tests/web_ownership.rs::member_cannot_reach_another_users_resource_on_any_web_route`
+the `api_v1` tests
+and the `web_ownership` tests
 (which excludes `/admin*` and `/account/*`).
 
 ### Reading vs. disclosing under `/admin`
@@ -679,21 +653,21 @@ The REST API needs no equivalent: `CheckDto` includes `ping_uuid`, and
 
 ## Background loops
 
-`main.rs` spawns two tasks, after building `AppState` so both loops and the
-server share `state.events`:
+`cmd/pingward/serve.go` starts two goroutines, after building the web deps so
+both loops and the server share one `events.Broker`:
 
-- `scheduler::run_scan_loop` — every `PINGWARD_SCAN_INTERVAL` (default 30s),
+- the `scheduler` scan loop — every `PINGWARD_SCAN_INTERVAL` (default 30s),
   downs overdue/overrun checks, then runs `nag_once`; notifications are
-  delivered in spawned tasks.
-- `prune::run_prune_loop` — every `PINGWARD_PRUNE_INTERVAL_SECS` (default 1h),
+  delivered in goroutines.
+- the `prune` loop — every `PINGWARD_PRUNE_INTERVAL_SECS` (default 1h),
   applies the retention settings and deletes expired sessions.
 
 Scan and nag intervals cascade check → project → global setting → env
-(`effective_scan_interval`/`effective_nag_interval`); non-positive or unset
+(`internal/config`, `internal/scheduler`); non-positive or unset
 falls through. Nag has no env default — off unless a level opts in.
 
 One polling loop, stateless across restarts (every pass recomputes from the
-DB), was chosen over per-check `tokio` timers (restart and race handling, hard
+DB), was chosen over per-check timers (restart and race handling, hard
 to test) and over an external cron driving scans (another deployment piece).
 Detection latency is bounded by one scan interval, and so is reminder cadence:
 a nag interval shorter than the tick cannot fire faster.
@@ -714,42 +688,39 @@ store a mixed-offset or differently formatted timestamp.
 
 ## Graceful shutdown
 
-`src/shutdown.rs` is one `watch<bool>` flag behind `(ShutdownTx, Shutdown)`,
-shared by the server and both loops and raised on the first SIGTERM/SIGINT
-(`os_signal`). Dropping `ShutdownTx` also counts as a request.
+`cmd/pingward/serve.go` listens for the first SIGTERM/SIGINT on a channel, so
+the signal name is logged; a closed channel counts as a request too.
 
 **The handler is mandatory.** The image's exec-form `ENTRYPOINT ["/pingward"]`
 has no init shim, so pingward is PID 1, and Linux discards default-disposition
-signals to PID 1 — without a handler `docker compose down` waits 10s and
+signals to PID 1: without a handler `docker compose down` waits 10s and
 SIGKILLs.
 
 The drain order matters:
 
-1. `with_graceful_shutdown` stops accepting and finishes in-flight requests,
-   bounded by `HTTP_DRAIN_TIMEOUT` (3s): an open SSE stream only ends on client
-   disconnect, and axum's drain has no timeout of its own.
-2. Each loop returns from its `select!` at the sleep; an in-flight pass
-   completes.
-3. `main` **joins** both handles, so no loop query is outstanding when the pool
-   closes (`PoolClosed` otherwise).
-4. `store.pool.close()` bounded by `POOL_CLOSE_TIMEOUT` (5s; with the drain,
-   inside Docker's 10s), since fire-and-forget `deliver_event` tasks may still hold
-   connections.
+1. `http.Server.Shutdown` stops accepting and finishes in-flight requests,
+   bounded by 3s: an open SSE stream only ends on client disconnect.
+2. Each loop returns at its sleep; an in-flight pass completes (passes run on a
+   context detached from the signal).
+3. `serve` **waits** for both loops, so no loop query is outstanding when the
+   database closes.
+4. A WAL checkpoint (`TRUNCATE`), then the DB close bounded by 5s (with the
+   drain, inside Docker's 10s), since fire-and-forget delivery goroutines may
+   still hold connections.
 
-For SQLite, closing the last connection checkpoints the WAL and removes the
-`-wal`/`-shm` sidecars
-(`db::tests::closing_the_pool_checkpoints_and_removes_wal_sidecars`); SIGKILL
-left them to be replayed on every start.
+For SQLite, the checkpoint removes the `-wal`/`-shm` sidecars; SIGKILL left them
+to be replayed on every start. `cmd/pingward/serve_test.go` and
+`binary_test.go` pin the order and the SIGTERM exit time.
 
 ## Live-tail signal bus (SSE)
 
-`AppState::events` is a `broadcast::Sender<i64>` (capacity 256) carrying a
+`events.Broker` is a `broadcast::Sender<i64>` (capacity 256) carrying a
 `check_id` whenever that check changes. Producers, each gated on
 `receiver_count() > 0` so it is free when unwatched:
 
 - `ping::apply` — after every `insert_ping` (all kinds, including `Log`), before
   the paused-check early return, so paused checks still publish.
-- `scheduler::run_scan_loop` — for each `Down` event from `scan_once`.
+- the `scheduler` scan loop — for each `Down` event from `scan_once`.
 
 `GET /checks/{id}/events` and `GET /admin/checks/{id}/events`
 (`web::sse_for_check`) stream a bare `"changed"`, **never data**: the browser
@@ -906,28 +877,29 @@ only self-generated literals are interpolated.
 
 ## Views & assets
 
-maud compiles `src/views/` into the binary — **run `cargo build` after
-any view or route change**. The E2E harness runs `target/debug/pingward`
-and only builds it when missing (`e2e/src/server.rs::ensure_binary`), so a
-stale binary is silently reused. Interactive elements carry `data-testid`,
-used by the integration tests and the E2E steps.
+Views live in `internal/views` and are embedded in the binary: **rebuild
+`bin/pingward` after any view or route change**. The E2E harness runs
+`bin/pingward` and only builds it when missing (`harness.ensureBinary`), so a
+stale binary is silently reused. Interactive elements carry `data-testid`, used
+by the integration tests and the E2E steps. `internal/views/testdata/*.golden.html`
+pin the markup.
 
 ## Testing
 
-Integration tests live in `tests/`, one file per area; run with
-`cargo nextest run` (CI does not use `cargo test`). SQLite tests always run.
-`tests/pg_store.rs` skips without `TEST_DATABASE_URL=postgres://…`;
-`tests/smtp_e2e.rs` skips without `PINGWARD_TEST_SMTP_HOST` (plus
-`PINGWARD_TEST_SMTP_PORT`, `PINGWARD_TEST_MAILPIT_API`). `docker compose up -d`
-starts both backends.
+Run `go test -race ./...`. SQLite tests always run. The Postgres store tests
+skip without `TEST_DATABASE_URL=postgres://…`; the SMTP tests skip without
+`PINGWARD_TEST_SMTP_HOST` (plus `PINGWARD_TEST_SMTP_PORT`,
+`PINGWARD_TEST_MAILPIT_API`). `docker compose up -d` starts both backends.
+`cmd/pingward` builds the binary once in `TestMain` for tests that run it as a
+process.
 
-`e2e/` is a cucumber + thirtyfour harness — `.feature` files plus steps in
-`e2e/tests/e2e/steps/`, run with `cd e2e && cargo test --test e2e`. It is its
-own workspace, so root `--workspace` runs never drive a browser. Each scenario
-gets a fresh binary and temp SQLite DB on a random port, because `POST /setup`
-creates the first admin once and nearly every scenario walks through it. A
-shared server with a DB reset between scenarios was rejected (mutating a live
-WAL database from outside); revisit only if spawn cost comes to dominate.
+`e2e/` is a godog + chromedp harness: `.feature` files plus steps in
+`e2e/steps_*_test.go`, run with `cd e2e && go test -count=1 .`. It is its own
+module, so root runs never drive a browser. Each scenario gets a fresh binary
+and temp SQLite DB on a random port, because `POST /setup` creates the first
+admin once and nearly every scenario walks through it. A shared server with a DB
+reset between scenarios was rejected (mutating a live WAL database from
+outside).
 
 `@nojs` scenarios (`no_js.feature`) run in a session opened with
 `Emulation.setScriptExecutionDisabled`, which applies to the next document, so
@@ -936,19 +908,23 @@ quietly come to depend on `app.js` for. Checks that matter in both directions
 (open without script, collapsed with it) are paired across `no_js.feature` and
 the JS-on suite, so an always-open "fix" cannot pass alone.
 
+
 ## How to make common changes
 
-- **DB column/table**: migration SQL in **both** `migrations/sqlite/` and
-  `migrations/postgres/`, then the `models.rs` struct and `Store` methods
-  (`$N` placeholders). Keep the portable types: timestamps `TEXT` (UTC RFC
-  3339), integers and booleans `INTEGER`/`BIGINT` — no `TIMESTAMPTZ`/`BOOLEAN`.
-  SQLite cannot alter a `CHECK` constraint, so widening one means rebuilding
-  the table (`0004_nag.sql`). A stray `?` placeholder passes on SQLite and
-  fails only on Postgres, so run `tests/pg_store.rs`.
-- **Enum variant**: extend the `str_enum!` invocation in `models.rs`.
-- **Notifier**: implement `Notifier` in `notify.rs`, add a `ChannelKind`
-  variant, wire it into `notifier_for`.
-- **Route**: register it in `web::routes()`, `ping::routes()` or
-  `api::routes()`. Under `/admin*`, extract `AdminUser`; under `/api/v1`,
-  `ApiUser` — before any body extractor. The route-derived tests pick it up
-  automatically.
+- **DB column/table**: migration SQL in **both** `internal/db/migrations/sqlite/`
+  and `internal/db/migrations/postgres/`, numbered on from the last file, then
+  the `models` struct and `store` methods (`$N` placeholders). Never edit an
+  applied migration. Keep the portable types: timestamps `TEXT` (UTC RFC 3339),
+  integers and booleans `INTEGER`/`BIGINT`: no `TIMESTAMPTZ`/`BOOLEAN`. SQLite
+  cannot alter a `CHECK` constraint, so widening one means rebuilding the table
+  (`0004_nag.sql`). A stray `?` placeholder passes on SQLite and fails only on
+  Postgres, so run the Postgres store tests.
+- **Enum variant**: add it in `internal/models`.
+- **Notifier**: implement the notifier in `internal/notify`, add a channel kind,
+  wire it into the sender lookup.
+- **Route**: register it in `web.Routes`, the ping router or the API routes.
+  Under `/admin*`, require an admin; under `/api/v1`, the bearer guard runs
+  before any body is read. The route-derived tests pick it up automatically.
+- **Environment variable**: add it to `internal/config`, the README table and
+  `/admin`'s Environment card; update `legacyEnvVars` in `cmd/pingward/env.go`
+  when retiring or renaming one.

@@ -1,12 +1,12 @@
 # pingward
 
-> A self-hosted, healthchecks-style uptime & cron monitor, built in Rust.
+> A self-hosted, healthchecks-style uptime & cron monitor, written in Go.
 
 [![CI](https://github.com/henry40408/pingward/actions/workflows/ci.yml/badge.svg)](https://github.com/henry40408/pingward/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/henry40408/pingward/graph/badge.svg)](https://codecov.io/gh/henry40408/pingward)
 [![Release](https://img.shields.io/github/v/release/henry40408/pingward)](https://github.com/henry40408/pingward/releases/latest)
 [![License](https://img.shields.io/github/license/henry40408/pingward)](LICENSE.txt)
-[![Rust toolchain](https://img.shields.io/badge/dynamic/toml?url=https://raw.githubusercontent.com/henry40408/pingward/main/rust-toolchain.toml&query=$.toolchain.channel&label=rust%20toolchain&logo=rust)](https://www.rust-lang.org/)
+[![Go version](https://img.shields.io/github/go-mod/go-version/henry40408/pingward)](go.mod)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io-blue.svg)](https://ghcr.io/henry40408/pingward)
 [![Casual Maintenance Intended](https://casuallymaintained.tech/badge.svg)](https://casuallymaintained.tech/)
 [![Vibe Coded](https://img.shields.io/badge/vibe_coded-Claude-d97757?logo=anthropic&logoColor=white)](https://claude.com/claude-code)
@@ -101,7 +101,7 @@ waiting out Docker's 10s timeout.
 ### From source
 
 ```sh
-cargo run   # SQLite file pingward.sqlite3, bind 127.0.0.1:8080
+go run ./cmd/pingward   # SQLite file pingward.sqlite3, bind 127.0.0.1:8080
 ```
 
 ## Configuration
@@ -116,8 +116,8 @@ All configuration is via environment variables:
 | `PINGWARD_SECRET` | random per process | Signs session cookies and CSRF tokens; at least 16 bytes. See below. |
 | `PINGWARD_SCAN_INTERVAL` | `30s` | How often checks are re-evaluated. |
 | `PINGWARD_PRUNE_INTERVAL_SECS` | `3600` | How often the retention prune runs. |
-| `PINGWARD_LOG_FORMAT` | `full` | `full`, `compact`, `pretty`, or `json` (one object per line). |
-| `RUST_LOG` | `error,pingward=info` | Log filter by target and level, e.g. `pingward=debug`. |
+| `PINGWARD_LOG_FORMAT` | `full` | `json` writes one slog JSON object per line; `full`, `compact` and `pretty` all write slog text. |
+| `PINGWARD_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
 | `PINGWARD_TRUSTED_PROXIES` | — | Comma-separated addresses or CIDR blocks whose `X-Forwarded-For` and forward-auth header are believed. |
 | `PINGWARD_FORWARD_AUTH_HEADER` | — | Header carrying a pre-authenticated username (trusted proxies only). |
 | `PINGWARD_FORWARD_AUTH_LOGOUT_URL` | — | Where **Log out** redirects, e.g. your gateway's sign-out URL. |
@@ -133,9 +133,8 @@ max-runtime and interval fields in the UI and API) accept raw seconds or
 strings like `5m`, `1h30m`, `2d`. An unparseable env value falls back to its
 default. `/admin` shows the parsed values on its **Environment** card.
 
-Session creation, renewal and destruction are logged under `pingward::session`
-(hashed session id, IP, user agent); `RUST_LOG=info,pingward::session=warn`
-silences them.
+Session creation, renewal and destruction are logged at info level (hashed
+session id, IP, user agent); `PINGWARD_LOG_LEVEL=warn` silences them.
 
 ### `PINGWARD_SECRET`
 
@@ -308,46 +307,57 @@ The full schema is at `/api/openapi.json`, with an interactive
 [Scalar](https://github.com/scalar/scalar) reference at `/api/docs` (both need a
 logged-in session).
 
+## Upgrading from the Rust releases
+
+pingward is now written in Go. The database, `PINGWARD_SECRET`, cookies, API
+keys and the HTTP surface are unchanged, so an existing volume works as is and
+nobody is signed out. Two things differ:
+
+- **`RUST_LOG` was removed.** Startup fails while it is set, naming
+  `PINGWARD_LOG_LEVEL` as the replacement (`debug`, `info`, `warn`, `error`).
+- **Log format changed.** Logs are slog records: `PINGWARD_LOG_FORMAT=json`
+  prints `time`, `level` and `msg` keys, anything else prints slog text.
+  `compact` and `pretty` no longer differ, and `NO_COLOR` has no effect (no ANSI
+  colour is written).
+
 ## Development
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the code map and how the pieces
 fit together.
 
 ```sh
-cargo build                       # required after any view or route change
-cargo run                         # start the server
-cargo fmt --all --check           # formatting (enforced in CI)
-cargo clippy --all-targets -- -D warnings
-cargo nextest run                 # Rust tests (use nextest, not `cargo test`)
-cargo deny check                  # supply-chain / license checks
+go build -o bin/pingward ./cmd/pingward   # rebuild after any view or route change
+go run ./cmd/pingward                     # start the server
+go test -race ./...                       # tests
+go vet ./... && go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
 ```
 
-Postgres (`tests/pg_store.rs`) and SMTP (`tests/smtp_e2e.rs`) tests skip unless
-configured: `docker compose up -d`, then export
-`TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres`,
+Dependencies are vendored (`vendor/`); see CLAUDE.md for adding one. The
+Postgres and SMTP tests skip unless configured: `docker compose up -d`, then
+export `TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres`,
 `PINGWARD_TEST_SMTP_HOST=localhost`, `PINGWARD_TEST_SMTP_PORT=1025`,
 `PINGWARD_TEST_MAILPIT_API=http://localhost:8025`.
 
 ### End-to-end tests
 
-Browser tests (cucumber + thirtyfour) live in `e2e/`, a separate cargo
-workspace. Each scenario runs a freshly built binary against a temporary SQLite
-database. Requires a local Chrome or Chromium (the driver is downloaded
-automatically; on macOS: `brew install --cask ungoogled-chromium`).
+Browser tests (godog + chromedp) live in `e2e/`, a separate Go module. Each
+scenario runs the built binary against a temporary SQLite database. Requires a
+local Chrome or Chromium (no driver to download; on macOS:
+`brew install --cask ungoogled-chromium`).
 
 ```sh
-cargo build && cd e2e && cargo test --test e2e
+go build -o bin/pingward ./cmd/pingward && cd e2e && go test -count=1 .
 ```
 
 ### Screenshots and app icon
 
 `docs/screenshots/` is generated by seeding demo data into a throwaway database
 and capturing each page. Re-run after UI changes and commit the PNGs.
-`assets/apple-touch-icon.png` is rendered from `assets/favicon.svg`.
+`internal/assets/static/apple-touch-icon.png` is rendered from `favicon.svg`.
 
 ```sh
-cargo build && cd e2e && cargo run --bin screenshots
-cd e2e && cargo run --bin icons
+go build -o bin/pingward ./cmd/pingward && cd e2e && go run ./cmd/screenshots
+cd e2e && go run ./cmd/icons
 ```
 
 ## License

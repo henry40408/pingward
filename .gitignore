@@ -1,5 +1,8 @@
-/target
 /pingward.sqlite3*
 /bin/
+/e2e/.tmp/
+
+# `go test -coverprofile` output.
 coverage.out
+coverage-bin.out
 /covdata/
