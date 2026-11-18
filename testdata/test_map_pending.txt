@@ -1,2 +1,1 @@
 # Rust tests with no Go counterpart yet. Resolve by adding a line to test_map.txt and deleting it here.
-tests/pg_store.rs::postgres_full_round_trip

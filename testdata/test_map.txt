@@ -708,3 +708,4 @@ src/shutdown.rs::wait_resolves_immediately_when_already_triggered cmd/pingward::
 src/shutdown.rs::wait_resolves_when_sender_dropped cmd/pingward::TestShutdownResolvesWhenTheSignalSourceIsGone
 src/shutdown.rs::wait_pends_until_triggered cmd/pingward::TestServerKeepsRunningUntilTheSignal
 tests/setup_token_log.rs::the_setup_token_is_printed_on_stderr_only cmd/pingward::TestBinaryPrintsTheSetupTokenOnStderrOnlyAndStopsOnSIGTERM
+tests/pg_store.rs::postgres_full_round_trip internal/store::TestPostgresFullRoundTrip
