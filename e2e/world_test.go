@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -18,9 +19,17 @@ type world struct {
 	server  *harness.Server
 	browser *harness.Browser
 
+	mockWebhook *harness.MockWebhook
+
 	projectURL string
+	projectID  int64
+	checkID    int64
+	pingURL    string
+	webhookURL string
 	// status is the last out-of-band HTTP status.
 	status int
+	// pingStatus is the status of the last ping.
+	pingStatus int
 }
 
 // initializeScenario runs once per scenario, so every scenario gets its own
@@ -63,6 +72,9 @@ func shardKey(scenario *godog.Scenario) string {
 func (w *world) cleanUp(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
 	if w.browser != nil {
 		w.browser.Close()
+	}
+	if w.mockWebhook != nil {
+		w.mockWebhook.Close()
 	}
 	if w.server != nil {
 		w.server.Stop()
@@ -120,4 +132,31 @@ func (w *world) requireProject() (string, error) {
 		return "", errors.New("no project: no step created one for this scenario")
 	}
 	return w.projectURL, nil
+}
+
+// mock starts the scenario's webhook receiver on first use, since most
+// scenarios never deliver anything.
+func (w *world) mock() *harness.MockWebhook {
+	if w.mockWebhook == nil {
+		w.mockWebhook = harness.StartMockWebhook()
+		w.webhookURL = w.mockWebhook.URL()
+	}
+	return w.mockWebhook
+}
+
+// postFormAsUser POSTs a form with the browser's cookies (the caller supplies
+// _csrf) and follows no redirects.
+func (w *world) postFormAsUser(path string, form url.Values) (int, error) {
+	cookies, err := w.browser.CookieHeader()
+	if err != nil {
+		return 0, err
+	}
+	return w.api().PostFormAs(cookies, path, form)
+}
+
+func (w *world) requireWebhookURL() (string, error) {
+	if w.webhookURL == "" {
+		return "", errors.New("no webhook URL: no step started the mock receiver")
+	}
+	return w.webhookURL, nil
 }
