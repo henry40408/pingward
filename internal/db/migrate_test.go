@@ -295,3 +295,20 @@ func TestAdvisoryLockIDWrapsLikeSqlx(t *testing.T) {
 		}
 	}
 }
+
+// The wording is sqlx's, so a Rust-era runbook still matches the message.
+func TestMigrationErrorsReadLikeSqlx(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{DirtyError{Version: 3}, "migration 3 is partially applied; fix and remove row from `_sqlx_migrations` table"},
+		{VersionMissingError{Version: 4}, "migration 4 was previously applied but is missing in the resolved migrations"},
+		{VersionMismatchError{Version: 5}, "migration 5 was previously applied but has been modified"},
+	}
+	for _, tc := range cases {
+		if got := tc.err.Error(); got != tc.want {
+			t.Errorf("got %q, want %q", got, tc.want)
+		}
+	}
+}

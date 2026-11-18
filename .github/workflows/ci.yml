@@ -207,13 +207,19 @@ jobs:
           echo "mailpit did not become ready" >&2
           exit 1
 
+      # `-coverprofile` ignores the binary cmd/pingward's TestMain execs; with
+      # PINGWARD_COVERDIR set it builds that binary with `-cover`.
       - name: Generate coverage
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           PINGWARD_TEST_SMTP_HOST: localhost
           PINGWARD_TEST_SMTP_PORT: "1025"
           PINGWARD_TEST_MAILPIT_API: http://localhost:8025
-        run: go test -mod=vendor -coverprofile=coverage.out ./...
+        run: |
+          mkdir -p "$PWD/covdata"
+          PINGWARD_COVERDIR="$PWD/covdata" go test -mod=vendor -coverpkg=./... -coverprofile=coverage.out ./...
+          go tool covdata textfmt -i=covdata -o coverage-bin.out
+          tail -n +2 coverage-bin.out >> coverage.out
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:

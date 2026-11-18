@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/henry40408/pingward/internal/db"
 	"github.com/henry40408/pingward/internal/testutil"
 )
 
@@ -159,5 +161,57 @@ func TestServeFailsWhenTheDatabaseCannotBeOpened(t *testing.T) {
 	})
 	if code == 0 || !strings.Contains(stderr.String(), "failed to connect to database") {
 		t.Fatalf("code %d stderr %q", code, stderr.String())
+	}
+}
+
+// runServeWith runs the real serve with env on top of a working base
+// configuration and returns the exit code and stderr.
+func runServeWith(t *testing.T, overrides map[string]string) (code int, stderr string) {
+	t.Helper()
+	env := map[string]string{
+		"PINGWARD_BIND":   "127.0.0.1:0",
+		"PINGWARD_SECRET": "pingward-test-secret-32-bytes-xx",
+	}
+	for key, value := range overrides {
+		env[key] = value
+	}
+	var out, errOut testutil.LockedBuffer
+	code = run(process{
+		lookupEnv: lookupFrom(env), stdout: &out, stderr: &errOut,
+		interrupts: make(chan os.Signal, 1), serve: serve,
+	})
+	return code, errOut.String()
+}
+
+func TestServeExitsWhenTheDatabaseCannotBeOpened(t *testing.T) {
+	missingDirectory := filepath.Join(t.TempDir(), "absent", "t.sqlite3")
+	code, stderr := runServeWith(t, map[string]string{"DATABASE_URL": "sqlite://" + missingDirectory + "?mode=rwc"})
+	if code != exitFailure {
+		t.Fatalf("exit code %d, want %d", code, exitFailure)
+	}
+	if !strings.Contains(stderr, "failed to") {
+		t.Fatalf("stderr %q does not explain the failure", stderr)
+	}
+}
+
+func TestServeExitsWhenAMigrationIsHalfApplied(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "t.sqlite3")
+	url := "sqlite://" + path + "?mode=rwc"
+	database, err := db.Open(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("UPDATE _sqlx_migrations SET success = false WHERE version = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, stderr := runServeWith(t, map[string]string{"DATABASE_URL": url})
+	if code != exitFailure || !strings.Contains(stderr, "partially applied") {
+		t.Fatalf("exit code %d, stderr %q", code, stderr)
 	}
 }

@@ -230,3 +230,46 @@ func TestTransportErrorsAreClassifiedWithoutTheURL(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+type failingStore struct {
+	channels    []models.Channel
+	channelsErr error
+	recordErr   error
+	recorded    int
+}
+
+func (s *failingStore) ChannelsForCheck(context.Context, int64) ([]models.Channel, error) {
+	return s.channels, s.channelsErr
+}
+
+func (s *failingStore) RecordNotification(context.Context, store.NewNotification, time.Time) error {
+	s.recorded++
+	return s.recordErr
+}
+
+func TestDeliverEventRecordsNothingWhenChannelsCannotBeLoaded(t *testing.T) {
+	failing := &failingStore{channelsErr: context.DeadlineExceeded}
+	Deliverer{Store: failing, Retry: DefaultRetryPolicy}.DeliverEvent(bg, Event{CheckID: 1, Kind: models.EventDown}, time.Now())
+	if failing.recorded != 0 {
+		t.Fatalf("recorded %d notifications", failing.recorded)
+	}
+}
+
+func TestDeliverEventWithoutChannelsRecordsNothing(t *testing.T) {
+	failing := &failingStore{}
+	Deliverer{Store: failing, Retry: DefaultRetryPolicy}.DeliverEvent(bg, Event{CheckID: 1, Kind: models.EventDown}, time.Now())
+	if failing.recorded != 0 {
+		t.Fatalf("recorded %d notifications", failing.recorded)
+	}
+}
+
+// A failing history write must not stop the remaining channels.
+func TestDeliverEventKeepsGoingWhenRecordingFails(t *testing.T) {
+	server := newSink(t, 200)
+	channel := channelWith(models.ChannelWebhook, `{"url":"`+server.URL+`"}`)
+	failing := &failingStore{channels: []models.Channel{channel, channel}, recordErr: context.DeadlineExceeded}
+	Deliverer{Store: failing, Retry: DefaultRetryPolicy}.DeliverEvent(bg, Event{CheckID: 1, Kind: models.EventDown, At: time.Now()}, time.Now())
+	if len(server.requests) != 2 || failing.recorded != 2 {
+		t.Fatalf("requests %d, recorded %d", len(server.requests), failing.recorded)
+	}
+}

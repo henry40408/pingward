@@ -18,6 +18,10 @@ import (
 
 var binaryPath string
 
+// coverDir is where a `-cover` binary writes its profile; empty builds the
+// binary plain. `go test -coverprofile` cannot see an exec'd binary.
+var coverDir = os.Getenv("PINGWARD_COVERDIR")
+
 // TestMain builds the binary once for the tests that run it as a process.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "pingward-bin")
@@ -26,7 +30,11 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	binaryPath = filepath.Join(dir, "pingward")
-	build := exec.Command("go", "build", "-p", "2", "-o", binaryPath, ".")
+	buildArgs := []string{"build", "-p", "2", "-o", binaryPath}
+	if coverDir != "" {
+		buildArgs = append(buildArgs, "-cover")
+	}
+	build := exec.Command("go", append(buildArgs, ".")...)
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "building the binary:", err)
@@ -55,6 +63,9 @@ func command(t *testing.T, env ...string) *exec.Cmd {
 	cmd := exec.Command(binaryPath)
 	cmd.Dir = home
 	cmd.Env = append([]string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}, env...)
+	if coverDir != "" {
+		cmd.Env = append(cmd.Env, "GOCOVERDIR="+coverDir)
+	}
 	return cmd
 }
 

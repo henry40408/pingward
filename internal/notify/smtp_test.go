@@ -185,3 +185,34 @@ func TestEmailCredentialsNeedAServerThatOffersAuth(t *testing.T) {
 	}
 	requireAbsent(t, server.transcript(), "MAIL FROM")
 }
+
+func TestEmailStartTLSFailsWhenTheServerRefusesTheUpgrade(t *testing.T) {
+	// The fake answers STARTTLS with 250 instead of 220.
+	server := startFakeSMTP(t, "STARTTLS", "AUTH PLAIN")
+	smtp := server.config(config.TLSStartTLS, ptr("user"), ptr("secret"))
+	if err := NewEmail(smtp, "ops@example.com").Send(bg, simpleEvent("backup", models.EventDown)); err == nil {
+		t.Fatal("want error")
+	}
+	transcript := server.transcript()
+	requireContains(t, transcript, "STARTTLS")
+	requireAbsent(t, transcript, "AUTH PLAIN")
+	requireAbsent(t, transcript, "MAIL FROM")
+}
+
+func TestEmailImplicitTLSFailsAgainstAPlainServer(t *testing.T) {
+	server := startFakeSMTP(t)
+	smtp := server.config(config.TLSImplicit, nil, nil)
+	if err := NewEmail(smtp, "ops@example.com").Send(bg, simpleEvent("backup", models.EventDown)); err == nil {
+		t.Fatal("want error")
+	}
+	requireAbsent(t, server.transcript(), "MAIL FROM")
+}
+
+func TestEmailFailsWhenNothingListens(t *testing.T) {
+	server := startFakeSMTP(t)
+	smtp := server.config(config.TLSNone, nil, nil)
+	smtp.Port = 1 // reserved port: nothing listens there
+	if err := NewEmail(smtp, "ops@example.com").Send(bg, simpleEvent("backup", models.EventDown)); err == nil {
+		t.Fatal("want error")
+	}
+}
