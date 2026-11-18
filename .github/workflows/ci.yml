@@ -169,10 +169,15 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
+          # Stream the output so a killed runner still leaves a log. Two
+          # workers with one CPU per test run keep a whole-module diff within
+          # the runner's memory.
           status=0
+          set -o pipefail
           go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash \
-            --diff "origin/$BASE_REF" . > "$RUNNER_TEMP/mutation.log" 2>&1 || status=$?
-          cat "$RUNNER_TEMP/mutation.log"
+            --workers 2 --test-cpu 2 \
+            --diff "origin/$BASE_REF" . 2>&1 | tee "$RUNNER_TEMP/mutation.log" || status=$?
+          set +o pipefail
           # A diff with no mutable Go line (docs, CI only) yields zero mutants,
           # which gremlins scores as 0% and so fails the threshold. That is not
           # a low score, so treat it as a pass.
