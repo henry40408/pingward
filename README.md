@@ -317,8 +317,7 @@ nobody is signed out. Two things differ:
   `PINGWARD_LOG_LEVEL` as the replacement (`debug`, `info`, `warn`, `error`).
 - **Log format changed.** Logs are slog records: `PINGWARD_LOG_FORMAT=json`
   prints `time`, `level` and `msg` keys, anything else prints slog text.
-  `compact` and `pretty` no longer differ, and `NO_COLOR` has no effect (no ANSI
-  colour is written).
+  `compact` and `pretty` no longer differ.
 
 ## Development
 
