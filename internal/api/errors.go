@@ -36,11 +36,11 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 
 // notFound answers both "does not exist" and "not yours", so existence never leaks.
 func notFound(w http.ResponseWriter) {
-	writeError(w, http.StatusNotFound, "not_found", "resource not found")
+	writeError(w, http.StatusNotFound, "not_found", "Resource not found.")
 }
 
 func unauthorized(w http.ResponseWriter) {
-	writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid API key")
+	writeError(w, http.StatusUnauthorized, "unauthorized", "Missing or invalid API key.")
 }
 
 func badRequest(w http.ResponseWriter, message string) {

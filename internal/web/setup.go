@@ -11,7 +11,7 @@ import (
 	"github.com/henry40408/pingward/internal/views"
 )
 
-const setupTokenRefusal = "the setup token is missing or wrong — find it in the server log"
+const setupTokenRefusal = "The setup token is missing or wrong. Find it in the server log."
 
 func (d *Deps) setupPage(w http.ResponseWriter, r *http.Request) {
 	users, err := d.Store.CountUsers(r.Context())
@@ -86,7 +86,7 @@ func (d *Deps) setupSubmit(w http.ResponseWriter, r *http.Request) {
 	peer := auth.PeerAddr(r.RemoteAddr)
 	client := auth.RateLimitKey(r.Header, peer, d.Config.TrustedProxies)
 	if !d.SetupLimiter.Charge(client, d.Now()) {
-		d.setupRefusal(w, r, http.StatusTooManyRequests, "too many setup attempts — try again later")
+		d.setupRefusal(w, r, http.StatusTooManyRequests, "Too many setup attempts. Try again later.")
 		return
 	}
 	ip := d.clientIP(r, peer)

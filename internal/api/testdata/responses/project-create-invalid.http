@@ -7,4 +7,4 @@ x-frame-options: DENY
 referrer-policy: same-origin
 permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
 
-{"error":{"code":"bad_request","message":"name is required"}}
+{"error":{"code":"bad_request","message":"Name is required."}}

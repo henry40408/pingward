@@ -16,7 +16,7 @@ func validateTimezone(raw string) (string, error) {
 	}
 	canonical, ok := tz.Canonical(name)
 	if !ok {
-		return "", fmt.Errorf("unknown timezone %q — use an IANA name such as UTC or Asia/Taipei", name)
+		return "", fmt.Errorf("Unknown timezone %q. Use an IANA name such as UTC or Asia/Taipei.", name)
 	}
 	return canonical, nil
 }

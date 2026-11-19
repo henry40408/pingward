@@ -29,7 +29,7 @@ Feature: Account
     Then the password change is confirmed
     When I sign out
     And I sign in as "admin" with password "correct horse battery"
-    Then the login page shows the error "invalid username or password"
+    Then the login page shows the error "Invalid username or password."
     When I sign in as "admin" with password "battery staple horse"
     Then I land on the dashboard signed in
 

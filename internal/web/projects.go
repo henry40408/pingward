@@ -21,7 +21,7 @@ const maxDescriptionChars = 2000
 func validateDescription(raw string) (string, string) {
 	trimmed := strings.TrimFunc(raw, isRustSpace)
 	if utf8.RuneCountInString(trimmed) > maxDescriptionChars {
-		return "", fmt.Sprintf("description must be at most %d characters", maxDescriptionChars)
+		return "", fmt.Sprintf("Description must be at most %d characters.", maxDescriptionChars)
 	}
 	return trimmed, ""
 }
@@ -34,7 +34,7 @@ func parseOptionalDuration(raw, field string) (value *int64, refusal string) {
 	}
 	seconds, ok := duration.Parse(trimmed)
 	if !ok || seconds <= 0 {
-		return nil, field + " must be a positive duration (e.g. 30, 5m, 1h30m)"
+		return nil, field + " must be a positive duration (e.g. 30, 5m, 1h30m)."
 	}
 	return &seconds, ""
 }
@@ -55,17 +55,17 @@ func readProjectInput(r *http.Request) projectInput {
 func validateProject(in projectInput) (store.ProjectSettings, string) {
 	name := strings.TrimFunc(in.name, isRustSpace)
 	if name == "" {
-		return store.ProjectSettings{}, "name is required"
+		return store.ProjectSettings{}, "Name is required."
 	}
 	description, refusal := validateDescription(in.description)
 	if refusal != "" {
 		return store.ProjectSettings{}, refusal
 	}
-	scan, refusal := parseOptionalDuration(in.scan, "scan interval")
+	scan, refusal := parseOptionalDuration(in.scan, "Scan interval")
 	if refusal != "" {
 		return store.ProjectSettings{}, refusal
 	}
-	nag, refusal := parseOptionalDuration(in.nag, "nag interval")
+	nag, refusal := parseOptionalDuration(in.nag, "Nag interval")
 	if refusal != "" {
 		return store.ProjectSettings{}, refusal
 	}

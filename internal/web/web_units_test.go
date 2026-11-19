@@ -90,7 +90,7 @@ func TestPositiveIntegerSettingAcceptsPositive(t *testing.T) {
 
 func TestPositiveIntegerSettingRejectsZeroNegativeAndNonNumeric(t *testing.T) {
 	_, err := validateSetting("0", "Scan interval", settingDays)
-	if err == nil || err.Error() != "Scan interval must be a positive integer" {
+	if err == nil || err.Error() != "Scan interval must be a positive integer." {
 		t.Errorf("zero: got %v", err)
 	}
 	for _, bad := range []string{"-3", "abc"} {
@@ -117,7 +117,7 @@ func TestOptionalDurationAcceptsHumanReadable(t *testing.T) {
 func TestOptionalDurationRejectsZeroNegativeAndInvalid(t *testing.T) {
 	for _, bad := range []string{"0", "-3", "1x"} {
 		got, refusal := parseOptionalDuration(bad, "x")
-		if got != nil || refusal != "x must be a positive duration (e.g. 30, 5m, 1h30m)" {
+		if got != nil || refusal != "x must be a positive duration (e.g. 30, 5m, 1h30m)." {
 			t.Errorf("%q: got %v, %q", bad, got, refusal)
 		}
 	}
@@ -175,7 +175,7 @@ func TestValidateProjectRejectsAnEmptyOrWhitespaceOnlyName(t *testing.T) {
 	for _, name := range []string{"", "   "} {
 		input := baseProjectInput()
 		input.name = name
-		if _, refusal := validateProject(input); refusal != "name is required" {
+		if _, refusal := validateProject(input); refusal != "Name is required." {
 			t.Errorf("name %q: refusal %q", name, refusal)
 		}
 	}
@@ -358,7 +358,7 @@ func TestValidateCheckRejectsAnEmptyOrWhitespaceOnlyName(t *testing.T) {
 	for _, name := range []string{"", "   "} {
 		in := baseCheckInput()
 		in.name = name
-		wantCheckRefusal(t, in, "name is required")
+		wantCheckRefusal(t, in, "Name is required.")
 	}
 }
 
@@ -385,10 +385,10 @@ func TestValidateCheckAcceptsPositiveOverrides(t *testing.T) {
 func TestValidateCheckRejectsABadOverride(t *testing.T) {
 	in := baseCheckInput()
 	in.scanInterval = "abc"
-	wantCheckRefusal(t, in, "scan interval must be a positive duration (e.g. 30, 5m, 1h30m)")
+	wantCheckRefusal(t, in, "Scan interval must be a positive duration (e.g. 30, 5m, 1h30m).")
 	in = baseCheckInput()
 	in.maxRuntime = "0"
-	wantCheckRefusal(t, in, "max runtime must be a positive duration (e.g. 30, 5m, 1h30m)")
+	wantCheckRefusal(t, in, "Max runtime must be a positive duration (e.g. 30, 5m, 1h30m).")
 }
 
 func TestValidateCheckAcceptsHumanReadableDurations(t *testing.T) {
@@ -414,12 +414,12 @@ func TestValidateCheckScheduleRefusals(t *testing.T) {
 		mutate func(*checkInput)
 		want   string
 	}{
-		{func(in *checkInput) { in.scheduleKind = "weekly" }, "invalid schedule kind"},
-		{func(in *checkInput) { in.periodSecs = " " }, "period_secs required for period mode"},
-		{func(in *checkInput) { in.periodSecs = "0" }, "period_secs must be > 0"},
-		{func(in *checkInput) { in.graceSecs = "x" }, "grace_secs must be a duration (e.g. 30, 5m, 1h30m)"},
-		{func(in *checkInput) { in.graceSecs = "-1" }, "grace_secs must be >= 0"},
-		{func(in *checkInput) { in.scheduleKind, in.cronExpr = "cron", "" }, "cron_expr required for cron mode"},
+		{func(in *checkInput) { in.scheduleKind = "weekly" }, "Invalid schedule kind."},
+		{func(in *checkInput) { in.periodSecs = " " }, "Period is required in period mode."},
+		{func(in *checkInput) { in.periodSecs = "0" }, "Period must be greater than 0."},
+		{func(in *checkInput) { in.graceSecs = "x" }, "Grace period must be a duration (e.g. 30, 5m, 1h30m)."},
+		{func(in *checkInput) { in.graceSecs = "-1" }, "Grace period must be 0 or more."},
+		{func(in *checkInput) { in.scheduleKind, in.cronExpr = "cron", "" }, "Cron expression is required in cron mode."},
 	}
 	for _, c := range cases {
 		in := baseCheckInput()
@@ -428,7 +428,7 @@ func TestValidateCheckScheduleRefusals(t *testing.T) {
 	}
 	in := baseCheckInput()
 	in.scheduleKind, in.cronExpr = "cron", "not a cron"
-	if _, refusal := validateCheck(in); !strings.HasPrefix(refusal, "invalid cron expression: ") {
+	if _, refusal := validateCheck(in); !strings.HasPrefix(refusal, "Invalid cron expression: ") || !strings.HasSuffix(refusal, ".") {
 		t.Errorf("got %q", refusal)
 	}
 }

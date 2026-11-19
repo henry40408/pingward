@@ -167,7 +167,7 @@ func TestRejectedEditReRendersWithoutLeakingOrSaving(t *testing.T) {
 	empty := a.addChannel(t, projectID, models.ChannelWebhook, config{})
 	res := a.post(t, "/channels/"+itoa(empty), url.Values{"name": {"renamed"}, "webhook_url": {""}})
 	wantStatus(t, res, http.StatusOK)
-	if !strings.Contains(res.Body, "a webhook URL is required") {
+	if !strings.Contains(res.Body, "A webhook URL is required.") {
 		t.Fatalf("missing the error: %s", res.Body)
 	}
 	if channel, _ := a.store.FindChannel(t.Context(), empty); channel.Name != "chan" {
@@ -183,7 +183,7 @@ func TestRejectedEditReRendersWithoutLeakingOrSaving(t *testing.T) {
 	telegram := a.addChannel(t, projectID, models.ChannelTelegram, config{"token": telegramSecret})
 	res = a.post(t, "/channels/"+itoa(telegram), url.Values{"telegram_chat_id": {""}})
 	wantStatus(t, res, http.StatusOK)
-	if !strings.Contains(res.Body, "Telegram requires both a bot token and a chat id") {
+	if !strings.Contains(res.Body, "Telegram requires both a bot token and a chat ID.") {
 		t.Fatalf("missing the error: %s", res.Body)
 	}
 	if strings.Contains(res.Body, telegramSecret) {

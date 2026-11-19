@@ -56,7 +56,7 @@ func readAuditQuery(w http.ResponseWriter, r *http.Request) (auditQuery, bool) {
 		}
 		id, err := strconv.ParseInt(values.Get(cursor.key), 10, 64)
 		if err != nil {
-			http.Error(w, "invalid "+cursor.key, http.StatusBadRequest)
+			http.Error(w, "Invalid cursor.", http.StatusBadRequest)
 			return auditQuery{}, false
 		}
 		*cursor.into = &id

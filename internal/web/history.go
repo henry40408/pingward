@@ -49,7 +49,7 @@ func readHistoryQuery(w http.ResponseWriter, r *http.Request) (historyQuery, boo
 		}
 		id, err := strconv.ParseInt(values.Get(cursor.key), 10, 64)
 		if err != nil {
-			http.Error(w, "invalid "+cursor.key, http.StatusBadRequest)
+			http.Error(w, "Invalid cursor.", http.StatusBadRequest)
 			return historyQuery{}, false
 		}
 		*cursor.into = &id

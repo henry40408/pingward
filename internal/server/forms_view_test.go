@@ -78,7 +78,7 @@ func TestProjectDescriptionRoundTripsAndIsLengthValidated(t *testing.T) {
 	// Both sides of the 2000-character limit.
 	res := a.postWithToken(path, projectFormValues("proj", strings.Repeat("a", 2001)))
 	wantStatus(t, res, http.StatusOK)
-	wantContains(t, res.Body, "description must be at most 2000 characters", "2001 characters rejected with the exact message")
+	wantContains(t, res.Body, "Description must be at most 2000 characters.", "2001 characters rejected with the exact message")
 	if got := a.storedDescription(t, projectID); got != "**bold** desc" {
 		t.Fatalf("the rejected update overwrote the stored description: %.20q", got)
 	}
@@ -224,7 +224,7 @@ func TestCheckDescriptionRoundTripsAndIsLengthValidated(t *testing.T) {
 
 	res := a.postWithToken(path, checkFormValues("backup", strings.Repeat("a", 2001)))
 	wantStatus(t, res, http.StatusOK)
-	wantContains(t, res.Body, "description must be at most 2000 characters", "2001 characters rejected with the exact message")
+	wantContains(t, res.Body, "Description must be at most 2000 characters.", "2001 characters rejected with the exact message")
 
 	boundary := strings.Repeat("b", 2000)
 	wantStatus(t, a.postWithToken(path, checkFormValues("backup", boundary)), http.StatusSeeOther)

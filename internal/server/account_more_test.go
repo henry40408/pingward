@@ -103,7 +103,7 @@ func TestCreatingAKeyWithABadExpiryIsRejectedWithAMessage(t *testing.T) {
 	a, id := memberApp(t)
 	res := a.post(t, "/account/api-keys", keyForm(testPassword, "temp", "banana"))
 	wantStatus(t, res, http.StatusOK)
-	if !strings.Contains(res.Body, "expiry must be") {
+	if !strings.Contains(res.Body, "Expiry must be") {
 		t.Fatalf("missing message: %s", res.Body)
 	}
 	if keys, _ := a.store.ListAPIKeysForUser(t.Context(), id); len(keys) != 0 {
@@ -115,7 +115,7 @@ func TestCreatingAKeyWithABlankNameIsRejectedWithAMessage(t *testing.T) {
 	a, id := memberApp(t)
 	res := a.post(t, "/account/api-keys", keyForm(testPassword, "   ", ""))
 	wantStatus(t, res, http.StatusOK)
-	if !strings.Contains(res.Body, "a name is required") {
+	if !strings.Contains(res.Body, "A name is required.") {
 		t.Fatalf("missing message: %s", res.Body)
 	}
 	if keys, _ := a.store.ListAPIKeysForUser(t.Context(), id); len(keys) != 0 {

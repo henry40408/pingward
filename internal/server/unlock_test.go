@@ -147,7 +147,7 @@ func TestSetupStillReportsAMissingUsernameAsAPair(t *testing.T) {
 		"_csrf": {csrf}, "setup_token": {testutil.TestSetupToken}, "username": {""}, "password": {strings.Repeat("a", 20)},
 	})
 	wantStatus(t, res, http.StatusOK)
-	if !strings.Contains(res.Body, "username and password are required") || countUsers(t, a) != 0 {
+	if !strings.Contains(res.Body, "Username and password are required.") || countUsers(t, a) != 0 {
 		t.Fatal("want the combined message and no user")
 	}
 }

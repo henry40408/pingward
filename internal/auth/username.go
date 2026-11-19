@@ -20,7 +20,7 @@ const logUsernameMaxChars = 64
 func ValidateUsername(raw string) (username, refusal string) {
 	username = strings.TrimFunc(raw, isRustWhitespace)
 	if username == "" {
-		return "", "username and password are required"
+		return "", "Username and password are required."
 	}
 	if utf8.RuneCountInString(username) > MaxUsernameChars {
 		return "", fmt.Sprintf("Username must be at most %d characters.", MaxUsernameChars)

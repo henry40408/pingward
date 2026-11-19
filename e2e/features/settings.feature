@@ -36,7 +36,7 @@ Feature: Settings
     And I fill the settings field "scan_interval" with "99"
     And I fill the settings field "nag_interval" with "abc"
     And I save the settings form
-    Then the settings form shows the error "Global nag interval must be a positive duration (e.g. 30, 5m, 1h30m)"
+    Then the settings form shows the error "Global nag interval must be a positive duration (e.g. 30, 5m, 1h30m)."
     And the settings field "scan_interval" shows "99"
     And the settings field "nag_interval" shows "abc"
     And the settings page shows no flash
@@ -55,7 +55,7 @@ Feature: Settings
     When I visit "/admin"
     And I fill the settings field "pings_retention_days" with "5m"
     And I save the settings form
-    Then the settings form shows the error "Pings retention must be a positive integer"
+    Then the settings form shows the error "Pings retention must be a positive integer."
 
   Scenario: The notification timezone is saved and can be cleared
     When I visit "/admin"
@@ -70,6 +70,6 @@ Feature: Settings
     When I visit "/admin"
     And I fill the settings field "display_timezone" with "Mars/Olympus"
     And I save the settings form
-    Then the settings form shows the error "unknown timezone \"Mars/Olympus\" — use an IANA name such as UTC or Asia/Taipei"
+    Then the settings form shows the error "Unknown timezone \"Mars/Olympus\". Use an IANA name such as UTC or Asia/Taipei."
     When I visit "/admin"
     Then the settings field "display_timezone" shows ""

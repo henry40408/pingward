@@ -343,7 +343,7 @@ func TestKeyCreationWithoutOrWithWrongPasswordIsRefused(t *testing.T) {
 func TestPasswordIsCheckedBeforeTheRestOfTheKeyForm(t *testing.T) {
 	a, _ := memberApp(t)
 	res := a.post(t, "/account/api-keys", keyForm("wrong", "", "garbage"))
-	if !strings.Contains(res.Body, "Current password is incorrect.") || strings.Contains(res.Body, "a name is required") || strings.Contains(res.Body, "expiry must be a duration") {
+	if !strings.Contains(res.Body, "Current password is incorrect.") || strings.Contains(res.Body, "A name is required.") || strings.Contains(res.Body, "Expiry must be a duration") {
 		t.Fatal("the password gate must come first")
 	}
 }

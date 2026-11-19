@@ -111,13 +111,13 @@ func validateSetting(raw, label string, kind settingKind) (string, error) {
 	case settingDuration:
 		seconds, ok := duration.Parse(text)
 		if !ok || seconds <= 0 {
-			return "", fmt.Errorf("%s must be a positive duration (e.g. 30, 5m, 1h30m)", label)
+			return "", fmt.Errorf("%s must be a positive duration (e.g. 30, 5m, 1h30m).", label)
 		}
 		return strconv.FormatInt(seconds, 10), nil
 	case settingDays:
 		days, err := strconv.ParseInt(text, 10, 64)
 		if err != nil || days <= 0 {
-			return "", fmt.Errorf("%s must be a positive integer", label)
+			return "", fmt.Errorf("%s must be a positive integer.", label)
 		}
 		return strconv.FormatInt(days, 10), nil
 	}

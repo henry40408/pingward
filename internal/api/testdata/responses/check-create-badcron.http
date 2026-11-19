@@ -7,4 +7,4 @@ x-frame-options: DENY
 referrer-policy: same-origin
 permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
 
-{"error":{"code":"bad_request","message":"invalid cron expression: nope\n^\nThe 'Seconds' field does not support using names. 'nope' specified."}}
+{"error":{"code":"bad_request","message":"Invalid cron expression: nope\n^\nThe 'Seconds' field does not support using names. 'nope' specified."}}

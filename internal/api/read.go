@@ -26,7 +26,7 @@ type pageParams struct {
 func readPageParams(w http.ResponseWriter, query url.Values) (pageParams, bool) {
 	params, err := parsePageParams(query)
 	if err != nil {
-		plainText(w, http.StatusBadRequest, "Failed to deserialize query string: "+err.Error())
+		plainText(w, http.StatusBadRequest, "Failed to deserialize query string: "+err.Error()+".")
 		return pageParams{}, false
 	}
 	return params, true

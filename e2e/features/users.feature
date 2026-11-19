@@ -44,7 +44,7 @@ Feature: User management
     Then the user "member" is marked disabled
     When I sign out
     And I sign in as "member" with password "hunter2 correct"
-    Then the login page shows the error "account is disabled"
+    Then the login page shows the error "Account is disabled."
 
   Scenario: Re-enabling a disabled user restores sign-in
     Given a member "member" with password "hunter2 correct" exists

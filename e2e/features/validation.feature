@@ -12,14 +12,14 @@ Feature: Server-side form validation
     Given I open the new project form
     When I fill the project name with "   "
     And I submit the project form
-    Then the project form shows the error "name is required"
+    Then the project form shows the error "Name is required."
 
   Scenario: An invalid project scan interval is rejected and preserved
     Given I open the new project form
     When I fill the project name with "Nightly jobs"
     And I fill the project scan interval with "abc"
     And I submit the project form
-    Then the project form shows the error "scan interval must be a positive duration (e.g. 30, 5m, 1h30m)"
+    Then the project form shows the error "Scan interval must be a positive duration (e.g. 30, 5m, 1h30m)."
     And the project name field shows "Nightly jobs"
 
   Scenario: An invalid check max runtime is rejected
@@ -29,7 +29,7 @@ Feature: Server-side form validation
     And I fill the check period with 60
     And I fill the check max runtime with "abc"
     And I submit the check form
-    Then the check form shows the error "max runtime must be a positive duration (e.g. 30, 5m, 1h30m)"
+    Then the check form shows the error "Max runtime must be a positive duration (e.g. 30, 5m, 1h30m)."
 
   Scenario: An unknown check timezone is rejected
     Given a project named "Nightly jobs"
@@ -38,7 +38,7 @@ Feature: Server-side form validation
     And I fill the check period with 60
     And I fill the check timezone with "Asia/Taipeh"
     And I submit the check form
-    Then the check form shows the error "unknown timezone \"Asia/Taipeh\" — use an IANA name such as UTC or Asia/Taipei"
+    Then the check form shows the error "Unknown timezone \"Asia/Taipeh\". Use an IANA name such as UTC or Asia/Taipei."
 
   Scenario: The timezone field offers every IANA zone
     Given a project named "Nightly jobs"

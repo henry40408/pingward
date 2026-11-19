@@ -54,7 +54,7 @@ func (d *Deps) loginRefusal(w http.ResponseWriter, r *http.Request, status int, 
 
 func (d *Deps) throttledLogin(w http.ResponseWriter, r *http.Request, window int64) {
 	setRetryAfter(w, window)
-	d.loginRefusal(w, r, http.StatusTooManyRequests, "too many login attempts — try again later")
+	d.loginRefusal(w, r, http.StatusTooManyRequests, "Too many login attempts. Try again later.")
 }
 
 func (d *Deps) loginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -93,14 +93,14 @@ func (d *Deps) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if !auth.VerifyPasswordOrDummy(password, stored) {
 		failure.reason = "bad_credentials"
 		d.logLoginFailure(failure)
-		d.loginRefusal(w, r, http.StatusOK, "invalid username or password")
+		d.loginRefusal(w, r, http.StatusOK, "Invalid username or password.")
 		return
 	}
 	if user.Disabled {
 		// Not released: a known-disabled credential must not probe the budget forever.
 		failure.reason = "account_disabled"
 		d.logLoginFailure(failure)
-		d.loginRefusal(w, r, http.StatusOK, "account is disabled")
+		d.loginRefusal(w, r, http.StatusOK, "Account is disabled.")
 		return
 	}
 	d.LoginLimiter.Release(client)
