@@ -9,8 +9,12 @@ import (
 )
 
 const (
-	// hangLimit is far above the package's normal run time (a few seconds, longer with PostgreSQL).
-	hangLimit = 5 * time.Minute
+	// hangLimit is well above the package's normal run time (about 2 seconds
+	// with -race, longer with PostgreSQL). It must stay below gremlins' own
+	// per-mutant timeout: a mutant that leaks the only in-memory connection
+	// (migrate.go, `if err != nil` after d.Conn) hangs every later query, and
+	// only an aborted test binary counts as killed, not a timed-out one.
+	hangLimit = 20 * time.Second
 	// heapLimit is far above what the tests need (a few megabytes).
 	heapLimit = 512 << 20
 )
