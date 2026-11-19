@@ -27,7 +27,6 @@ func parseLogLevel(text string) (slog.Level, error) {
 
 // newLogger writes to w, which is stdout: stderr is reserved for the setup
 // token. slog has one text layout, so full, compact and pretty look alike.
-// There is no colour to turn off, so NO_COLOR needs no handling.
 func newLogger(w io.Writer, format config.LogFormat, level slog.Level) *slog.Logger {
 	handlerOptions := &slog.HandlerOptions{Level: level}
 	if format == config.LogFormatJSON {
