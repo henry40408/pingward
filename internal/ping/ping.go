@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/henry40408/pingward/internal/auth"
@@ -40,7 +41,14 @@ type Handler struct {
 	Deliver func(ctx context.Context, event notify.Event, now time.Time)
 	// Logger records a panic in the delivery goroutine; nil uses slog.Default.
 	Logger *slog.Logger
+
+	deliveries sync.WaitGroup
 }
+
+// WaitForDeliveries blocks until every delivery goroutine started so far has
+// returned. Production never needs it; tests use it so that no goroutine still
+// touches the store (or its temp dir) after the test ends.
+func (h *Handler) WaitForDeliveries() { h.deliveries.Wait() }
 
 // Mount registers the ping routes. Static segments beat {code} in the mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
@@ -180,7 +188,7 @@ func (h *Handler) markDown(ctx context.Context, check models.Check, exitCode *in
 }
 
 // deliverAsync keeps notification I/O (and the project lookup) off the ping
-// response path. The goroutine is not tracked, and outlives the request.
+// response path. The goroutine outlives the request; WaitForDeliveries joins it.
 func (h *Handler) deliverAsync(check models.Check, kind models.EventKind, cause *notify.DownCause, now time.Time) {
 	if h.Deliver == nil {
 		return
@@ -189,7 +197,9 @@ func (h *Handler) deliverAsync(check models.Check, kind models.EventKind, cause 
 	if logger == nil {
 		logger = slog.Default()
 	}
+	h.deliveries.Add(1)
 	safego.Go(logger, "ping delivery", func() {
+		defer h.deliveries.Done()
 		ctx := context.Background()
 		var projectName *string
 		if project, err := h.Store.FindProject(ctx, check.ProjectID); err == nil && project != nil {
