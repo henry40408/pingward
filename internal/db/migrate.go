@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha512"
 	"database/sql"
@@ -9,8 +10,9 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io/fs"
+	"maps"
 	"path"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -156,7 +158,7 @@ func loadMigrations(files fs.FS, dialect Dialect) ([]migration, error) {
 		}
 		migrations = append(migrations, parsed)
 	}
-	sort.Slice(migrations, func(i, j int) bool { return migrations[i].version < migrations[j].version })
+	slices.SortFunc(migrations, func(a, b migration) int { return cmp.Compare(a.version, b.version) })
 	return migrations, nil
 }
 
@@ -224,12 +226,7 @@ func checkNoneMissing(applied map[int64][]byte, migrations []migration) error {
 	for _, m := range migrations {
 		known[m.version] = true
 	}
-	versions := make([]int64, 0, len(applied))
-	for version := range applied {
-		versions = append(versions, version)
-	}
-	sort.Slice(versions, func(i, j int) bool { return versions[i] < versions[j] })
-	for _, version := range versions {
+	for _, version := range slices.Sorted(maps.Keys(applied)) {
 		if !known[version] {
 			return VersionMissingError{Version: version}
 		}

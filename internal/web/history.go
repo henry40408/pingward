@@ -60,7 +60,7 @@ func readHistoryQuery(w http.ResponseWriter, r *http.Request) (historyQuery, boo
 // parseDateBound reads RFC 3339 (from JS) or a bare YYYY-MM-DDTHH:MM[:SS] (JS
 // off) as UTC; anything else is no bound.
 func parseDateBound(raw string) *time.Time {
-	text := strings.TrimFunc(raw, isRustSpace)
+	text := trimRustSpace(raw)
 	if text == "" {
 		return nil
 	}
@@ -86,7 +86,7 @@ func dateBoundToken(at *time.Time) string {
 
 // parseFilterToken: blank or unknown is no filter; the UI offers one choice.
 func parseFilterToken[T ~string](raw string, known ...T) []T {
-	token := T(strings.TrimFunc(raw, isRustSpace))
+	token := T(trimRustSpace(raw))
 	if !slices.Contains(known, token) {
 		return nil
 	}

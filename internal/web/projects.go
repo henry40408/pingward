@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/henry40408/pingward/internal/markdown"
 	"net/http"
-	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -19,7 +18,7 @@ const maxDescriptionChars = 2000
 
 // validateDescription trims, then enforces maxDescriptionChars.
 func validateDescription(raw string) (string, string) {
-	trimmed := strings.TrimFunc(raw, isRustSpace)
+	trimmed := trimRustSpace(raw)
 	if utf8.RuneCountInString(trimmed) > maxDescriptionChars {
 		return "", fmt.Sprintf("Description must be at most %d characters.", maxDescriptionChars)
 	}
@@ -28,7 +27,7 @@ func validateDescription(raw string) (string, string) {
 
 // parseOptionalDuration treats blank as unset (inherit or off); refusal names the field.
 func parseOptionalDuration(raw, field string) (value *int64, refusal string) {
-	trimmed := strings.TrimFunc(raw, isRustSpace)
+	trimmed := trimRustSpace(raw)
 	if trimmed == "" {
 		return nil, ""
 	}
@@ -53,7 +52,7 @@ func readProjectInput(r *http.Request) projectInput {
 }
 
 func validateProject(in projectInput) (store.ProjectSettings, string) {
-	name := strings.TrimFunc(in.name, isRustSpace)
+	name := trimRustSpace(in.name)
 	if name == "" {
 		return store.ProjectSettings{}, "Name is required."
 	}

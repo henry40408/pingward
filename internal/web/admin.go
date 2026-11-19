@@ -3,7 +3,6 @@ package web
 import (
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/henry40408/pingward/internal/models"
@@ -346,7 +345,7 @@ func projectRows(projects []store.ProjectWithOwner) []views.AdminProjectRow {
 // readableSettingDuration turns stored seconds into the readable form;
 // anything else passes through untouched.
 func readableSettingDuration(raw string) string {
-	seconds, err := strconv.ParseInt(strings.TrimFunc(raw, isRustSpace), 10, 64)
+	seconds, err := strconv.ParseInt(trimRustSpace(raw), 10, 64)
 	if err != nil || seconds <= 0 {
 		return raw
 	}
