@@ -107,7 +107,7 @@ func sendSMTP(ctx context.Context, cfg config.SMTPConfig, message emailMessage) 
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	if cfg.Username != nil && cfg.Password != nil {
 		if ok, _ := client.Extension("AUTH"); !ok {
 			return fmt.Errorf("server does not offer authentication")
@@ -151,18 +151,18 @@ func connectSMTP(ctx context.Context, cfg config.SMTPConfig) (*smtp.Client, erro
 	}
 	client, err := smtp.NewClient(conn, cfg.Host)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	if cfg.TLS != config.TLSStartTLS {
 		return client, nil
 	}
 	if ok, _ := client.Extension("STARTTLS"); !ok {
-		client.Close()
+		_ = client.Close()
 		return nil, fmt.Errorf("server does not support STARTTLS")
 	}
 	if err := client.StartTLS(tlsConfig); err != nil {
-		client.Close()
+		_ = client.Close()
 		return nil, err
 	}
 	return client, nil

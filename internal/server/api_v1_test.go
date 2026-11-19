@@ -351,7 +351,7 @@ func readCapture(t *testing.T, name string) capture {
 		case strings.HasPrefix(line, "body: "):
 			c.body = strings.TrimPrefix(line, "body: ")
 		case strings.HasPrefix(line, "HTTP/1.1 "):
-			fmt.Sscanf(line, "HTTP/1.1 %d", &c.status)
+			_, _ = fmt.Sscanf(line, "HTTP/1.1 %d", &c.status)
 		case strings.HasPrefix(line, "content-type: "):
 			c.contentType = strings.TrimPrefix(line, "content-type: ")
 		}

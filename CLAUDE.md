@@ -22,10 +22,11 @@ Run from the repository root. The Go version comes from `go.mod` alone (`go` +
   runs `bin/pingward`).
 - Run: `go run ./cmd/pingward` (SQLite `pingward.sqlite3`, bind `127.0.0.1:8080`).
 - Tests: `go test -race ./...`; one test: `go test ./internal/web -run TestName`.
-- Lint (CI-enforced): `gofmt -l` on the tracked non-vendor `.go` files (must
-  print nothing), `go vet -mod=vendor ./...`,
-  `go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...`. Run all three inside
-  `e2e/` too.
+- Lint (CI-enforced): `golangci-lint fmt --diff ./...` (formatting; must print
+  nothing) and `golangci-lint run ./...`, each inside `e2e/` too. Config is in
+  `.golangci.yml`; suppress a finding with `//nolint:<linter> // reason`. `run`
+  does not check formatting, so `fmt --diff` is a separate step. The linter
+  release comes from the CI action (dependabot tracks only the action).
 - Mutation testing (CI-enforced, the `mutation` job): `go clean -testcache`, then
   `go run github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0 unleash .`. The
   efficacy threshold and the `e2e/` and `vendor/` exclusions live in

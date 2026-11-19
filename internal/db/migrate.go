@@ -81,11 +81,11 @@ func (d *DB) migrateFrom(ctx context.Context, files fs.FS) error {
 	}
 	// One connection for the whole run: the Postgres advisory lock belongs to
 	// the session.
-	conn, err := d.DB.Conn(ctx)
+	conn, err := d.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Lock before creating the table: two replicas starting on an empty
 	// database would otherwise both run CREATE TABLE and collide.
@@ -251,7 +251,7 @@ func (a applier) appliedChecksums(ctx context.Context) (map[int64][]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	applied := make(map[int64][]byte)
 	for rows.Next() {
 		var version int64

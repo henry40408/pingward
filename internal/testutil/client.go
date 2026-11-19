@@ -61,7 +61,7 @@ func (c *Client) Do(method, path string, body io.Reader, headers http.Header) *R
 	if err != nil {
 		c.T.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	text, err := io.ReadAll(res.Body)
 	if err != nil {
 		c.T.Fatal(err)

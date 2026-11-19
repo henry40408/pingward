@@ -328,7 +328,7 @@ fit together.
 go build -o bin/pingward ./cmd/pingward   # rebuild after any view or route change
 go run ./cmd/pingward                     # start the server
 go test -race ./...                       # tests
-go vet ./... && go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+golangci-lint fmt --diff ./... && golangci-lint run ./...   # lint; config in .golangci.yml
 ```
 
 Dependencies are vendored (`vendor/`); see CLAUDE.md for adding one. The

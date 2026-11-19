@@ -179,7 +179,7 @@ func TestEventsStreamEndsWhenClientDisconnects(t *testing.T) {
 	if err != nil || line != "data: changed\n" {
 		t.Fatalf("frame = %q, %v", line, err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	waitFor(t, func() bool { return a.deps.Events.Subscribers() == 0 })
 }
 
@@ -194,7 +194,7 @@ func TestEventsStreamEndsWhenServerStops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	close(stop)
 	done := make(chan struct{})
 	go func() {
@@ -238,7 +238,7 @@ func TestOwnerReceivesChangedEventWhenTheCheckIsPinged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Fatalf("content type = %q", ct)
 	}

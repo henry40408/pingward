@@ -76,7 +76,7 @@ func (a *API) BootstrapAdmin(username, password string) error {
 	if err != nil {
 		return fmt.Errorf("GET /setup: %w", err)
 	}
-	defer page.Body.Close()
+	defer func() { _ = page.Body.Close() }()
 	html, err := io.ReadAll(page.Body)
 	if err != nil {
 		return err
@@ -102,7 +102,7 @@ func (a *API) BootstrapAdmin(username, password string) error {
 	if err != nil {
 		return fmt.Errorf("POST /setup: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if location := response.Header.Get("Location"); response.StatusCode != http.StatusSeeOther || location != "/" {
 		return fmt.Errorf("bootstrapping the admin `%s` answered %d to %q", username, response.StatusCode, location)
 	}
@@ -161,7 +161,7 @@ func (a *API) status(method, target, body string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("%s %s: %w", method, target, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, response.Body)
 	return response.StatusCode, nil
 }
@@ -180,6 +180,6 @@ func (a *API) PostFormAs(cookieHeader, path string, form url.Values) (int, error
 	if err != nil {
 		return 0, fmt.Errorf("posting %s as the signed-in user: %w", path, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	return response.StatusCode, nil
 }

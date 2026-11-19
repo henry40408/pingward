@@ -91,13 +91,13 @@ func TestUserAndSessionLifecycle(t *testing.T) {
 	}
 
 	// Throttled: under 60s later, last_seen_at stays.
-	s.FindSessionUser(ctx, "sess-1", t0.Add(30*time.Second))
+	_, _ = s.FindSessionUser(ctx, "sess-1", t0.Add(30*time.Second))
 	rows, _ = s.ListSessionsForUser(ctx, uid, t0)
 	if !rows[0].LastSeenAt.Equal(t0) {
 		t.Fatal("last seen must be throttled")
 	}
 	later := t0.Add(61 * time.Second)
-	s.FindSessionUser(ctx, "sess-1", later)
+	_, _ = s.FindSessionUser(ctx, "sess-1", later)
 	rows, _ = s.ListSessionsForUser(ctx, uid, later)
 	if !rows[0].LastSeenAt.Equal(later) {
 		t.Fatal("last seen must refresh")
@@ -132,7 +132,7 @@ func TestUserAndSessionLifecycle(t *testing.T) {
 
 	// Plain DeleteSession (logout) works unscoped.
 	sessionAt(t, s, "sess-3", uid, t0, t0.Add(time.Hour))
-	s.DeleteSession(ctx, "sess-3")
+	_ = s.DeleteSession(ctx, "sess-3")
 	requireNoSession(t, s, "sess-3", t0)
 
 	// DeleteSessionsForUser keeps no row and spares other users.
@@ -165,7 +165,7 @@ func TestFindSessionUserDoesNotSlideAFreshSession(t *testing.T) {
 	uid := mustUser(t, s, "erin")
 	original := t0.Add(70 * time.Hour) // more than half of 72h left
 	sessionAt(t, s, "sess-fresh", uid, t0, original)
-	s.FindSessionUser(ctx, "sess-fresh", t0)
+	_, _ = s.FindSessionUser(ctx, "sess-fresh", t0)
 	if got := storedExpiry(t, s, "sess-fresh"); got != db.FormatTime(original) {
 		t.Fatalf("expiry %s, want %s", got, db.FormatTime(original))
 	}
@@ -175,7 +175,7 @@ func TestFindSessionUserSlidesExpiry(t *testing.T) {
 	s := testutil.NewStore(t)
 	uid := mustUser(t, s, "frank")
 	sessionAt(t, s, "sess-stale", uid, t0, t0.Add(time.Hour))
-	s.FindSessionUser(ctx, "sess-stale", t0)
+	_, _ = s.FindSessionUser(ctx, "sess-stale", t0)
 	want := db.FormatTime(t0.Add(72 * time.Hour))
 	if got := storedExpiry(t, s, "sess-stale"); got != want {
 		t.Fatalf("expiry %s, want %s", got, want)
@@ -193,11 +193,11 @@ func TestNewUserIsNotDisabled(t *testing.T) {
 func TestSetUserDisabledToggles(t *testing.T) {
 	s := testutil.NewStore(t)
 	id := mustUser(t, s, "u3")
-	s.SetUserDisabled(ctx, id, true)
+	_ = s.SetUserDisabled(ctx, id, true)
 	if u, _ := s.FindUserByID(ctx, id); !u.Disabled {
 		t.Fatal("not disabled")
 	}
-	s.SetUserDisabled(ctx, id, false)
+	_ = s.SetUserDisabled(ctx, id, false)
 	if u, _ := s.FindUserByID(ctx, id); u.Disabled {
 		t.Fatal("still disabled")
 	}
@@ -225,8 +225,8 @@ func TestSetAdminAndCountEnabledAdmins(t *testing.T) {
 		}
 	}
 	want(1)
-	s.SetUserAdmin(ctx, b, true)
+	_ = s.SetUserAdmin(ctx, b, true)
 	want(2)
-	s.SetUserDisabled(ctx, a, true)
+	_ = s.SetUserDisabled(ctx, a, true)
 	want(1)
 }

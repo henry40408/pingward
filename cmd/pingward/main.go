@@ -49,14 +49,14 @@ func main() {
 // setup token and for startup errors.
 func run(p process) int {
 	if err := ensureNoLegacyEnvVars(p.lookupEnv); err != nil {
-		fmt.Fprintf(p.stderr, "pingward: %v\n", err)
+		_, _ = fmt.Fprintf(p.stderr, "pingward: %v\n", err)
 		return exitFailure
 	}
 	cfg := config.Load(p.lookupEnv)
 	levelText, _ := p.lookupEnv("PINGWARD_LOG_LEVEL")
 	level, err := parseLogLevel(levelText)
 	if err != nil {
-		fmt.Fprintf(p.stderr, "pingward: PINGWARD_LOG_LEVEL: %v\n", err)
+		_, _ = fmt.Fprintf(p.stderr, "pingward: PINGWARD_LOG_LEVEL: %v\n", err)
 		return exitFailure
 	}
 	logger := newLogger(p.stdout, cfg.LogFormat, level)
