@@ -60,6 +60,9 @@ func newFixture(t *testing.T, env map[string]string) *fixture {
 		Deliver: func(_ context.Context, event notify.Event, _ time.Time) { f.sent <- event },
 	}
 	f.handler.Mount(f.mux)
+	// Cleanups run last-in-first-out: this one runs before the store closes and
+	// the temp dir is removed, so a delivery goroutine cannot outlive them.
+	t.Cleanup(f.handler.WaitForDeliveries)
 	return f
 }
 
