@@ -6,4 +6,4 @@ x-frame-options: DENY
 referrer-policy: same-origin
 permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
 
-{"error":{"code":"not_found","message":"resource not found"}}
+{"error":{"code":"not_found","message":"Resource not found."}}

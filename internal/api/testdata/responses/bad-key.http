@@ -6,4 +6,4 @@ x-frame-options: DENY
 referrer-policy: same-origin
 permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
 
-{"error":{"code":"unauthorized","message":"missing or invalid API key"}}
+{"error":{"code":"unauthorized","message":"Missing or invalid API key."}}

@@ -156,7 +156,7 @@ func TestLoginPageUsesAuthCardAndErrorIsRestyled(t *testing.T) {
 	}
 	res = a.attemptLogin(t, "bob", "nope")
 	wantStatus(t, res, http.StatusOK)
-	if !strings.Contains(res.Body, "invalid username or password") || !strings.Contains(res.Body, `class="flash err"`) {
+	if !strings.Contains(res.Body, "Invalid username or password.") || !strings.Contains(res.Body, `class="flash err"`) {
 		t.Fatalf("missing the restyled error banner: %s", res.Body)
 	}
 }
@@ -759,7 +759,7 @@ func TestInvalidCronIsRejected(t *testing.T) {
 	a, projectID := projectWith(t)
 	res := a.createCheckViaForm(t, projectID, map[string]string{"schedule_kind": "cron", "period_secs": "", "cron_expr": "not a cron"})
 	wantStatus(t, res, http.StatusOK) // the form again, not a redirect
-	wantContains(t, res.Body, "invalid cron expression", "the refusal is shown")
+	wantContains(t, res.Body, "Invalid cron expression", "the refusal is shown")
 	checks, err := a.store.ListChecksForProject(t.Context(), projectID)
 	if err != nil || len(checks) != 0 {
 		t.Fatalf("checks = %v, %v", checks, err)

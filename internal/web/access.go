@@ -38,7 +38,7 @@ func (d *Deps) enter(w http.ResponseWriter, r *http.Request, admin bool) (access
 func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue(name), 10, 64)
 	if err != nil {
-		http.Error(w, "invalid "+name, http.StatusBadRequest)
+		http.Error(w, "Invalid ID.", http.StatusBadRequest)
 		return 0, false
 	}
 	return id, true

@@ -32,14 +32,14 @@ Feature: Check creation branches
     Given I open the new check form
     When I fill the check name with "backup"
     And I submit the check form
-    Then the check form shows the error "period_secs required for period mode"
+    Then the check form shows the error "Period is required in period mode."
 
   Scenario: Creating a cron check without an expression is rejected
     Given I open the new check form
     When I fill the check name with "backup"
     And I choose the "cron" schedule kind
     And I submit the check form
-    Then the check form shows the error "cron_expr required for cron mode"
+    Then the check form shows the error "Cron expression is required in cron mode."
 
   Scenario: A human-readable period is accepted
     Given I open the new check form

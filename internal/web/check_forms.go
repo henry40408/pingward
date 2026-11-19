@@ -3,6 +3,9 @@ package web
 import (
 	"fmt"
 	"net/http"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/henry40408/pingward/internal/cron"
 	"github.com/henry40408/pingward/internal/duration"
@@ -67,7 +70,7 @@ type validatedCheck struct {
 func validateCheck(in checkInput) (validatedCheck, string) {
 	name := trimRustSpace(in.name)
 	if name == "" {
-		return validatedCheck{}, "name is required"
+		return validatedCheck{}, "Name is required."
 	}
 	description, refusal := validateDescription(in.description)
 	if refusal != "" {
@@ -75,22 +78,22 @@ func validateCheck(in checkInput) (validatedCheck, string) {
 	}
 	grace, ok := duration.Parse(in.graceSecs)
 	if !ok {
-		return validatedCheck{}, "grace_secs must be a duration (e.g. 30, 5m, 1h30m)"
+		return validatedCheck{}, "Grace period must be a duration (e.g. 30, 5m, 1h30m)."
 	}
 	if grace < 0 {
-		return validatedCheck{}, "grace_secs must be >= 0"
+		return validatedCheck{}, "Grace period must be 0 or more."
 	}
 	kind, err := models.ParseScheduleKind(in.scheduleKind)
 	if err != nil {
-		return validatedCheck{}, "invalid schedule kind"
+		return validatedCheck{}, "Invalid schedule kind."
 	}
 	schedule, refusal := validateSchedule(kind, in)
 	if refusal != "" {
 		return validatedCheck{}, refusal
 	}
-	timezone, err := validateTimezone(in.timezone)
-	if err != nil {
-		return validatedCheck{}, err.Error()
+	timezone, refusal := validateTimezone(in.timezone)
+	if refusal != "" {
+		return validatedCheck{}, refusal
 	}
 	overrides, refusal := parseCheckOverrides(in)
 	if refusal != "" {
@@ -103,6 +106,18 @@ func validateCheck(in checkInput) (validatedCheck, string) {
 	}, ""
 }
 
+// sentence ends text with a period only after a letter or digit. The cron
+// parser's details may already end in "." or ".)", or in a caret block that a
+// period would strand on its own line.
+func sentence(text string) string {
+	text = strings.TrimRightFunc(text, unicode.IsSpace)
+	last, _ := utf8.DecodeLastRuneInString(text)
+	if unicode.IsLetter(last) || unicode.IsDigit(last) {
+		return text + "."
+	}
+	return text
+}
+
 type scheduleFields struct {
 	periodSecs *int64
 	cronExpr   *string
@@ -112,22 +127,22 @@ func validateSchedule(kind models.ScheduleKind, in checkInput) (scheduleFields, 
 	if kind == models.ScheduleCron {
 		expr := trimRustSpace(in.cronExpr)
 		if expr == "" {
-			return scheduleFields{}, "cron_expr required for cron mode"
+			return scheduleFields{}, "Cron expression is required in cron mode."
 		}
 		if _, err := cron.Parse(expr); err != nil {
-			return scheduleFields{}, "invalid cron expression: " + err.Error()
+			return scheduleFields{}, "Invalid cron expression: " + sentence(err.Error())
 		}
 		return scheduleFields{cronExpr: &expr}, ""
 	}
 	if trimRustSpace(in.periodSecs) == "" {
-		return scheduleFields{}, "period_secs required for period mode"
+		return scheduleFields{}, "Period is required in period mode."
 	}
 	seconds, ok := duration.Parse(in.periodSecs)
 	if !ok {
-		return scheduleFields{}, "period_secs must be a duration (e.g. 30, 5m, 1h30m)"
+		return scheduleFields{}, "Period must be a duration (e.g. 30, 5m, 1h30m)."
 	}
 	if seconds <= 0 {
-		return scheduleFields{}, "period_secs must be > 0"
+		return scheduleFields{}, "Period must be greater than 0."
 	}
 	return scheduleFields{periodSecs: &seconds}, ""
 }
@@ -139,13 +154,13 @@ type checkOverrides struct{ scan, maxRuntime, nag *int64 }
 func parseCheckOverrides(in checkInput) (checkOverrides, string) {
 	var overrides checkOverrides
 	var refusal string
-	if overrides.scan, refusal = parseOptionalDuration(in.scanInterval, "scan interval"); refusal != "" {
+	if overrides.scan, refusal = parseOptionalDuration(in.scanInterval, "Scan interval"); refusal != "" {
 		return checkOverrides{}, refusal
 	}
-	if overrides.maxRuntime, refusal = parseOptionalDuration(in.maxRuntime, "max runtime"); refusal != "" {
+	if overrides.maxRuntime, refusal = parseOptionalDuration(in.maxRuntime, "Max runtime"); refusal != "" {
 		return checkOverrides{}, refusal
 	}
-	if overrides.nag, refusal = parseOptionalDuration(in.nag, "nag interval"); refusal != "" {
+	if overrides.nag, refusal = parseOptionalDuration(in.nag, "Nag interval"); refusal != "" {
 		return checkOverrides{}, refusal
 	}
 	return overrides, ""

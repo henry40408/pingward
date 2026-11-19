@@ -26,21 +26,21 @@ type fields struct {
 // refusal is a 400 in the error envelope, as the Rust extractor made it.
 func readFields(w http.ResponseWriter, r *http.Request) (*fields, bool) {
 	if !isJSONContentType(r.Header.Get("Content-Type")) {
-		badRequest(w, "Expected request with `Content-Type: application/json`")
+		badRequest(w, "Expected request with `Content-Type: application/json`.")
 		return nil, false
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
-		badRequest(w, "Failed to buffer the request body: "+err.Error())
+		badRequest(w, "Failed to buffer the request body: "+err.Error()+".")
 		return nil, false
 	}
 	if !json.Valid(body) {
-		badRequest(w, "Failed to parse the request body as JSON: "+syntaxError(body))
+		badRequest(w, "Failed to parse the request body as JSON: "+syntaxError(body)+".")
 		return nil, false
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil || raw == nil {
-		badRequest(w, "Failed to deserialize the JSON body into the target type: expected a JSON object")
+		badRequest(w, "Failed to deserialize the JSON body into the target type: expected a JSON object.")
 		return nil, false
 	}
 	return &fields{raw: raw}, true
@@ -69,7 +69,7 @@ func (f *fields) refusal() string {
 	if f.err == nil {
 		return ""
 	}
-	return "Failed to deserialize the JSON body into the target type: " + f.err.Error()
+	return "Failed to deserialize the JSON body into the target type: " + f.err.Error() + "."
 }
 
 func (f *fields) fail(format string, args ...any) {

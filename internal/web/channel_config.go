@@ -56,14 +56,14 @@ func compactJSON(values map[string]string) string {
 func parseNewChannelKind(raw string) (models.ChannelKind, string) {
 	kind := trimRustSpace(raw)
 	if kind == "" {
-		return "", "a channel kind is required"
+		return "", "A channel kind is required."
 	}
 	switch parsed := models.ChannelKind(kind); parsed {
 	case models.ChannelWebhook, models.ChannelTelegram, models.ChannelSlack,
 		models.ChannelNtfy, models.ChannelPushover, models.ChannelEmail:
 		return parsed, ""
 	}
-	return "", "unknown channel kind"
+	return "", "Unknown channel kind."
 }
 
 // ValidateChannelUpdate checks a channel form. existing is nil when creating;
@@ -73,7 +73,7 @@ func ValidateChannelUpdate(in ChannelInput, existing *models.Channel) (kind mode
 	name = trimRustSpace(in.Name)
 	if name == "" {
 		if existing == nil {
-			return "", "", "", "a channel name is required"
+			return "", "", "", "A channel name is required."
 		}
 		name = existing.Name
 	}
@@ -99,19 +99,19 @@ func channelConfig(kind models.ChannelKind, in ChannelInput, stored storedConfig
 	case models.ChannelWebhook:
 		url := stored.merged(in.WebhookURL, "url")
 		if url == "" {
-			return "", "a webhook URL is required"
+			return "", "A webhook URL is required."
 		}
 		return compactJSON(map[string]string{"url": url}), ""
 	case models.ChannelSlack:
 		url := stored.merged(in.SlackURL, "url")
 		if url == "" {
-			return "", "a Slack incoming-webhook URL is required"
+			return "", "A Slack incoming-webhook URL is required."
 		}
 		return compactJSON(map[string]string{"url": url}), ""
 	case models.ChannelTelegram:
 		token, chatID := stored.merged(in.TelegramToken, "token"), stored.merged(in.TelegramChatID, "chat_id")
 		if token == "" || chatID == "" {
-			return "", "Telegram requires both a bot token and a chat id"
+			return "", "Telegram requires both a bot token and a chat ID."
 		}
 		return compactJSON(map[string]string{"token": token, "chat_id": chatID}), ""
 	case models.ChannelNtfy:
@@ -119,23 +119,23 @@ func channelConfig(kind models.ChannelKind, in ChannelInput, stored storedConfig
 	case models.ChannelPushover:
 		token, user := stored.merged(in.PushoverToken, "token"), stored.merged(in.PushoverUser, "user")
 		if token == "" || user == "" {
-			return "", "Pushover requires both an application token and a user key"
+			return "", "Pushover requires both an application token and a user key."
 		}
 		return compactJSON(map[string]string{"token": token, "user": user}), ""
 	case models.ChannelEmail:
 		to := stored.merged(in.EmailTo, "to")
 		if to == "" {
-			return "", "an email recipient address is required"
+			return "", "An email recipient address is required."
 		}
 		return compactJSON(map[string]string{"to": to}), ""
 	}
-	return "", "unknown channel kind"
+	return "", "Unknown channel kind."
 }
 
 func ntfyConfig(in ChannelInput, stored storedConfig) (string, string) {
 	topic := stored.merged(in.NtfyTopic, "topic")
 	if topic == "" {
-		return "", "ntfy requires a topic"
+		return "", "A topic is required for ntfy."
 	}
 	baseURL := stored.merged(in.NtfyBaseURL, "base_url")
 	if baseURL == "" {

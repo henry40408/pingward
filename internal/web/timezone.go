@@ -9,14 +9,14 @@ import (
 // validateTimezone: blank means UTC (the column default). A typo is rejected
 // and echoed back, because a stored bad zone would silently fall back to UTC
 // when the check's deadline is computed.
-func validateTimezone(raw string) (string, error) {
+func validateTimezone(raw string) (zone, refusal string) {
 	name := trimRustSpace(raw)
 	if name == "" {
-		return "UTC", nil
+		return "UTC", ""
 	}
 	canonical, ok := tz.Canonical(name)
 	if !ok {
-		return "", fmt.Errorf("unknown timezone %q — use an IANA name such as UTC or Asia/Taipei", name)
+		return "", fmt.Sprintf("Unknown timezone %q. Use an IANA name such as UTC or Asia/Taipei.", name)
 	}
-	return canonical, nil
+	return canonical, ""
 }

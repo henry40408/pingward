@@ -76,25 +76,25 @@ func TestScheduleLabelUsesDurationFormatAndShowsCronGrace(t *testing.T) {
 // parse_opt_positive's Go counterpart is the days setting kind.
 func TestPositiveIntegerSettingBlankIsEmpty(t *testing.T) {
 	for _, blank := range []string{"", "   "} {
-		if got, err := validateSetting(blank, "x", settingDays); err != nil || got != "" {
-			t.Errorf("validateSetting(%q) = %q, %v; want blank and no error", blank, got, err)
+		if got, refusal := validateSetting(blank, "x", settingDays); refusal != "" || got != "" {
+			t.Errorf("validateSetting(%q) = %q, %q; want blank and no refusal", blank, got, refusal)
 		}
 	}
 }
 
 func TestPositiveIntegerSettingAcceptsPositive(t *testing.T) {
-	if got, err := validateSetting("5", "x", settingDays); err != nil || got != "5" {
-		t.Errorf("got %q, %v", got, err)
+	if got, refusal := validateSetting("5", "x", settingDays); refusal != "" || got != "5" {
+		t.Errorf("got %q, %q", got, refusal)
 	}
 }
 
 func TestPositiveIntegerSettingRejectsZeroNegativeAndNonNumeric(t *testing.T) {
-	_, err := validateSetting("0", "Scan interval", settingDays)
-	if err == nil || err.Error() != "Scan interval must be a positive integer" {
-		t.Errorf("zero: got %v", err)
+	_, refusal := validateSetting("0", "Scan interval", settingDays)
+	if refusal != "Scan interval must be a positive integer." {
+		t.Errorf("zero: got %q", refusal)
 	}
 	for _, bad := range []string{"-3", "abc"} {
-		if _, err := validateSetting(bad, "x", settingDays); err == nil {
+		if _, refusal := validateSetting(bad, "x", settingDays); refusal == "" {
 			t.Errorf("%q must be refused", bad)
 		}
 	}
@@ -117,7 +117,7 @@ func TestOptionalDurationAcceptsHumanReadable(t *testing.T) {
 func TestOptionalDurationRejectsZeroNegativeAndInvalid(t *testing.T) {
 	for _, bad := range []string{"0", "-3", "1x"} {
 		got, refusal := parseOptionalDuration(bad, "x")
-		if got != nil || refusal != "x must be a positive duration (e.g. 30, 5m, 1h30m)" {
+		if got != nil || refusal != "x must be a positive duration (e.g. 30, 5m, 1h30m)." {
 			t.Errorf("%q: got %v, %q", bad, got, refusal)
 		}
 	}
@@ -175,7 +175,7 @@ func TestValidateProjectRejectsAnEmptyOrWhitespaceOnlyName(t *testing.T) {
 	for _, name := range []string{"", "   "} {
 		input := baseProjectInput()
 		input.name = name
-		if _, refusal := validateProject(input); refusal != "name is required" {
+		if _, refusal := validateProject(input); refusal != "Name is required." {
 			t.Errorf("name %q: refusal %q", name, refusal)
 		}
 	}
@@ -332,24 +332,25 @@ func TestValidateCheckCarriesTheValidatedTimezone(t *testing.T) {
 
 func TestValidateTimezoneTreatsBlankAsUTCAndCanonicalizes(t *testing.T) {
 	for raw, want := range map[string]string{"": "UTC", "   ": "UTC", "Europe/Berlin": "Europe/Berlin"} {
-		if got, err := validateTimezone(raw); err != nil || got != want {
-			t.Errorf("validateTimezone(%q) = %q, %v; want %q", raw, got, err, want)
+		if got, refusal := validateTimezone(raw); refusal != "" || got != want {
+			t.Errorf("validateTimezone(%q) = %q, %q; want %q", raw, got, refusal, want)
 		}
 	}
-	if _, err := validateTimezone("Mars/Olympus"); err == nil {
-		t.Error("Mars/Olympus must be refused")
+	want := `Unknown timezone "Mars/Olympus". Use an IANA name such as UTC or Asia/Taipei.`
+	if _, refusal := validateTimezone("Mars/Olympus"); refusal != want {
+		t.Errorf("Mars/Olympus refusal = %q", refusal)
 	}
 }
 
 // Blank means unset for a setting, so the check's own zone still applies.
 func TestOptionalTimezoneSettingTreatsBlankAsUnset(t *testing.T) {
-	if got, err := validateSetting("", "x", settingTimezone); err != nil || got != "" {
-		t.Errorf("blank: %q, %v", got, err)
+	if got, refusal := validateSetting("", "x", settingTimezone); refusal != "" || got != "" {
+		t.Errorf("blank: %q, %q", got, refusal)
 	}
-	if got, err := validateSetting(" Europe/Berlin ", "x", settingTimezone); err != nil || got != "Europe/Berlin" {
-		t.Errorf("padded: %q, %v", got, err)
+	if got, refusal := validateSetting(" Europe/Berlin ", "x", settingTimezone); refusal != "" || got != "Europe/Berlin" {
+		t.Errorf("padded: %q, %q", got, refusal)
 	}
-	if _, err := validateSetting("nonsense", "x", settingTimezone); err == nil {
+	if _, refusal := validateSetting("nonsense", "x", settingTimezone); refusal == "" {
 		t.Error("nonsense must be refused")
 	}
 }
@@ -358,7 +359,7 @@ func TestValidateCheckRejectsAnEmptyOrWhitespaceOnlyName(t *testing.T) {
 	for _, name := range []string{"", "   "} {
 		in := baseCheckInput()
 		in.name = name
-		wantCheckRefusal(t, in, "name is required")
+		wantCheckRefusal(t, in, "Name is required.")
 	}
 }
 
@@ -385,10 +386,10 @@ func TestValidateCheckAcceptsPositiveOverrides(t *testing.T) {
 func TestValidateCheckRejectsABadOverride(t *testing.T) {
 	in := baseCheckInput()
 	in.scanInterval = "abc"
-	wantCheckRefusal(t, in, "scan interval must be a positive duration (e.g. 30, 5m, 1h30m)")
+	wantCheckRefusal(t, in, "Scan interval must be a positive duration (e.g. 30, 5m, 1h30m).")
 	in = baseCheckInput()
 	in.maxRuntime = "0"
-	wantCheckRefusal(t, in, "max runtime must be a positive duration (e.g. 30, 5m, 1h30m)")
+	wantCheckRefusal(t, in, "Max runtime must be a positive duration (e.g. 30, 5m, 1h30m).")
 }
 
 func TestValidateCheckAcceptsHumanReadableDurations(t *testing.T) {
@@ -414,12 +415,12 @@ func TestValidateCheckScheduleRefusals(t *testing.T) {
 		mutate func(*checkInput)
 		want   string
 	}{
-		{func(in *checkInput) { in.scheduleKind = "weekly" }, "invalid schedule kind"},
-		{func(in *checkInput) { in.periodSecs = " " }, "period_secs required for period mode"},
-		{func(in *checkInput) { in.periodSecs = "0" }, "period_secs must be > 0"},
-		{func(in *checkInput) { in.graceSecs = "x" }, "grace_secs must be a duration (e.g. 30, 5m, 1h30m)"},
-		{func(in *checkInput) { in.graceSecs = "-1" }, "grace_secs must be >= 0"},
-		{func(in *checkInput) { in.scheduleKind, in.cronExpr = "cron", "" }, "cron_expr required for cron mode"},
+		{func(in *checkInput) { in.scheduleKind = "weekly" }, "Invalid schedule kind."},
+		{func(in *checkInput) { in.periodSecs = " " }, "Period is required in period mode."},
+		{func(in *checkInput) { in.periodSecs = "0" }, "Period must be greater than 0."},
+		{func(in *checkInput) { in.graceSecs = "x" }, "Grace period must be a duration (e.g. 30, 5m, 1h30m)."},
+		{func(in *checkInput) { in.graceSecs = "-1" }, "Grace period must be 0 or more."},
+		{func(in *checkInput) { in.scheduleKind, in.cronExpr = "cron", "" }, "Cron expression is required in cron mode."},
 	}
 	for _, c := range cases {
 		in := baseCheckInput()
@@ -428,7 +429,45 @@ func TestValidateCheckScheduleRefusals(t *testing.T) {
 	}
 	in := baseCheckInput()
 	in.scheduleKind, in.cronExpr = "cron", "not a cron"
-	if _, refusal := validateCheck(in); !strings.HasPrefix(refusal, "invalid cron expression: ") {
+	if _, refusal := validateCheck(in); !strings.HasPrefix(refusal, "Invalid cron expression: ") || !strings.HasSuffix(refusal, ".") {
 		t.Errorf("got %q", refusal)
+	}
+}
+
+func TestSentenceEndsTextWithOnePeriodAfterLettersAndDigits(t *testing.T) {
+	for raw, want := range map[string]string{
+		"":                               "",
+		"ends in a letter":               "ends in a letter.",
+		"ends in a digit 7":              "ends in a digit 7.",
+		"already ended.":                 "already ended.",
+		"trailing space  \n":             "trailing space.",
+		"(7 specified.)":                 "(7 specified.)",
+		"* * * * *\n         ^\n":        "* * * * *\n         ^",
+		"Days of Week must be less than": "Days of Week must be less than.",
+	} {
+		if got := sentence(raw); got != want {
+			t.Errorf("sentence(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestValidateCheckAcceptsZeroGrace(t *testing.T) {
+	in := baseCheckInput()
+	in.graceSecs = "0"
+	valid, refusal := validateCheck(in)
+	if refusal != "" || valid.graceSecs != 0 {
+		t.Errorf("grace 0: %+v, %q", valid, refusal)
+	}
+}
+
+func TestValidateCheckCronRefusalNeverStrandsAPeriod(t *testing.T) {
+	for _, expr := range []string{"0 0 0 * * 0", "* * * * *", "nope"} {
+		in := baseCheckInput()
+		in.scheduleKind, in.cronExpr = "cron", expr
+		_, refusal := validateCheck(in)
+		if !strings.HasPrefix(refusal, "Invalid cron expression: ") || strings.HasSuffix(refusal, "\n") ||
+			strings.Contains(refusal, "\n.") || strings.HasSuffix(refusal, ".).") {
+			t.Errorf("%q: %q", expr, refusal)
+		}
 	}
 }

@@ -233,7 +233,7 @@ func readChannelIDs(w http.ResponseWriter, r *http.Request) ([]int64, bool) {
 	for _, raw := range r.PostForm["channel_ids"] {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil {
-			http.Error(w, "invalid channel_ids", http.StatusBadRequest)
+			http.Error(w, "Invalid channel selection.", http.StatusBadRequest)
 			return nil, false
 		}
 		channelIDs = append(channelIDs, id)
@@ -288,7 +288,7 @@ func (d *Deps) checkSetChannels(admin bool) http.HandlerFunc {
 			return
 		}
 		if err := r.ParseForm(); err != nil {
-			http.Error(w, "invalid form", http.StatusBadRequest)
+			http.Error(w, "Invalid form.", http.StatusBadRequest)
 			return
 		}
 		wanted, ok := readChannelIDs(w, r)

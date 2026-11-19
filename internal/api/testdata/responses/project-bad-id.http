@@ -6,4 +6,4 @@ x-frame-options: DENY
 referrer-policy: same-origin
 permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
 
-Invalid URL: Cannot parse `abc` to a `i64`
+Invalid URL: Cannot parse `abc` to a `i64`.

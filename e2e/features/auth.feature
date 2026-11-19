@@ -17,7 +17,7 @@ Feature: Authentication
   Scenario: Signing in with a wrong password is rejected
     Given an admin "admin" with password "password123 stapler" exists
     When I sign in as "admin" with password "wrong-password"
-    Then the login page shows the error "invalid username or password"
+    Then the login page shows the error "Invalid username or password."
 
   Scenario: Signing out ends the session
     Given an admin "admin" with password "password123 stapler" exists

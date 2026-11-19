@@ -22,7 +22,7 @@ Feature: Notification channels
     Given a project named "Notify"
     And I remember the current project
     When I submit a webhook channel with a blank URL
-    Then the channel form shows an error "a webhook URL is required"
+    Then the channel form shows an error "A webhook URL is required."
 
   Scenario: The email channel kind is not offered without instance SMTP
     Given a project named "Notify"

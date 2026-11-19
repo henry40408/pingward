@@ -123,7 +123,7 @@ func (d *Deps) accountPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	// 403, not a message: the card is hidden, so only a crafted request gets here.
 	if user.PasswordHash == nil {
-		http.Error(w, "this account has no local password", http.StatusForbidden)
+		http.Error(w, "This account has no local password.", http.StatusForbidden)
 		return
 	}
 	refuse := func(message string) {
@@ -208,12 +208,12 @@ func (d *Deps) apiKeyCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	name := trimRustSpace(r.PostFormValue("name"))
 	if name == "" {
-		refuse("a name is required")
+		refuse("A name is required.")
 		return
 	}
 	expiresAt, ok := d.keyExpiry(trimRustSpace(r.PostFormValue("expires_in")))
 	if !ok {
-		refuse("expiry must be a duration like 30d, or blank for never")
+		refuse("Expiry must be a duration like 30d, or blank for never.")
 		return
 	}
 	key := apikey.Generate()
@@ -248,7 +248,7 @@ func (d *Deps) apiKeyDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		http.Error(w, "Invalid ID.", http.StatusBadRequest)
 		return
 	}
 	if !isConfirmed(r) {
