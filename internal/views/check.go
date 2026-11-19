@@ -114,7 +114,7 @@ func pingCard(v CheckView, base string) node {
 	return el("div", []attr{a("class", "card")}, el("div", []attr{a("class", "cb")},
 		urlPart,
 		// No run count: only the browser knows how many bars are visible.
-		el("div", []attr{a("class", "beat"), a("title", "most recent runs, newest on the right")}, heartbeatBars(v.Bars)),
+		el("div", []attr{a("class", "beat"), a("title", "Most recent runs, newest on the right")}, heartbeatBars(v.Bars)),
 		// "taller = longer" holds only for solid bars; hollow ones are full height.
 		el("div", []attr{a("class", "beatcap")},
 			el("span", nil, text("older")),

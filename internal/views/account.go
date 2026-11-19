@@ -164,7 +164,7 @@ func sessionRow(s SessionRow, csrf string) node {
 		el("td", mono, localTime(s.ExpiresAt)),
 		el("td", nil, el("form", []attr{a("class", "inline"), a("method", "post"), a("action", "/account/sessions/"+s.Handle+"/revoke"), a("data-confirm", "Revoke this session? If it is your current session you will be signed out.")},
 			CSRFField(csrf),
-			el("button", []attr{a("class", "btn danger"), a("type", "submit"), a("data-testid", "session-revoke")}, text("revoke")))))
+			el("button", []attr{a("class", "btn danger"), a("type", "submit"), a("data-testid", "session-revoke")}, text("Revoke")))))
 }
 
 func keysCard(v AccountView) node {
@@ -195,7 +195,7 @@ func keyRow(k APIKeyRow, csrf string) node {
 		el("td", mono, expires),
 		el("td", nil, el("form", []attr{a("class", "inline"), a("method", "post"), a("action", "/account/api-keys/"+num(k.ID)+"/delete"), a("data-confirm", "Revoke this API key?")},
 			CSRFField(csrf),
-			el("button", []attr{a("class", "btn danger"), a("type", "submit"), a("data-testid", "api-key-delete")}, text("revoke")))))
+			el("button", []attr{a("class", "btn danger"), a("type", "submit"), a("data-testid", "api-key-delete")}, text("Revoke")))))
 }
 
 func createKeyCard(v AccountView) node {

@@ -152,7 +152,7 @@ func projectCheckRow(c ProjectCheckRow, base string) node {
 			el("div", []attr{a("class", "sc")}, text(c.Schedule)),
 			when(c.Description != "", el("div", []attr{a("class", "cdesc"), a("data-testid", "check-description-summary")}, text(c.Description)))),
 		when(c.NoChannel, noChannelChip()),
-		el("a", []attr{a("class", "rowedit"), a("href", href+"/edit")}, text("edit")),
+		el("a", []attr{a("class", "rowedit"), a("href", href+"/edit")}, text("Edit")),
 		el("span", []attr{a("class", "badge "+c.Status)}, text(c.Status)))
 }
 
@@ -172,9 +172,9 @@ func channelRow(ch ProjectChannelRow, base, csrf string) node {
 	return el("div", []attr{a("class", "chk readonly")},
 		el("span", []attr{a("class", "nm")}, text(ch.Name)),
 		el("span", []attr{a("class", "kind")}, text(ch.Kind)),
-		el("a", []attr{a("class", "btn ml-8"), a("href", base+"/channels/"+id+"/edit"), a("data-testid", "channel-edit-"+id)}, text("edit")),
+		el("a", []attr{a("class", "btn ml-8"), a("href", base+"/channels/"+id+"/edit"), a("data-testid", "channel-edit-"+id)}, text("Edit")),
 		el("form", []attr{a("class", "inline"), a("method", "post"), a("action", base+"/channels/"+id+"/test")},
 			CSRFField(csrf), el("button", []attr{a("class", "btn"), a("type", "submit")}, text("Send test"))),
 		el("form", []attr{a("class", "inline"), a("method", "post"), a("action", base+"/channels/"+id+"/delete"), a("data-confirm", "Delete channel?")},
-			CSRFField(csrf), el("button", []attr{a("class", "btn danger"), a("type", "submit")}, text("delete"))))
+			CSRFField(csrf), el("button", []attr{a("class", "btn danger"), a("type", "submit")}, text("Delete"))))
 }

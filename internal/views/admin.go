@@ -332,12 +332,12 @@ func usersCard(v AdminView) node {
 }
 
 func userRow(u AdminUserRow, v AdminView) node {
-	toggleAdminLabel, toggleDisabledLabel := "make admin", "disable"
+	toggleAdminLabel, toggleDisabledLabel := "Make admin", "Disable"
 	if u.IsAdmin {
-		toggleAdminLabel = "revoke admin"
+		toggleAdminLabel = "Revoke admin"
 	}
 	if u.Disabled {
-		toggleDisabledLabel = "enable"
+		toggleDisabledLabel = "Enable"
 	}
 	rolePill := el("span", []attr{a("class", "pill start"), a("data-testid", "user-role")}, text("member"))
 	if u.IsAdmin {
@@ -351,7 +351,7 @@ func userRow(u AdminUserRow, v AdminView) node {
 			el("form", []attr{a("class", "inline"), a("method", "post"), a("action", "/admin/users/"+num(u.ID)+"/password"), attrIf(v.ElevationLocked, "data-reauth", "reset this user's password")},
 				CSRFField(v.CSRF),
 				void("input", a("type", "password"), a("name", "password"), a("placeholder", "new password"), a("autocomplete", "new-password"), a("data-testid", "user-reset-input"), flag("required")),
-				el("button", []attr{a("class", "btn"), a("type", "submit"), a("data-testid", "user-reset-submit")}, text("reset"))),
+				el("button", []attr{a("class", "btn"), a("type", "submit"), a("data-testid", "user-reset-submit")}, text("Reset"))),
 			userControls(u, v, toggleAdminLabel, toggleDisabledLabel)))
 }
 
@@ -363,7 +363,7 @@ func userControls(u AdminUserRow, v AdminView, toggleAdminLabel, toggleDisabledL
 		return group(
 			inert("btn disabled", "You cannot change your own admin status", "user-toggle-admin", toggleAdminLabel),
 			inert("btn disabled", "You cannot disable your own account", "user-toggle-disabled", toggleDisabledLabel),
-			inert("btn danger disabled", "You cannot delete your own account", "user-delete", "delete"))
+			inert("btn danger disabled", "You cannot delete your own account", "user-delete", "Delete"))
 	}
 	// Granting admin is gated on elevation; revoking is not, so it confirms instead.
 	adminForm := []attr{a("class", "inline"), a("method", "post"), a("action", "/admin/users/"+num(u.ID)+"/admin"),
@@ -379,7 +379,7 @@ func userControls(u AdminUserRow, v AdminView, toggleAdminLabel, toggleDisabledL
 	return group(
 		el("form", adminForm, CSRFField(v.CSRF), button("btn", "user-toggle-admin", toggleAdminLabel)),
 		el("form", disabledForm, CSRFField(v.CSRF), button("btn", "user-toggle-disabled", toggleDisabledLabel)),
-		el("form", deleteForm, CSRFField(v.CSRF), button("btn danger", "user-delete", "delete")))
+		el("form", deleteForm, CSRFField(v.CSRF), button("btn danger", "user-delete", "Delete")))
 }
 
 func addUserForm(v AdminView) node {
@@ -408,7 +408,7 @@ func projectsGroup(v AdminView) node {
 			el("div", []attr{a("class", "cmeta")},
 				el("div", []attr{a("class", "nm")}, el("a", []attr{a("href", href)}, text(p.Name))),
 				el("div", []attr{a("class", "sc")}, text("owner: "+p.Owner))),
-			el("a", []attr{a("class", "rowedit"), a("href", href)}, text("manage →")))
+			el("a", []attr{a("class", "rowedit"), a("href", href)}, text("Manage →")))
 	})
 	return el("div", []attr{a("class", "group")},
 		el("div", []attr{a("class", "gh")},
