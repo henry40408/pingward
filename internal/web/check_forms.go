@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/henry40408/pingward/internal/cron"
 	"github.com/henry40408/pingward/internal/duration"
@@ -89,9 +91,9 @@ func validateCheck(in checkInput) (validatedCheck, string) {
 	if refusal != "" {
 		return validatedCheck{}, refusal
 	}
-	timezone, err := validateTimezone(in.timezone)
-	if err != nil {
-		return validatedCheck{}, err.Error()
+	timezone, refusal := validateTimezone(in.timezone)
+	if refusal != "" {
+		return validatedCheck{}, refusal
 	}
 	overrides, refusal := parseCheckOverrides(in)
 	if refusal != "" {
@@ -104,13 +106,16 @@ func validateCheck(in checkInput) (validatedCheck, string) {
 	}, ""
 }
 
-// sentence ends text with a period unless it already ends one, so the cron
-// parser's mixed-punctuation details read consistently after our prefix.
+// sentence ends text with a period only after a letter or digit. The cron
+// parser's details may already end in "." or ".)", or in a caret block that a
+// period would strand on its own line.
 func sentence(text string) string {
-	if strings.HasSuffix(text, ".") {
-		return text
+	text = strings.TrimRightFunc(text, unicode.IsSpace)
+	last, _ := utf8.DecodeLastRuneInString(text)
+	if unicode.IsLetter(last) || unicode.IsDigit(last) {
+		return text + "."
 	}
-	return text + "."
+	return text
 }
 
 type scheduleFields struct {

@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,10 +36,10 @@ func (d *Deps) settingsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	form := readSettingsFields(r)
-	parsed, err := validateSettings(form)
-	if err != nil {
+	parsed, refusal := validateSettings(form)
+	if refusal != "" {
 		// The audit card just comes back on its default latest page.
-		d.renderAdmin(w, r, admin, adminNotices{settings: form, settingsError: err.Error()}, auditQuery{})
+		d.renderAdmin(w, r, admin, adminNotices{settings: form, settingsError: refusal}, auditQuery{})
 		return
 	}
 	ctx := writeCtx(r)
@@ -79,7 +78,7 @@ func (d *Deps) auditSettingsUpdate(ctx context.Context, adminID int64, adminName
 
 // validateSettings is atomic: it checks and normalises every field before the
 // caller writes any.
-func validateSettings(form settingsFields) ([]setting, error) {
+func validateSettings(form settingsFields) (parsed []setting, refusal string) {
 	fields := []struct {
 		key, raw, label string
 		kind            settingKind
@@ -91,35 +90,36 @@ func validateSettings(form settingsFields) ([]setting, error) {
 		{"audit_retention_days", form.auditRetentionDays, "Audit trail retention", settingDays},
 		{"display_timezone", form.displayTimezone, "Notification timezone", settingTimezone},
 	}
-	parsed := make([]setting, 0, len(fields))
+	parsed = make([]setting, 0, len(fields))
 	for _, field := range fields {
-		value, err := validateSetting(field.raw, field.label, field.kind)
-		if err != nil {
-			return nil, err
+		value, refusal := validateSetting(field.raw, field.label, field.kind)
+		if refusal != "" {
+			return nil, refusal
 		}
 		parsed = append(parsed, setting{field.key, value})
 	}
-	return parsed, nil
+	return parsed, ""
 }
 
-func validateSetting(raw, label string, kind settingKind) (string, error) {
+// validateSetting returns the user-facing refusal, or "" when acceptable.
+func validateSetting(raw, label string, kind settingKind) (value, refusal string) {
 	text := trimRustSpace(raw)
 	if text == "" {
-		return "", nil // blank clears the setting
+		return "", "" // blank clears the setting
 	}
 	switch kind {
 	case settingDuration:
 		seconds, ok := duration.Parse(text)
 		if !ok || seconds <= 0 {
-			return "", fmt.Errorf("%s must be a positive duration (e.g. 30, 5m, 1h30m).", label)
+			return "", label + " must be a positive duration (e.g. 30, 5m, 1h30m)."
 		}
-		return strconv.FormatInt(seconds, 10), nil
+		return strconv.FormatInt(seconds, 10), ""
 	case settingDays:
 		days, err := strconv.ParseInt(text, 10, 64)
 		if err != nil || days <= 0 {
-			return "", fmt.Errorf("%s must be a positive integer.", label)
+			return "", label + " must be a positive integer."
 		}
-		return strconv.FormatInt(days, 10), nil
+		return strconv.FormatInt(days, 10), ""
 	}
 	return validateTimezone(text)
 }

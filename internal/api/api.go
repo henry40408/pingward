@@ -50,7 +50,7 @@ func (a *API) guard(handler func(*call)) http.HandlerFunc {
 		if raw := r.PathValue("id"); raw != "" {
 			id, err := strconv.ParseInt(raw, 10, 64)
 			if err != nil {
-				plainText(w, http.StatusBadRequest, "Invalid URL: Cannot parse `"+raw+"` to a `i64`")
+				plainText(w, http.StatusBadRequest, "Invalid URL: Cannot parse `"+raw+"` to a `i64`.")
 				return
 			}
 			c.id = id
