@@ -39,7 +39,7 @@ const (
 func serve(p process, s started) int {
 	database, err := openDatabase(s)
 	if err != nil {
-		fmt.Fprintf(p.stderr, "pingward: %v\n", err)
+		_, _ = fmt.Fprintf(p.stderr, "pingward: %v\n", err)
 		return exitFailure
 	}
 	st := store.New(database)
@@ -48,13 +48,13 @@ func serve(p process, s started) int {
 	deps := web.NewDeps(st, &s.cfg, s.logger, time.Now)
 	deps.Stopping = stopping
 	if err := announceSetupToken(p, s.logger, deps); err != nil {
-		fmt.Fprintf(p.stderr, "pingward: %v\n", err)
+		_, _ = fmt.Fprintf(p.stderr, "pingward: %v\n", err)
 		closeDatabase(s.logger, database)
 		return exitFailure
 	}
 	listener, err := net.Listen("tcp", s.cfg.Bind)
 	if err != nil {
-		fmt.Fprintf(p.stderr, "pingward: failed to bind %s: %v\n", s.cfg.Bind, err)
+		_, _ = fmt.Fprintf(p.stderr, "pingward: failed to bind %s: %v\n", s.cfg.Bind, err)
 		closeDatabase(s.logger, database)
 		return exitFailure
 	}
@@ -108,7 +108,7 @@ func announceSetupToken(p process, logger *slog.Logger, deps *web.Deps) error {
 	if token == "" {
 		return nil
 	}
-	fmt.Fprintf(p.stderr, "pingward: no users yet. Setup token (enter it on /setup): %s\n", token)
+	_, _ = fmt.Fprintf(p.stderr, "pingward: no users yet. Setup token (enter it on /setup): %s\n", token)
 	logger.Warn("no users yet; setup token issued, see stderr")
 	return nil
 }

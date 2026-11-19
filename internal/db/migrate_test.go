@@ -30,7 +30,7 @@ func readMigrationRows(t *testing.T, database *DB) []migrationRow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []migrationRow
 	for rows.Next() {
 		var row migrationRow
@@ -54,7 +54,7 @@ func readGolden(t *testing.T, name string) []migrationRow {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var out []migrationRow
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -121,12 +121,12 @@ func copyFile(t *testing.T, from, to string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }()
 	target, err := os.Create(to)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer target.Close()
+	defer func() { _ = target.Close() }()
 	if _, err := io.Copy(target, source); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestMigratingARustCreatedDatabaseIsANoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
+	defer func() { _ = database.Close() }()
 
 	before := scanString(t, database, "SELECT group_concat(execution_time) FROM _sqlx_migrations")
 	if err := database.Migrate(context.Background()); err != nil {

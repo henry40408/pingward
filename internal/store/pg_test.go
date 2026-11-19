@@ -70,7 +70,7 @@ func TestPostgresSessionSlidingAndAbsoluteCap(t *testing.T) {
 		t.Fatalf("a stale session must slide: %s != %s", got, want)
 	}
 
-	s.FindSessionUser(ctx, "fresh", t0.Add(30*time.Second))
+	_, _ = s.FindSessionUser(ctx, "fresh", t0.Add(30*time.Second))
 	list, _ := s.ListSessionsForUser(ctx, uid, t0)
 	for _, session := range list {
 		if session.ID == "fresh" && !session.LastSeenAt.Equal(t0) {

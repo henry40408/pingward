@@ -50,7 +50,7 @@ func TestEmailChannelDeliversOverSMTPToRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var messages struct {
 		Total    int
 		Messages []struct {
@@ -81,14 +81,14 @@ func startFakeSMTP(t *testing.T, ehloExtensions ...string) *fakeSMTP {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { listener.Close() })
+	t.Cleanup(func() { _ = listener.Close() })
 	server := &fakeSMTP{addr: listener.Addr(), lines: make(chan string, 64)}
 	go func() {
 		conn, err := listener.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		server.serve(conn, ehloExtensions)
 	}()
 	return server

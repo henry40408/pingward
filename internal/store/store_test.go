@@ -140,17 +140,17 @@ func TestAPIKeyLifecycle(t *testing.T) {
 		t.Fatal("expiry instant must be rejected")
 	}
 	// last_used_at is throttled to once per 60s.
-	s.ValidateAPIKey(ctx, "h1", t0.Add(30*time.Second))
+	_, _, _ = s.ValidateAPIKey(ctx, "h1", t0.Add(30*time.Second))
 	keys, _ = s.ListAPIKeysForUser(ctx, owner)
 	if got := keys[1].LastUsedAt; got == nil || !got.Equal(t0) {
 		t.Fatalf("last used %v", got)
 	}
-	s.ValidateAPIKey(ctx, "h1", t0.Add(60*time.Second))
+	_, _, _ = s.ValidateAPIKey(ctx, "h1", t0.Add(60*time.Second))
 	keys, _ = s.ListAPIKeysForUser(ctx, owner)
 	if got := keys[1].LastUsedAt; !got.Equal(t0.Add(60 * time.Second)) {
 		t.Fatalf("last used must refresh at exactly 60s, got %v", got)
 	}
-	s.ValidateAPIKey(ctx, "h1", t0.Add(121*time.Second))
+	_, _, _ = s.ValidateAPIKey(ctx, "h1", t0.Add(121*time.Second))
 	keys, _ = s.ListAPIKeysForUser(ctx, owner)
 	if got := keys[1].LastUsedAt; !got.Equal(t0.Add(121 * time.Second)) {
 		t.Fatalf("last used %v", got)
@@ -177,17 +177,17 @@ func TestSessionSlidingAndThrottle(t *testing.T) {
 	if sessions[0].LastSeenAt == nil || !sessions[0].LastSeenAt.Equal(t0) {
 		t.Fatalf("last seen %v", sessions[0].LastSeenAt)
 	}
-	s.FindSessionUser(ctx, "fresh", t0.Add(30*time.Second))
+	_, _ = s.FindSessionUser(ctx, "fresh", t0.Add(30*time.Second))
 	sessions, _ = s.ListSessionsForUser(ctx, uid, t0)
 	if !sessions[0].LastSeenAt.Equal(t0) {
 		t.Fatal("last seen must be throttled at 30s")
 	}
-	s.FindSessionUser(ctx, "fresh", t0.Add(60*time.Second))
+	_, _ = s.FindSessionUser(ctx, "fresh", t0.Add(60*time.Second))
 	sessions, _ = s.ListSessionsForUser(ctx, uid, t0)
 	if !sessions[0].LastSeenAt.Equal(t0.Add(60 * time.Second)) {
 		t.Fatal("last seen must refresh at exactly 60s")
 	}
-	s.FindSessionUser(ctx, "fresh", t0.Add(121*time.Second))
+	_, _ = s.FindSessionUser(ctx, "fresh", t0.Add(121*time.Second))
 	sessions, _ = s.ListSessionsForUser(ctx, uid, t0)
 	if !sessions[0].LastSeenAt.Equal(t0.Add(121 * time.Second)) {
 		t.Fatal("last seen must refresh at 61s")
@@ -195,7 +195,7 @@ func TestSessionSlidingAndThrottle(t *testing.T) {
 
 	// Past the half-life the expiry slides to now + 72h.
 	newSession(t, s, "old", uid, t0, t0.Add(10*time.Hour))
-	s.FindSessionUser(ctx, "old", t0)
+	_, _ = s.FindSessionUser(ctx, "old", t0)
 	sessions, _ = s.ListSessionsForUser(ctx, uid, t0)
 	for _, session := range sessions {
 		if session.ID == "old" && !session.ExpiresAt.Equal(t0.Add(72*time.Hour)) {
@@ -247,7 +247,7 @@ func TestDeleteExpiredSessionsBoundary(t *testing.T) {
 	}
 	for id, want := range map[string]bool{"boundary": false, "capped": false, "live": true, "legacy": true} {
 		var n int
-		s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions WHERE id = $1", id).Scan(&n)
+		_ = s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions WHERE id = $1", id).Scan(&n)
 		if (n == 1) != want {
 			t.Errorf("%s present=%v want %v", id, n == 1, want)
 		}
@@ -273,7 +273,7 @@ func TestSessionListingAndOwnedDeletes(t *testing.T) {
 	if n, _ := s.DeleteSessionsForUser(ctx, a); n != 1 {
 		t.Fatalf("all %d", n)
 	}
-	s.DeleteSession(ctx, "s3")
+	_ = s.DeleteSession(ctx, "s3")
 }
 
 func TestSessionSSOFlagRoundTrips(t *testing.T) {
@@ -295,8 +295,8 @@ func TestSettings(t *testing.T) {
 	if v, err := s.GetSetting(ctx, "k"); v != nil || err != nil {
 		t.Fatalf("%v %v", v, err)
 	}
-	s.SetSetting(ctx, "k", "1")
-	s.SetSetting(ctx, "k", "2")
+	_ = s.SetSetting(ctx, "k", "1")
+	_ = s.SetSetting(ctx, "k", "2")
 	if v, _ := s.GetSetting(ctx, "k"); v == nil || *v != "2" {
 		t.Fatalf("%v", v)
 	}
@@ -310,7 +310,7 @@ func TestAuditRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry.Action, entry.ActorUsername = "user.delete", "zed"
-	s.RecordAudit(ctx, entry, t0.Add(time.Second))
+	_, _ = s.RecordAudit(ctx, entry, t0.Add(time.Second))
 	rows, err := s.ListAudit(ctx, 10)
 	if err != nil || len(rows) != 2 || rows[0].Action != "user.delete" || rows[1].TargetID != nil {
 		t.Fatalf("%+v %v", rows, err)

@@ -31,7 +31,7 @@ func (a *app) sessionHandles(t *testing.T) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var handles []string
 	for rows.Next() {
 		var id string

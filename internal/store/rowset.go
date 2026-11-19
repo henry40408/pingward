@@ -21,7 +21,7 @@ var errSkipRow = errors.New("skip row")
 
 // readRows decodes every row with decode.
 func readRows[T any](rows *sql.Rows, decode func(*row) (T, error)) ([]T, error) {
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	columns, err := rows.Columns()
 	if err != nil {
 		return nil, err

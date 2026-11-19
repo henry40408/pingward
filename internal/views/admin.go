@@ -152,7 +152,7 @@ func checkHealthCard(v AdminView) node {
 		return el("span", []attr{a("class", "badge "+class)}, text(num(n)+" "+class))
 	}
 	s := v.Status
-	var down node = el("p", []attr{a("class", "note")}, text("No checks are currently down."))
+	down := el("p", []attr{a("class", "note")}, text("No checks are currently down."))
 	if len(v.Down) > 0 {
 		down = plainTable("health-down", "", headRow("Check", "Project", "Owner"), each(v.Down, func(d DownCheck) node {
 			return el("tr", nil,
@@ -169,7 +169,7 @@ func checkHealthCard(v AdminView) node {
 }
 
 func notificationHealthCard(v AdminView) node {
-	var channels node = el("p", []attr{a("class", "note")}, text("No notifications sent in the last 24h."))
+	channels := el("p", []attr{a("class", "note")}, text("No notifications sent in the last 24h."))
 	if len(v.ChannelFailures) > 0 {
 		channels = plainTable("health-channels", "", headRow("Channel", "Ok", "Error"), each(v.ChannelFailures, func(c ChannelFailure) node {
 			return el("tr", nil,
@@ -178,7 +178,7 @@ func notificationHealthCard(v AdminView) node {
 				el("td", []attr{a("class", "mono fail-txt")}, text(num(c.Failed))))
 		}))
 	}
-	var recent node = el("p", []attr{a("class", "note")}, text("No recent notification failures."))
+	recent := el("p", []attr{a("class", "note")}, text("No recent notification failures."))
 	if len(v.RecentFailures) > 0 {
 		recent = plainTable("health-recent", "", headRow("When", "Event", "Check", "Error"), each(v.RecentFailures, func(n FailedNotification) node {
 			return el("tr", nil,
@@ -205,7 +205,7 @@ func loopStamp(testID, label string, stamp LoopStamp) node {
 	if never {
 		dotClass += " idle"
 	}
-	var timing node = group(
+	timing := group(
 		el("div", []attr{a("class", "hb-time localtime"), a("data-ts", stamp.At)}, text(firstNonEmpty(stamp.UTC, stamp.At))),
 		el("div", []attr{a("class", "hb-ago"), a("data-ago", stamp.At)}, text(stamp.Ago)))
 	if never {
@@ -304,7 +304,7 @@ func envRow(row EnvSetting) node {
 }
 
 func elevationCard(v AdminView) node {
-	var state node = group(
+	state := group(
 		el("p", []attr{a("class", "crumb tight"), a("data-testid", "elevation-state")}, text("Creating a user, resetting a password and granting admin each hand out access that outlasts this browser session, so they ask you to confirm your password first. Removing access — disabling, demoting, deleting — never does.")),
 		el("p", nil, el("a", []attr{a("class", "btn"), a("href", "/admin/unlock"), a("data-testid", "elevation-confirm-link")}, text("Confirm now"))))
 	if v.ElevationRemaining != "" {

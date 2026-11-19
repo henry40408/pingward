@@ -95,7 +95,7 @@ func applySeed(database string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	// One connection, so the script's BEGIN and COMMIT share a transaction.
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(script); err != nil {

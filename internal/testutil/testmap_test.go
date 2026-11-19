@@ -20,7 +20,7 @@ func readEntries(t *testing.T, name string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var entries []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
