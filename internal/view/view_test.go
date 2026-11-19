@@ -97,12 +97,12 @@ func TestHeartbeatVariants(t *testing.T) {
 		ping(1, models.PingSuccess, 0), ping(2, models.PingSuccess, time.Minute),
 	}, HeartbeatOptions{Count: 6})
 	for _, b := range unknown {
-		if b.Class != "none" || b.Title != "duration unknown" {
+		if b.Class != "none" || b.Title != "Duration unknown" {
 			t.Fatal(b)
 		}
 	}
 	timed := []models.PingSummary{ping(1, models.PingStart, 0), ping(2, models.PingSuccess, 42*time.Second)}
-	if b := Heartbeat(timed, HeartbeatOptions{Count: 6}); b[len(b)-1].Title != "no runtime limit set" || b[len(b)-1].Class != "none" {
+	if b := Heartbeat(timed, HeartbeatOptions{Count: 6}); b[len(b)-1].Title != "No runtime limit set" || b[len(b)-1].Class != "none" {
 		t.Fatal(b)
 	}
 	limit := int64(100)
@@ -212,7 +212,7 @@ func TestRunDurationOrdersByTimeThenIDAndKeepsAZeroLength(t *testing.T) {
 
 func TestHeartbeatCeilingNeedsTwoMeasuredRuns(t *testing.T) {
 	one := []models.PingSummary{ping(1, models.PingStart, 0), ping(2, models.PingSuccess, 10*time.Second)}
-	if b := Heartbeat(one, HeartbeatOptions{Count: 6}); b[0].Title != "no runtime limit set" {
+	if b := Heartbeat(one, HeartbeatOptions{Count: 6}); b[0].Title != "No runtime limit set" {
 		t.Fatalf("one measured run gives no ceiling: %v", b)
 	}
 	two := []models.PingSummary{

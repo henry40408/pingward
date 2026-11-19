@@ -71,7 +71,7 @@ func Heartbeat(pings []models.PingSummary, opts HeartbeatOptions) []Bar {
 	if opts.Paused {
 		bars := make([]Bar, opts.Count)
 		for i := range bars {
-			bars[i] = Bar{Height: minHeight, Class: "pausedbar", Title: "paused"}
+			bars[i] = Bar{Height: minHeight, Class: "pausedbar", Title: "Paused"}
 		}
 		return bars
 	}
@@ -132,10 +132,10 @@ func bar(run models.PingSummary, durations map[int64]int64, ceiling, maxRuntime 
 func unmeasuredBar(failed, measured bool) Bar {
 	switch {
 	case failed:
-		return Bar{Height: maxHeight, Class: "bad", Title: "failed"}
+		return Bar{Height: maxHeight, Class: "bad", Title: "Failed"}
 	case measured:
-		return Bar{Height: noneHeight, Class: "none", Title: "no runtime limit set"}
+		return Bar{Height: noneHeight, Class: "none", Title: "No runtime limit set"}
 	default:
-		return Bar{Height: noneHeight, Class: "none", Title: "duration unknown"}
+		return Bar{Height: noneHeight, Class: "none", Title: "Duration unknown"}
 	}
 }

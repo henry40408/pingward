@@ -103,7 +103,7 @@ func TestDashboardMatchesRust(t *testing.T) {
 	sameAsGolden(t, "dashboard-empty", Dashboard(DashboardView{CSRF: "c"}))
 	bars := []view.Bar{{Height: 5, Class: "", Title: "0s / 30m 00s"}}
 	for range 3 {
-		bars = append(bars, view.Bar{Height: 26, Class: "bad", Title: "failed"})
+		bars = append(bars, view.Bar{Height: 26, Class: "bad", Title: "Failed"})
 	}
 	sameAsGolden(t, "dashboard-down", Dashboard(DashboardView{
 		IsAdmin: true, Total: 5, Up: 1, Down: 1, Status: "down",
