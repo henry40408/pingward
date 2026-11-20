@@ -158,7 +158,7 @@ func (d *Deps) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	// Consumed here so the removal Set-Cookie rides back on this response.
 	logoutNote, _ := d.takeFlash(w, r, "forward_auth_logout")
-	query := strings.TrimFunc(r.URL.Query().Get("q"), isRustSpace)
+	query := trimRustSpace(r.URL.Query().Get("q"))
 	filter := parseStatusFilter(r.URL.Query().Get("status"))
 	page, err := d.dashboardView(r, user, query, filter)
 	if err != nil {

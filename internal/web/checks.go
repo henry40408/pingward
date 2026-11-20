@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/henry40408/pingward/internal/markdown"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -105,7 +106,7 @@ func (d *Deps) checkPageView(r *http.Request, who access, in checkPageInput, opt
 	boxes := make([]views.ChannelBox, len(channels))
 	for i, channel := range channels {
 		names[channel.ID] = channel.Name
-		boxes[i] = views.ChannelBox{ID: channel.ID, Name: channel.Name, Kind: string(channel.Kind), Bound: containsID(bound, channel.ID)}
+		boxes[i] = views.ChannelBox{ID: channel.ID, Name: channel.Name, Kind: string(channel.Kind), Bound: slices.Contains(bound, channel.ID)}
 	}
 	// Always the latest window, never the table's page; summaries, so no bodies load.
 	recent, err := d.Store.ListRecentPingSummaries(ctx, check.ID, heartbeatWindow)
@@ -137,15 +138,6 @@ func (d *Deps) checkPageView(r *http.Request, who access, in checkPageInput, opt
 		ChannelBoxes: boxes, PingsPartial: views.CheckPings(pings), NotifsPartial: views.CheckNotifs(notifs),
 		Flash: opts.flash,
 	}, nil
-}
-
-func containsID(ids []int64, id int64) bool {
-	for _, candidate := range ids {
-		if candidate == id {
-			return true
-		}
-	}
-	return false
 }
 
 func (d *Deps) checkShow(admin bool) http.HandlerFunc {

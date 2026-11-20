@@ -2,6 +2,8 @@ package cron
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -185,10 +187,5 @@ func (u *unit) resolve(specs []rootSpec) (ordinalSet, error) {
 			members[ordinal] = true
 		}
 	}
-	set := make(ordinalSet, 0, len(members))
-	for ordinal := range members {
-		set = append(set, ordinal)
-	}
-	sort.Slice(set, func(i, j int) bool { return set[i] < set[j] })
-	return set, nil
+	return ordinalSet(slices.Sorted(maps.Keys(members))), nil
 }
