@@ -5,8 +5,8 @@ go 1.27.0
 toolchain go1.27.4
 
 require (
-	github.com/chromedp/cdproto v0.159.3
-	github.com/chromedp/chromedp v0.23.0
+	github.com/chromedp/cdproto v0.160.3
+	github.com/chromedp/chromedp v0.23.1
 	github.com/cucumber/godog v0.16.0
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
