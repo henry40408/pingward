@@ -47,16 +47,11 @@ func readMigrationRows(t *testing.T, database *DB) []migrationRow {
 	return out
 }
 
-// readGolden parses "<version> <description…> <sha384 hex>" lines.
-func readGolden(t *testing.T, name string) []migrationRow {
+// parseMigrationGolden parses "<version> <description…> <sha384 hex>" lines.
+func parseMigrationGolden(t *testing.T, golden string) []migrationRow {
 	t.Helper()
-	file, err := os.Open(filepath.Join("testdata", name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = file.Close() }()
 	var out []migrationRow
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(strings.NewReader(golden))
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) < 3 {
@@ -79,7 +74,7 @@ func TestGoMigratedDatabaseMatchesTheRustGolden(t *testing.T) {
 	if err := database.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	got, want := readMigrationRows(t, database), readGolden(t, "sqlx_migrations.sqlite.txt")
+	got, want := readMigrationRows(t, database), parseMigrationGolden(t, sqliteMigrationGolden)
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got  %v\nwant %v", got, want)
 	}
@@ -94,7 +89,7 @@ func TestPostgresGoldenIsTheFileChecksums(t *testing.T) {
 	for _, m := range dialectFiles {
 		got = append(got, migrationRow{m.version, m.description, hex.EncodeToString(m.checksum), true})
 	}
-	if want := readGolden(t, "sqlx_migrations.postgres.txt"); fmt.Sprint(got) != fmt.Sprint(want) {
+	if want := parseMigrationGolden(t, postgresMigrationGolden); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got  %v\nwant %v", got, want)
 	}
 }

@@ -1,9 +1,7 @@
 package auth
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -65,27 +63,26 @@ func TestHashThenVerifyRoundTrips(t *testing.T) {
 	}
 }
 
+// rustPasswordVectors are PHC strings produced by the Rust v0.12.0 server
+// (argon2 0.6 defaults m=19456,t=2,p=1), taken from the users table of its
+// database, plus the argon2 0.5.3 vector from src/auth.rs
+// verify_accepts_hash_from_argon2_0_5. The salts are random, so Go must verify
+// them rather than reproduce them.
+var rustPasswordVectors = []struct{ password, phc string }{
+	{"correct horse battery staple", "$argon2id$v=19$m=19456,t=2,p=1$vHgAaDRCakSMcV1CO34qog$oO+4Exa3gccDO+ZP+T74abbYEm/n6dvNMAtQV5TTdsA"},
+	{"日本語のパスワード十五文字以上です", "$argon2id$v=19$m=19456,t=2,p=1$IBRv0JBNjykisiXTNWm//Q$1BdvSGkAIg/c5Bm9N4W169G470UlE9N3YR3lpuAIf5g"},
+	{"carol carol carol carol", "$argon2id$v=19$m=19456,t=2,p=1$eJFyRAuPyuNQWfNAjgwoRA$Bm+EasQtuLUcb/ghUJuzZiWczCQAgvtNgF/7iZq7DGg"},
+	{"correct horse", "$argon2id$v=19$m=19456,t=2,p=1$7GpHNWosgZqygblv9zwMuA$mZ2ug4DZpfCWRzPvF3HZwnIhPZyrsljPLgfNdsPKXuk"},
+}
+
 func TestVerifyAcceptsRustHashes(t *testing.T) {
-	raw, err := os.ReadFile("testdata/password_vectors.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var v struct {
-		Vectors []struct{ Password, PHC string } `json:"vectors"`
-		Wrong   string                           `json:"wrong_password"`
-	}
-	if err := json.Unmarshal(raw, &v); err != nil {
-		t.Fatal(err)
-	}
-	if len(v.Vectors) < 4 {
-		t.Fatal("vectors missing")
-	}
-	for _, vec := range v.Vectors {
-		if !VerifyPassword(vec.Password, vec.PHC) {
-			t.Errorf("Rust hash for %q rejected", vec.Password)
+	const wrongPassword = "wrong horse"
+	for _, vec := range rustPasswordVectors {
+		if !VerifyPassword(vec.password, vec.phc) {
+			t.Errorf("Rust hash for %q rejected", vec.password)
 		}
-		if VerifyPassword(v.Wrong, vec.PHC) {
-			t.Errorf("wrong password accepted for %q", vec.Password)
+		if VerifyPassword(wrongPassword, vec.phc) {
+			t.Errorf("wrong password accepted for %q", vec.password)
 		}
 	}
 }

@@ -1,9 +1,0 @@
-GET /api/v1/checks/1/notifications
-HTTP/1.1 200 OK
-content-type: application/json
-x-content-type-options: nosniff
-x-frame-options: DENY
-referrer-policy: same-origin
-permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
-
-{"items":[],"has_newer":false,"has_older":false,"next_before":null,"next_after":null}

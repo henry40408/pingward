@@ -109,9 +109,12 @@ real `$HOME`: use `t.TempDir()` and set `HOME`.
 
 ### Golden files
 
-`internal/*/testdata` holds captured fixtures (HTML goldens for views, cron and
-timezone tables, markdown, password vectors, the OpenAPI document). Many were
-captured from the former Rust server; each `testdata/README.txt` says how. A
+`internal/*/testdata` holds the large captured fixtures (HTML goldens for views,
+cron and timezone tables, markdown, the OpenAPI document). Many were captured
+from the former Rust server; each `testdata/README.txt` says how. Small Rust
+vectors (password hashes, session cookies, notifier request bodies, timezone
+parse probes, API error responses, `_sqlx_migrations` checksums) are inline in
+the tests that use them (`rust*` variables, `*MigrationGolden`). A
 deliberate markup change means regenerating the goldens and the screenshots
 together. Never edit a golden to make a test pass without understanding why it
 differs. `testdata/test_map.txt` maps the original Rust tests to Go tests; keep

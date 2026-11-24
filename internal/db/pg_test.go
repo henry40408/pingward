@@ -32,7 +32,7 @@ func TestPostgresMigrationsMatchTheDerivedGolden(t *testing.T) {
 	if err := database.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	got, want := readMigrationRows(t, database), readGolden(t, "sqlx_migrations.postgres.txt")
+	got, want := readMigrationRows(t, database), parseMigrationGolden(t, postgresMigrationGolden)
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("got  %v\nwant %v", got, want)
 	}

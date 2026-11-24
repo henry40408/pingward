@@ -11,7 +11,7 @@ How it was run (rust:1-slim-trixie, --cpus 2, one container at a time, removed a
 The program writes four files, which are copied into the packages:
   cron_fixtures.json   -> internal/cron/testdata/fixtures.json
   tz_names.txt         -> internal/tz/testdata/chrono_tz_names.txt
-  tz_parse.json        -> internal/tz/testdata/chrono_tz_parse.json
+  tz_parse.json        -> inline in internal/tz/tz_test.go (chronoTzParseProbes)
   markdown_cases.json  -> internal/markdown/testdata/cases.json
 
 Contents
@@ -20,7 +20,7 @@ Contents
   crate error text. Anchors cover DST gaps and overlaps; zones include UTC, Asia/Taipei and
   zones with DST.
 - tz chrono_tz_names.txt: chrono_tz::TZ_VARIANTS in crate order; internal/tz/gen.go turns it into
-  names.go. chrono_tz_parse.json: what str::parse::<Tz>() returns for probe inputs (null = rejected),
+  names.go. tz_parse.json: what str::parse::<Tz>() returns for probe inputs (null = rejected),
   which pins the case-sensitivity rules.
 - markdown cases.json: input and exact HTML output of the Rust renderer, including XSS probes.
 
