@@ -1,7 +1,0 @@
-GET /api/v1/nothing
-HTTP/1.1 404 Not Found
-x-content-type-options: nosniff
-x-frame-options: DENY
-referrer-policy: same-origin
-permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
-

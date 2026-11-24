@@ -5,8 +5,6 @@ Fragment endpoints (pings, notifications, audit) were requested with `X-Requeste
 Confirmation pages are the POST response without ?confirmed, with a valid CSRF token.
 Values that vary between runs must be normalised by the Go comparison: _csrf value,
 asset ?v= hashes, timestamps and relative times ("3s ago"), ping UUIDs, version in the footer.
-Pages the Rust app answers with a redirect or an empty body (/setup once a user exists,
-unknown paths) are in internal/server/testdata/headers.txt instead.
 Not captured (needs other server runs): setup with SMTP disabled vs enabled variants of
 channel_form (the capture server had SMTP configured), forward-auth account page, passwordless
 account, dashboard filters beyond down/search, project/check pages for every status.

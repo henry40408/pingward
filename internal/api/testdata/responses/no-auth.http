@@ -1,9 +1,0 @@
-GET /api/v1/projects
-HTTP/1.1 401 Unauthorized
-content-type: application/json
-x-content-type-options: nosniff
-x-frame-options: DENY
-referrer-policy: same-origin
-permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
-
-{"error":{"code":"unauthorized","message":"Missing or invalid API key."}}

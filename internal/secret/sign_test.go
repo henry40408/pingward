@@ -3,8 +3,6 @@ package secret
 import (
 	"bytes"
 	"encoding/hex"
-	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 )
@@ -155,34 +153,39 @@ func TestFlashAndSessionSignaturesDoNotCrossVerify(t *testing.T) {
 	}
 }
 
+// rustSessionVectors were captured from a live Rust v0.12.0 server started with
+// rustVectorSecret as PINGWARD_SECRET (raw UTF-8 bytes): sessionCookie is
+// sign_session(uuid) and csrf is derive_csrf(uuid) as rendered in the _csrf form
+// field. Flash cookie and setup-token vectors were not captured; the other tests
+// derive them from secret.rs semantics instead.
+const rustVectorSecret = "0123456789abcdef0123456789abcdef-pingward-capture"
+
+var rustSessionVectors = []struct{ sessionCookie, csrf string }{
+	{
+		"3fc3d93d-44d8-4ab6-9664-e30812a2e67c.fe34d79d02c8d864b3ca283b33ee0c3cd7be34433685f4020716d1810bfa0049",
+		"b7ca0ba8683abf68ac0edc23e5c47d45a48c2276d080ed5dae51d15a5137d62c",
+	},
+	{
+		"fe2d1027-1a37-4b5f-b471-f2e1f81dfef2.373baa12ba8395f790be496ee08f71f3a3a73b4562922b233c46864d7fbe6ffe",
+		"e2a212b66f3e677c041a8f6891c921244b37afd1339e4ad083228b9278d0e5ff",
+	},
+	{
+		"57fabe9b-7397-4320-bee3-cb29da484d65.dd6aaa586148d66723b40a6b4473c91f368191e7857d388fb216c4cc5e520740",
+		"adb233efb1f59925af7193bc1bd1d227706805277ac80a398f5bfac87f1f8193",
+	},
+}
+
 func TestVerifiesRustCapturedVectors(t *testing.T) {
-	raw, err := os.ReadFile("testdata/vectors.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var v struct {
-		SecretUTF8 string `json:"secret_utf8"`
-		Sessions   []struct {
-			SessionCookie string `json:"session_cookie"`
-			CSRF          string `json:"csrf"`
-		} `json:"sessions"`
-	}
-	if err := json.Unmarshal(raw, &v); err != nil {
-		t.Fatal(err)
-	}
-	if len(v.Sessions) == 0 {
-		t.Fatal("no vectors")
-	}
-	secret := []byte(v.SecretUTF8)
-	for _, s := range v.Sessions {
-		id, ok := VerifySession(secret, s.SessionCookie)
+	secret := []byte(rustVectorSecret)
+	for _, s := range rustSessionVectors {
+		id, ok := VerifySession(secret, s.sessionCookie)
 		if !ok {
-			t.Fatalf("Rust cookie %q rejected", s.SessionCookie)
+			t.Fatalf("Rust cookie %q rejected", s.sessionCookie)
 		}
-		if got := DeriveCSRF(secret, id); got != s.CSRF {
-			t.Fatalf("csrf for %s: got %s want %s", id, got, s.CSRF)
+		if got := DeriveCSRF(secret, id); got != s.csrf {
+			t.Fatalf("csrf for %s: got %s want %s", id, got, s.csrf)
 		}
-		if SignSession(secret, id) != s.SessionCookie {
+		if SignSession(secret, id) != s.sessionCookie {
 			t.Fatalf("re-signing %s differs from Rust", id)
 		}
 	}

@@ -1,9 +1,0 @@
-GET /api/openapi.json
-HTTP/1.1 303 See Other
-location: /login
-cache-control: no-store
-x-content-type-options: nosniff
-x-frame-options: DENY
-referrer-policy: same-origin
-permissions-policy: geolocation=(), camera=(), microphone=(), payment=(), usb=()
-

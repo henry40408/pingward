@@ -3,7 +3,6 @@ package server_test
 import (
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -320,7 +319,10 @@ func TestStatelessErrorsMatchTheRustCaptures(t *testing.T) {
 	for _, tc := range []struct{ file, token string }{
 		{"no-auth", ""}, {"bad-key", "pw_bad"}, {"project-create-invalid", token}, {"project-bad-id", token},
 	} {
-		capture := readCapture(t, tc.file)
+		capture, ok := rustCaptures[tc.file]
+		if !ok {
+			t.Fatalf("no capture named %s", tc.file)
+		}
 		res := a.api(capture.method, capture.path, tc.token, capture.body)
 		if res.StatusCode != capture.status || res.Header.Get("Content-Type") != capture.contentType || res.Body != capture.body2 {
 			t.Errorf("%s: got %d %q %q\nwant %d %q %q", tc.file, res.StatusCode, res.Header.Get("Content-Type"), res.Body,
@@ -335,27 +337,24 @@ type capture struct {
 	status                           int
 }
 
-func readCapture(t *testing.T, name string) capture {
-	t.Helper()
-	raw, err := os.ReadFile("../api/testdata/responses/" + name + ".http")
-	if err != nil {
-		t.Fatal(err)
-	}
-	head, responseBody, _ := strings.Cut(string(raw), "\n\n")
-	lines := strings.Split(head, "\n")
-	var c capture
-	c.method, c.path, _ = strings.Cut(lines[0], " ")
-	c.path = strings.TrimSpace(c.path)
-	for _, line := range lines[1:] {
-		switch {
-		case strings.HasPrefix(line, "body: "):
-			c.body = strings.TrimPrefix(line, "body: ")
-		case strings.HasPrefix(line, "HTTP/1.1 "):
-			_, _ = fmt.Sscanf(line, "HTTP/1.1 %d", &c.status)
-		case strings.HasPrefix(line, "content-type: "):
-			c.contentType = strings.TrimPrefix(line, "content-type: ")
-		}
-	}
-	c.body2 = strings.TrimRight(responseBody, "\n")
-	return c
+// rustCaptures are the responses of the Rust v0.12.0 server to the requests
+// below. The server also sent x-content-type-options, x-frame-options,
+// referrer-policy and permissions-policy; the test does not compare them.
+var rustCaptures = map[string]capture{
+	"no-auth": {
+		method: "GET", path: "/api/v1/projects", status: 401, contentType: "application/json",
+		body2: `{"error":{"code":"unauthorized","message":"Missing or invalid API key."}}`,
+	},
+	"bad-key": {
+		method: "GET", path: "/api/v1/projects", status: 401, contentType: "application/json",
+		body2: `{"error":{"code":"unauthorized","message":"Missing or invalid API key."}}`,
+	},
+	"project-create-invalid": {
+		method: "POST", path: "/api/v1/projects", body: `{"name":""}`, status: 400, contentType: "application/json",
+		body2: `{"error":{"code":"bad_request","message":"Name is required."}}`,
+	},
+	"project-bad-id": {
+		method: "GET", path: "/api/v1/projects/abc", status: 400, contentType: "text/plain; charset=utf-8",
+		body2: "Invalid URL: Cannot parse `abc` to a `i64`.",
+	},
 }

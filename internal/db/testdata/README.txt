@@ -22,12 +22,5 @@ rust-created.sqlite3
   heartbeat, flaky(period 2s, down/up/reminder notifications), slow-job(overrun), bob-check.
   Notification rows cover down(overdue, failed, overrun), up, reminder.
 
-sqlx_migrations.sqlite.txt
-  version description sha384-hex, read from the real _sqlx_migrations of the captured DB.
-  All 16 checksums equal SHA-384 of migrations/sqlite/<n>_*.sql (verified).
-  Table DDL: see `sqlite3 rust-created.sqlite3 .schema _sqlx_migrations`.
-
-sqlx_migrations.postgres.txt
-  DERIVED, NOT CAPTURED: sha384 of migrations/postgres/*.sql using the rule verified on
-  SQLite (sqlx checksum = SHA-384 of the file bytes). A real Postgres capture needs a
-  second container (not done under the one-container rule).
+_sqlx_migrations checksums (the sqlite capture and the derived postgres list) are inline in
+../migration_golden_test.go.

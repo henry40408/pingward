@@ -1,10 +1,6 @@
 package tz
 
-import (
-	"encoding/json"
-	"os"
-	"testing"
-)
+import "testing"
 
 func TestNamesMatchTheChronoTzList(t *testing.T) {
 	if len(Names()) != 597 {
@@ -23,25 +19,79 @@ func TestEveryNameLoadsFromEmbeddedTzdata(t *testing.T) {
 	}
 }
 
+// chronoTzParseProbes were captured from chrono-tz 0.10.4 `str::parse::<Tz>()`:
+// want is the canonical name, or "" where chrono-tz refuses the input.
+var chronoTzParseProbes = []struct{ input, want string }{
+	{"UTC", "UTC"},
+	{"utc", ""},
+	{"Utc", ""},
+	{"UCT", "UCT"},
+	{"Asia/Taipei", "Asia/Taipei"},
+	{"asia/taipei", ""},
+	{"ASIA/TAIPEI", ""},
+	{"America/New_York", "America/New_York"},
+	{"america/new_york", ""},
+	{"Etc/GMT+5", "Etc/GMT+5"},
+	{"etc/gmt+5", ""},
+	{"GMT", "GMT"},
+	{"gmt", ""},
+	{"Zulu", "Zulu"},
+	{"zulu", ""},
+	{"EST", "EST"},
+	{"est", ""},
+	{"EST5EDT", "EST5EDT"},
+	{"Local", ""},
+	{"local", ""},
+	{"Not/AZone", ""},
+	{"", ""},
+	{" UTC", ""},
+	{"UTC ", ""},
+	{"Asia/Taipei ", ""},
+	{"Taipei", ""},
+	{"Asia/Kolkata", "Asia/Kolkata"},
+	{"Asia/Calcutta", "Asia/Calcutta"},
+	{"US/Eastern", "US/Eastern"},
+	{"us/eastern", ""},
+	{"Europe/Kyiv", "Europe/Kyiv"},
+	{"Europe/Kiev", "Europe/Kiev"},
+	{"America/Argentina/Buenos_Aires", "America/Argentina/Buenos_Aires"},
+	{"america/argentina/buenos_aires", ""},
+	{"UTC+8", ""},
+	{"+08:00", ""},
+	{"Asia//Taipei", ""},
+	{"/UTC", ""},
+	{"UTC/", ""},
+	{"../UTC", ""},
+	{"posixrules", ""},
+	{"right/UTC", ""},
+	{"Factory", ""},
+	{"localtime", ""},
+	{"Asia/Taipei\n", ""},
+	{"Asia/Tapei", ""},
+	{"Etc/UTC", "Etc/UTC"},
+	{"Etc/Greenwich", "Etc/Greenwich"},
+	{"Greenwich", "Greenwich"},
+	{"Japan", "Japan"},
+	{"japan", ""},
+	{"Asia/Ho_Chi_Minh", "Asia/Ho_Chi_Minh"},
+	{"Asia/Saigon", "Asia/Saigon"},
+	{"WET", "WET"},
+	{"CET", "CET"},
+	{"MST7MDT", "MST7MDT"},
+	{"PST8PDT", "PST8PDT"},
+	{"Navajo", "Navajo"},
+	{"ROC", "ROC"},
+	{"PRC", "PRC"},
+}
+
 func TestCanonicalAgreesWithChronoTzParse(t *testing.T) {
-	raw, err := os.ReadFile("testdata/chrono_tz_parse.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var probes []struct {
-		Input string  `json:"input"`
-		Name  *string `json:"name"`
-	}
-	if err := json.Unmarshal(raw, &probes); err != nil {
-		t.Fatal(err)
-	}
-	for _, probe := range probes {
-		got, ok := Canonical(probe.Input)
+	for _, probe := range chronoTzParseProbes {
+		got, ok := Canonical(probe.input)
 		switch {
-		case probe.Name == nil && ok:
-			t.Errorf("%q accepted, chrono-tz refuses it", probe.Input)
-		case probe.Name != nil && (!ok || got != *probe.Name):
-			t.Errorf("%q = %q,%v want %q", probe.Input, got, ok, *probe.Name)
+		case probe.want == "" && ok:
+			t.Errorf("%q accepted, chrono-tz refuses it", probe.input)
+		case probe.want != "" && (!ok || got != probe.want):
+			t.Errorf("%q = %q,%v want %q", probe.input, got, ok, probe.want)
 		}
 	}
 }
