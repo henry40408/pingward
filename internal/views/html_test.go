@@ -1,7 +1,6 @@
 package views
 
 import (
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -34,15 +33,6 @@ func TestRawIsNotEscapedButTextIs(t *testing.T) {
 	}
 }
 
-func goldenShell(t *testing.T, name string) string {
-	t.Helper()
-	body, err := os.ReadFile("testdata/" + name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return normalise(string(body))
-}
-
 var (
 	csrfValue   = regexp.MustCompile(`name="_csrf" value="[^"]*"`)
 	versionArgs = regexp.MustCompile(`\?v=[0-9a-f]+`)
@@ -56,24 +46,17 @@ func normalise(html string) string {
 }
 
 func TestPageWithoutNavMatchesTheRustLoginShell(t *testing.T) {
-	golden := goldenShell(t, "login.golden.html")
-	start := strings.Index(golden, "<main")
-	end := strings.Index(golden, "</main>") + len("</main>")
-	page := normalise(Page(Chrome{}, raw("BODY")))
-	rebuilt := golden[:start] + `<main class="wrap">BODY</main>` + golden[end:]
-	if page != rebuilt {
-		t.Fatalf("\n%s\n!=\n%s", page, rebuilt)
-	}
+	assertGolden(t, "login-shell", Page(Chrome{}, raw("BODY")))
 }
 
 func TestPageWithNavMatchesTheRustDashboardNav(t *testing.T) {
-	golden := goldenShell(t, "dashboard.golden.html")
-	start := strings.Index(golden, "<header")
-	end := strings.Index(golden, "</header>") + len("</header>")
-	page := normalise(Page(Chrome{ShowNav: true, IsAdmin: true, CSRF: "c"}, raw("")))
-	if !strings.Contains(page, golden[start:end]) {
-		t.Fatalf("nav differs:\n%s\nin\n%s", golden[start:end], page)
+	page := Page(Chrome{ShowNav: true, IsAdmin: true, CSRF: "c"}, raw(""))
+	start := strings.Index(page, "<header")
+	end := strings.Index(page, "</header>") + len("</header>")
+	if start < 0 || end < len("</header>") {
+		t.Fatalf("no <header> in %s", page)
 	}
+	assertGolden(t, "dashboard-nav", page[start:end])
 }
 
 func TestNavHidesAdminLinkFromNonAdmins(t *testing.T) {

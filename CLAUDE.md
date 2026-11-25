@@ -109,16 +109,22 @@ real `$HOME`: use `t.TempDir()` and set `HOME`.
 
 ### Golden files
 
-`internal/*/testdata` holds the large captured fixtures (HTML goldens for views,
-cron and timezone tables, markdown, the OpenAPI document). Many were captured
-from the former Rust server; each `testdata/README.txt` says how. Small Rust
-vectors (password hashes, session cookies, notifier request bodies, timezone
-parse probes, API error responses, `_sqlx_migrations` checksums) are inline in
-the tests that use them (`rust*` variables, `*MigrationGolden`). A
-deliberate markup change means regenerating the goldens and the screenshots
-together. Never edit a golden to make a test pass without understanding why it
-differs. `testdata/test_map.txt` maps the original Rust tests to Go tests; keep
-it consistent when renaming a test (`internal/testutil/testmap_test.go`).
+`internal/*/testdata` holds the large captured fixtures (cron and timezone
+tables, markdown, the OpenAPI document). Many were captured from the former
+Rust server; each `testdata/README.txt` says how. Small Rust vectors (password
+hashes, session cookies, notifier request bodies, timezone parse probes, API
+error responses, `_sqlx_migrations` checksums) are inline in the tests that use
+them (`rust*` variables, `*MigrationGolden`).
+
+View markup is pinned by `goldenDigests` (`internal/views/golden_digests_test.go`):
+the sha256 of each page the Rust server rendered, compared with the normalised
+Go output. A mismatch writes the output to a temp file and names the
+`git show` command that recovers the Rust golden from history. A deliberate
+markup change means replacing the affected digests (compare the output with the
+recovered golden first) and regenerating the screenshots together. Never change
+a digest to make a test pass without understanding why it differs.
+`testdata/test_map.txt` maps the original Rust tests to Go tests; keep it
+consistent when renaming a test (`internal/testutil/testmap_test.go`).
 
 ## Invariants
 

@@ -881,8 +881,9 @@ Views live in `internal/views` and are embedded in the binary: **rebuild
 `bin/pingward` after any view or route change**. The E2E harness runs
 `bin/pingward` and only builds it when missing (`harness.ensureBinary`), so a
 stale binary is silently reused. Interactive elements carry `data-testid`, used
-by the integration tests and the E2E steps. `internal/views/testdata/*.golden.html`
-pin the markup.
+by the integration tests and the E2E steps. `goldenDigests`
+(`internal/views/golden_digests_test.go`) pins the markup: the sha256 of each
+page the Rust server rendered.
 
 ## Testing
 
