@@ -27,8 +27,8 @@ func at(t *testing.T, s string) time.Time {
 func str(s string) *string { return &s }
 
 func TestChannelFormsMatchRust(t *testing.T) {
-	sameAsGolden(t, "channel-new", ChannelForm(ChannelFormView{IsAdmin: true, ProjectID: 1, SMTPAvailable: true}))
-	sameAsGolden(t, "admin-channel-new", ChannelForm(ChannelFormView{IsAdmin: true, Admin: true, ProjectID: 4, SMTPAvailable: true}))
+	assertGolden(t, "channel-new", ChannelForm(ChannelFormView{IsAdmin: true, ProjectID: 1, SMTPAvailable: true}))
+	assertGolden(t, "admin-channel-new", ChannelForm(ChannelFormView{IsAdmin: true, Admin: true, ProjectID: 4, SMTPAvailable: true}))
 }
 
 func TestAccountPagesMatchRust(t *testing.T) {
@@ -45,14 +45,14 @@ func TestAccountPagesMatchRust(t *testing.T) {
 		{ID: 1, Name: "ci", Prefix: "pw_3c1ab0d7", CreatedAt: at(t, "2026-11-17T15:25:17.184268460+00:00"), ExpiresAt: &expires},
 	}
 	account := AccountView{CSRF: "c", IsAdmin: true, HasPassword: true, Sessions: []SessionRow{session}, Keys: keys}
-	sameAsGolden(t, "account", Account(account))
+	assertGolden(t, "account", Account(account))
 
 	seen := at(t, "2026-11-17T15:25:00.901036239+00:00")
 	session.LastSeenAt = &seen
 	keys[0].LastUsedAt = nil
 	account.Sessions, account.Keys = []SessionRow{session}, keys
 	account.NewToken = "pw_00a0e648fc5141e6888cfb1e3e5400fbb5460013c9f84498ba4a7f8d7910186f"
-	sameAsGolden(t, "account-key-created", Account(account))
+	assertGolden(t, "account-key-created", Account(account))
 }
 
 func TestAccountHidesPasswordControlsWithoutAPassword(t *testing.T) {
@@ -86,7 +86,7 @@ func TestAccountMarksExpiredAndSSOEntries(t *testing.T) {
 }
 
 func TestAdminUnlockMatchesRust(t *testing.T) {
-	sameAsGolden(t, "admin-unlock", AdminUnlock(AdminUnlockView{IsAdmin: true, CSRF: "c", Applies: true, TTL: "15m"}))
+	assertGolden(t, "admin-unlock", AdminUnlock(AdminUnlockView{IsAdmin: true, CSRF: "c", Applies: true, TTL: "15m"}))
 }
 
 func TestAdminUnlockStates(t *testing.T) {
@@ -107,8 +107,7 @@ func TestAdminAuditFilterEmptyStateMatchesRust(t *testing.T) {
 	got := string(AdminAudit(AdminAuditView{
 		Actors: []string{"admin"}, Actions: []string{"admin.access", "settings.update", "user.create", "user.set_admin"}, Filtered: true, FilterAction: "unknown",
 	}))
-	want := golden(t, "admin-audit-filter")
-	sameHTML(t, "admin-audit-filter", want, got)
+	assertGolden(t, "admin-audit-filter", got)
 }
 
 func auditRows(t *testing.T) []AuditRow {
@@ -164,10 +163,7 @@ func TestAdminPageMatchesRustExceptTheEnvironmentTable(t *testing.T) {
 		ElevationApplies: true, ElevationRemaining: "12m57s",
 		Projects: []AdminProjectRow{{1, "Alpha", "admin"}, {2, "Beta", "admin"}, {4, "BobProject", "bob"}},
 	})
-	strip := func(html string) string {
-		return environment.ReplaceAllString(html, "ENV")
-	}
-	sameHTML(t, "admin", strip(golden(t, "admin")), strip(got))
+	assertGolden(t, "admin", environment.ReplaceAllString(got, "ENV"))
 }
 
 func TestAdminPageGatesControlsWhileLocked(t *testing.T) {
@@ -208,10 +204,10 @@ func TestChannelEditPagesMatchRust(t *testing.T) {
 	}
 	for _, edit := range edits {
 		name := "channel-edit-" + num(edit.ID)
-		sameAsGolden(t, name, ChannelForm(ChannelFormView{IsAdmin: true, ProjectID: 1, SMTPAvailable: true, Edit: &edit}))
+		assertGolden(t, name, ChannelForm(ChannelFormView{IsAdmin: true, ProjectID: 1, SMTPAvailable: true, Edit: &edit}))
 	}
 	edit := ChannelEditView{ID: 8, Kind: "webhook", Name: "bob-hook", HasWebhookURL: true}
-	sameAsGolden(t, "admin-channel-edit", ChannelForm(ChannelFormView{IsAdmin: true, Admin: true, ProjectID: 4, SMTPAvailable: true, Edit: &edit}))
+	assertGolden(t, "admin-channel-edit", ChannelForm(ChannelFormView{IsAdmin: true, Admin: true, ProjectID: 4, SMTPAvailable: true, Edit: &edit}))
 }
 
 func TestChannelFormNeverRendersASecretAndGatesEmailOnSMTP(t *testing.T) {

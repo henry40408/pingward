@@ -1,8 +1,9 @@
 package views
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -12,36 +13,39 @@ import (
 	"github.com/henry40408/pingward/internal/view"
 )
 
-func golden(t *testing.T, name string) string {
+// assertGolden compares the digest of the normalised page with the Rust
+// server's. A mismatch writes the page to a temporary file; the Rust golden is
+// in git history under internal/views/testdata.
+func assertGolden(t *testing.T, name, html string) {
 	t.Helper()
-	body, err := os.ReadFile("testdata/" + name + ".golden.html")
+	want, ok := goldenDigests[name]
+	if !ok {
+		t.Fatalf("no golden digest named %s", name)
+	}
+	got := normalise(html)
+	sum := sha256.Sum256([]byte(got))
+	if hex.EncodeToString(sum[:]) == want {
+		return
+	}
+	file, err := os.CreateTemp("", name+".actual.*.html")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(body)
-}
-
-func sameAsGolden(t *testing.T, name, got string) {
-	t.Helper()
-	sameHTML(t, name, golden(t, name), got)
-}
-
-func sameHTML(t *testing.T, name, wantHTML, gotHTML string) {
-	t.Helper()
-	want, got := normalise(wantHTML), normalise(gotHTML)
-	if got == want {
-		return
+	defer func() { _ = file.Close() }()
+	if _, err := file.WriteString(got); err != nil {
+		t.Fatal(err)
 	}
-	at := 0
-	for at < len(got) && at < len(want) && got[at] == want[at] {
-		at++
-	}
-	t.Fatalf("%s differs at %d\n got: ...%s\nwant: ...%s", name, at, got[max(at-80, 0):min(at+160, len(got))], want[max(at-80, 0):min(at+160, len(want))])
+	// login-shell and dashboard-nav are cut from the login and dashboard goldens.
+	source := strings.TrimSuffix(strings.TrimSuffix(name, "-shell"), "-nav")
+	path := "internal/views/testdata/" + source + ".golden.html"
+	t.Errorf("%s differs from the Rust golden (%d bytes of normalised output written to %s).\n"+
+		"The golden is in git history: git show $(git log --diff-filter=D --format=%%h -1 -- %s)^:%s",
+		name, len(got), file.Name(), path, path)
 }
 
 func TestLoginAndSetupMatchRust(t *testing.T) {
-	sameAsGolden(t, "login", Login(AuthView{CSRF: "c"}))
-	sameAsGolden(t, "setup", Setup(AuthView{CSRF: "c"}))
+	assertGolden(t, "login", Login(AuthView{CSRF: "c"}))
+	assertGolden(t, "setup", Setup(AuthView{CSRF: "c"}))
 }
 
 func TestAuthErrorsCarryTheirOwnTestID(t *testing.T) {
@@ -53,39 +57,18 @@ func TestAuthErrorsCarryTheirOwnTestID(t *testing.T) {
 	}
 }
 
-var confirmFields = regexp.MustCompile(`<h1>(.*?)</h1>.*?data-testid="confirm-message">(.*?)</p><form method="post" action="(.*?)">.*?data-testid="confirm-submit">(.*?)</button><a class="btn" href="(.*?)" data-testid="confirm-cancel"`)
-
 func TestEveryConfirmationPageMatchesRust(t *testing.T) {
-	entries, err := os.ReadDir("testdata")
-	if err != nil {
-		t.Fatal(err)
-	}
-	count := 0
-	for _, entry := range entries {
-		name, ok := strings.CutSuffix(entry.Name(), ".golden.html")
-		if !ok || !strings.HasPrefix(name, "confirm-") {
-			continue
-		}
-		count++
-		unescape := strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`).Replace
-		m := confirmFields.FindStringSubmatch(golden(t, name))
-		if m == nil {
-			t.Fatalf("%s: no fields", name)
-		}
-		isAdmin := strings.Contains(golden(t, name), `data-testid="nav-admin"`)
-		sameAsGolden(t, name, Confirm(ConfirmView{
-			IsAdmin: isAdmin, CSRF: "c", Title: unescape(m[1]), Message: unescape(m[2]),
-			Action: unescape(m[3]), Button: unescape(m[4]), Cancel: unescape(m[5]),
+	for _, c := range confirmCases {
+		assertGolden(t, c.name, Confirm(ConfirmView{
+			IsAdmin: c.isAdmin, CSRF: "c", Title: c.title, Message: c.message,
+			Action: c.action, Button: c.button, Cancel: c.cancel,
 		}))
-	}
-	if count != 13 {
-		t.Fatalf("%d confirmation goldens", count)
 	}
 }
 
 func TestProjectFormsMatchRust(t *testing.T) {
-	sameAsGolden(t, "projects-new", ProjectForm(ProjectFormView{IsAdmin: true, Heading: "New project", Action: "/projects"}))
-	sameAsGolden(t, "project-edit", ProjectForm(ProjectFormView{
+	assertGolden(t, "projects-new", ProjectForm(ProjectFormView{IsAdmin: true, Heading: "New project", Action: "/projects"}))
+	assertGolden(t, "project-edit", ProjectForm(ProjectFormView{
 		IsAdmin: true, Heading: "Edit project", Action: "/projects/1", Name: "Alpha", Description: "First **project**",
 	}))
 }
@@ -96,16 +79,16 @@ func TestCheckFormMatchesRust(t *testing.T) {
 		ScheduleKind: "period", PeriodSecs: "1d", GraceSecs: "1h", Timezone: "UTC", MaxRuntimeSecs: "30m", NagIntervalSecs: "2h",
 		Timezones: tz.Names(),
 	})
-	sameAsGolden(t, "check-edit", got)
+	assertGolden(t, "check-edit", got)
 }
 
 func TestDashboardMatchesRust(t *testing.T) {
-	sameAsGolden(t, "dashboard-empty", Dashboard(DashboardView{CSRF: "c"}))
+	assertGolden(t, "dashboard-empty", Dashboard(DashboardView{CSRF: "c"}))
 	bars := []view.Bar{{Height: 5, Class: "", Title: "0s / 30m 00s"}}
 	for range 3 {
 		bars = append(bars, view.Bar{Height: 26, Class: "bad", Title: "Failed"})
 	}
-	sameAsGolden(t, "dashboard-down", Dashboard(DashboardView{
+	assertGolden(t, "dashboard-down", Dashboard(DashboardView{
 		IsAdmin: true, Total: 5, Up: 1, Down: 1, Status: "down",
 		Groups: []ProjectGroup{{ID: 1, Name: "Alpha", Description: "First project", Count: 1, Checks: []CheckRow{{
 			ID: 1, Name: "nightly-backup", Status: "down", Schedule: "every 1d · 1h grace",
@@ -122,7 +105,7 @@ func TestProjectPageMatchesRust(t *testing.T) {
 	for i, kind := range []string{"webhook", "slack", "telegram", "ntfy", "pushover", "email"} {
 		channels = append(channels, ProjectChannelRow{ID: int64(i + 1), Name: "ch-" + kind, Kind: kind})
 	}
-	sameAsGolden(t, "project", Project(ProjectView{
+	assertGolden(t, "project", Project(ProjectView{
 		IsAdmin: true, Project: models.Project{ID: 1, Name: "Alpha"},
 		DescriptionHTML: "<p>First <strong>project</strong></p>",
 		Checks: []ProjectCheckRow{
@@ -147,14 +130,12 @@ func TestNewCheckPageMatchesRust(t *testing.T) {
 		Schedule: "every 5m · 1m grace", PingURL: "http://localhost:18080/ping/f009852c-3f49-4586-9204-207afa2c1627",
 		PingsPartial: pings, NotifsPartial: notifs,
 	})
-	sameAsGolden(t, "check-new-state", got)
+	assertGolden(t, "check-new-state", got)
 }
 
 func TestHistoryFragmentsMatchRust(t *testing.T) {
 	notifs := CheckNotifs(CheckNotifsView{HistoryFilter: HistoryFilter{CheckID: 3}})
-	if string(notifs) != golden(t, "check-notifications-empty") {
-		t.Fatal(notifs)
-	}
+	assertGolden(t, "check-notifications-empty", string(notifs))
 	rows := []PingRow{
 		{Time: "2026-11-17 15:25:17 UTC", ISO: "2026-11-17T15:25:17.081501953+00:00", PillClass: "log", KindLabel: "log", Exit: "—", Duration: "—", Source: "192.168.215.1", Body: "backup finished ok"},
 	}
