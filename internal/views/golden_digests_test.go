@@ -2,10 +2,16 @@ package views
 
 // goldenDigests holds the sha256 of each page the Rust v0.12.0 server rendered
 // (ghcr.io/henry40408/pingward:latest, revision ca5682f, over HTTP), after
-// normalise. The state was the capture database described in
-// internal/db/testdata/README.txt (admin, bob, carol); admin pages came from an
-// elevated admin session and confirmation pages are the POST response without
-// ?confirmed, with a valid CSRF token. Three names are not whole pages:
+// normalise. The server's state was built through HTTP only: users admin and
+// bob (both admins; bob was promoted) and carol (not an admin, no projects),
+// 3 projects, 6 checks (nightly-backup with period, max runtime and nag;
+// weekly-report on a cron in Asia/Taipei; heartbeat; flaky with a 2s period;
+// slow-job, which overran; bob-check), 7 channels (one per notifier kind on
+// admin's project, plus bob-hook), 2 API keys (ci, script), 14 pings, 47
+// notifications (down, up, reminder), 10 audit rows, 8 settings and 3
+// sessions. Admin pages came from an elevated admin session and confirmation
+// pages are the POST response without ?confirmed, with a valid CSRF token.
+// Three names are not whole pages:
 //
 //   - admin is the page with its Environment card replaced by "ENV", because
 //     that table lists the capture server's own environment.

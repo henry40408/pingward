@@ -8,9 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -110,32 +107,8 @@ func TestMigrationFilesAreChecksummedByteForByte(t *testing.T) {
 	}
 }
 
-func copyFile(t *testing.T, from, to string) {
-	t.Helper()
-	source, err := os.Open(from)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = source.Close() }()
-	target, err := os.Create(to)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = target.Close() }()
-	if _, err := io.Copy(target, source); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestMigratingARustCreatedDatabaseIsANoOp(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "rust.sqlite3")
-	copyFile(t, filepath.Join("testdata", "rust-created.sqlite3"), path)
-	database, err := Open("sqlite://" + path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = database.Close() }()
-
+	database := openRustCreated(t)
 	before := scanString(t, database, "SELECT group_concat(execution_time) FROM _sqlx_migrations")
 	if err := database.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
@@ -156,23 +129,10 @@ func TestGoCreatedTableDDLMatchesSqlx(t *testing.T) {
 	if err := database.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	rust := openRustCopy(t)
 	query := "SELECT sql FROM sqlite_master WHERE name = '_sqlx_migrations'"
-	if got, want := scanString(t, database, query), scanString(t, rust, query); got != want {
-		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	if got := scanString(t, database, query); got != sqlxMigrationsTable {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, sqlxMigrationsTable)
 	}
-}
-
-func openRustCopy(t *testing.T) *DB {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "rust.sqlite3")
-	copyFile(t, filepath.Join("testdata", "rust-created.sqlite3"), path)
-	database, err := Open("sqlite://" + path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = database.Close() })
-	return database
 }
 
 func TestMigrationRecordsARealExecutionTime(t *testing.T) {
