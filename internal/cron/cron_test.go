@@ -1,88 +1,104 @@
 package cron
 
 import (
-	"encoding/json"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
-type fixtureCase struct {
-	Anchor string   `json:"anchor"`
-	Zone   string   `json:"zone"`
-	Next   []string `json:"next"`
+// rustCapturePath is the file the Rust capture lived in before it was deleted
+// from the tree (see rust_fixtures_test.go).
+const rustCapturePath = "internal/cron/testdata/fixtures.json"
+
+// logCaptureHint prints, for a failed test, where the original capture is.
+func logCaptureHint(t *testing.T) {
+	if !t.Failed() {
+		return
+	}
+	t.Logf("The Rust capture is in git history: git show $(git log --diff-filter=D --format=%%h -1 -- %s)^:%s\n"+
+		"A rustValid digest covers one line per case of the capture, in order: \"<anchor> <zone> <next joined by comma>\".",
+		rustCapturePath, rustCapturePath)
 }
 
-type fixtureFile struct {
-	Valid []struct {
-		Expr  string        `json:"expr"`
-		Cases []fixtureCase `json:"cases"`
-	} `json:"valid"`
-	Invalid []struct {
-		Expr  string `json:"expr"`
-		Error string `json:"error"`
-	} `json:"invalid"`
-}
-
-func loadFixtures(t *testing.T) fixtureFile {
+// assertRustDigest fails when got does not hash to want. It writes got to a
+// temporary file, so it can be compared with the capture.
+func assertRustDigest(t *testing.T, name, want, got string) {
 	t.Helper()
-	raw, err := os.ReadFile("testdata/fixtures.json")
+	sum := sha256.Sum256([]byte(got))
+	if hex.EncodeToString(sum[:]) == want {
+		return
+	}
+	file, err := os.CreateTemp("", "cron-actual-*.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fixtures fixtureFile
-	if err := json.Unmarshal(raw, &fixtures); err != nil {
+	defer func() { _ = file.Close() }()
+	if _, err := file.WriteString(got); err != nil {
 		t.Fatal(err)
 	}
-	return fixtures
+	t.Errorf("%s differs from the Rust capture (%d bytes of output written to %s)", name, len(got), file.Name())
+}
+
+// upcomingText lists the next five fire times for every anchor in every zone
+// of rustZones, in the line format the rustValid digests were computed over.
+func upcomingText(t *testing.T, schedule *Schedule, anchors []string) string {
+	t.Helper()
+	var text strings.Builder
+	for _, anchorText := range anchors {
+		anchor, err := time.Parse(time.RFC3339Nano, anchorText)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, zoneName := range rustZones {
+			zone, err := time.LoadLocation(zoneName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fires []string
+			for _, fire := range schedule.Upcoming(anchor, zone, 5) {
+				fires = append(fires, fire.UTC().Format("2006-01-02T15:04:05.000000000Z"))
+			}
+			fmt.Fprintf(&text, "%s %s %s\n", anchorText, zoneName, strings.Join(fires, ","))
+		}
+	}
+	return text.String()
 }
 
 func TestInvalidExpressionsReportTheRustErrorText(t *testing.T) {
-	fixtures := loadFixtures(t)
-	if len(fixtures.Invalid) < 100 {
-		t.Fatalf("only %d invalid fixtures", len(fixtures.Invalid))
+	defer logCaptureHint(t)
+	if len(rustInvalid) != 154 {
+		t.Fatalf("%d invalid fixtures, want 154", len(rustInvalid))
 	}
-	for _, c := range fixtures.Invalid {
-		_, err := Parse(c.Expr)
+	for _, c := range rustInvalid {
+		_, err := Parse(c.expr)
 		if err == nil {
-			t.Errorf("%q parsed, Rust refused it with %q", c.Expr, c.Error)
+			t.Errorf("%q parsed, Rust refused it with %q", c.expr, c.error)
 			continue
 		}
-		if err.Error() != c.Error {
-			t.Errorf("%q:\n got %q\nwant %q", c.Expr, err.Error(), c.Error)
+		if err.Error() != c.error {
+			t.Errorf("%q:\n got %q\nwant %q", c.expr, err.Error(), c.error)
 		}
 	}
 }
 
 func TestValidExpressionsFireLikeTheRustCrate(t *testing.T) {
-	fixtures := loadFixtures(t)
-	if len(fixtures.Valid) < 100 {
-		t.Fatalf("only %d valid fixtures", len(fixtures.Valid))
+	defer logCaptureHint(t)
+	if len(rustValid) != 150 {
+		t.Fatalf("%d valid fixtures, want 150", len(rustValid))
 	}
-	for _, expression := range fixtures.Valid {
-		schedule, err := Parse(expression.Expr)
+	for i, expression := range rustValid {
+		schedule, err := Parse(expression.expr)
 		if err != nil {
-			t.Errorf("%q: %v", expression.Expr, err)
+			t.Errorf("%q: %v", expression.expr, err)
 			continue
 		}
-		for _, c := range expression.Cases {
-			anchor, err := time.Parse(time.RFC3339Nano, c.Anchor)
-			if err != nil {
-				t.Fatal(err)
-			}
-			zone, err := time.LoadLocation(c.Zone)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var got []string
-			for _, fire := range schedule.Upcoming(anchor, zone, 5) {
-				got = append(got, fire.UTC().Format("2006-01-02T15:04:05.000000000Z"))
-			}
-			if !equalStrings(got, c.Next) {
-				t.Errorf("%q anchor %s zone %s:\n got %v\nwant %v", expression.Expr, c.Anchor, c.Zone, got, c.Next)
-			}
-		}
+		// The index tells apart the expression the capture lists twice.
+		name := fmt.Sprintf("rustValid[%d] %q", i, expression.expr)
+		assertRustDigest(t, name, expression.digest, upcomingText(t, schedule, expression.anchors))
 	}
 }
 
