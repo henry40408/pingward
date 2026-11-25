@@ -1,43 +1,26 @@
 package markdown
 
 import (
-	"encoding/json"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
 )
 
 func TestCasesCapturedFromRust(t *testing.T) {
-	raw, err := os.ReadFile("testdata/cases.json")
-	if err != nil {
-		t.Fatal(err)
+	if len(rustCases) != 112 {
+		t.Fatalf("%d cases, want 112", len(rustCases))
 	}
-	var cases []struct {
-		Input           string `json:"input"`
-		Render          string `json:"render"`
-		ToPlain         string `json:"to_plain"`
-		TruncatePlain5  string `json:"truncate_plain_5"`
-		TruncatePlain20 string `json:"truncate_plain_20"`
-		TruncatePlain0  string `json:"truncate_plain_0"`
-	}
-	if err := json.Unmarshal(raw, &cases); err != nil {
-		t.Fatal(err)
-	}
-	if len(cases) < 100 {
-		t.Fatalf("only %d cases", len(cases))
-	}
-	for _, c := range cases {
+	for _, c := range rustCases {
 		check := func(name, got, want string) {
 			if got != want {
-				t.Errorf("%s(%q):\n got %q\nwant %q", name, c.Input, got, want)
+				t.Errorf("%s(%q):\n got %q\nwant %q", name, c.input, got, want)
 			}
 		}
-		check("Render", Render(c.Input), c.Render)
-		check("ToPlain", ToPlain(c.Input), c.ToPlain)
-		check("TruncatePlain(5)", TruncatePlain(c.Input, 5), c.TruncatePlain5)
-		check("TruncatePlain(20)", TruncatePlain(c.Input, 20), c.TruncatePlain20)
-		check("TruncatePlain(0)", TruncatePlain(c.Input, 0), c.TruncatePlain0)
+		check("Render", Render(c.input), c.render)
+		check("ToPlain", ToPlain(c.input), c.toPlain)
+		check("TruncatePlain(5)", TruncatePlain(c.input, 5), c.truncatePlain5)
+		check("TruncatePlain(20)", TruncatePlain(c.input, 20), c.truncatePlain20)
+		check("TruncatePlain(0)", TruncatePlain(c.input, 0), c.truncatePlain0)
 	}
 }
 
@@ -225,18 +208,8 @@ func TestOutputContainsOnlyWhitelistedMarkup(t *testing.T) {
 		"[<img src=x onerror=1>](https://a.b)", "**<b>**", "`<script>`", "- <script>", "[x](HTTPS://A.B)",
 		"[a](mailto:\"><script>)", "&lt;script&gt;", "\u2028<script>", "[x](https://a.b\n)",
 	}
-	raw, err := os.ReadFile("testdata/cases.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cases []struct {
-		Input string `json:"input"`
-	}
-	if err := json.Unmarshal(raw, &cases); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range cases {
-		hostile = append(hostile, c.Input)
+	for _, c := range rustCases {
+		hostile = append(hostile, c.input)
 	}
 	for _, input := range hostile {
 		out := Render(input)
