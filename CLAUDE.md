@@ -113,8 +113,11 @@ real `$HOME`: use `t.TempDir()` and set `HOME`.
 tables, markdown, the OpenAPI document). Many were captured from the former
 Rust server; each `testdata/README.txt` says how. Small Rust vectors (password
 hashes, session cookies, notifier request bodies, timezone parse probes, API
-error responses, `_sqlx_migrations` checksums) are inline in the tests that use
-them (`rust*` variables, `*MigrationGolden`).
+error responses, `_sqlx_migrations` checksums and rows) are inline in the tests
+that use them (`rust*` variables, `*MigrationGolden`). `openRustCreated`
+(`internal/db/rust_created_test.go`) rebuilds the Rust-created SQLite database
+from the embedded migrations plus the captured `_sqlx_migrations` statement and
+rows.
 
 View markup is pinned by `goldenDigests` (`internal/views/golden_digests_test.go`):
 the sha256 of each page the Rust server rendered, compared with the normalised
