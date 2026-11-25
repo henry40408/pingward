@@ -1,6 +1,17 @@
 package tz
 
-import "testing"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+	"testing"
+)
+
+// chronoTzNamesDigest is the sha256 of chrono_tz::TZ_VARIANTS (chrono-tz
+// 0.10.4), one name per line in the crate's order, each line ending in "\n". It
+// stands in for the captured list names.go was generated from, which is in git
+// history (internal/tz/testdata/chrono_tz_names.txt).
+const chronoTzNamesDigest = "92b90ad47e72e7d816bee5df595b9dc387ba95b43f48090cf47a9953064cdfa1"
 
 func TestNamesMatchTheChronoTzList(t *testing.T) {
 	if len(Names()) != 597 {
@@ -8,6 +19,10 @@ func TestNamesMatchTheChronoTzList(t *testing.T) {
 	}
 	if Names()[0] != "Africa/Abidjan" {
 		t.Fatalf("first name = %q", Names()[0])
+	}
+	sum := sha256.Sum256([]byte(strings.Join(Names(), "\n") + "\n"))
+	if got := hex.EncodeToString(sum[:]); got != chronoTzNamesDigest {
+		t.Fatalf("names digest = %s, want %s: the list differs from chrono-tz 0.10.4", got, chronoTzNamesDigest)
 	}
 }
 
