@@ -1,7 +1,8 @@
 package api
 
 import (
-	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -35,21 +36,41 @@ func TestOpenAPIMatchesRoutes(t *testing.T) {
 	}
 }
 
+// The sha256 of what the Rust v0.12.0 image served (captured 2026-11-18):
+// GET /api/openapi.json, and GET /api/docs with a login session. The page is
+// referencePageHead, the document and referencePageTail, so a deliberate change
+// to the document replaces both digests. Do not recompute a digest to make a
+// test pass: it is the Rust server's output.
+const (
+	rustOpenAPIDigest       = "b87980595a15473bd59595beb1d865473b9104b28980a68c017f6b9600454249"
+	rustReferencePageDigest = "c34fd14a0df1e5f5ee5831a38e825d5420f7fcb2c987db52a085527224a61f79"
+)
+
+// assertRustDigest fails when got does not hash to want. It writes got to a
+// temporary file; the Rust capture is in git history under capturePath.
+func assertRustDigest(t *testing.T, name, want, got, capturePath string) {
+	t.Helper()
+	sum := sha256.Sum256([]byte(got))
+	if hex.EncodeToString(sum[:]) == want {
+		return
+	}
+	file, err := os.CreateTemp("", name+".actual.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	if _, err := file.WriteString(got); err != nil {
+		t.Fatal(err)
+	}
+	t.Errorf("%s differs from the Rust capture (%d bytes written to %s).\n"+
+		"The capture is in git history: git show $(git log --diff-filter=D --format=%%h -1 -- %s)^:%s",
+		name, len(got), file.Name(), capturePath, capturePath)
+}
+
 func TestEmbeddedDocumentsEqualTheRustCaptures(t *testing.T) {
-	spec, err := os.ReadFile("testdata/openapi.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(spec, openAPIJSON) {
-		t.Error("embedded openapi.json differs from testdata/openapi.json")
-	}
-	page, err := os.ReadFile("testdata/docs.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := referencePageHead + string(openAPIJSON) + referencePageTail; got != string(page) {
-		t.Error("the reference page differs from testdata/docs.html")
-	}
+	assertRustDigest(t, "openapi.json", rustOpenAPIDigest, string(openAPIJSON), "internal/api/testdata/openapi.json")
+	page := referencePageHead + string(openAPIJSON) + referencePageTail
+	assertRustDigest(t, "docs.html", rustReferencePageDigest, page, "internal/api/testdata/docs.html")
 }
 
 func TestTimeFormatIsChronoAutoSi(t *testing.T) {
