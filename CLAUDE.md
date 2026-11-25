@@ -110,11 +110,24 @@ real `$HOME`: use `t.TempDir()` and set `HOME`.
 ### Golden files
 
 `internal/*/testdata` holds the large captured fixtures (cron and timezone
-tables, markdown, the OpenAPI document). Many were captured from the former
-Rust server; each `testdata/README.txt` says how. Small Rust vectors (password
-hashes, session cookies, notifier request bodies, timezone parse probes, API
-error responses, `_sqlx_migrations` checksums) are inline in the tests that use
-them (`rust*` variables, `*MigrationGolden`).
+tables, markdown). Many were captured from the former Rust server; each
+`testdata/README.txt` says how. Small Rust vectors (password hashes, session
+cookies, notifier request bodies, timezone parse probes, API error responses,
+`_sqlx_migrations` checksums) are inline in the tests that use them (`rust*`
+variables, `*MigrationGolden`).
+
+Large byte-exact Rust outputs that Go code reproduces are pinned by a sha256
+instead of a file: the OpenAPI document and the `/api/docs` page
+(`rustOpenAPIDigest`, `rustReferencePageDigest` in `internal/api/api_test.go`;
+the document itself is the embedded `internal/api/openapi.json`, and the page
+is the document between `referencePageHead` and `referencePageTail`), and the
+e2e seed script for `SQL(1_800_000_000_000)` (`rustSeedDigest` in
+`e2e/internal/seed/seed_test.go`, from the former `e2e/src/seed.rs`; it pins the
+Mulberry32 draw order and the float arithmetic). A mismatch writes the actual
+output to a temp file and names the `git show` command that recovers the
+capture from history. A deliberate change to the document, the page or the seed
+means replacing the digest; never recompute one to make a test pass without
+understanding why it differs.
 
 View markup is pinned by `goldenDigests` (`internal/views/golden_digests_test.go`):
 the sha256 of each page the Rust server rendered, compared with the normalised

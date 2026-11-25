@@ -1,6 +1,8 @@
 package seed
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"strings"
 	"testing"
@@ -64,16 +66,31 @@ func TestTheSeedScriptIsOneTransaction(t *testing.T) {
 	}
 }
 
+// rustSeedDigest is the sha256 of the Rust e2e/src/seed.rs seed_sql(1_800_000_000_000)
+// output, captured once in a container before the Rust code was removed. The Go
+// port must reproduce it byte for byte, which pins the Mulberry32 draw order and
+// the float arithmetic. Do not recompute it to make a test pass.
+const rustSeedDigest = "38a30753c3e12f6ad0f06c9d55717da8c91ca67554f44a2277ca091d2c78b41c"
+
 func TestSQLMatchesTheRustCapture(t *testing.T) {
-	want, err := os.ReadFile("testdata/seed_1800000000000.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
 	got, err := SQL(1_800_000_000_000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != string(want) {
-		t.Error("the seed script differs from the Rust capture")
+	sum := sha256.Sum256([]byte(got))
+	if hex.EncodeToString(sum[:]) == rustSeedDigest {
+		return
 	}
+	file, err := os.CreateTemp("", "seed.actual.*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	if _, err := file.WriteString(got); err != nil {
+		t.Fatal(err)
+	}
+	const capturePath = "e2e/internal/seed/testdata/seed_1800000000000.sql"
+	t.Errorf("the seed script differs from the Rust capture (%d bytes written to %s).\n"+
+		"The capture is in git history: git show $(git log --diff-filter=D --format=%%h -1 -- %s)^:%s",
+		len(got), file.Name(), capturePath, capturePath)
 }
