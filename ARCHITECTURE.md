@@ -22,7 +22,6 @@ cookies, API keys and the HTTP surface are unchanged.
 | `internal/db/migrations/postgres/`| The same migrations, hand-duplicated for Postgres                 |
 | `internal/assets/static/`         | CSS, scripts, embedded fonts and icons                            |
 | `e2e/`                            | godog + chromedp browser tests; its own Go module                 |
-| `testdata/`                       | Inventory of the original Rust tests mapped to Go tests           |
 
 ## Package map
 

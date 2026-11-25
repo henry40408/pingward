@@ -109,27 +109,33 @@ real `$HOME`: use `t.TempDir()` and set `HOME`.
 
 ### Golden files
 
-`internal/*/testdata` holds the large captured fixtures (cron and timezone
-tables, markdown). Many were captured from the former Rust server; each
-`testdata/README.txt` says how. Small Rust vectors (password hashes, session
-cookies, notifier request bodies, timezone parse probes, API error responses,
-`_sqlx_migrations` checksums and rows) are inline in the tests that use them
+There are no `testdata` directories: everything captured once from the former
+Rust server is inline in the tests that use it, and the originals are in git
+history. Small Rust vectors (password hashes, session cookies, notifier request
+bodies, timezone parse probes, API error responses, `_sqlx_migrations`
+checksums and rows, the 112 markdown cases in `rustCases`) are Go literals
 (`rust*` variables, `*MigrationGolden`). `openRustCreated`
 (`internal/db/rust_created_test.go`) rebuilds the Rust-created SQLite database
 from the embedded migrations plus the captured `_sqlx_migrations` statement and
 rows.
 
 Large byte-exact Rust outputs that Go code reproduces are pinned by a sha256
-instead of a file: the OpenAPI document and the `/api/docs` page
+instead of a file: the cron schedule results (`rustValid` in
+`internal/cron/rust_fixtures_test.go`: one digest per expression over every
+anchor and zone; the 154 invalid expressions and their error text are the
+`rustInvalid` table beside it), the timezone name list (`chronoTzNamesDigest`
+in `internal/tz/tz_test.go`; `names.go` itself is the source, no generator),
+the OpenAPI document and the `/api/docs` page
 (`rustOpenAPIDigest`, `rustReferencePageDigest` in `internal/api/api_test.go`;
 the document itself is the embedded `internal/api/openapi.json`, and the page
 is the document between `referencePageHead` and `referencePageTail`), and the
 e2e seed script for `SQL(1_800_000_000_000)` (`rustSeedDigest` in
 `e2e/internal/seed/seed_test.go`, from the former `e2e/src/seed.rs`; it pins the
-Mulberry32 draw order and the float arithmetic). A mismatch writes the actual
-output to a temp file and names the `git show` command that recovers the
-capture from history. A deliberate change to the document, the page or the seed
-means replacing the digest; never recompute one to make a test pass without
+Mulberry32 draw order and the float arithmetic). A mismatch (except the tz
+list, which has no capture to compare) writes the actual output to a temp file
+and names the `git show` command that recovers the capture from history. A
+deliberate change to a cron result, the document, the page or the seed means
+replacing the digest; never recompute one to make a test pass without
 understanding why it differs.
 
 View markup is pinned by `goldenDigests` (`internal/views/golden_digests_test.go`):
@@ -139,8 +145,6 @@ Go output. A mismatch writes the output to a temp file and names the
 markup change means replacing the affected digests (compare the output with the
 recovered golden first) and regenerating the screenshots together. Never change
 a digest to make a test pass without understanding why it differs.
-`testdata/test_map.txt` maps the original Rust tests to Go tests; keep it
-consistent when renaming a test (`internal/testutil/testmap_test.go`).
 
 ## Invariants
 
