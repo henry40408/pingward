@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"hash/crc32"
 	"regexp"
 	"slices"
@@ -389,6 +390,17 @@ func TestBothDialectsHaveTheSameVersions(t *testing.T) {
 	sqlite, postgres := versions(SQLite), versions(Postgres)
 	if !slices.Equal(sqlite, postgres) || sqlite[0] != 16 {
 		t.Fatalf("sqlite %v, postgres %v", sqlite, postgres)
+	}
+}
+
+// The Postgres tests need a server; this holds without one.
+func TestOnlyPostgresAsksForAnIsolationLevel(t *testing.T) {
+	if got := (&DB{dialect: SQLite}).migrationTxOptions(); got != nil {
+		t.Errorf("SQLite: %+v", got)
+	}
+	got := (&DB{dialect: Postgres}).migrationTxOptions()
+	if got == nil || got.Isolation != sql.LevelReadCommitted {
+		t.Errorf("Postgres: %+v", got)
 	}
 }
 
