@@ -1,6 +1,4 @@
-// Package db opens SQLite and Postgres and applies the sqlx-compatible
-// migrations that the Rust build also used, so a database written by one
-// build can be opened by the other.
+// Package db opens SQLite and Postgres and migrates their schema.
 package db
 
 import (

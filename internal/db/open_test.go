@@ -178,12 +178,14 @@ func TestOpenHonoursAnExplicitReadOnlyMode(t *testing.T) {
 
 func TestSQLiteDSN(t *testing.T) {
 	cases := map[string]string{
-		"sqlite::memory:":             "file::memory:?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)",
-		"sqlite://x.db":               "file:x.db?mode=rwc&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
-		"sqlite:///data/p.db?mode=rw": "file:/data/p.db?mode=rw&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
-		"sqlite://a%b#c.db":           "file:a%25b%23c.db?mode=rwc&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
-		"sqlite:x.db?cache=shared":    "file:x.db?cache=shared&mode=rwc&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
-		"sqlite://x.db?mode=memory":   "file::memory:?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)",
+		"sqlite::memory:":             "file::memory:?_txlock=immediate&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)",
+		"sqlite://x.db":               "file:x.db?_txlock=immediate&mode=rwc&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+		"sqlite:///data/p.db?mode=rw": "file:/data/p.db?_txlock=immediate&mode=rw&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+		"sqlite://a%b#c.db":           "file:a%25b%23c.db?_txlock=immediate&mode=rwc&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+		"sqlite:x.db?cache=shared":    "file:x.db?_txlock=immediate&cache=shared&mode=rwc&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+		"sqlite://x.db?mode=memory":   "file::memory:?_txlock=immediate&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)",
+		// The driver reads the first _txlock.
+		"sqlite://x.db?_txlock=deferred": "file:x.db?_txlock=immediate&_txlock=deferred&mode=rwc&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
 	}
 	for url, want := range cases {
 		if got := sqliteDSN(url); got != want {

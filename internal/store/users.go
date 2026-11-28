@@ -52,8 +52,7 @@ func (s *Store) CreateUser(ctx context.Context, username string, passwordHash *s
 // READ COMMITTED, so two concurrent INSERT ... WHERE NOT EXISTS statements
 // both see an empty table; a transaction-scoped advisory lock makes the second
 // wait and then see the first's row. SQLite needs none: one statement is
-// atomic and writers are serialised, and a deferred transaction there would
-// fail with SQLITE_BUSY on lock upgrade. found is false when the statement
+// atomic and writers are serialised. found is false when the statement
 // inserted nothing.
 func (s *Store) insertFirstUser(ctx context.Context, query string, args ...any) (id int64, found bool, err error) {
 	if s.DB.Dialect() != db.Postgres {

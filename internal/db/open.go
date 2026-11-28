@@ -12,6 +12,9 @@ import (
 const (
 	filePoolSize     = 5
 	busyTimeoutMilli = 5000
+	// txLock makes a transaction take the write lock when it begins, which a
+	// migration needs to read the schema version under it.
+	txLock = "_txlock=immediate"
 )
 
 // IsSQLiteURL reports whether url selects SQLite ("sqlite:..."); anything else
@@ -67,15 +70,16 @@ func openSQLite(url string) (*DB, error) {
 // sqliteDSN builds the modernc DSN. foreign_keys is needed or ON DELETE
 // CASCADE is silently unenforced; busy_timeout retries a blocked write instead
 // of failing with SQLITE_BUSY. A file database also gets WAL so readers run
-// alongside a writer (NORMAL is safe under WAL); an in-memory database's
-// journal mode is always "memory".
+// alongside a writer (NORMAL is safe under WAL); an in-memory database's journal
+// mode is always "memory". txLock leads the query, because the driver reads the
+// first _txlock and the URL may carry another.
 func sqliteDSN(url string) string {
 	pragmas := []string{
 		"foreign_keys(1)",
 		fmt.Sprintf("busy_timeout(%d)", busyTimeoutMilli),
 	}
 	if isInMemoryURL(url) {
-		return "file::memory:?" + pragmaQuery(pragmas)
+		return "file::memory:?" + joinQuery(txLock, pragmaQuery(pragmas))
 	}
 	pragmas = append(pragmas, "journal_mode(WAL)", "synchronous(NORMAL)")
 
@@ -84,7 +88,8 @@ func sqliteDSN(url string) string {
 	if !strings.Contains(query, "mode=") {
 		query = joinQuery(query, "mode=rwc")
 	}
-	return "file:" + escapeURIPath(path) + "?" + joinQuery(query, pragmaQuery(pragmas))
+	query = joinQuery(query, pragmaQuery(pragmas))
+	return "file:" + escapeURIPath(path) + "?" + joinQuery(txLock, query)
 }
 
 func pragmaQuery(pragmas []string) string {
