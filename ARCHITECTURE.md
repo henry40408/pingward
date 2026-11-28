@@ -10,7 +10,7 @@ server-rendered browser UI (views embedded in the binary), machine `/ping/*`
 endpoints, and a bearer-authenticated REST API under `/api/v1` with an OpenAPI
 document and Scalar UI. All three share one `database/sql` pool that talks to
 SQLite or Postgres. It replaced an earlier Rust implementation; databases,
-cookies, API keys and the HTTP surface are unchanged.
+cookies, API keys and the HTTP surface carried over.
 
 ## Repository layout
 
@@ -44,8 +44,8 @@ cookies, API keys and the HTTP surface are unchanged.
 - `internal/apikey` — API key generation (`pw_...`) and SHA-256 hashing.
 - `internal/ratelimit` — the in-memory fixed-window limiter.
 - `internal/store` — the only data-access layer (all SQL).
-- `internal/db` — opening the pool, SQLite pragmas, embedded migrations with
-  sqlx-compatible bookkeeping, time formatting.
+- `internal/db` — opening the pool, SQLite pragmas, embedded migrations and the
+  schema version, time formatting.
 - `internal/models` — domain structs and string-backed enums.
 - `internal/scheduler` — `DueTime`/`OverrunTime`, the scan and nag passes, the
   scan loop.
@@ -270,7 +270,7 @@ original (RFC 6265bis §5.5).
 **Flipping `PINGWARD_COOKIE_SECURE` or the base URL's scheme renames the cookie
 and signs everyone out once.** There is no fallback read of the other name, on
 purpose: a permanent branch for a one-time, self-healing inconvenience
-(`0012_session_secret.sql` did the same with `DELETE FROM sessions`).
+(the upgrade to schema 12 did the same with `DELETE FROM sessions`).
 
 ## Persistence
 
@@ -282,6 +282,28 @@ Migrations are hand-duplicated in `internal/db/migrations/sqlite/` and
 `internal/db/migrations/postgres/`; a schema change means writing both. Both sets are
 embedded with `go:embed`, because the release image ships only the binary
 and runs from `/data` — a migrator reading the files from disk would fail.
+
+Each script is named `<version>_<description>.sql` and runs in one transaction
+with the version bump: `PRAGMA user_version` on SQLite, the one-row
+`pingward_schema_version` table on Postgres (the name carries pingward's because
+the database may be shared; it is looked up in `current_schema()` only). The
+version is read again under the write lock (`_txlock=immediate` on SQLite; on
+Postgres an advisory lock in a `READ COMMITTED` transaction, whatever the
+server's default), so simultaneous starts apply a script once. A database newer
+than the build is refused. There are no checksums, so a released script must
+never change.
+
+`0016_baseline.sql` is the whole schema of version 16 and replaces the sixteen
+steps of releases up to 0.13. It runs on an empty database only. One that is not
+empty must show in `_sqlx_migrations` that it reached version 16 (v0.3.0 or
+later); it has the schema already, so the runner does not run the script
+(Postgres demands table ownership even for `CREATE INDEX IF NOT EXISTS`). Any
+other is refused: the script only creates what is missing, so it would leave
+older tables as they are. Either way that table gets version `99999999999999`:
+releases up to 0.13, the Rust ones included, then refuse to start instead of
+running against a schema they do not know. The same row lets a database that
+lost `user_version` (a restored SQLite `.dump`) migrate again; scripts after the
+baseline run again then, so they should be safe to repeat where SQL allows.
 
 `db.Open` applies SQLite-only pragmas per connection: `foreign_keys` (so
 `ON DELETE CASCADE` works; Postgres does this natively), `busy_timeout` 5000ms,
@@ -337,7 +359,7 @@ passwordless non-admin user, only when the peer is a trusted proxy.
 
 `auth.RefreshedExpiry` also **clamps downward**: a stored `expires_at` beyond
 `min(now + idle, cap)` is pulled down on the next request, bypassing the
-throttle. `0015_invalidate_legacy_sessions.sql` deleted the old single-layer
+throttle. The upgrade to schema 15 deleted the old single-layer
 rows, and migration runs before `bind`, but the clamp still covers a stale
 binary writing to a shared DB (rolling deploy, mixed-version instances) and a
 future build that lowers `SESSION_IDLE_TTL_HOURS`. `auth.IsPastAbsoluteCap`
@@ -913,11 +935,12 @@ the JS-on suite, so an always-open "fix" cannot pass alone.
 
 - **DB column/table**: migration SQL in **both** `internal/db/migrations/sqlite/`
   and `internal/db/migrations/postgres/`, numbered on from the last file, then
-  the `models` struct and `store` methods (`$N` placeholders). Never edit an
-  applied migration. Keep the portable types: timestamps `TEXT` (UTC RFC 3339),
+  the `models` struct and `store` methods (`$N` placeholders). Never edit a
+  released migration (see "Persistence"). Keep the portable types: timestamps `TEXT` (UTC RFC 3339),
   integers and booleans `INTEGER`/`BIGINT`: no `TIMESTAMPTZ`/`BOOLEAN`. SQLite
-  cannot alter a `CHECK` constraint, so widening one means rebuilding the table
-  (`0004_nag.sql`). A stray `?` placeholder passes on SQLite and fails only on
+  cannot alter a `CHECK` constraint, so widening one means rebuilding the table;
+  `PRAGMA foreign_keys=OFF` is ignored inside a migration's transaction, so
+  rebuilding a referenced table cascade-deletes its children. A stray `?` placeholder passes on SQLite and fails only on
   Postgres, so run the Postgres store tests.
 - **Enum variant**: add it in `internal/models`.
 - **Notifier**: implement the notifier in `internal/notify`, add a channel kind,

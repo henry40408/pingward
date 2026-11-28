@@ -307,10 +307,27 @@ The full schema is at `/api/openapi.json`, with an interactive
 [Scalar](https://github.com/scalar/scalar) reference at `/api/docs` (both need a
 logged-in session).
 
+## Upgrading
+
+pingward upgrades its database when it starts. Back the database up first.
+
+- **Upgrade from 0.3.0 or later.** An older database is refused and left
+  untouched: start `ghcr.io/henry40408/pingward:0.13.1` on it once, then
+  upgrade.
+- **There is no way back.** Releases up to 0.13 refuse to start against an
+  upgraded database (they report a missing migration `99999999999999`). To
+  downgrade, restore the backup.
+- **Back up SQLite with `.backup`** (or copy the file while pingward is
+  stopped). A `.dump` leaves out the schema version, so after restoring one
+  pingward runs its migrations again, which a later migration may not survive.
+  To avoid that, before the first start copy the number that
+  `PRAGMA user_version;` reports for the original, by running
+  `PRAGMA user_version = <number>;` on the restored file.
+
 ## Upgrading from the Rust releases
 
-pingward is now written in Go. The database, `PINGWARD_SECRET`, cookies, API
-keys and the HTTP surface are unchanged, so an existing volume works as is and
+pingward is now written in Go. `PINGWARD_SECRET`, cookies, API keys and the
+HTTP surface are unchanged and the database is upgraded in place (see above), so
 nobody is signed out. Two things differ:
 
 - **`RUST_LOG` was removed.** Startup fails while it is set, naming

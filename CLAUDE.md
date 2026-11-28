@@ -9,8 +9,8 @@ pingward: self-hosted, healthchecks-style uptime/cron monitor, written in Go
 (standard library `net/http`). Jobs ping a per-check URL; a background loop
 marks overdue checks **down** and notifies via per-check channels. One process
 serves a server-rendered UI and the machine `/ping/*` endpoints. It replaced an
-earlier Rust implementation; existing databases, cookies, API keys and the
-HTTP surface carry over unchanged.
+earlier Rust implementation; existing databases (see "Persistence" for the
+minimum version), cookies, API keys and the HTTP surface carry over.
 
 ## Commands
 
@@ -112,12 +112,8 @@ real `$HOME`: use `t.TempDir()` and set `HOME`.
 There are no `testdata` directories: everything captured once from the former
 Rust server is inline in the tests that use it, and the originals are in git
 history. Small Rust vectors (password hashes, session cookies, notifier request
-bodies, timezone parse probes, API error responses, `_sqlx_migrations`
-checksums and rows, the 112 markdown cases in `rustCases`) are Go literals
-(`rust*` variables, `*MigrationGolden`). `openRustCreated`
-(`internal/db/rust_created_test.go`) rebuilds the Rust-created SQLite database
-from the embedded migrations plus the captured `_sqlx_migrations` statement and
-rows.
+bodies, timezone parse probes, API error responses, the 112 markdown cases in
+`rustCases`) are Go literals (`rust*` variables).
 
 Large byte-exact Rust outputs that Go code reproduces are pinned by a sha256
 instead of a file: the cron schedule results (`rustValid` in
@@ -229,10 +225,23 @@ a digest to make a test pass without understanding why it differs.
   SQL: never change the write format. Reads also accept `Z` and
   `YYYY-MM-DD HH:MM:SS`.
 - Schema changes go in **both** `internal/db/migrations/sqlite/` and
-  `internal/db/migrations/postgres/`, numbered on from `0016`; they are embedded
-  and never read from disk at runtime. `_sqlx_migrations` keeps its sqlx layout
-  and SHA-384 checksums, so the Rust build can still open the database.
-- Existing migration files are immutable (the checksum is verified at startup).
+  `internal/db/migrations/postgres/` as `<version>_<description>.sql`, numbered
+  on from `0016_baseline.sql`; they are embedded and never read from disk at
+  runtime. Each runs in one transaction with the version bump
+  (`PRAGMA user_version`; the one-row `pingward_schema_version` table on
+  Postgres).
+- **Released migration files never change.** Nothing checks them, so an edit
+  would silently reach new databases only.
+- Make a new script safe to run again where SQL allows (`IF [NOT] EXISTS`, data
+  changes that find nothing to do): a restored SQLite `.dump` loses
+  `user_version`, so every script runs again. `ADD COLUMN` cannot be.
+- `PRAGMA foreign_keys=OFF` is ignored inside a transaction: rebuilding a
+  referenced table cascade-deletes its children.
+- Keep the `_sqlx_migrations` row `99999999999999` (written by the baseline
+  script, or by `writeSentinel` where the script is skipped): it makes releases
+  up to 0.13 refuse the database, and proves where a database that lost its
+  version comes from. A database below version 16 (before v0.3.0) is refused.
+  `internal/db/old_database_test.go` holds the old schema the baseline must match.
 
 ### Background loops & shutdown
 - `cmd/pingward/serve.go` starts the scan loop (`internal/scheduler`) and the

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -196,24 +195,21 @@ func TestServeExitsWhenTheDatabaseCannotBeOpened(t *testing.T) {
 	}
 }
 
-func TestServeExitsWhenAMigrationIsHalfApplied(t *testing.T) {
+func TestServeExitsWhenTheDatabaseCannotBeUpgraded(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "t.sqlite3")
 	url := "sqlite://" + path + "?mode=rwc"
 	database, err := db.Open(url)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := database.Migrate(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := database.Exec("UPDATE _sqlx_migrations SET success = false WHERE version = 1"); err != nil {
+	if _, err := database.Exec("CREATE TABLE users (id INTEGER)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := database.Close(); err != nil {
 		t.Fatal(err)
 	}
 	code, stderr := runServeWith(t, map[string]string{"DATABASE_URL": url})
-	if code != exitFailure || !strings.Contains(stderr, "partially applied") {
+	if code != exitFailure || !strings.Contains(stderr, "no complete record") {
 		t.Fatalf("exit code %d, stderr %q", code, stderr)
 	}
 }
